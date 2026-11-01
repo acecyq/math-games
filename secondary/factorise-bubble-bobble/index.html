@@ -133,7 +133,21 @@
       box-shadow: 0 3px 0 #333;
       color: #eee;
     }
+    .choice.focused {
+      outline: 3px solid #ffd84d;
+      outline-offset: 2px;
+      box-shadow: 0 3px 0 #147a9e, 0 0 0 4px rgba(255, 216, 77, 0.35);
+      transform: translateY(-1px);
+    }
     .choice .key { display: block; font-size: 0.55em; opacity: 0.7; margin-bottom: 4px; }
+    #padHint {
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      opacity: 0.85;
+      margin-top: 4px;
+      color: #c7b8ff;
+    }
     #hintLine {
       text-align: center;
       font-size: 0.8rem;
@@ -236,6 +250,7 @@
     <section id="mathDock" aria-label="HCF challenge">
       <div id="mathPrompt">Find the HCF of: <span class="terms">…</span></div>
       <div id="choices"></div>
+      <div id="padHint">8BitDo / gamepad: ←→ aim · ↑↓ highlight · <strong>B</strong> confirm answer · <strong>A</strong> shoot · shortcuts <strong>Y / X / R / L</strong> = A / B / C / D</div>
       <div id="hintLine">Answer correctly to LOAD a bubble, then aim &amp; shoot!</div>
     </section>
 
@@ -247,10 +262,11 @@
           <h2>PUZZLE FACTOR BOBBLE</h2>
           <p>Classic <strong>Puzzle Bobble</strong> aiming — powered by algebra HCF!</p>
           <div class="help">
-            <div>1. Solve the HCF question (keys 1–4) to <strong>load</strong> a bubble.</div>
-            <div>2. Aim with mouse / ← →, shoot with click / Space / J.</div>
+            <div>1. Solve the HCF question to <strong>load</strong> a bubble (keys 1–4, click, or gamepad).</div>
+            <div>2. Aim with mouse / ← → / D-pad, shoot with click / Space / J / <strong>A</strong>.</div>
             <div>3. Match <strong>3+ same colour</strong> to pop. Clear the board to win the wave!</div>
             <div>4. Don&apos;t let bubbles cross the danger line.</div>
+            <div style="margin-top:8px;"><strong>8BitDo Micro:</strong> ↑↓ highlight answer → <strong>B</strong> to confirm. Shortcuts: <strong>Y / X / R / L</strong> = options A–D. ←→ aim, <strong>A</strong> shoot. Use <em>X-input / Windows</em> gamepad mode (not keyboard mode).</div>
           </div>
           <button type="button" id="startBtn">START!</button>
         </div>
@@ -274,11 +290,18 @@
   /* ========== HCF ENGINE ========== */
   function gcd(a, b) {
     a = Math.abs(a | 0); b = Math.abs(b | 0);
-    while (b) { const t = b; b = a % b; a = t; }
+    while (b) { var t = b; b = a % b; a = t; }
     return a || 1;
+  }
+  function lcm(a, b) {
+    if (!a || !b) return a || b || 1;
+    return Math.abs(a * b) / gcd(a, b);
   }
   function gcdMany(nums) {
     return nums.reduce(function (g, n) { return gcd(g, n); }, nums[0] || 1);
+  }
+  function lcmMany(nums) {
+    return nums.reduce(function (L, n) { return lcm(L, n); }, nums[0] || 1);
   }
   function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
   function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
@@ -291,10 +314,46 @@
     return a;
   }
 
+  /** Rational coefficient in lowest terms: { n, d, vars } */
+  function simplifyRat(n, d) {
+    if (d < 0) { n = -n; d = -d; }
+    if (d === 0) d = 1;
+    if (n === 0) return { n: 0, d: 1 };
+    var g = gcd(n, d);
+    return { n: n / g, d: d / g };
+  }
+  function makeTerm(n, d, vars) {
+    var r = simplifyRat(n, d);
+    return { n: r.n, d: r.d, vars: vars || {} };
+  }
+  function cloneVars(v) {
+    return Object.assign({}, v);
+  }
+
+  var FANCY_FRAC = {
+    '1/2': '½', '1/3': '⅓', '2/3': '⅔', '1/4': '¼', '3/4': '¾',
+    '1/5': '⅕', '2/5': '⅖', '3/5': '⅗', '4/5': '⅘',
+    '1/6': '⅙', '5/6': '⅚', '1/8': '⅛', '3/8': '⅜', '5/8': '⅝', '7/8': '⅞'
+  };
+
+  function formatCoef(n, d) {
+    var r = simplifyRat(n, d);
+    if (r.d === 1) return String(r.n);
+    var key = r.n + '/' + r.d;
+    return FANCY_FRAC[key] || (r.n + '/' + r.d);
+  }
+
   function formatTerm(t) {
     var keys = Object.keys(t.vars).filter(function (k) { return t.vars[k] > 0; }).sort();
+    var r = simplifyRat(t.n, t.d || 1);
     var s = '';
-    if (t.coef !== 1 || keys.length === 0) s += String(t.coef);
+    var isOne = r.n === 1 && r.d === 1;
+    if (!isOne || keys.length === 0) {
+      var coefStr = formatCoef(r.n, r.d);
+      // Parenthesise ascii a/b so (2/9)a is unambiguous
+      if (keys.length && coefStr.indexOf('/') !== -1) s += '(' + coefStr + ')';
+      else s += coefStr;
+    }
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
       var e = t.vars[k];
@@ -305,10 +364,25 @@
     }
     return s || '1';
   }
-  function termKey(t) { return formatTerm(t); }
+  function termKey(t) {
+    var r = simplifyRat(t.n, t.d || 1);
+    var keys = Object.keys(t.vars).filter(function (k) { return t.vars[k] > 0; }).sort();
+    var parts = [r.n + '/' + r.d];
+    for (var i = 0; i < keys.length; i++) parts.push(keys[i] + '^' + t.vars[keys[i]]);
+    return parts.join('|');
+  }
 
+  /**
+   * HCF of algebraic terms with rational coeffs:
+   * numeric part = gcd(numerators) / lcm(denominators), plus min powers of shared letters.
+   * e.g. ½x & ¾xy → ¼x ; ⅔a² & 4/9 a → ⅔a
+   */
   function hcfTerms(terms) {
-    var coef = gcdMany(terms.map(function (t) { return t.coef; }));
+    var nums = terms.map(function (t) { return simplifyRat(t.n, t.d || 1).n; });
+    var dens = terms.map(function (t) { return simplifyRat(t.n, t.d || 1).d; });
+    var rn = gcdMany(nums);
+    var rd = lcmMany(dens);
+    var coef = simplifyRat(rn, rd);
     var allVars = {};
     terms.forEach(function (t) {
       Object.keys(t.vars).forEach(function (k) { allVars[k] = true; });
@@ -319,7 +393,7 @@
       for (var i = 0; i < terms.length; i++) m = Math.min(m, terms[i].vars[k] || 0);
       if (m > 0 && m < Infinity) vars[k] = m;
     });
-    return { coef: coef, vars: vars };
+    return makeTerm(coef.n, coef.d, vars);
   }
 
   function makeWrong(correct) {
@@ -327,46 +401,55 @@
     var seen = {};
     seen[termKey(correct)] = true;
     function add(t) {
-      if (t.coef <= 0) return;
+      var r = simplifyRat(t.n, t.d || 1);
+      if (r.n <= 0) return;
+      t = makeTerm(r.n, r.d, t.vars);
       var k = termKey(t);
       if (!seen[k]) { seen[k] = true; opts.push(t); }
     }
     var keys = Object.keys(correct.vars);
-    if (correct.coef > 1) {
-      add({ coef: Math.max(1, Math.floor(correct.coef / 2)), vars: Object.assign({}, correct.vars) });
-      add({ coef: correct.coef, vars: {} });
+    var cn = correct.n;
+    var cd = correct.d || 1;
+
+    // Smaller / larger numeric factor
+    add(makeTerm(cn, cd * 2, cloneVars(correct.vars)));
+    add(makeTerm(Math.max(1, Math.floor(cn / 2) || 1), cd, cloneVars(correct.vars)));
+    add(makeTerm(cn * 2, cd, cloneVars(correct.vars)));
+    add(makeTerm(cn, cd, {})); // drop all letters
+    if (cd > 1) {
+      add(makeTerm(cn, 1, cloneVars(correct.vars))); // forget the denominator
+      add(makeTerm(1, cd, cloneVars(correct.vars)));
+    } else {
+      add(makeTerm(1, pick([2, 3, 4]), cloneVars(correct.vars))); // fake fraction
     }
     if (keys.length) {
       var drop = pick(keys);
-      var v = Object.assign({}, correct.vars);
+      var v = cloneVars(correct.vars);
       delete v[drop];
-      add({ coef: correct.coef, vars: v });
-      var v2 = Object.assign({}, correct.vars);
+      add(makeTerm(cn, cd, v));
+      var v2 = cloneVars(correct.vars);
       v2[drop] = (v2[drop] || 1) + 1;
-      add({ coef: correct.coef, vars: v2 });
+      add(makeTerm(cn, cd, v2));
     }
     var extra = pick(['a', 'b', 'x', 'y', 'm', 'n']);
-    var ve = Object.assign({}, correct.vars);
+    var ve = cloneVars(correct.vars);
     ve[extra] = (ve[extra] || 0) + 1;
-    add({ coef: correct.coef, vars: ve });
-    add({ coef: correct.coef * 2, vars: Object.assign({}, correct.vars) });
-    add({ coef: Math.max(1, correct.coef - 1), vars: Object.assign({}, correct.vars) });
+    add(makeTerm(cn, cd, ve));
+
     while (opts.length < 3) {
-      add({ coef: randInt(2, 12), vars: { x: 1 } });
+      add(makeTerm(randInt(1, 6), pick([1, 2, 3, 4]), { x: 1 }));
     }
     return shuffle(opts).slice(0, 3);
   }
 
-  /** Difficulty ramps with wave: more terms (up to 6), bigger coeffs, higher powers. */
+  /** Difficulty ramps with wave: more terms (up to 6), powers, then fractional coefficients. */
   function difficultyForWave(wave) {
     var w = Math.max(1, wave | 0);
-    // term count: 2 → 6 as waves advance
     var termCount = 2;
     if (w >= 3) termCount = 3;
     if (w >= 5) termCount = 4;
     if (w >= 7) termCount = 5;
     if (w >= 9) termCount = 6;
-    // occasional +1 earlier for variety (still capped at 6)
     if (w >= 4 && Math.random() < 0.25) termCount = Math.min(6, termCount + 1);
 
     var maxPower = w <= 2 ? 1 : w <= 5 ? 2 : w <= 8 ? 3 : 4;
@@ -374,11 +457,36 @@
       ? ['x', 'a', 'y', 'b']
       : ['a', 'b', 'x', 'y', 'm', 'n', 'p'];
     var commonVarCount = w <= 2 ? 1 : w <= 6 ? 2 : Math.min(3, varPool.length);
-    var hcfCoefChoices = w <= 2
-      ? [2, 3, 4, 5, 6]
-      : w <= 5
-        ? [2, 3, 4, 6, 8, 9, 10, 12]
-        : [4, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24];
+
+    // Fractions unlock from wave 4, become common later
+    var fractionChance = 0;
+    if (w >= 4 && w <= 5) fractionChance = 0.45;
+    else if (w >= 6 && w <= 7) fractionChance = 0.7;
+    else if (w >= 8) fractionChance = 0.9;
+    var useFractions = Math.random() < fractionChance;
+
+    var hcfN, hcfD;
+    if (useFractions) {
+      // Proper-fraction style HCFs students meet when factorising
+      var fracPool = w <= 5
+        ? [{ n: 1, d: 2 }, { n: 1, d: 3 }, { n: 1, d: 4 }, { n: 2, d: 3 }, { n: 3, d: 4 }]
+        : [
+          { n: 1, d: 2 }, { n: 1, d: 3 }, { n: 2, d: 3 }, { n: 1, d: 4 }, { n: 3, d: 4 },
+          { n: 1, d: 5 }, { n: 2, d: 5 }, { n: 1, d: 6 }, { n: 5, d: 6 }, { n: 2, d: 9 }, { n: 3, d: 8 }
+        ];
+      var fr = pick(fracPool);
+      hcfN = fr.n;
+      hcfD = fr.d;
+    } else {
+      var hcfCoefChoices = w <= 2
+        ? [2, 3, 4, 5, 6]
+        : w <= 5
+          ? [2, 3, 4, 6, 8, 9, 10, 12]
+          : [4, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24];
+      hcfN = pick(hcfCoefChoices);
+      hcfD = 1;
+    }
+
     var multChoices = w <= 3
       ? [2, 3, 4, 5]
       : w <= 6
@@ -390,9 +498,11 @@
       maxPower: maxPower,
       varPool: varPool,
       commonVarCount: commonVarCount,
-      hcfCoef: pick(hcfCoefChoices),
+      hcfN: hcfN,
+      hcfD: hcfD,
+      useFractions: useFractions,
       multChoices: multChoices,
-      level: termCount // used for HUD flavour
+      level: termCount
     };
   }
 
@@ -400,45 +510,39 @@
     var pool = shuffle(diff.varPool.slice());
     var commonVars = pool.slice(0, diff.commonVarCount);
     var spareVars = pool.slice(diff.commonVarCount);
-    // Shared HCF skeleton: each common var gets a base power 1..maxPower
     var baseVars = {};
     for (var i = 0; i < commonVars.length; i++) {
       baseVars[commonVars[i]] = randInt(1, Math.min(2, diff.maxPower));
     }
 
+    // Integer multipliers with gcd 1 so HCF numeric part stays hcfN/hcfD
+    var primes = [2, 3, 5, 7, 11, 13];
     var terms = [];
-    var usedMults = {};
     for (var t = 0; t < diff.termCount; t++) {
-      var mult = pick(diff.multChoices);
-      // Prefer pairwise-coprime-ish multipliers so HCF stays the intended coef
-      var guard = 0;
-      while (usedMults[mult] && guard++ < 8) mult = pick(diff.multChoices);
-      usedMults[mult] = true;
+      var mult = primes[t % primes.length];
+      if (t >= primes.length) mult = pick(diff.multChoices);
 
       var vars = {};
       for (var j = 0; j < commonVars.length; j++) {
         var cv = commonVars[j];
-        // Each term has at least the base power; some get higher so HCF uses the minimum
         vars[cv] = baseVars[cv] + (Math.random() < 0.55 ? randInt(0, Math.max(0, diff.maxPower - baseVars[cv])) : 0);
       }
-      // Extra private letters (not in HCF) — more often on later terms / harder waves
       if (spareVars.length && Math.random() < (0.35 + diff.termCount * 0.06)) {
         var sv = pick(spareVars);
         vars[sv] = randInt(1, Math.min(2, diff.maxPower));
       }
-      // Sometimes omit one common var on one term only when we have 3+ commons — keeps HCF honest
-      // (skip — would shrink HCF unexpectedly)
 
-      terms.push({ coef: diff.hcfCoef * mult, vars: vars });
+      // Coefficient = (hcfN * mult) / hcfD
+      terms.push(makeTerm(diff.hcfN * mult, diff.hcfD, vars));
     }
 
-    // Ensure multipliers aren't all sharing an extra common factor accidentally too often:
-    // recompute HCF; if coef grew beyond hcfCoef due to mult gcd, rebuild once with coprime mults
     var correct = hcfTerms(terms);
-    if (correct.coef !== diff.hcfCoef) {
-      var primes = [2, 3, 5, 7];
+    var expect = makeTerm(diff.hcfN, diff.hcfD, correct.vars);
+    // If multipliers accidentally shared a factor, force prime mults
+    if (simplifyRat(correct.n, correct.d).n !== expect.n ||
+        simplifyRat(correct.n, correct.d).d !== expect.d) {
       for (var k = 0; k < terms.length; k++) {
-        terms[k].coef = diff.hcfCoef * primes[k % primes.length];
+        terms[k] = makeTerm(diff.hcfN * primes[k % primes.length], diff.hcfD, terms[k].vars);
       }
       correct = hcfTerms(terms);
     }
@@ -457,12 +561,12 @@
     var terms = built.terms;
     var correct = built.correct;
 
-    // Safety: never allow trivial HCF of 1 with no letters on harder waves — bump shared var
-    if (correct.coef === 1 && Object.keys(correct.vars).length === 0) {
+    // Safety: avoid trivial 1 with no letters
+    if (correct.n === 1 && correct.d === 1 && Object.keys(correct.vars).length === 0) {
       var v = pick(diff.varPool);
       for (var i = 0; i < terms.length; i++) {
         terms[i].vars[v] = Math.max(terms[i].vars[v] || 0, 1);
-        terms[i].coef = Math.max(2, terms[i].coef) * 2;
+        terms[i] = makeTerm(terms[i].n * 2, terms[i].d, terms[i].vars);
       }
       correct = hcfTerms(terms);
     }
@@ -472,18 +576,25 @@
       return { term: t, label: formatTerm(t), correct: termKey(t) === termKey(correct) };
     });
     var labels = terms.map(formatTerm);
+    var hint;
+    if (diff.useFractions) {
+      hint = 'Fractional coeffs: HCF number = gcd(tops) / lcm(bottoms), then take shared letters (lowest powers).';
+    } else if (diff.termCount >= 4) {
+      hint = 'Look across ALL ' + diff.termCount + ' terms — HCF uses the lowest power of each shared letter.';
+    } else {
+      hint = 'HCF = biggest number & letters in ALL terms (lowest powers).';
+    }
     return {
       level: diff.level,
       termCount: diff.termCount,
+      useFractions: diff.useFractions,
       terms: terms,
       termLabels: labels,
       termsJoined: joinTermLabels(labels),
       correct: correct,
       correctLabel: formatTerm(correct),
       choices: choices,
-      hint: diff.termCount >= 4
-        ? 'Look across ALL ' + diff.termCount + ' terms — HCF uses the lowest power of each shared letter.'
-        : 'HCF = biggest number & letters in ALL terms (lowest powers).'
+      hint: hint
     };
   }
 
@@ -646,8 +757,21 @@
     pointerY: 0,
     padIndex: null,
     gpPrev: {},
+    choiceFocus: 0,
+    padConnected: false,
     layout: null
   };
+
+  // Standard Gamepad API indices (X-input / 8BitDo X mode)
+  var PAD = {
+    A: 0, B: 1, X: 2, Y: 3,
+    LB: 4, RB: 5, LT: 6, RT: 7,
+    SELECT: 8, START: 9,
+    UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15
+  };
+  // Direct answer shortcuts: Y X R L → options A B C D (B alone confirms highlighted)
+  var PAD_ANSWER_BTNS = [PAD.Y, PAD.X, PAD.RB, PAD.LB];
+  var PAD_ANSWER_LABELS = ['Y', 'X', 'R', 'L'];
 
   function emptyGrid() {
     var g = [];
@@ -756,9 +880,13 @@
   function renderChoices() {
     var q = state.question;
     if (!q) return;
+    if (state.choiceFocus < 0 || state.choiceFocus > 3) state.choiceFocus = 0;
     var joined = q.termsJoined || q.termLabels.join('  &  ');
-    var tag = q.termCount
-      ? '<span class="diff-tag">' + q.termCount + ' terms</span>'
+    var tagBits = [];
+    if (q.termCount) tagBits.push(q.termCount + ' terms');
+    if (q.useFractions) tagBits.push('fractions');
+    var tag = tagBits.length
+      ? '<span class="diff-tag">' + tagBits.join(' · ') + '</span>'
       : '';
     els.prompt.innerHTML = 'Find the HCF of: <span class="terms">' + joined + '</span>' + tag;
     els.choices.innerHTML = '';
@@ -766,17 +894,33 @@
     q.choices.forEach(function (c, i) {
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'choice' + (locked ? ' locked' : '');
+      var cls = 'choice';
+      if (locked) cls += ' locked';
+      if (i === state.choiceFocus) cls += ' focused';
+      btn.className = cls;
       btn.disabled = locked;
-      btn.innerHTML = '<span class="key">' + (i + 1) + ' · ' + String.fromCharCode(65 + i) + '</span>' + c.label;
-      btn.addEventListener('click', function () { selectChoice(i); });
+      btn.setAttribute('aria-selected', i === state.choiceFocus ? 'true' : 'false');
+      btn.innerHTML =
+        '<span class="key">' + (i + 1) + ' · ' + String.fromCharCode(65 + i) +
+        ' · pad ' + PAD_ANSWER_LABELS[i] + '</span>' + c.label;
+      btn.addEventListener('click', function () {
+        state.choiceFocus = i;
+        selectChoice(i);
+      });
       els.choices.appendChild(btn);
     });
+  }
+
+  function moveChoiceFocus(dir) {
+    if (!state.question) return;
+    state.choiceFocus = (state.choiceFocus + dir + 4) % 4;
+    renderChoices();
   }
 
   function newQuestion() {
     state.question = generateQuestion(state.wave);
     state.choiceLockUntil = 0;
+    state.choiceFocus = 0;
     renderChoices();
   }
 
@@ -1414,25 +1558,45 @@
     if (!gp) return;
     var buttons = gp.buttons;
     var axes = gp.axes;
-    var pressed = function (i) { return buttons[i] && (buttons[i].pressed || buttons[i].value > 0.5); };
+    var pressed = function (i) {
+      return buttons[i] && (buttons[i].pressed || buttons[i].value > 0.5);
+    };
     var just = function (i) {
       var on = pressed(i);
-      var was = state.gpPrev[i];
+      var was = !!state.gpPrev[i];
       state.gpPrev[i] = on;
       return on && !was;
     };
 
+    // Aim: left stick X + D-pad ←→ (8BitDo Micro has no stick — D-pad is primary)
     if (axes[0] != null && Math.abs(axes[0]) > 0.2) {
       state.aimAngle = clampAim(state.aimAngle + axes[0] * 0.05);
     }
-    if (pressed(14)) state.aimAngle = clampAim(state.aimAngle - 0.04);
-    if (pressed(15)) state.aimAngle = clampAim(state.aimAngle + 0.04);
+    if (pressed(PAD.LEFT)) state.aimAngle = clampAim(state.aimAngle - 0.05);
+    if (pressed(PAD.RIGHT)) state.aimAngle = clampAim(state.aimAngle + 0.05);
 
-    if (just(0) || just(7)) tryShoot();
-    if (just(2)) selectChoice(0);
-    if (just(3)) selectChoice(1);
-    if (just(4)) selectChoice(2);
-    if (just(5)) selectChoice(3);
+    // HCF answers: ↑↓ move highlight, B confirms (friendliest on Micro)
+    if (just(PAD.UP)) moveChoiceFocus(-1);
+    if (just(PAD.DOWN)) moveChoiceFocus(1);
+    if (just(PAD.B)) selectChoice(state.choiceFocus);
+
+    // Direct shortcuts Y / X / R / L → options A–D
+    for (var a = 0; a < PAD_ANSWER_BTNS.length; a++) {
+      if (just(PAD_ANSWER_BTNS[a])) {
+        state.choiceFocus = a;
+        selectChoice(a);
+      }
+    }
+
+    // Shoot: A or RT (and RB if not used as answer — RB is answer C, so only A/RT)
+    if (just(PAD.A) || just(PAD.RT)) tryShoot();
+
+    // Start to begin / restart when overlays visible
+    if (just(PAD.START) || just(PAD.SELECT)) {
+      if (!els.start.classList.contains('hidden') || !els.over.classList.contains('hidden')) {
+        startGame();
+      }
+    }
   }
 
   function loop(ts) {
@@ -1484,6 +1648,12 @@
   window.addEventListener('resize', resize);
   window.addEventListener('gamepadconnected', function (e) {
     state.padIndex = e.gamepad.index;
+    state.padConnected = true;
+    els.hint.textContent = 'Gamepad connected (' + (e.gamepad.id || 'pad') + ') — ↑↓ then B to answer · A to shoot';
+  });
+  window.addEventListener('gamepaddisconnected', function () {
+    state.padConnected = false;
+    state.padIndex = null;
   });
 
   // boot
