@@ -329,9 +329,9 @@
             <div><strong style="color:#ff4d5e">P1 RED</strong><br />Arrows move · Space fires</div>
             <div><strong style="color:#3aa0ff">P2 BLUE</strong><br />W A S D move · F fires</div>
             <div><strong style="color:#c89600">P3 YELLOW</strong><br />I J K L move · H fires</div>
-            <div><strong>GAMEPAD</strong><br />Stick or D-pad · A (button 0) fires<br />8BitDo: X-input mode</div>
+            <div><strong>8BITDO</strong><br />Press A to join a knight<br />D-pad moves · A fires · X-input</div>
           </div>
-          <p>Q hint · M mute · Esc pause. Up to three knights, one shared castle.</p>
+          <p>Press A on an 8BitDo to join a knight, then A again or Start to begin. Q hint · M mute · Esc or Start pauses.</p>
         </div>
         <div class="panel" id="panelPause" hidden>
           <h2>PAUSED</h2>
@@ -439,6 +439,8 @@
     towers: [],
     original: { a: 24, b: 36, h: 12 },
     ratioLabel: '',
+    clearHeadline: '',
+    padJoinHeld: Object.create(null),
     time: 0,
     lastTs: 0,
     dpr: 1,
@@ -693,9 +695,9 @@
 
   function makePlayers() {
     players = [
-      { id: 0, name: 'P1', knight: 'Red Knight', color: '#ff4d5e', help: 'Arrows · Space', joinHelp: 'Arrows or Space to join', left: ['arrowleft'], right: ['arrowright'], up: ['arrowup'], down: ['arrowdown'], fire: [' '], score: 0, crate: 0, joined: true, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false },
-      { id: 1, name: 'P2', knight: 'Blue Knight', color: '#3aa0ff', help: 'W A S D · F', joinHelp: 'Press F to join', left: ['a'], right: ['d'], up: ['w'], down: ['s'], fire: ['f'], score: 0, crate: 0, joined: false, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false },
-      { id: 2, name: 'P3', knight: 'Yellow Knight', color: '#ffcc33', help: 'I J K L · H', joinHelp: 'Press H to join', left: ['j'], right: ['l'], up: ['i'], down: ['k'], fire: ['h'], score: 0, crate: 0, joined: false, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false }
+      { id: 0, name: 'P1', knight: 'Red Knight', color: '#ff4d5e', help: 'Arrows · Space', joinHelp: 'Press A to join', left: ['arrowleft'], right: ['arrowright'], up: ['arrowup'], down: ['arrowdown'], fire: [' '], score: 0, crate: 0, joined: false, padIndex: null, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false },
+      { id: 1, name: 'P2', knight: 'Blue Knight', color: '#3aa0ff', help: 'W A S D · F', joinHelp: 'Press A to join', left: ['a'], right: ['d'], up: ['w'], down: ['s'], fire: ['f'], score: 0, crate: 0, joined: false, padIndex: null, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false },
+      { id: 2, name: 'P3', knight: 'Yellow Knight', color: '#ffcc33', help: 'I J K L · H', joinHelp: 'Press A to join', left: ['j'], right: ['l'], up: ['i'], down: ['k'], fire: ['h'], score: 0, crate: 0, joined: false, padIndex: null, moveHeld: false, moveDir: 0, moveCd: 0, keyFireHeld: false, padFireHeld: false, padStartHeld: false }
     ];
     players.forEach(function (p) {
       p.all = p.left.concat(p.right, p.up, p.down, p.fire);
@@ -802,9 +804,10 @@
 
   function renderSquad() {
     squadEl.innerHTML = players.map(function (p) {
+      var line = p.padIndex != null ? '8BitDo · D-pad + A' : (p.joined ? p.help : p.joinHelp);
       return '<article class="pcard' + (p.joined ? '' : ' wait') + '" data-p="' + p.id + '" style="--c:' + p.color + '">' +
         '<div><div class="pname">' + p.name + ' ' + p.knight + '</div>' +
-        '<div class="pkeys">' + (p.joined ? p.help : p.joinHelp) + '</div></div>' +
+        '<div class="pkeys">' + line + '</div></div>' +
         '<div class="pscore">' + p.score + '</div></article>';
     }).join('');
   }
@@ -814,12 +817,7 @@
   }
 
   function publishCrates() {
-    var vals = shieldValues();
-    var bits = state.ammo.map(function (n) {
-      var pts = quotePoints(n, vals);
-      return pts ? n + ' for ' + pts : String(n);
-    });
-    crateLive.textContent = 'Ammo crates: ' + bits.join(', ') + '. Shields ' + vals.join(', ') + '.';
+    crateLive.textContent = 'Ammo crates: ' + state.ammo.join(', ') + '. Shields ' + shieldValues().join(', ') + '.';
   }
 
   function setupShields(vals) {
@@ -859,6 +857,7 @@
     setupShields(vals);
     state.clock = clockForWave(n, vals.length);
     state.baseSpeed = 1 / Math.max(16, 58 - (n - 1) * 2.4);
+    state.clearHeadline = '';
     state.banner = 'WAVE ' + n + '  ·  ' + vals.length + ' TOWERS';
     state.bannerT = 2.1;
     state.invuln = 0;
@@ -873,10 +872,11 @@
       p.moveHeld = false;
     });
     var pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    players.forEach(function (p, i) {
-      var gp = pads[i];
-      var btn = gp && gp.buttons && gp.buttons[0];
-      p.padFireHeld = !!(btn && (btn.pressed || btn.value > 0.5));
+    players.forEach(function (p) {
+      var gp = p.padIndex != null ? pads[p.padIndex] : null;
+      var dirs = gp ? padDirs(gp) : null;
+      p.padFireHeld = !!(dirs && dirs.fire);
+      p.padStartHeld = !!(dirs && dirs.start);
     });
   }
 
@@ -895,6 +895,7 @@
     state.shake = 0;
     state.seen = { 1: new Set(), 2: new Set(), 3: new Set() };
     players.forEach(function (p) { p.score = 0; });
+    if (!players.some(function (p) { return p.joined; })) players[0].joined = true;
     hideOverlay();
     startWave(1);
     swallowFire();
@@ -1173,6 +1174,7 @@
       state.purse.shots += 1;
       award(p, hcfPts);
       state.ratioLabel = next.join(' : ');
+      state.clearHeadline = value === 1 ? 'CO-PRIME' : 'HCF CRITICAL';
       state.shake = reduceMotion ? 3 : 16;
       state.flash = 'rgba(255, 210, 80, 0.55)';
       state.flashT = 0.42;
@@ -1180,7 +1182,6 @@
         burst(T.aimX, T.aimY, '#ffd56a', 22, 210);
         spawnRing(T.aimX, T.aimY);
       });
-      spawnFloat(value === 1 ? 'CO-PRIME' : 'HCF CRITICAL', VW / 2, 150, '#ffe08a', 32);
       var worked = prev.map(function (v, i) { return v + ' ÷ ' + value + ' = ' + next[i]; }).join(', ');
       var msg;
       if (value === 1) {
@@ -1410,41 +1411,101 @@
     });
   }
 
+  function padPressed(gp, idx) {
+    var btn = gp.buttons && gp.buttons[idx];
+    return !!(btn && (btn.pressed || btn.value > 0.5));
+  }
+
+  function padDirs(gp) {
+    var axes = gp.axes || [];
+    var ax = axes[0] || 0;
+    var ay = axes[1] || 0;
+    var hatL = false;
+    var hatR = false;
+    var hatU = false;
+    var hatD = false;
+    var hat = axes.length > 9 ? axes[9] : null;
+    if (hat != null && hat > -0.95 && hat < 1.05) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+    return {
+      left: padPressed(gp, 14) || ax < -0.5 || hatL,
+      right: padPressed(gp, 15) || ax > 0.5 || hatR,
+      up: padPressed(gp, 12) || ay < -0.5 || hatU,
+      down: padPressed(gp, 13) || ay > 0.5 || hatD,
+      fire: padPressed(gp, 0) || padPressed(gp, 1),
+      start: padPressed(gp, 9)
+    };
+  }
+
+  function claimPad(padIndex) {
+    if (players.some(function (p) { return p.padIndex === padIndex; })) return null;
+    var knight = null;
+    players.some(function (p) {
+      if (p.padIndex != null || p.joined) return false;
+      knight = p;
+      return true;
+    });
+    if (!knight) {
+      players.some(function (p) {
+        if (p.padIndex != null) return false;
+        knight = p;
+        return true;
+      });
+    }
+    if (!knight) return null;
+    knight.padIndex = padIndex;
+    knight.joined = true;
+    knight.padFireHeld = true;
+    knight.padStartHeld = true;
+    renderSquad();
+    spawnFloat(knight.name + ' JOINED', 180 + knight.id * 220, 120, knight.color, 20);
+    Audio.tick();
+    return knight;
+  }
+
   function pollPads(dt) {
     var pads = navigator.getGamepads ? navigator.getGamepads() : [];
-    for (var i = 0; i < 3; i++) {
+    var driven = Object.create(null);
+    for (var i = 0; i < pads.length; i++) {
       var gp = pads[i];
-      var p = players[i];
       if (!gp) {
-        applyMove(p, p._keyDir || 0, dt);
+        state.padJoinHeld[i] = false;
         continue;
       }
-      var buttons = gp.buttons || [];
-      var axes = gp.axes || [];
-      function pressed(idx) {
-        return !!(buttons[idx] && (buttons[idx].pressed || buttons[idx].value > 0.5));
+      var dirs = padDirs(gp);
+      var owner = null;
+      players.some(function (p) {
+        if (p.padIndex !== i) return false;
+        owner = p;
+        return true;
+      });
+      if (!owner) {
+        var joinDown = dirs.fire || dirs.start;
+        if (joinDown && !state.padJoinHeld[i]) claimPad(i);
+        state.padJoinHeld[i] = joinDown;
+        continue;
       }
-      var ax = axes[0] || 0;
-      var ay = axes[1] || 0;
-      var left = pressed(14) || ax < -0.5 || ay < -0.55;
-      var right = pressed(15) || ax > 0.5 || ay > 0.55;
-      var dir = p._keyDir || 0;
+      driven[owner.id] = true;
+      var left = dirs.left || dirs.up;
+      var right = dirs.right || dirs.down;
+      var dir = owner._keyDir || 0;
       if (left && !right) dir = -1;
       else if (right && !left) dir = 1;
-      if (left || right || pressed(0) || pressed(1)) {
-        if (!p.joined) {
-          p.joined = true;
-          renderSquad();
-        }
-      }
-      applyMove(p, dir, dt);
-      var fire = pressed(0);
-      if (fire && !p.padFireHeld) onAction(p);
-      p.padFireHeld = fire;
-      var start = pressed(9);
-      if (start && !p.padStartHeld) onStartButton();
-      p.padStartHeld = start;
+      applyMove(owner, dir, dt);
+      if (dirs.fire && !owner.padFireHeld) onAction(owner);
+      owner.padFireHeld = dirs.fire;
+      if (dirs.start && !owner.padStartHeld) onStartButton();
+      owner.padStartHeld = dirs.start;
     }
+    players.forEach(function (p) {
+      if (!driven[p.id]) applyMove(p, p._keyDir || 0, dt);
+    });
   }
 
   function update(dt) {
@@ -1912,24 +1973,17 @@
       [[2, 2], [w - 12, 2], [2, h - 12], [w - 12, h - 12]].forEach(function (corner) {
         ctx.fillRect(x + corner[0], y + corner[1], 10, 10);
       });
-      var pts = quotePoints(c.value, shieldValues());
-      var best = pts > 0 && c.value === gcdAll(shieldValues());
       roundRect(x + 16, y + 12, w - 32, h - 24, 6);
-      ctx.fillStyle = best ? '#ffe08a' : '#fff8ea';
+      ctx.fillStyle = '#fff8ea';
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = best ? '#8d5e14' : '#3a2414';
+      ctx.strokeStyle = '#3a2414';
       ctx.stroke();
       ctx.fillStyle = '#2a1c12';
-      ctx.font = '900 26px Nunito, Trebuchet MS, sans-serif';
+      ctx.font = '900 30px Nunito, Trebuchet MS, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(c.value), x + w / 2, y + h / 2 + (pts ? 7 : 1));
-      if (pts) {
-        ctx.font = '800 12px Nunito, Trebuchet MS, sans-serif';
-        ctx.fillStyle = best ? '#8d5e14' : '#6a4a28';
-        ctx.fillText('+' + pts, x + w / 2, y + 18);
-      }
+      ctx.fillText(String(c.value), x + w / 2, y + h / 2 + 1);
       players.forEach(function (p) {
         if (!p.joined || p.crate !== i) return;
         ctx.strokeStyle = p.color;
@@ -2033,22 +2087,6 @@
       ctx.fillText(state.banner, VW / 2, 70);
       ctx.globalAlpha = 1;
     }
-    if (state.mode === 'clear' && state.ratioLabel) {
-      ctx.fillStyle = 'rgba(20,12,8,0.78)';
-      roundRect(230, 86, 500, 96, 14);
-      ctx.fill();
-      ctx.strokeStyle = '#ffd56a';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.fillStyle = '#ffd56a';
-      ctx.font = '800 14px Nunito, Trebuchet MS, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('SIMPLEST FORM', VW / 2, 112);
-      ctx.fillStyle = '#fff8ea';
-      ctx.font = '900 36px Nunito, Trebuchet MS, sans-serif';
-      ctx.fillText(state.ratioLabel, VW / 2, 150);
-    }
     if (state.haste > 1.25 && state.mode === 'play') {
       ctx.fillStyle = '#ffb4bc';
       ctx.font = '900 14px Nunito, Trebuchet MS, sans-serif';
@@ -2095,7 +2133,33 @@
       ctx.fillRect(-40, -40, VW + 80, VH + 80);
       ctx.globalAlpha = 1;
     }
+    drawClearCard();
     ctx.restore();
+  }
+
+  function drawClearCard() {
+    if (state.mode !== 'clear' || !state.ratioLabel) return;
+    ctx.fillStyle = 'rgba(20,12,8,0.92)';
+    roundRect(170, 42, 620, 156, 16);
+    ctx.fill();
+    ctx.strokeStyle = '#ffd56a';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = '#2a1208';
+    ctx.fillStyle = '#ffe08a';
+    ctx.font = '900 32px Nunito, Trebuchet MS, sans-serif';
+    ctx.strokeText(state.clearHeadline || 'HCF CRITICAL', VW / 2, 78);
+    ctx.fillText(state.clearHeadline || 'HCF CRITICAL', VW / 2, 78);
+    ctx.fillStyle = '#ffd56a';
+    ctx.font = '800 15px Nunito, Trebuchet MS, sans-serif';
+    ctx.fillText('SIMPLEST FORM', VW / 2, 116);
+    ctx.fillStyle = '#fff8ea';
+    ctx.font = '900 42px Nunito, Trebuchet MS, sans-serif';
+    ctx.fillText(state.ratioLabel, VW / 2, 158);
   }
 
   function fit() {
@@ -2446,13 +2510,23 @@
     canvas.style.cursor = over ? 'pointer' : 'default';
   });
 
-  window.addEventListener('gamepadconnected', function (e) {
-    var i = e.gamepad.index;
-    if (i >= 0 && i < 3) {
-      players[i].joined = true;
-      renderSquad();
-      spawnFloat(players[i].name + ' PAD', 180 + i * 220, 120, players[i].color, 18);
+  window.addEventListener('gamepadconnected', function () {
+    if (players.some(function (p) { return p.padIndex == null; })) {
+      spawnFloat('PRESS A TO JOIN', VW / 2, 120, '#ffe08a', 22);
     }
+  });
+
+  window.addEventListener('gamepaddisconnected', function (e) {
+    var index = e.gamepad && e.gamepad.index;
+    players.forEach(function (p) {
+      if (p.padIndex !== index) return;
+      p.padIndex = null;
+      p.padFireHeld = false;
+      p.padStartHeld = false;
+      if (p.id !== 0) p.joined = false;
+    });
+    state.padJoinHeld[index] = false;
+    renderSquad();
   });
 
   document.getElementById('startBtn').addEventListener('click', startGame);
