@@ -1,0 +1,2247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Circuit Breaker: Linear Fraction Buster</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #03060c;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+  }
+  noscript {
+    color: #e8f6ff;
+    font-family: "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>This lesson needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+/* Circuit Breaker: Linear Fraction Buster
+   Singapore Sec 2 G2 — linear equations with fractions, brackets,
+   and negative numerators. Every generated question is an integer
+   linear equation checked by substitution before it is shown. */
+
+const W = 1280;
+const H = 720;
+const COL = {
+  bg: '#071018',
+  ink: '#eaf3ff',
+  dim: '#8eabc4',
+  cyan: '#5ef2e0',
+  magenta: '#ff4fa3',
+  amber: '#ffc857',
+  good: '#7dffb3',
+  bad: '#ff5d6c',
+  panel: 'rgba(7, 18, 32, 0.94)',
+  players: ['#ff2d4a', '#3aa0ff', '#ffe14a']
+};
+
+const PKEYS = [
+  { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', fire: ['Space', 'Enter', 'NumpadEnter'] },
+  { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD', fire: ['KeyF'] },
+  { up: 'KeyI', down: 'KeyK', left: 'KeyJ', right: 'KeyL', fire: ['KeyO'] }
+];
+
+const PAIRS = [
+  [3, 6], [6, 3], [2, 4], [4, 2], [2, 6], [6, 2], [4, 8], [8, 4],
+  [2, 3], [3, 2], [3, 4], [4, 3], [4, 6], [6, 4],
+  [3, 5], [5, 3], [2, 5], [5, 2], [5, 4], [4, 5],
+  [6, 8], [8, 6], [3, 9], [9, 3], [6, 9], [9, 6],
+  [8, 12], [12, 8], [6, 12], [12, 6], [4, 12], [12, 4]
+];
+
+let canvas, ctx, audio, game;
+const held = new Set();
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+function randInt(rng, a, b) { return a + Math.floor(rng() * (b - a + 1)); }
+
+function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
+
+function gcd(a, b) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  while (b) {
+    const t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function lcm(a, b) {
+  return Math.round(Math.abs(a * b) / gcd(a, b));
+}
+
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function fmtNum(n) {
+  return n < 0 ? '−' + Math.abs(n) : String(n);
+}
+
+function limits(tier) {
+  return {
+    maxTerm: tier ? 16 : 12,
+    maxK: tier ? 14 : 10,
+    maxCoef: tier ? 12 : 9,
+    maxRhs: tier ? 72 : 48,
+    maxY: tier ? 8 : 6,
+    maxL: tier ? 24 : 18
+  };
+}
+
+function randY(rng, maxY) {
+  const mag = 1 + Math.floor(rng() * maxY);
+  return (rng() < 0.4 ? -1 : 1) * mag;
+}
+
+function pickNonZero(rng, max) {
+  const mag = 1 + Math.floor(rng() * max);
+  return (rng() < 0.5 ? -1 : 1) * mag;
+}
+
+function polyParts(yCoef, constant, yFirst) {
+  const parts = [];
+  const add = (kind, v) => { if (v) parts.push({ kind, v }); };
+  if (yFirst) { add('y', yCoef); add('n', constant); }
+  else { add('n', constant); add('y', yCoef); }
+  if (!parts.length) parts.push({ kind: 'n', v: 0 });
+  return parts;
+}
+
+function polyToText(yCoef, constant, yFirst) {
+  const parts = polyParts(yCoef, constant, yFirst);
+  return parts.map((p, i) => {
+    const mag = Math.abs(p.v);
+    const body = p.kind === 'y' ? (mag === 1 ? 'y' : mag + 'y') : String(mag);
+    if (i === 0) return (p.v < 0 ? '−' : '') + body;
+    return (p.v < 0 ? '− ' : '+ ') + body;
+  }).join(' ');
+}
+
+function mulText(coef, inner) {
+  if (coef === 1) return '(' + inner + ')';
+  if (coef === -1) return '−(' + inner + ')';
+  return fmtNum(coef) + '(' + inner + ')';
+}
+
+function joinChunks(chunks) {
+  const usable = chunks.filter((ch) => ch && ch !== '0');
+  if (!usable.length) return '0';
+  let s = usable[0];
+  for (let i = 1; i < usable.length; i++) {
+    const ch = usable[i];
+    if (ch.charAt(0) === '−') s += ' − ' + ch.slice(1);
+    else s += ' + ' + ch;
+  }
+  return s;
+}
+
+function textNode(s, color) { return { k: 't', s: String(s), color: color || null }; }
+function rowNode(items) { return { k: 'row', items }; }
+function fracNode(num, den) { return { k: 'f', num, den }; }
+function mulNode(coef, inner) { return { k: 'mul', coef, inner }; }
+function tagNode(item) { return { k: 'tag', item }; }
+function spacer(w) { return { k: 'sp', w }; }
+
+function polyExpr(yCoef, constant, yFirst, color) {
+  const parts = polyParts(yCoef, constant, yFirst);
+  const items = [];
+  parts.forEach((p, i) => {
+    const mag = Math.abs(p.v);
+    const body = p.kind === 'y' ? (mag === 1 ? 'y' : mag + 'y') : String(mag);
+    if (i === 0) items.push(textNode((p.v < 0 ? '−' : '') + body, color));
+    else {
+      items.push(textNode(p.v < 0 ? ' − ' : ' + ', color));
+      items.push(textNode(body, color));
+    }
+  });
+  return items.length === 1 ? items[0] : rowNode(items);
+}
+
+function eqNode(left, right) {
+  return rowNode([left, textNode(' = '), right]);
+}
+
+function exprToText(e) {
+  if (!e) return '';
+  if (e.k === 't') return e.s;
+  if (e.k === 'sp') return '';
+  if (e.k === 'row') return e.items.map(exprToText).join('');
+  if (e.k === 'tag') return exprToText(e.item);
+  if (e.k === 'mul') return mulText(e.coef, exprToText(e.inner));
+  if (e.k === 'f') return fracText(exprToText(e.num), exprToText(e.den));
+  return '';
+}
+
+function fracText(num, den) {
+  const wrap = (s) => (/[+\s]/.test(s) ? '(' + s + ')' : s);
+  return wrap(num) + '/' + wrap(den);
+}
+
+function uiFont(size, weight) {
+  return (weight || 700) + ' ' + size + 'px "Avenir Next", "Segoe UI", sans-serif';
+}
+function mathFont(size) {
+  return '600 ' + size + 'px Georgia, "Times New Roman", serif';
+}
+function measure(text, font) {
+  ctx.font = font;
+  return ctx.measureText(text).width;
+}
+
+function layoutExpr(expr, size, color) {
+  const col = (expr && expr.color) || color || '#f4f7ff';
+  if (expr.k === 'sp') {
+    return { w: expr.w, h: size, mid: size * 0.5, draw() {} };
+  }
+  if (expr.k === 't') {
+    const font = mathFont(size);
+    const w = Math.max(1, measure(expr.s, font));
+    const h = size * 1.2;
+    const mid = h * 0.52;
+    return {
+      w, h, mid,
+      draw(c, x, top) {
+        c.font = font;
+        c.fillStyle = expr.color || col;
+        c.textAlign = 'left';
+        c.textBaseline = 'middle';
+        c.fillText(expr.s, x, top + mid);
+      }
+    };
+  }
+  if (expr.k === 'row') {
+    const kids = expr.items.map((it) => layoutExpr(it, size, col));
+    const w = kids.reduce((s, k) => s + k.w, 0);
+    const mid = Math.max.apply(null, kids.map((k) => k.mid));
+    const below = Math.max.apply(null, kids.map((k) => k.h - k.mid));
+    const h = mid + below;
+    return {
+      w, h, mid,
+      draw(c, x, top) {
+        let cx = x;
+        kids.forEach((k) => {
+          k.draw(c, cx, top + mid - k.mid);
+          cx += k.w;
+        });
+      }
+    };
+  }
+  if (expr.k === 'f') {
+    const num = layoutExpr(expr.num, size * 0.92, col);
+    const den = layoutExpr(expr.den, size * 0.92, col);
+    const w = Math.max(num.w, den.w) + size * 0.45;
+    const gap = Math.max(4, size * 0.12);
+    const bar = Math.max(2, size * 0.065);
+    const h = num.h + den.h + gap * 2 + bar;
+    const mid = num.h + gap + bar / 2;
+    return {
+      w, h, mid,
+      draw(c, x, top) {
+        num.draw(c, x + (w - num.w) / 2, top);
+        den.draw(c, x + (w - den.w) / 2, top + num.h + gap * 2 + bar);
+        c.fillStyle = col;
+        c.fillRect(x + 2, top + num.h + gap, w - 4, bar);
+      }
+    };
+  }
+  if (expr.k === 'mul') {
+    const inner = layoutExpr(expr.inner, size, col);
+    const prefix = expr.coef === 1 ? '' : (expr.coef === -1 ? '−' : fmtNum(expr.coef));
+    const font = mathFont(size);
+    const pw = prefix ? measure(prefix, font) + size * 0.06 : 0;
+    const parenW = Math.max(12, size * 0.34);
+    const padY = size * 0.08;
+    const h = inner.h + padY * 2;
+    const mid = inner.mid + padY;
+    const w = pw + parenW * 2 + inner.w;
+    return {
+      w, h, mid,
+      draw(c, x, top) {
+        if (prefix) {
+          c.font = font;
+          c.fillStyle = col;
+          c.textAlign = 'left';
+          c.textBaseline = 'middle';
+          c.fillText(prefix, x, top + mid);
+        }
+        strokeParen(c, x + pw, top, h, parenW, -1, col);
+        inner.draw(c, x + pw + parenW, top + padY);
+        strokeParen(c, x + pw + parenW + inner.w, top, h, parenW, 1, col);
+      }
+    };
+  }
+  if (expr.k === 'tag') {
+    const inner = layoutExpr(expr.item, size, expr.color || '#ffd4ea');
+    const pad = Math.max(8, size * 0.2);
+    return {
+      w: inner.w + pad * 2,
+      h: inner.h + pad * 2,
+      mid: inner.mid + pad,
+      draw(c, x, top) {
+        c.save();
+        c.fillStyle = 'rgba(255, 79, 163, 0.14)';
+        c.strokeStyle = 'rgba(255, 140, 196, 0.95)';
+        c.lineWidth = 2;
+        roundRect(c, x, top, inner.w + pad * 2, inner.h + pad * 2, 12);
+        c.fill();
+        c.stroke();
+        c.restore();
+        inner.draw(c, x + pad, top + pad);
+      }
+    };
+  }
+  return { w: 0, h: 0, mid: 0, draw() {} };
+}
+
+function strokeParen(c, x, top, h, w, dir, color) {
+  c.save();
+  c.strokeStyle = color;
+  c.lineWidth = Math.max(2, h * 0.035);
+  c.lineCap = 'round';
+  c.beginPath();
+  if (dir < 0) {
+    c.moveTo(x + w * 0.78, top + 1);
+    c.quadraticCurveTo(x + w * 0.05, top + h / 2, x + w * 0.78, top + h - 1);
+  } else {
+    c.moveTo(x + w * 0.22, top + 1);
+    c.quadraticCurveTo(x + w * 0.95, top + h / 2, x + w * 0.22, top + h - 1);
+  }
+  c.stroke();
+  c.restore();
+}
+
+function drawFitted(expr, cx, cy, maxW, maxH, size) {
+  let box = layoutExpr(expr, size);
+  const sc = Math.min(1, maxW / Math.max(1, box.w), maxH / Math.max(1, box.h));
+  if (sc < 0.98) box = layoutExpr(expr, Math.max(15, Math.floor(size * sc)));
+  box.draw(ctx, cx - box.w / 2, cy - box.h / 2);
+}
+
+function makeSignOptions(outer, innerConst, innerY, rng) {
+  const correct = { c: outer * innerConst, y: outer * innerY };
+  const mag = Math.abs(outer);
+  const candidates = [
+    correct,
+    { c: correct.c, y: -correct.y },
+    { c: mag * innerConst, y: mag * innerY },
+    { c: -innerConst, y: -innerY },
+    { c: -correct.c, y: correct.y },
+    { c: -correct.c, y: -correct.y },
+    { c: correct.c, y: innerY },
+    { c: outer * innerConst, y: mag * innerY }
+  ];
+  const seen = new Set();
+  const uniq = [];
+  candidates.forEach((cand) => {
+    if (!Number.isInteger(cand.c) || !Number.isInteger(cand.y)) return;
+    if (cand.c === 0 && cand.y === 0) return;
+    const key = cand.c + ',' + cand.y;
+    if (seen.has(key)) return;
+    seen.add(key);
+    uniq.push(cand);
+  });
+  if (!uniq.length || uniq[0].c !== correct.c || uniq[0].y !== correct.y) return null;
+  if (uniq.length < 4) return null;
+  const chosen = [uniq[0]].concat(uniq.slice(1, 4));
+  return shuffle(rng, chosen).map((cand) => {
+    const expr = polyExpr(cand.y, cand.c, false);
+    const plain = exprToText(expr);
+    return {
+      expr,
+      plain,
+      correct: cand.c === correct.c && cand.y === correct.y,
+      expansion: { c: cand.c, y: cand.y }
+    };
+  });
+}
+
+function makeLcmOptions(d1, d2, L, rng) {
+  const g = gcd(d1, d2);
+  const pool = [Math.max(d1, d2), Math.min(d1, d2), d1 * d2, g, L * 2, d1 + d2, Math.max(d1, d2) * 2, L + d1];
+  const preferredOrder = [d1 * d2, Math.max(d1, d2), g, L * 2, d1 + d2, Math.min(d1, d2)];
+  const wrongs = [];
+  preferredOrder.concat(pool).forEach((n) => {
+    if (n > 0 && n !== L && Number.isInteger(n) && n <= 80 && wrongs.indexOf(n) < 0) wrongs.push(n);
+  });
+  if (wrongs.length < 3) return null;
+  return shuffle(rng, [L].concat(wrongs.slice(0, 3))).map((n) => ({
+    expr: textNode(String(n)),
+    plain: String(n),
+    correct: n === L,
+    lcmValue: n
+  }));
+}
+
+function makeSolveOptions(y, yCoef, rhs, rng) {
+  const wrongs = [];
+  const add = (v) => {
+    if (!Number.isInteger(v) || v === y || Math.abs(v) > 36) return;
+    if (wrongs.indexOf(v) < 0) wrongs.push(v);
+  };
+  add(-y);
+  add(y + 1);
+  add(y - 1);
+  add(y + 2);
+  add(y - 2);
+  if (Math.abs(yCoef) !== 1) add(rhs);
+  add(-rhs);
+  add(yCoef);
+  if (yCoef && (rhs + yCoef) % yCoef === 0) add((rhs + yCoef) / yCoef);
+  if (yCoef < 0) add(Math.abs(y));
+  for (let d = 3; wrongs.length < 3 && d < 10; d++) {
+    add(y + d);
+    add(y - d);
+  }
+  if (wrongs.length < 3) return null;
+  return shuffle(rng, [y].concat(wrongs.slice(0, 3))).map((v) => ({
+    expr: textNode('y = ' + fmtNum(v)),
+    plain: 'y = ' + fmtNum(v),
+    correct: v === y,
+    solveValue: v
+  }));
+}
+
+function crossHolds(opt, y) {
+  const L = opt.cross.leftMul * (opt.cross.leftY * y + opt.cross.leftConst);
+  const R = opt.cross.rightMul * (opt.cross.rightY * y + opt.cross.rightConst);
+  return L === R;
+}
+
+function crossOption(leftMul, leftY, leftConst, leftFirst, rightMul, rightY, rightConst, rightFirst, correct) {
+  const expr = eqNode(
+    mulNode(leftMul, polyExpr(leftY, leftConst, leftFirst)),
+    mulNode(rightMul, polyExpr(rightY, rightConst, rightFirst))
+  );
+  return {
+    expr,
+    plain: exprToText(expr),
+    correct,
+    cross: { leftMul, leftY, leftConst, rightMul, rightY, rightConst }
+  };
+}
+
+function makeCrossOptions(correctSpec, alts, y, rng) {
+  const correct = crossOption(
+    correctSpec.leftMul, correctSpec.leftY, correctSpec.leftConst, correctSpec.leftFirst,
+    correctSpec.rightMul, correctSpec.rightY, correctSpec.rightConst, correctSpec.rightFirst,
+    true
+  );
+  if (!crossHolds(correct, y)) return null;
+  const wrongs = [];
+  const seen = new Set([correct.plain]);
+  for (let i = 0; i < alts.length; i++) {
+    const a = alts[i];
+    const opt = crossOption(a.leftMul, a.leftY, a.leftConst, a.leftFirst, a.rightMul, a.rightY, a.rightConst, a.rightFirst, false);
+    if (seen.has(opt.plain)) continue;
+    if (crossHolds(opt, y)) continue;
+    seen.add(opt.plain);
+    wrongs.push(opt);
+    if (wrongs.length === 3) break;
+  }
+  if (wrongs.length < 3) return null;
+  return shuffle(rng, [correct].concat(wrongs));
+}
+
+function constantFrac(n, denExpr) {
+  const mag = fracNode(textNode(String(Math.abs(n))), denExpr);
+  if (n < 0) return rowNode([textNode('−'), spacer(6), mag]);
+  return mag;
+}
+
+function rollA(rng, tier) {
+  const lim = limits(tier);
+  const pair = pick(rng, PAIRS);
+  const d1 = pair[0];
+  const d2 = pair[1];
+  const L = lcm(d1, d2);
+  if (L > lim.maxL) return null;
+  const m1 = L / d1;
+  const m2 = L / d2;
+  const y = randY(rng, lim.maxY);
+  const a = pick(rng, [1, 1, 2, 2, 3, 5, -1, -2]);
+  const f = pick(rng, [1, 1, 1, 2]);
+  const c = pick(rng, [1, 1, 2, 3]);
+  const s = pick(rng, [-2, -1, 1, 1, 2, 3]);
+  const t = pick(rng, [-2, -1, 1, 1, 2, 3]);
+  const e = d2 * s + f * y;
+  const b = d1 * t - a * y;
+  if (e <= 0 || e > lim.maxTerm || b === 0 || Math.abs(b) > lim.maxTerm) return null;
+  const k = t - c * s;
+  if (Math.abs(k) > lim.maxK) return null;
+  const yCoef = m1 * a + c * m2 * f;
+  const rhs = k * L - m1 * b + c * m2 * e;
+  if (!yCoef || yCoef === 1 || Math.abs(yCoef) > lim.maxCoef || rhs !== yCoef * y || Math.abs(rhs) > lim.maxRhs) return null;
+  if (Math.abs(a * y + b) > 36) return null;
+  return { type: 'A', d1, d2, L, m1, m2, a, b, c, e, f, k, yCoef, rhs, solution: y };
+}
+
+function presentA(n, rng) {
+  const num = polyToText(n.a, n.b, true);
+  const inner = polyToText(-n.f, n.e, false);
+  const coef2 = n.c * n.m2;
+  const outer = -coef2;
+  const mid = (n.c === 1 ? '' : String(n.c)) + '(' + inner + ')';
+  const originalText = '(' + num + ')/' + n.d1 + ' − ' + mid + '/' + n.d2 + ' = ' + fmtNum(n.k);
+  const t1 = n.m1 === 1 ? '(' + num + ')' : n.m1 + '(' + num + ')';
+  const t2 = coef2 === 1 ? '(' + inner + ')' : coef2 + '(' + inner + ')';
+  const clearedText = t1 + ' − ' + t2 + ' = ' + fmtNum(n.k * n.L);
+  const targetText = mulText(outer, inner);
+  const expanded = polyToText(outer * (-n.f), outer * n.e, false);
+  const collectedConst = n.m1 * n.b + outer * n.e;
+  const collected = polyToText(n.yCoef, collectedConst, true) + ' = ' + fmtNum(n.k * n.L);
+  const linearText = polyToText(n.yCoef, 0, true) + ' = ' + fmtNum(n.rhs);
+  const originalExpr = eqNode(
+    rowNode([
+      fracNode(polyExpr(n.a, n.b, true), textNode(String(n.d1))),
+      textNode(' − '),
+      fracNode(mulNode(n.c, polyExpr(-n.f, n.e, false)), textNode(String(n.d2)))
+    ]),
+    textNode(fmtNum(n.k))
+  );
+  const clearedExpr = eqNode(
+    rowNode([
+      mulNode(n.m1, polyExpr(n.a, n.b, true)),
+      tagNode(rowNode([textNode(' − '), mulNode(coef2, polyExpr(-n.f, n.e, false))]))
+    ]),
+    textNode(fmtNum(n.k * n.L))
+  );
+  const targetExpr = tagNode(mulNode(outer, polyExpr(-n.f, n.e, false)));
+  const linearExpr = eqNode(polyExpr(n.yCoef, 0, true), textNode(fmtNum(n.rhs)));
+  const signOpts = makeSignOptions(outer, n.e, -n.f, rng);
+  const lcmOpts = makeLcmOptions(n.d1, n.d2, n.L, rng);
+  const solveOpts = makeSolveOptions(n.solution, n.yCoef, n.rhs, rng);
+  if (!signOpts || !lcmOpts || !solveOpts) return null;
+  return finishCommon(n, rng, {
+    originalText, clearedText, targetText, linearText, expanded, collected,
+    originalExpr, clearedExpr, targetExpr, linearExpr,
+    lcmOpts, signOpts, solveOpts,
+    outer, innerConst: n.e, innerY: -n.f,
+    step1: 'LCM VAPORIZER',
+    step1Prompt: 'Denominators are ' + n.d1 + ' and ' + n.d2 + '. Choose their lowest common multiple.',
+    step2Prompt: 'The minus in front of the bracket flips every term inside.',
+    innerFirst: false
+  });
+}
+
+function rollB(rng, tier) {
+  const lim = limits(tier);
+  const pair = pick(rng, PAIRS);
+  const d1 = pair[0];
+  const d2 = pair[1];
+  const L = lcm(d1, d2);
+  if (L > lim.maxL) return null;
+  const m1 = L / d1;
+  const m2 = L / d2;
+  const y = randY(rng, lim.maxY);
+  const m = pick(rng, [1, 1, 1, 2]);
+  const p = pick(rng, [-2, -1, 1, 1, 2, 3]);
+  const qv = pick(rng, [1, 1, 2, 2, 3, -1]);
+  const a = d1 * p - y;
+  const b = d2 * qv + y;
+  if (b <= 0 || Math.abs(b) > lim.maxTerm || a === 0 || Math.abs(a) > lim.maxTerm) return null;
+  const k = m * y - p - qv;
+  if (Math.abs(k) > lim.maxK) return null;
+  const yCoef = L * m - m1 + m2;
+  const rhs = k * L + m1 * a + m2 * b;
+  if (!yCoef || yCoef === 1 || Math.abs(yCoef) > lim.maxCoef || rhs !== yCoef * y || Math.abs(rhs) > lim.maxRhs) return null;
+  return { type: 'B', d1, d2, L, m1, m2, m, a, b, k, yCoef, rhs, solution: y };
+}
+
+function presentB(n, rng) {
+  const num1 = polyToText(1, n.a, true);
+  const inner = polyToText(-1, n.b, false);
+  const lead = polyToText(n.m, 0, true);
+  const originalText = lead + ' − (' + num1 + ')/' + n.d1 + ' − (' + inner + ')/' + n.d2 + ' = ' + fmtNum(n.k);
+  const midCoef = n.m1 === 1 ? '' : String(n.m1);
+  const lastCoef = n.m2 === 1 ? '' : String(n.m2);
+  const firstCleared = polyToText(n.L * n.m, 0, true);
+  const cleared = firstCleared + ' − ' + midCoef + '(' + num1 + ') − ' + lastCoef + '(' + inner + ') = ' + fmtNum(n.k * n.L);
+  const outer = -n.m2;
+  const targetText = mulText(outer, inner);
+  const expanded = polyToText(outer * (-1), outer * n.b, false);
+  const middle = polyToText(-n.m1, -n.m1 * n.a, true);
+  const full = joinChunks([firstCleared, middle, expanded]) + ' = ' + fmtNum(n.k * n.L);
+  const collectedConst = -n.m1 * n.a + outer * n.b;
+  const collected = polyToText(n.yCoef, collectedConst, true) + ' = ' + fmtNum(n.k * n.L);
+  const linearText = polyToText(n.yCoef, 0, true) + ' = ' + fmtNum(n.rhs);
+  const originalExpr = eqNode(
+    rowNode([
+      polyExpr(n.m, 0, true),
+      textNode(' − '),
+      fracNode(polyExpr(1, n.a, true), textNode(String(n.d1))),
+      textNode(' − '),
+      fracNode(polyExpr(-1, n.b, false), textNode(String(n.d2)))
+    ]),
+    textNode(fmtNum(n.k))
+  );
+  const clearedExpr = eqNode(
+    rowNode([
+      polyExpr(n.L * n.m, 0, true),
+      textNode(' − '),
+      mulNode(n.m1, polyExpr(1, n.a, true)),
+      tagNode(rowNode([textNode(' − '), mulNode(n.m2, polyExpr(-1, n.b, false))]))
+    ]),
+    textNode(fmtNum(n.k * n.L))
+  );
+  const targetExpr = tagNode(mulNode(outer, polyExpr(-1, n.b, false)));
+  const linearExpr = eqNode(polyExpr(n.yCoef, 0, true), textNode(fmtNum(n.rhs)));
+  const signOpts = makeSignOptions(outer, n.b, -1, rng);
+  const lcmOpts = makeLcmOptions(n.d1, n.d2, n.L, rng);
+  const solveOpts = makeSolveOptions(n.solution, n.yCoef, n.rhs, rng);
+  if (!signOpts || !lcmOpts || !solveOpts) return null;
+  const workedExtra = { middle, full, cleared };
+  return finishCommon(n, rng, {
+    originalText, clearedText: cleared, targetText, linearText, expanded,
+    collected, originalExpr, clearedExpr, targetExpr, linearExpr,
+    lcmOpts, signOpts, solveOpts,
+    outer, innerConst: n.b, innerY: -1,
+    step1: 'LCM VAPORIZER',
+    step1Prompt: 'Denominators are ' + n.d1 + ' and ' + n.d2 + '. Choose their lowest common multiple.',
+    step2Prompt: 'The minus in front of the bracket flips every term inside.',
+    innerFirst: false,
+    workedExtra
+  });
+}
+
+function rollC1(rng, tier) {
+  const lim = limits(tier);
+  const y = randY(rng, lim.maxY);
+  const dy = pick(rng, [1, 1, 2]);
+  const rq = pick(rng, [2, 3, 4, 5, 6]);
+  const rp = pick(rng, [1, 2, 3, 4, 5]);
+  if (gcd(rp, rq) !== 1) return null;
+  const s = pick(rng, [-3, -2, -1, 1, 2, 3]);
+  const den = rq * s;
+  const dc = den + dy * y;
+  if (dc <= 0 || dc > lim.maxTerm) return null;
+  const a = pick(rng, [1, 1, 2, 3, 5, -1, -2]);
+  const N = -rp * s;
+  const b = N - a * y;
+  if (b === 0 || Math.abs(b) > lim.maxTerm || Math.abs(N) > 32) return null;
+  const yCoef = rq * a - rp * dy;
+  const rhs = -rp * dc - rq * b;
+  if (!yCoef || yCoef === 1 || Math.abs(yCoef) > lim.maxCoef || rhs !== yCoef * y || Math.abs(rhs) > lim.maxRhs) return null;
+  return { type: 'C', sub: 'C1', a, b, dc, dy, rp, rq, yCoef, rhs, solution: y };
+}
+
+function presentC1(n, rng) {
+  const num = polyToText(n.a, n.b, true);
+  const den = polyToText(-n.dy, n.dc, false);
+  const originalText = '(' + num + ')/(' + den + ') = −' + n.rp + '/' + n.rq;
+  const crossLeft = mulText(n.rq, num);
+  const crossRight = mulText(-n.rp, den);
+  const clearedText = crossLeft + ' = ' + crossRight;
+  const outer = -n.rp;
+  const targetText = mulText(outer, den);
+  const expanded = polyToText(outer * (-n.dy), outer * n.dc, false);
+  const leftExp = polyToText(n.rq * n.a, n.rq * n.b, true);
+  const linearText = polyToText(n.yCoef, 0, true) + ' = ' + fmtNum(n.rhs);
+  const originalExpr = eqNode(
+    fracNode(polyExpr(n.a, n.b, true), polyExpr(-n.dy, n.dc, false)),
+    constantFrac(-n.rp, textNode(String(n.rq)))
+  );
+  const clearedExpr = eqNode(
+    mulNode(n.rq, polyExpr(n.a, n.b, true)),
+    tagNode(mulNode(-n.rp, polyExpr(-n.dy, n.dc, false)))
+  );
+  const targetExpr = tagNode(mulNode(outer, polyExpr(-n.dy, n.dc, false)));
+  const linearExpr = eqNode(polyExpr(n.yCoef, 0, true), textNode(fmtNum(n.rhs)));
+  const spec = {
+    leftMul: n.rq, leftY: n.a, leftConst: n.b, leftFirst: true,
+    rightMul: -n.rp, rightY: -n.dy, rightConst: n.dc, rightFirst: false
+  };
+  const alts = [
+    altCross(spec, { rightMul: n.rp }),
+    altCross(spec, { leftMul: n.rp, rightMul: -n.rq }),
+    altCross(spec, { rightY: n.dy }),
+    altCross(spec, { leftY: -n.a }),
+    altCross(spec, { rightMul: n.rp, rightY: n.dy }),
+    altCross(spec, { leftMul: -n.rq, rightMul: n.rp })
+  ];
+  const crossOpts = makeCrossOptions(spec, alts, n.solution, rng);
+  const signOpts = makeSignOptions(outer, n.dc, -n.dy, rng);
+  const solveOpts = makeSolveOptions(n.solution, n.yCoef, n.rhs, rng);
+  if (!crossOpts || !signOpts || !solveOpts) return null;
+  return finishCommon(n, rng, {
+    originalText, clearedText, targetText, linearText, expanded,
+    collected: leftExp + ' = ' + expanded,
+    originalExpr, clearedExpr, targetExpr, linearExpr,
+    lcmOpts: crossOpts, signOpts, solveOpts,
+    outer, innerConst: n.dc, innerY: -n.dy, innerFirst: false,
+    step1: 'CROSS-MULTIPLY VAPORIZER',
+    step1Prompt: 'The fractions are equal. Choose the correct cross-multiplication.',
+    step2Prompt: 'The minus in front of the bracket flips every term inside.'
+  });
+}
+
+function rollC2(rng, tier) {
+  const lim = limits(tier);
+  const y = randY(rng, lim.maxY);
+  const dy = pick(rng, [1, 1, 1, 2]);
+  const f = pick(rng, [1, 1, 1, 2]);
+  const denL = pickNonZero(rng, tier ? 6 : 5);
+  const denR = pickNonZero(rng, tier ? 6 : 5);
+  if (!denL || !denR || denL === denR) return null;
+  const n1 = pick(rng, [-6, -5, -4, -3, -2, -1, 2, 3, 4, 5, 6]);
+  if ((n1 * denR) % denL !== 0) return null;
+  const n2 = (n1 * denR) / denL;
+  if (!Number.isInteger(n2) || n2 === 0 || Math.abs(n2) > 9 || Math.abs(n1) > 9) return null;
+  const dc = denL + dy * y;
+  const e = denR - f * y;
+  if (dc <= 0 || dc > lim.maxTerm || e === 0 || Math.abs(e) > lim.maxTerm) return null;
+  const yCoef = n1 * f + n2 * dy;
+  const rhs = n2 * dc - n1 * e;
+  if (!yCoef || yCoef === 1 || Math.abs(yCoef) > lim.maxCoef || rhs !== yCoef * y || Math.abs(rhs) > lim.maxRhs) return null;
+  return { type: 'C', sub: 'C2', n1, n2, dc, dy, e, f, yCoef, rhs, solution: y };
+}
+
+function presentC2(n, rng) {
+  const denL = polyToText(-n.dy, n.dc, false);
+  const denR = polyToText(n.f, n.e, true);
+  const leftText = (n.n1 < 0 ? '−' + Math.abs(n.n1) : String(n.n1)) + '/(' + denL + ')';
+  const rightText = (n.n2 < 0 ? '−' + Math.abs(n.n2) : String(n.n2)) + '/(' + denR + ')';
+  const originalText = leftText + ' = ' + rightText;
+  const focusLeft = n.n2 > 0 && n.n1 < 0;
+  const outer = focusLeft ? n.n1 : n.n2;
+  const innerY = focusLeft ? n.f : -n.dy;
+  const innerConst = focusLeft ? n.e : n.dc;
+  const innerFirst = !!focusLeft;
+  const bracket = polyToText(innerY, innerConst, innerFirst);
+  const targetText = mulText(outer, bracket);
+  const expanded = polyToText(outer * innerY, outer * innerConst, false);
+  const leftExp = polyToText(n.n1 * n.f, n.n1 * n.e, true);
+  const rightExp = polyToText(-n.n2 * n.dy, n.n2 * n.dc, false);
+  const linearText = polyToText(n.yCoef, 0, true) + ' = ' + fmtNum(n.rhs);
+  const leftNode = mulNode(n.n1, polyExpr(n.f, n.e, true));
+  const rightNode = mulNode(n.n2, polyExpr(-n.dy, n.dc, false));
+  const originalExpr = eqNode(
+    constantFrac(n.n1, polyExpr(-n.dy, n.dc, false)),
+    constantFrac(n.n2, polyExpr(n.f, n.e, true))
+  );
+  const clearedExpr = eqNode(focusLeft ? tagNode(leftNode) : leftNode, focusLeft ? rightNode : tagNode(rightNode));
+  const targetExpr = tagNode(mulNode(outer, polyExpr(innerY, innerConst, innerFirst)));
+  const linearExpr = eqNode(polyExpr(n.yCoef, 0, true), textNode(fmtNum(n.rhs)));
+  const spec = {
+    leftMul: n.n1, leftY: n.f, leftConst: n.e, leftFirst: true,
+    rightMul: n.n2, rightY: -n.dy, rightConst: n.dc, rightFirst: false
+  };
+  const alts = [
+    altCross(spec, { rightMul: -n.n2 }),
+    altCross(spec, { leftMul: n.n2, rightMul: n.n1 }),
+    altCross(spec, { rightY: n.dy }),
+    altCross(spec, { leftY: -n.f }),
+    altCross(spec, { leftConst: -n.e }),
+    altCross(spec, { rightMul: -n.n2, rightY: n.dy })
+  ];
+  const crossOpts = makeCrossOptions(spec, alts, n.solution, rng);
+  const signOpts = makeSignOptions(outer, innerConst, innerY, rng);
+  const solveOpts = makeSolveOptions(n.solution, n.yCoef, n.rhs, rng);
+  if (!crossOpts || !signOpts || !solveOpts) return null;
+  return finishCommon(n, rng, {
+    originalText,
+    clearedText: mulText(n.n1, denR) + ' = ' + mulText(n.n2, denL),
+    targetText, linearText, expanded,
+    collected: leftExp + ' = ' + rightExp,
+    originalExpr, clearedExpr, targetExpr, linearExpr,
+    lcmOpts: crossOpts, signOpts, solveOpts,
+    outer, innerConst, innerY, innerFirst,
+    step1: 'CROSS-MULTIPLY VAPORIZER',
+    step1Prompt: 'The fractions are equal. Choose the correct cross-multiplication.',
+    step2Prompt: outer < 0
+      ? 'The minus in front of the bracket flips every term inside.'
+      : 'Multiply the outside number by both terms. The minus stays on the y term.'
+  });
+}
+
+function altCross(spec, patch) {
+  return {
+    leftMul: patch.leftMul != null ? patch.leftMul : spec.leftMul,
+    leftY: patch.leftY != null ? patch.leftY : spec.leftY,
+    leftConst: patch.leftConst != null ? patch.leftConst : spec.leftConst,
+    leftFirst: spec.leftFirst,
+    rightMul: patch.rightMul != null ? patch.rightMul : spec.rightMul,
+    rightY: patch.rightY != null ? patch.rightY : spec.rightY,
+    rightConst: patch.rightConst != null ? patch.rightConst : spec.rightConst,
+    rightFirst: spec.rightFirst
+  };
+}
+
+function finishCommon(n, rng, view) {
+  const step3Prompt = n.yCoef < 0
+    ? 'Divide both sides by the coefficient of y. That coefficient is negative.'
+    : 'Divide both sides by the coefficient of y.';
+  const worked = buildWorked(n, view);
+  const skill = n.type === 'A' ? 'VAPORIZING DENOMINATORS' : (n.type === 'B' ? 'SIGN TRAPS' : 'CROSS-MULTIPLY');
+  return {
+    type: n.type,
+    sub: n.sub || n.type,
+    skill,
+    solution: n.solution,
+    yCoef: n.yCoef,
+    rhs: n.rhs,
+    outer: view.outer,
+    innerConst: view.innerConst,
+    innerY: view.innerY,
+    innerFirst: !!view.innerFirst,
+    originalText: view.originalText,
+    clearedText: view.clearedText,
+    targetText: view.targetText,
+    linearText: view.linearText,
+    worked,
+    raw: n,
+    steps: [
+      {
+        name: view.step1,
+        prompt: view.step1Prompt,
+        equation: view.originalExpr,
+        context: null,
+        target: null,
+        options: view.lcmOpts,
+        hint: n.type === 'C'
+          ? 'Cross-multiply: each numerator meets the other denominator. Keep every minus sign.'
+          : 'The LCM is the smallest positive integer that both denominators divide evenly.'
+      },
+      {
+        name: 'SIGN DEFLECTOR',
+        prompt: view.step2Prompt,
+        equation: view.clearedExpr,
+        context: view.clearedExpr,
+        target: view.targetExpr,
+        options: view.signOpts,
+        hint: 'Multiply the outside number by each term inside, then apply the minus to every term.'
+      },
+      {
+        name: 'SOLVE & ISOLATE',
+        prompt: step3Prompt,
+        equation: view.linearExpr,
+        context: null,
+        target: null,
+        options: view.solveOpts,
+        hint: 'Divide both sides by the coefficient of y. A negative coefficient flips the value of y.'
+      }
+    ]
+  };
+}
+
+function buildWorked(n, view) {
+  const lines = [view.originalText];
+  if (n.type === 'A' || n.type === 'B') {
+    lines.push('Denominators ' + n.d1 + ' and ' + n.d2 + '. Lowest common multiple = ' + n.L + '.');
+    lines.push('Multiply every term by ' + n.L + ':  ' + view.clearedText);
+  } else {
+    lines.push('Cross-multiply, and keep the negative sign:  ' + view.clearedText);
+  }
+  lines.push('Expand ' + view.targetText + '  →  ' + view.expanded + '.');
+  if (view.workedExtra && view.workedExtra.full) {
+    lines.push('Expand the other bracket too:  ' + view.workedExtra.full);
+  }
+  if (view.collected) {
+    const lead = n.type === 'C' ? 'Write both sides without brackets:  ' : 'Collect like terms:  ';
+    lines.push(lead + view.collected);
+  }
+  lines.push(view.linearText + ', so y = ' + fmtNum(n.solution) + '.');
+  return lines;
+}
+
+function generateQuestion(type, rng, tier) {
+  const random = rng || Math.random;
+  let last = 'no candidate';
+  for (let i = 0; i < 250; i++) {
+    let rolled = null;
+    if (type === 'A') rolled = rollA(random, tier || 0);
+    else if (type === 'B') rolled = rollB(random, tier || 0);
+    else rolled = random() < 0.5 ? rollC1(random, tier || 0) : rollC2(random, tier || 0);
+    if (!rolled) continue;
+    const presented = rolled.type === 'A' ? presentA(rolled, random)
+      : rolled.type === 'B' ? presentB(rolled, random)
+      : rolled.sub === 'C2' ? presentC2(rolled, random)
+      : presentC1(rolled, random);
+    if (!presented) { last = 'present rejected'; continue; }
+    const verdict = validateQuestion(presented);
+    if (verdict.ok) return presented;
+    last = verdict.reason;
+  }
+  throw new Error('Could not build a ' + type + ' question (' + last + ')');
+}
+
+function makeShift(rng) {
+  const random = rng || Math.random;
+  const spec = [['A', 0], ['A', 1], ['B', 0], ['B', 1], ['C', 0], ['C', 1]];
+  return spec.map((item) => generateQuestion(item[0], random, item[1]));
+}
+
+function definedAt(q, y) {
+  const n = q.raw;
+  if (n.type === 'C' && n.sub === 'C1') return (n.dc - n.dy * y) !== 0;
+  if (n.type === 'C' && n.sub === 'C2') return (n.dc - n.dy * y) !== 0 && (n.e + n.f * y) !== 0;
+  return true;
+}
+
+function satisfies(q, y) {
+  if (!definedAt(q, y)) return false;
+  const n = q.raw;
+  if (n.type === 'A') {
+    return n.d2 * (n.a * y + n.b) - n.c * n.d1 * (n.e - n.f * y) === n.k * n.d1 * n.d2;
+  }
+  if (n.type === 'B') {
+    return n.d1 * n.d2 * n.m * y - n.d2 * (y + n.a) - n.d1 * (n.b - y) === n.k * n.d1 * n.d2;
+  }
+  if (n.sub === 'C1') return n.rq * (n.a * y + n.b) === -n.rp * (n.dc - n.dy * y);
+  return n.n1 * (n.e + n.f * y) === n.n2 * (n.dc - n.dy * y);
+}
+
+function validateQuestion(q) {
+  const fail = (reason) => ({ ok: false, reason });
+  if (!q || !Number.isInteger(q.solution) || q.solution === 0) return fail('solution');
+  if (q.yCoef * q.solution !== q.rhs || !q.yCoef) return fail('linear');
+  if (!q.innerConst || !q.innerY || !q.outer) return fail('bracket');
+  const hits = [];
+  for (let y = -18; y <= 18; y++) if (satisfies(q, y)) hits.push(y);
+  if (hits.length !== 1 || hits[0] !== q.solution) return fail('roots ' + hits.join(','));
+  if (q.steps.length !== 3) return fail('steps');
+  const expectSign = { c: q.outer * q.innerConst, y: q.outer * q.innerY };
+  const signPlain = polyToText(expectSign.y, expectSign.c, false);
+  if (q.targetText !== mulText(q.outer, polyToText(q.innerY, q.innerConst, !!q.innerFirst))) return fail('target text');
+  for (let s = 0; s < 3; s++) {
+    const step = q.steps[s];
+    if (!step.options || step.options.length !== 4) return fail('option count ' + s);
+    const goods = step.options.filter((o) => o.correct);
+    if (goods.length !== 1) return fail('correct count ' + s);
+    const plains = step.options.map((o) => o.plain);
+    if (new Set(plains).size !== 4) return fail('dup plain ' + s);
+    for (let i = 0; i < step.options.length; i++) {
+      if (exprToText(step.options[i].expr) !== step.options[i].plain) return fail('label drift ' + s);
+    }
+  }
+  const lcmStep = q.steps[0];
+  const signStep = q.steps[1];
+  const solveStep = q.steps[2];
+  if (q.type === 'A' || q.type === 'B') {
+    const good = lcmStep.options.find((o) => o.correct);
+    if (good.lcmValue !== lcm(q.raw.d1, q.raw.d2)) return fail('lcm');
+    for (let i = 0; i < lcmStep.options.length; i++) {
+      const opt = lcmStep.options[i];
+      if (!opt.correct && opt.lcmValue === q.raw.L) return fail('fake lcm');
+    }
+  } else {
+    const good = lcmStep.options.find((o) => o.correct);
+    if (!crossHolds(good, q.solution)) return fail('cross true');
+    const bad = lcmStep.options.filter((o) => !o.correct);
+    if (bad.some((o) => crossHolds(o, q.solution))) return fail('cross false positive');
+  }
+  const goodSign = signStep.options.find((o) => o.correct);
+  if (goodSign.expansion.c !== expectSign.c || goodSign.expansion.y !== expectSign.y) return fail('sign');
+  if (goodSign.plain !== signPlain) return fail('sign text');
+  for (let i = 0; i < signStep.options.length; i++) {
+    const opt = signStep.options[i];
+    if (!opt.correct && opt.expansion.c === expectSign.c && opt.expansion.y === expectSign.y) return fail('dup sign');
+  }
+  const goodY = solveStep.options.find((o) => o.correct);
+  if (goodY.solveValue !== q.solution) return fail('isolate');
+  if (solveStep.options.some((o) => !o.correct && satisfies(q, o.solveValue))) return fail('alt root');
+  if (q.linearText !== polyToText(q.yCoef, 0, true) + ' = ' + fmtNum(q.rhs)) return fail('linear text');
+  return { ok: true };
+}
+
+function testFormatters() {
+  const cases = [
+    [5, -6, true, '5y − 6'],
+    [-1, 8, false, '8 − y'],
+    [2, -10, false, '−10 + 2y'],
+    [1, 4, true, 'y + 4'],
+    [-2, 0, true, '−2y'],
+    [1, 0, true, 'y'],
+    [7, 0, true, '7y'],
+    [-8, 5, true, '−8y + 5'],
+    [3, 5, false, '5 + 3y'],
+    [-1, 5, false, '5 − y']
+  ];
+  const fails = [];
+  cases.forEach((row) => {
+    const text = polyToText(row[0], row[1], row[2]);
+    const via = exprToText(polyExpr(row[0], row[1], row[2]));
+    if (text !== row[3] || via !== row[3]) fails.push(text + ' | ' + via + ' expected ' + row[3]);
+  });
+  if (mulText(-6, '8 − y') !== '−6(8 − y)') fails.push('mul');
+  if (mulText(-1, '5 − y') !== '−(5 − y)') fails.push('mul-1');
+  if (joinChunks(['6y', '−y − 4', '−10 + 2y']) !== '6y − y − 4 − 10 + 2y') fails.push('join');
+  return fails;
+}
+
+function runMathTests(perType) {
+  const count = perType || 40;
+  const failures = testFormatters().map((reason) => ({ type: 'fmt', reason }));
+  const samples = [];
+  ['A', 'B', 'C'].forEach((type) => {
+    for (let i = 0; i < count; i++) {
+      try {
+        const q = generateQuestion(type, Math.random, i % 5 === 0 ? 0 : 1);
+        const verdict = validateQuestion(q);
+        if (!verdict.ok) failures.push({ type, reason: verdict.reason, original: q.originalText });
+        if (samples.filter((s) => s.type === type).length < 2) {
+          samples.push({
+            type: q.sub || type,
+            original: q.originalText,
+            cleared: q.clearedText,
+            target: q.targetText,
+            linear: q.linearText,
+            y: q.solution,
+            worked: q.worked
+          });
+        }
+      } catch (err) {
+        failures.push({ type, reason: err.message });
+      }
+    }
+  });
+  const pad = {
+    axes: [0.9, -0.2, 0, 0],
+    buttons: []
+  };
+  for (let i = 0; i < 16; i++) pad.buttons.push({ pressed: i === 14 || i === 0 });
+  const reading = readPad(pad);
+  if (!(reading.x < 0 && reading.fire)) failures.push({ type: 'pad', reason: JSON.stringify(reading) });
+  return { failures, samples, tested: count * 3 };
+}
+
+function readPad(gp) {
+  if (!gp) return { x: 0, y: 0, fire: false, start: false };
+  let x = gp.axes && gp.axes.length ? gp.axes[0] || 0 : 0;
+  let y = gp.axes && gp.axes.length > 1 ? gp.axes[1] || 0 : 0;
+  if (Math.abs(x) < 0.28) x = 0;
+  if (Math.abs(y) < 0.28) y = 0;
+  const btn = (i) => {
+    const b = gp.buttons && gp.buttons[i];
+    if (!b) return false;
+    return typeof b === 'object' ? !!b.pressed : !!b;
+  };
+  if (btn(12)) y = -1;
+  if (btn(13)) y = 1;
+  if (btn(14)) x = -1;
+  if (btn(15)) x = 1;
+  return { x, y, fire: btn(0) || btn(1), start: btn(9) };
+}
+
+function createAudio() {
+  let actx = null;
+  let master = null;
+  let sfxBus = null;
+  let noiseBuf = null;
+  let timer = null;
+  let step = 0;
+  let next = 0;
+  let muted = false;
+  try {
+    muted = sessionStorage.getItem('circuit-breaker-mute') === '1';
+  } catch (err) { muted = false; }
+
+  function ensure() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      master = actx.createGain();
+      master.gain.value = muted ? 0 : 0.2;
+      master.connect(actx.destination);
+      const filter = actx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 1680;
+      const music = actx.createGain();
+      music.gain.value = 0.85;
+      music.connect(filter);
+      filter.connect(master);
+      sfxBus = actx.createGain();
+      sfxBus.gain.value = 0.9;
+      sfxBus.connect(master);
+      const len = actx.sampleRate;
+      noiseBuf = actx.createBuffer(1, len, actx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      next = actx.currentTime + 0.06;
+      timer = setInterval(schedule, 25);
+      actx._music = music;
+    }
+    if (actx.state === 'suspended') actx.resume();
+    if (next < actx.currentTime) next = actx.currentTime + 0.05;
+  }
+
+  function schedule() {
+    if (!actx) return;
+    const beat = 60 / 124 / 4;
+    while (next < actx.currentTime + 0.14) {
+      playStep(step % 32, next);
+      next += beat;
+      step++;
+    }
+  }
+
+  function env(bus, time, dur, vol, freq, type, slide) {
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(Math.max(40, freq), time);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+    o.connect(g);
+    g.connect(bus);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+  }
+
+  function hat(time, vol) {
+    const src = actx.createBufferSource();
+    src.buffer = noiseBuf;
+    const hp = actx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 6500;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.001, time + 0.04);
+    src.connect(hp);
+    hp.connect(g);
+    g.connect(actx._music);
+    src.start(time);
+    src.stop(time + 0.05);
+  }
+
+  function playStep(i, time) {
+    const bass = [110, 0, 110, 0, 165, 0, 110, 0, 98, 0, 130, 0, 110, 0, 82, 0, 110, 0, 110, 0, 196, 0, 165, 0, 87, 0, 98, 0, 130, 0, 110, 0];
+    const lead = [0, 0, 440, 0, 0, 523, 0, 0, 0, 494, 0, 0, 440, 0, 392, 0, 0, 349, 0, 0, 392, 0, 0, 330, 0, 0, 392, 0, 440, 0, 0, 0];
+    if (i % 4 === 0) env(actx._music, time, 0.16, 0.55, 168, 'sine', 48);
+    if (i % 2 === 0) hat(time, i % 4 === 2 ? 0.05 : 0.028);
+    if (i % 8 === 4) {
+      hat(time, 0.07);
+      env(actx._music, time, 0.1, 0.12, 220, 'triangle', 140);
+    }
+    if (bass[i]) env(actx._music, time, 0.16, 0.16, bass[i], 'square');
+    if (lead[i]) env(actx._music, time, 0.12, 0.045, lead[i], 'square');
+  }
+
+  function blip(freq, dur, type, vol, slide) {
+    if (!actx) return;
+    env(sfxBus, actx.currentTime, dur, vol, freq, type, slide);
+  }
+
+  return {
+    ensure,
+    get muted() { return muted; },
+    toggle() {
+      muted = !muted;
+      try { sessionStorage.setItem('circuit-breaker-mute', muted ? '1' : '0'); } catch (err) {}
+      if (master) master.gain.setTargetAtTime(muted ? 0 : 0.2, actx.currentTime, 0.04);
+      return muted;
+    },
+    laser() { blip(760, 0.07, 'square', 0.05, 1280); },
+    good() { blip(523, 0.1, 'square', 0.06); blip(784, 0.16, 'triangle', 0.05); },
+    bad() { blip(140, 0.18, 'sawtooth', 0.045, 70); },
+    boom() { blip(90, 0.28, 'sine', 0.08, 42); }
+  };
+}
+
+function roundRect(c, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + rr, y);
+  c.arcTo(x + w, y, x + w, y + h, rr);
+  c.arcTo(x + w, y + h, x, y + h, rr);
+  c.arcTo(x, y + h, x, y, rr);
+  c.arcTo(x, y, x + w, y, rr);
+  c.closePath();
+}
+
+function fillText(text, x, y, font, color, align) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+}
+
+function wrapLines(text, font, maxW) {
+  ctx.font = font;
+  const words = String(text).split(' ');
+  const lines = [];
+  let line = '';
+  words.forEach((word) => {
+    const trial = line ? line + ' ' + word : word;
+    if (ctx.measureText(trial).width > maxW && line) {
+      lines.push(line);
+      line = word;
+    } else line = trial;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+function makePlayer(i) {
+  const starts = [[640, 446], [640, 506], [640, 566]];
+  return {
+    i,
+    name: 'P' + (i + 1),
+    color: COL.players[i],
+    x: starts[i][0],
+    y: starts[i][1],
+    score: 0,
+    hits: 0,
+    misses: 0,
+    active: i === 0,
+    fireLatch: false,
+    startLatch: false,
+    pointerFresh: false,
+    padOn: false
+  };
+}
+
+function freshGame() {
+  return {
+    mode: 'title',
+    shift: [],
+    qi: 0,
+    step: 0,
+    lives: 3,
+    chain: 0,
+    teamBonus: 0,
+    players: [makePlayer(0), makePlayer(1), makePlayer(2)],
+    nodes: [],
+    banner: null,
+    shake: 0,
+    stepT: 0,
+    lockout: 0,
+    pendingAdvance: null,
+    pendingShots: [],
+    history: [],
+    questionCleared: false,
+    reviewT: 0,
+    time: 0,
+    hotspots: [],
+    particles: [],
+    lasers: [],
+    floats: [],
+    view: { s: 1, ox: 0, oy: 0 },
+    fatal: '',
+    best: 0,
+    howFrom: 'title'
+  };
+}
+
+function nodeRects() {
+  const gap = 18;
+  const nw = (1208 - gap) / 2;
+  const nh = 108;
+  const x0 = 36;
+  const y0 = 392;
+  return [
+    { x: x0, y: y0, w: nw, h: nh },
+    { x: x0 + nw + gap, y: y0, w: nw, h: nh },
+    { x: x0, y: y0 + nh + 14, w: nw, h: nh },
+    { x: x0 + nw + gap, y: y0 + nh + 14, w: nw, h: nh }
+  ];
+}
+
+function currentQ() {
+  return game.shift[game.qi];
+}
+
+function loadStep() {
+  const q = currentQ();
+  const step = q.steps[game.step];
+  const rects = nodeRects();
+  game.nodes = step.options.map((opt, i) => ({
+    expr: opt.expr,
+    plain: opt.plain,
+    correct: opt.correct,
+    disabled: false,
+    flash: 0,
+    flashKind: '',
+    rect: rects[i],
+    label: 'ABCD'.charAt(i)
+  }));
+  game.stepT = 0;
+  game.pendingShots = [];
+}
+
+function startGame() {
+  audio.ensure();
+  try {
+    game.shift = makeShift(Math.random);
+  } catch (err) {
+    game.fatal = err.message;
+    game.mode = 'title';
+    return;
+  }
+  game.qi = 0;
+  game.step = 0;
+  game.lives = 3;
+  game.chain = 0;
+  game.teamBonus = 0;
+  game.history = [];
+  game.players.forEach((p, i) => {
+    const fresh = makePlayer(i);
+    p.score = 0;
+    p.hits = 0;
+    p.misses = 0;
+    p.x = fresh.x;
+    p.y = fresh.y;
+    p.fireLatch = false;
+  });
+  game.mode = 'play';
+  game.questionCleared = false;
+  game.fatal = '';
+  beginQuestion(true);
+}
+
+function beginQuestion(first) {
+  game.step = 0;
+  game.questionCleared = false;
+  loadStep();
+  const q = currentQ();
+  game.lockout = first ? 0.55 : 0.7;
+  game.banner = {
+    text: 'CIRCUIT ' + (game.qi + 1) + '  ·  ' + q.skill,
+    good: true,
+    life: 0.85
+  };
+  game.pendingAdvance = null;
+}
+
+function teamScore() {
+  return game.players.reduce((sum, p) => sum + p.score, 0) + game.teamBonus;
+}
+
+function openReview() {
+  const q = currentQ();
+  game.history.push({
+    type: q.type,
+    skill: q.skill,
+    original: q.originalText,
+    solution: q.solution,
+    cleared: game.questionCleared
+  });
+  game.mode = 'review';
+  game.reviewT = 0;
+  game.banner = null;
+}
+
+function advanceReview() {
+  if (game.mode !== 'review') return;
+  if (game.lives <= 0 || game.qi >= game.shift.length - 1) {
+    if (game.lives > 0 && game.history.every((h) => h.cleared)) game.teamBonus += 300;
+    const total = teamScore();
+    if (total > game.best) {
+      game.best = total;
+      try { sessionStorage.setItem('circuit-breaker-best', String(total)); } catch (err) {}
+    }
+    game.mode = 'over';
+    return;
+  }
+  game.qi += 1;
+  game.mode = 'play';
+  beginQuestion(false);
+}
+
+function award(p) {
+  const base = [130, 160, 220][game.step];
+  const speed = Math.max(0, Math.round(80 * (1 - game.stepT / 10)));
+  const pts = base + speed + Math.min(game.chain, 6) * 20;
+  p.score += pts;
+  p.hits += 1;
+  game.floats.push({ x: p.x, y: p.y - 24, text: '+' + pts, color: p.color, life: 0.9, vy: -36 });
+}
+
+function succeed(hitNode) {
+  game.chain += 1;
+  hitNode.flash = 0.85;
+  hitNode.flashKind = 'good';
+  game.lockout = 0.82;
+  game.banner = {
+    text: ['DENOMINATORS CLEARED', 'SIGN DEFLECTED', 'Y ISOLATED'][game.step],
+    good: true,
+    life: 0.82
+  };
+  if (game.step >= 2) game.questionCleared = true;
+  game.pendingAdvance = 'step';
+  audio.good();
+  burst(hitNode.rect.x + hitNode.rect.w / 2, hitNode.rect.y + hitNode.rect.h / 2, COL.good, 18);
+}
+
+function loseLife(nodes) {
+  nodes.forEach((node) => {
+    node.disabled = true;
+    node.flash = 0.7;
+    node.flashKind = 'bad';
+    burst(node.rect.x + node.rect.w / 2, node.rect.y + node.rect.h / 2, COL.bad, 12);
+  });
+  game.lives -= 1;
+  game.chain = 0;
+  game.shake = 12;
+  game.lockout = 0.78;
+  if (game.lives <= 0) {
+    audio.boom();
+    game.questionCleared = false;
+    game.banner = { text: 'INTEGRITY LOST', good: false, life: 0.78 };
+    game.pendingAdvance = 'failreview';
+  } else {
+    audio.bad();
+    game.banner = { text: currentQ().steps[game.step].hint, good: false, life: 1.45 };
+  }
+}
+
+function resolveShots() {
+  const shots = game.pendingShots;
+  game.pendingShots = [];
+  const live = shots.filter((s) => s.node && !s.node.disabled);
+  if (!live.length) return;
+  const goods = live.filter((s) => s.node.correct);
+  if (goods.length) {
+    const seen = new Set();
+    goods.forEach((s) => {
+      if (seen.has(s.player)) return;
+      seen.add(s.player);
+      award(s.player);
+    });
+    succeed(goods[0].node);
+    return;
+  }
+  const seenNodes = [];
+  live.forEach((s) => {
+    s.player.misses += 1;
+    if (seenNodes.indexOf(s.node) < 0) seenNodes.push(s.node);
+  });
+  loseLife(seenNodes);
+}
+
+function tryFire(p) {
+  if (game.mode === 'title') { startGame(); return; }
+  if (game.mode === 'how') { game.mode = 'title'; return; }
+  if (game.mode === 'pause') { game.mode = 'play'; return; }
+  if (game.mode === 'over') { startGame(); return; }
+  if (game.mode === 'review') {
+    if (game.reviewT > 0.45) advanceReview();
+    return;
+  }
+  if (game.mode !== 'play' || game.lockout > 0) return;
+  const node = nodeAt(p.x, p.y);
+  audio.laser();
+  if (node) {
+    game.lasers.push({
+      x1: p.x, y1: p.y,
+      x2: node.rect.x + node.rect.w / 2,
+      y2: node.rect.y + node.rect.h / 2,
+      color: p.color, life: 0.16
+    });
+    if (!node.disabled) game.pendingShots.push({ player: p, node });
+  } else {
+    burst(p.x, p.y, p.color, 6);
+  }
+}
+
+function nodeAt(x, y) {
+  return game.nodes.find((node) => {
+    const r = node.rect;
+    return x >= r.x - 6 && x <= r.x + r.w + 6 && y >= r.y - 6 && y <= r.y + r.h + 6;
+  }) || null;
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 40 + Math.random() * 180;
+    game.particles.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.35, color, r: 1.5 + Math.random() * 2.2
+    });
+  }
+}
+
+function getPads() {
+  if (globalThis.__fakePads) return globalThis.__fakePads;
+  try { return navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch (err) { return []; }
+}
+
+function keyAxis(map) {
+  let x = 0;
+  let y = 0;
+  if (held.has(map.left)) x -= 1;
+  if (held.has(map.right)) x += 1;
+  if (held.has(map.up)) y -= 1;
+  if (held.has(map.down)) y += 1;
+  const fire = map.fire.some((code) => held.has(code));
+  return { x, y, fire };
+}
+
+function update(dt) {
+  game.time += dt;
+  if (game.banner) {
+    game.banner.life -= dt;
+    if (game.banner.life <= 0) game.banner = null;
+  }
+  game.shake = Math.max(0, game.shake - dt * 28);
+  game.particles.forEach((p) => {
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 20 * dt;
+  });
+  game.particles = game.particles.filter((p) => p.life > 0);
+  game.lasers.forEach((l) => { l.life -= dt; });
+  game.lasers = game.lasers.filter((l) => l.life > 0);
+  game.floats.forEach((f) => { f.life -= dt; f.y += f.vy * dt; });
+  game.floats = game.floats.filter((f) => f.life > 0);
+  game.nodes.forEach((n) => { if (n.flash > 0) n.flash -= dt; });
+
+  if (game.mode === 'review') game.reviewT += dt;
+  if (game.mode === 'review' && game.reviewT > 16) advanceReview();
+
+  const pads = getPads();
+  const playing = game.mode === 'play';
+  game.players.forEach((p, i) => {
+    const pad = readPad(pads && pads[i]);
+    if (pad.start && !p.startLatch && playing) game.mode = 'pause';
+    p.startLatch = pad.start;
+    if (pads && pads[i]) {
+      p.padOn = true;
+      p.active = true;
+      const named = String(pads[i].id || '').match(/blue|green|red|yellow|black|white|purple|orange/i);
+      p.padLabel = named ? named[0].toUpperCase() : ('PAD ' + i);
+    } else {
+      p.padOn = false;
+      p.padLabel = '';
+    }
+    const keys = keyAxis(PKEYS[i]);
+    if (keys.x || keys.y || keys.fire) p.active = true;
+    const fire = pad.fire || keys.fire;
+    const edge = fire && !p.fireLatch;
+    p.fireLatch = fire;
+    if (!playing) {
+      if (edge) tryFire(p);
+      return;
+    }
+    if (p.pointerFresh) p.pointerFresh = false;
+    else {
+      const x = Math.abs(pad.x) > 0 ? pad.x : keys.x;
+      const y = Math.abs(pad.y) > 0 ? pad.y : keys.y;
+      const mag = Math.min(1, Math.hypot(x, y));
+      if (mag > 0) {
+        p.x += (x / Math.hypot(x, y)) * mag * 690 * dt;
+        p.y += (y / Math.hypot(x, y)) * mag * 690 * dt;
+      }
+    }
+    p.x = clamp(p.x, 18, W - 18);
+    p.y = clamp(p.y, 18, H - 18);
+    if (edge) tryFire(p);
+  });
+
+  if (playing) {
+    if (game.lockout > 0) {
+      game.lockout -= dt;
+      if (game.lockout <= 0 && game.pendingAdvance) {
+        const what = game.pendingAdvance;
+        game.pendingAdvance = null;
+        if (what === 'failreview' || game.questionCleared) openReview();
+        else {
+          game.step += 1;
+          loadStep();
+        }
+      }
+    } else {
+      game.stepT += dt;
+      resolveShots();
+    }
+  }
+}
+
+function logicalPoint(ev) {
+  const rect = canvas.getBoundingClientRect();
+  const cssX = (ev.clientX - rect.left) * (window.innerWidth / rect.width);
+  const cssY = (ev.clientY - rect.top) * (window.innerHeight / rect.height);
+  const view = game.view || { s: 1, ox: 0, oy: 0 };
+  return { x: (cssX - view.ox) / view.s, y: (cssY - view.oy) / view.s };
+}
+
+function hotspotAt(x, y) {
+  for (let i = game.hotspots.length - 1; i >= 0; i--) {
+    const h = game.hotspots[i];
+    if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
+function activateHot(id) {
+  audio.ensure();
+  if (id === 'mute') { audio.toggle(); return; }
+  if (id === 'start') { startGame(); return; }
+  if (id === 'howto') { game.howFrom = game.mode === 'pause' ? 'pause' : 'title'; game.mode = 'how'; return; }
+  if (id === 'back') { game.mode = game.howFrom || 'title'; return; }
+  if (id === 'resume') { game.mode = 'play'; return; }
+  if (id === 'quit') { game.mode = 'title'; return; }
+  if (id === 'again') { startGame(); return; }
+  if (id === 'continue') { if (game.reviewT > 0.35) advanceReview(); }
+}
+
+function onPointerMove(ev) {
+  if (!game || !game.view) return;
+  const p = logicalPoint(ev);
+  const pl = game.players[0];
+  pl.x = clamp(p.x, 18, W - 18);
+  pl.y = clamp(p.y, 18, H - 18);
+  pl.pointerFresh = true;
+  pl.active = true;
+}
+
+function onPointerDown(ev) {
+  if (!game) return;
+  if (ev.button !== undefined && ev.button !== 0) return;
+  audio.ensure();
+  const p = logicalPoint(ev);
+  const hot = hotspotAt(p.x, p.y);
+  if (hot) { activateHot(hot.id); return; }
+  const pl = game.players[0];
+  pl.active = true;
+  pl.x = clamp(p.x, 18, W - 18);
+  pl.y = clamp(p.y, 18, H - 18);
+  pl.pointerFresh = true;
+  pl.fireLatch = true;
+  tryFire(pl);
+}
+
+function onKeyDown(ev) {
+  const fresh = !held.has(ev.code);
+  held.add(ev.code);
+  const eat = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'];
+  if (eat.indexOf(ev.code) >= 0) ev.preventDefault();
+  if (!game || !fresh || ev.repeat) return;
+  audio.ensure();
+  if (ev.code === 'KeyM') { audio.toggle(); return; }
+  if (ev.code === 'KeyH' && (game.mode === 'title' || game.mode === 'pause')) {
+    game.howFrom = game.mode;
+    game.mode = 'how';
+    return;
+  }
+  if (ev.code === 'KeyP' || ev.code === 'Escape') {
+    if (game.mode === 'play') game.mode = 'pause';
+    else if (game.mode === 'pause') game.mode = 'play';
+    else if (game.mode === 'how') game.mode = game.howFrom || 'title';
+    return;
+  }
+  if (ev.code === 'KeyR' && (game.mode === 'pause' || game.mode === 'over')) {
+    startGame();
+    return;
+  }
+  const owner = PKEYS.findIndex((map) => map.fire.indexOf(ev.code) >= 0);
+  if (owner >= 0) {
+    const p = game.players[owner];
+    p.active = true;
+    p.fireLatch = true;
+    tryFire(p);
+  }
+}
+
+function onKeyUp(ev) { held.delete(ev.code); }
+
+function drawBackground() {
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(94, 242, 224, 0.045)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= H; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+  const g = ctx.createRadialGradient(W / 2, H * 0.45, 160, W / 2, H * 0.5, 820);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.38)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(94, 242, 224, 0.28)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 16]);
+  ctx.lineDashOffset = -game.time * 36;
+  roundRect(ctx, 14, 14, W - 28, H - 28, 18);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+  const perim = 2 * ((W - 28) + (H - 28));
+  for (let i = 0; i < 5; i++) {
+    const dist = ((game.time * 70 + i * perim / 5) % perim);
+    const pt = framePoint(dist);
+    ctx.fillStyle = i % 2 ? COL.cyan : COL.magenta;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function framePoint(dist) {
+  const x0 = 14;
+  const y0 = 14;
+  const rw = W - 28;
+  const rh = H - 28;
+  if (dist < rw) return { x: x0 + dist, y: y0 };
+  dist -= rw;
+  if (dist < rh) return { x: x0 + rw, y: y0 + dist };
+  dist -= rh;
+  if (dist < rw) return { x: x0 + rw - dist, y: y0 + rh };
+  dist -= rw;
+  return { x: x0, y: y0 + rh - dist };
+}
+
+function pushHot(id, x, y, w, h) {
+  game.hotspots.push({ id, x, y, w, h });
+}
+
+function drawMute(x, y) {
+  pushHot('mute', x - 8, y - 16, 78, 32);
+  ctx.save();
+  ctx.strokeStyle = COL.dim;
+  ctx.fillStyle = audio.muted ? COL.bad : COL.cyan;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6);
+  ctx.lineTo(x + 8, y - 6);
+  ctx.lineTo(x + 16, y - 12);
+  ctx.lineTo(x + 16, y + 12);
+  ctx.lineTo(x + 8, y + 6);
+  ctx.lineTo(x, y + 6);
+  ctx.closePath();
+  ctx.fill();
+  if (audio.muted) {
+    ctx.strokeStyle = COL.bad;
+    ctx.beginPath();
+    ctx.moveTo(x + 22, y - 8);
+    ctx.lineTo(x + 36, y + 8);
+    ctx.moveTo(x + 36, y - 8);
+    ctx.lineTo(x + 22, y + 8);
+    ctx.stroke();
+  } else {
+    ctx.strokeStyle = COL.cyan;
+    ctx.beginPath();
+    ctx.arc(x + 18, y, 8, -0.8, 0.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + 18, y, 13, -0.7, 0.7);
+    ctx.stroke();
+  }
+  fillText(audio.muted ? 'SOUND OFF' : 'SOUND ON', x + 42, y, uiFont(11, 700), COL.dim, 'left');
+  ctx.restore();
+}
+
+function drawFuses(x, y, lives) {
+  fillText('INTEGRITY', x, y - 16, uiFont(11, 700), COL.dim, 'left');
+  for (let i = 0; i < 3; i++) {
+    const on = i < lives;
+    const fx = x + i * 28;
+    roundRect(ctx, fx, y - 6, 20, 16, 4);
+    ctx.fillStyle = on ? COL.cyan : 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    if (on) {
+      ctx.fillStyle = '#08343a';
+      ctx.fillRect(fx + 8, y - 2, 4, 8);
+    }
+  }
+}
+
+function drawTopBar() {
+  fillText('CIRCUIT BREAKER', 36, 32, uiFont(20, 800), COL.ink, 'left');
+  fillText('LINEAR FRACTION BUSTER', 36, 52, uiFont(11, 700), COL.cyan, 'left');
+  if (game.mode === 'play' || game.mode === 'pause' || game.mode === 'review') {
+    const names = ['CLEAR', 'SIGNS', 'SOLVE'];
+    const labels = currentQ() && currentQ().type === 'C' ? ['CROSS', 'SIGNS', 'SOLVE'] : names;
+    labels.forEach((label, i) => {
+      const x = 520 + i * 96;
+      const on = game.mode !== 'play' ? i < 3 : i <= game.step;
+      const current = game.mode === 'play' && i === game.step;
+      ctx.beginPath();
+      ctx.arc(x, 36, 11, 0, Math.PI * 2);
+      ctx.fillStyle = current ? COL.magenta : (on ? 'rgba(94,242,224,0.85)' : 'rgba(255,255,255,0.08)');
+      ctx.fill();
+      fillText(String(i + 1), x, 36, uiFont(12, 800), '#071018', 'center');
+      fillText(label, x, 56, uiFont(10, 700), current ? COL.ink : COL.dim, 'center');
+      if (i < 2) {
+        ctx.strokeStyle = 'rgba(94,242,224,0.35)';
+        ctx.beginPath();
+        ctx.moveTo(x + 16, 36);
+        ctx.lineTo(x + 74, 36);
+        ctx.stroke();
+      }
+    });
+  }
+  drawFuses(1040, 34, game.lives);
+  drawMute(1168, 34);
+}
+
+function drawPanelShell(x, y, w, h) {
+  ctx.save();
+  ctx.fillStyle = COL.panel;
+  ctx.strokeStyle = 'rgba(94, 242, 224, 0.42)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, x, y, w, h, 16);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPlay() {
+  const q = currentQ();
+  const step = q.steps[game.step];
+  drawPanelShell(36, 74, 1208, 300);
+  fillText(q.type + '  ·  ' + q.skill, 58, 98, uiFont(13, 800), COL.amber, 'left');
+  fillText(step.name, 58, 124, uiFont(22, 800), COL.ink, 'left');
+  fillText('CIRCUIT ' + (game.qi + 1) + ' / ' + game.shift.length, 1210, 98, uiFont(13, 700), COL.dim, 'right');
+  const bonus = Math.max(0, 1 - game.stepT / 10);
+  if (game.lockout <= 0) {
+    roundRect(ctx, 1104, 116, 106, 8, 4);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    roundRect(ctx, 1104, 116, 106 * bonus, 8, 4);
+    ctx.fillStyle = COL.cyan;
+    ctx.fill();
+    fillText('BONUS', 1094, 120, uiFont(10, 700), COL.dim, 'right');
+  }
+  const message = game.banner ? game.banner.text : step.prompt;
+  const messageColor = !game.banner ? COL.dim : (game.banner.good ? COL.good : '#ffc2c8');
+  wrapLines(message, uiFont(16, 600), 1000).slice(0, 2).forEach((line, i) => {
+    fillText(line, 58, 158 + i * 22, uiFont(16, 600), messageColor, 'left');
+  });
+  if (game.step === 1) {
+    drawFitted(step.equation, 640, 224, 1100, 58, 22);
+    fillText('EXPAND', 640, 262, uiFont(12, 800), COL.magenta, 'center');
+    drawFitted(step.target, 640, 318, 980, 84, 36);
+  } else if (game.step === 2) {
+    drawFitted(step.equation, 640, 252, 1000, 110, 56);
+    fillText(q.originalText, 640, 340, uiFont(14, 600), 'rgba(234,243,255,0.62)', 'center');
+  } else {
+    drawFitted(step.equation, 640, 270, 1120, 150, 44);
+  }
+
+  game.nodes.forEach((node) => {
+    const r = node.rect;
+    const over = game.players.filter((p) => p.active && nodeAt(p.x, p.y) === node);
+    ctx.save();
+    roundRect(ctx, r.x, r.y, r.w, r.h, 14);
+    ctx.fillStyle = node.disabled ? 'rgba(40, 16, 22, 0.88)' : '#0c1b2b';
+    ctx.fill();
+    let stroke = 'rgba(120, 210, 200, 0.45)';
+    if (over.length) stroke = over[0].color;
+    if (node.flash > 0) stroke = node.flashKind === 'good' ? COL.good : COL.bad;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = over.length || node.flash > 0 ? 3 : 1.5;
+    ctx.stroke();
+    fillText(node.label, r.x + 16, r.y + 18, uiFont(12, 800), COL.dim, 'left');
+    if (node.disabled) fillText('MISS', r.x + r.w - 16, r.y + 18, uiFont(11, 800), COL.bad, 'right');
+    const size = node.plain.length > 22 ? 24 : node.plain.length > 12 ? 30 : 42;
+    drawFitted(node.expr, r.x + r.w / 2, r.y + r.h / 2 + 6, r.w - 36, r.h - 36, size);
+    ctx.restore();
+  });
+}
+
+function drawCrosshair(p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.strokeStyle = p.color;
+  ctx.fillStyle = p.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 15, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  const ticks = [[-24, 0, -16, 0], [16, 0, 24, 0], [0, -24, 0, -16], [0, 16, 0, 24]];
+  ticks.forEach((t) => {
+    ctx.beginPath();
+    ctx.moveTo(t[0], t[1]);
+    ctx.lineTo(t[2], t[3]);
+    ctx.stroke();
+  });
+  fillText(p.name, 0, 30, uiFont(12, 800), p.color, 'center');
+  ctx.restore();
+}
+
+function drawBottom() {
+  game.players.forEach((p, i) => {
+    const x = 36 + i * 270;
+    roundRect(ctx, x, 650, 254, 52, 12);
+    ctx.fillStyle = 'rgba(8, 18, 30, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = p.active ? p.color : 'rgba(255,255,255,0.08)';
+    ctx.stroke();
+    ctx.fillStyle = p.color;
+    ctx.fillRect(x + 12, 662, 8, 28);
+    fillText(p.name, x + 30, 668, uiFont(13, 800), p.color, 'left');
+    const status = p.padOn ? (p.padLabel || ('PAD ' + i)) : (p.active ? 'READY' : 'PRESS KEY');
+    fillText(status, x + 62, 668, uiFont(11, 700), COL.dim, 'left');
+    fillText(String(p.score).padStart(4, '0'), x + 30, 688, uiFont(16, 800), COL.ink, 'left');
+    fillText(p.hits + ' locks', x + 238, 688, uiFont(11, 700), COL.dim, 'right');
+  });
+  fillText(game.chain > 1 ? 'CHAIN x' + game.chain : 'CHAIN', 900, 668, uiFont(12, 800), game.chain > 1 ? COL.amber : COL.dim, 'left');
+  fillText('TEAM ' + String(teamScore()).padStart(4, '0'), 900, 690, uiFont(16, 800), COL.ink, 'left');
+}
+
+function drawBanner() {
+  if (!game.banner) return;
+  const text = game.banner.text;
+  ctx.save();
+  ctx.font = uiFont(16, 700);
+  const w = Math.min(980, ctx.measureText(text).width + 48);
+  const x = (W - w) / 2;
+  const y = game.banner.good ? 78 : 632;
+  roundRect(ctx, x, y, w, 36, 10);
+  ctx.fillStyle = game.banner.good ? 'rgba(10, 40, 38, 0.94)' : 'rgba(48, 16, 24, 0.94)';
+  ctx.fill();
+  ctx.strokeStyle = game.banner.good ? COL.cyan : COL.bad;
+  ctx.stroke();
+  fillText(text, W / 2, y + 18, uiFont(15, 700), game.banner.good ? COL.cyan : '#ffd0d4', 'center');
+  ctx.restore();
+}
+
+function drawFx() {
+  game.lasers.forEach((l) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, l.life / 0.16);
+    ctx.strokeStyle = l.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(l.x1, l.y1);
+    ctx.lineTo(l.x2, l.y2);
+    ctx.stroke();
+    ctx.restore();
+  });
+  game.particles.forEach((p) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+  game.floats.forEach((f) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, f.life);
+    fillText(f.text, f.x, f.y, uiFont(18, 800), f.color, 'center');
+    ctx.restore();
+  });
+}
+
+function drawTitle() {
+  fillText('CIRCUIT BREAKER', W / 2, 78, uiFont(54, 800), COL.ink, 'center');
+  fillText('LINEAR FRACTION BUSTER', W / 2, 124, uiFont(18, 800), COL.cyan, 'center');
+  fillText('Sec 2  ·  linear equations with fractions, brackets, and negative numerators', W / 2, 156, uiFont(15, 600), COL.dim, 'center');
+  drawPanelShell(180, 184, 920, 150);
+  const sample = eqNode(
+    rowNode([
+      fracNode(polyExpr(5, 3, true), textNode('4')),
+      textNode(' − '),
+      fracNode(mulNode(3, polyExpr(-1, 1, false)), textNode('2'))
+    ]),
+    textNode('2')
+  );
+  drawFitted(sample, 640, 258, 860, 100, 36);
+  const cards = [
+    ['1  LCM VAPORIZER', 'Multiply through by the lowest common multiple and clear every denominator.'],
+    ['2  SIGN DEFLECTOR', 'A minus in front of a bracket flips each term. −(5−y) becomes −5+y.'],
+    ['3  SOLVE & ISOLATE', 'Collect y on one side. Divide by its coefficient, and watch a negative sign.']
+  ];
+  cards.forEach((card, i) => {
+    const x = 70 + i * 400;
+    drawPanelShell(x, 356, 376, 118);
+    fillText(card[0], x + 18, 384, uiFont(14, 800), i === 1 ? COL.magenta : COL.cyan, 'left');
+    wrapLines(card[1], uiFont(14, 600), 340).forEach((line, li) => {
+      fillText(line, x + 18, 414 + li * 20, uiFont(14, 600), COL.ink, 'left');
+    });
+  });
+  drawButton('BOOT THE CIRCUIT', 390, 508, 500, 58, 'start', COL.cyan);
+  drawButton('HOW THE MATH WORKS', 390, 580, 500, 46, 'howto', COL.dim);
+  fillText('P1  arrows + space     P2  WASD + F     P3  IJKL + O     mouse aims P1', W / 2, 650, uiFont(13, 700), COL.dim, 'center');
+  fillText('Up to 3 players on 8BitDo in XInput. D-pad aims. Bottom or right face button fires.', W / 2, 674, uiFont(13, 600), COL.dim, 'center');
+  const pads = getPads();
+  const linked = [0, 1, 2].filter((i) => pads && pads[i]).length;
+  fillText(linked ? linked + ' gamepad' + (linked > 1 ? 's' : '') + ' linked' : 'No gamepad yet — keyboard and mouse are ready', W / 2, 698, uiFont(12, 700), linked ? COL.good : COL.dim, 'center');
+  if (game.best) fillText('BEST TEAM  ' + game.best, 36, 698, uiFont(12, 800), COL.amber, 'left');
+  if (game.fatal) fillText(game.fatal, W / 2, 332, uiFont(14, 700), COL.bad, 'center');
+}
+
+function drawButton(label, x, y, w, h, id, color) {
+  pushHot(id, x, y, w, h);
+  const pulse = id === 'start' ? 0.55 + Math.sin(game.time * 3) * 0.15 : 0.35;
+  roundRect(ctx, x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(8, 22, 34, 0.95)';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = id === 'start' ? pulse + 0.4 : 1;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  fillText(label, x + w / 2, y + h / 2, uiFont(16, 800), color, 'center');
+}
+
+function drawHow() {
+  drawPanelShell(140, 48, 960, 624);
+  fillText('HOW THE CIRCUIT IS REPAIRED', 160, 86, uiFont(24, 800), COL.ink, 'left');
+  const blocks = [
+    ['Type A · Vaporizing denominators', 'Numerical denominators, such as (5y + 3)/4 − 3(1 − y)/2 = 2. The first job is the LCM of the denominators.'],
+    ['Type B · Sign traps', 'A minus sits in front of a fraction whose numerator has more than one term, such as y − (y + 4)/6 − (5 − y)/3 = 7.'],
+    ['Type C · Variables in the denominator', 'Cross-multiply a pair of fractions, including a negative value such as (3y − 5)/(7 − 2y) = −2/5.'],
+    ['Shared lives', 'The team has 3 integrity. A wrong card costs one and locks that card. Clear all 3 steps to stabilise the circuit. Six circuits make a full shift.']
+  ];
+  blocks.forEach((b, i) => {
+    const y = 124 + i * 78;
+    fillText(b[0], 160, y, uiFont(16, 800), COL.cyan, 'left');
+    wrapLines(b[1], uiFont(15, 600), 760).forEach((line, li) => fillText(line, 160, y + 24 + li * 20, uiFont(15, 600), COL.ink, 'left'));
+  });
+  const demo = rowNode([
+    tagNode(mulNode(-1, polyExpr(-1, 5, false))),
+    textNode('   →   '),
+    polyExpr(1, -5, false)
+  ]);
+  drawFitted(demo, 460, 458, 620, 64, 30);
+  wrapLines('8BitDo in XInput mode: on many models, hold Start + B while it connects. D-pad or left stick aims. The bottom face button and the right face button both fire.', uiFont(14, 600), 900).forEach((line, i) => {
+    fillText(line, 160, 508 + i * 20, uiFont(14, 600), COL.dim, 'left');
+  });
+  wrapLines('Keyboard: P1 arrows and space, P2 WASD and F, P3 IJKL and O. M mutes the music. P pauses.', uiFont(14, 600), 900).forEach((line, i) => {
+    fillText(line, 160, 556 + i * 20, uiFont(14, 600), COL.dim, 'left');
+  });
+  drawButton('BACK TO THE BOARD', 390, 604, 500, 46, 'back', COL.cyan);
+}
+
+function drawReview() {
+  const q = currentQ();
+  ctx.save();
+  ctx.fillStyle = 'rgba(3, 6, 12, 0.86)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  drawPanelShell(140, 70, 1000, 560);
+  fillText(game.questionCleared ? 'CIRCUIT STABILISED' : 'REPAIR LOG', 180, 108, uiFont(24, 800), game.questionCleared ? COL.good : COL.amber, 'left');
+  fillText(q.skill + '   ·   y = ' + fmtNum(q.solution), 180, 142, uiFont(16, 700), COL.cyan, 'left');
+  let lineY = 178;
+  q.worked.forEach((line) => {
+    wrapLines(line, uiFont(16, 600), 900).forEach((bit) => {
+      if (lineY < 520) fillText(bit, 180, lineY, uiFont(16, 600), COL.ink, 'left');
+      lineY += 22;
+    });
+    lineY += 8;
+  });
+  const label = game.lives <= 0 || game.qi >= game.shift.length - 1 ? 'SEE THE SHIFT REPORT' : 'NEXT CIRCUIT';
+  const remain = Math.max(0, 16 - game.reviewT);
+  fillText('A, space, or the button continues   ·   ' + Math.ceil(remain) + 's', 640, 534, uiFont(12, 700), COL.dim, 'center');
+  drawButton(label, 390, 556, 500, 46, 'continue', COL.cyan);
+}
+
+function drawOver() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(3, 6, 12, 0.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  const won = game.lives > 0 && game.history.length === game.shift.length && game.history.every((h) => h.cleared);
+  drawPanelShell(150, 36, 980, 650);
+  fillText(won ? 'GRID STABLE' : 'CIRCUIT OVERLOAD', 190, 74, uiFont(28, 800), won ? COL.good : COL.bad, 'left');
+  fillText('TEAM ' + teamScore() + (game.teamBonus ? '   including flawless bonus ' + game.teamBonus : ''), 190, 108, uiFont(16, 700), COL.amber, 'left');
+  game.players.forEach((p, i) => {
+    fillText(p.name + '   ' + p.score + '   ·   ' + p.hits + ' locks   ·   ' + p.misses + ' misses', 190, 142 + i * 24, uiFont(15, 700), p.color, 'left');
+  });
+  const missed = [];
+  game.history.forEach((h) => { if (!h.cleared && missed.indexOf(h.skill) < 0) missed.push(h.skill); });
+  fillText(missed.length ? 'Practice next: ' + missed.join(', ') : 'Every circuit on this shift held.', 190, 220, uiFont(14, 700), COL.dim, 'left');
+  game.history.forEach((h, i) => {
+    const y = 252 + i * 48;
+    fillText((h.cleared ? 'HELD' : 'LOST') + '  ' + h.type, 190, y, uiFont(13, 800), h.cleared ? COL.good : COL.bad, 'left');
+    fillText(h.original, 280, y, uiFont(14, 600), COL.ink, 'left');
+    fillText('y = ' + fmtNum(h.solution), 1040, y, uiFont(16, 800), COL.cyan, 'right');
+  });
+  drawButton('RUN ANOTHER SHIFT', 390, 600, 500, 50, 'again', COL.cyan);
+}
+
+function drawPause() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(3, 6, 12, 0.62)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+  drawPanelShell(340, 200, 600, 300);
+  fillText('CIRCUIT PAUSED', 640, 250, uiFont(28, 800), COL.ink, 'center');
+  drawButton('RESUME', 430, 300, 420, 48, 'resume', COL.cyan);
+  drawButton('HOW THE MATH WORKS', 430, 362, 420, 44, 'howto', COL.dim);
+  drawButton('QUIT TO TITLE', 430, 420, 420, 44, 'quit', COL.bad);
+}
+
+function draw() {
+  game.hotspots = [];
+  const dpr = canvas.width / window.innerWidth;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.fillStyle = '#03060c';
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  const ox = (window.innerWidth - W * s) / 2;
+  const oy = (window.innerHeight - H * s) / 2;
+  game.view = { s, ox, oy };
+  ctx.save();
+  ctx.translate(ox, oy);
+  ctx.scale(s, s);
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.clip();
+  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+  drawBackground();
+  if (game.mode === 'title') drawTitle();
+  else if (game.mode === 'how') drawHow();
+  else {
+    drawPlay();
+    drawFx();
+    if (game.mode === 'play') game.players.forEach((p) => { if (p.active) drawCrosshair(p); });
+    drawBottom();
+    if (game.mode === 'review') drawReview();
+    if (game.mode === 'over') drawOver();
+    if (game.mode === 'pause') drawPause();
+  }
+  if (game.mode !== 'title' && game.mode !== 'how') drawTopBar();
+  else drawMute(1168, 34);
+  if (game.mode !== 'play') drawBanner();
+  ctx.restore();
+  canvas.style.cursor = game.mode === 'play' ? 'none' : 'crosshair';
+}
+
+function frame(now) {
+  if (!game._last) game._last = now;
+  const dt = Math.min(0.033, (now - game._last) / 1000);
+  game._last = now;
+  try {
+    update(dt);
+    draw();
+  } catch (err) {
+    console.error(err);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#1a0608';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffd0d4';
+    ctx.font = '16px sans-serif';
+    ctx.fillText(String(err && err.stack || err), 24, 40);
+    return;
+  }
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d');
+  audio = createAudio();
+  game = freshGame();
+  try {
+    const saved = sessionStorage.getItem('circuit-breaker-best');
+    if (saved) game.best = Number(saved) || 0;
+  } catch (err) {}
+  const resize = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+  };
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPointerDown);
+  globalThis.__debug = {
+    generateQuestion,
+    validateQuestion,
+    runMathTests,
+    readPad,
+    load(type, step, seed) {
+      const q = generateQuestion(type, mulberry32(seed || 1), 1);
+      game.shift = [q, q, q, q, q, q];
+      game.qi = 0;
+      game.step = step || 0;
+      game.mode = 'play';
+      game.lives = 3;
+      game.lockout = 0;
+      game.questionCleared = false;
+      loadStep();
+      return { original: q.originalText, cleared: q.clearedText, target: q.targetText, linear: q.linearText, y: q.solution, worked: q.worked };
+    },
+    state() {
+      const q = game.shift[game.qi];
+      return {
+        mode: game.mode,
+        step: game.step,
+        lives: game.lives,
+        qi: game.qi,
+        scores: game.players.map((p) => p.score),
+        original: q && q.originalText,
+        nodes: game.nodes.map((n) => ({ plain: n.plain, correct: n.correct, disabled: n.disabled })),
+        players: game.players.map((p) => ({ x: p.x, y: p.y, active: p.active }))
+      };
+    },
+    nodeCss(i) {
+      const r = game.nodes[i].rect;
+      const v = game.view;
+      return { x: v.ox + (r.x + r.w / 2) * v.s, y: v.oy + (r.y + r.h / 2) * v.s };
+    },
+    fireIndex(playerIndex, nodeIndex) {
+      const p = game.players[playerIndex];
+      const n = game.nodes[nodeIndex];
+      p.active = true;
+      p.x = n.rect.x + n.rect.w / 2;
+      p.y = n.rect.y + n.rect.h / 2;
+      p.fireLatch = false;
+      tryFire(p);
+      resolveShots();
+    }
+  };
+  requestAnimationFrame(frame);
+}
+
+globalThis.generateQuestion = generateQuestion;
+globalThis.validateQuestion = validateQuestion;
+globalThis.runMathTests = runMathTests;
+globalThis.readPad = readPad;
+
+if (typeof document !== 'undefined') boot();
+</script>
+</body>
+</html>
