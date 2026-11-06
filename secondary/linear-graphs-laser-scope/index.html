@@ -1,0 +1,2614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Laser Scope: Linear Interceptor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%2379f0ff' d='M1 8h9l5-4-2 4 2 4-5-4z'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #061018;
+    --panel: rgba(10, 22, 36, 0.94);
+    --line: rgba(121, 240, 255, 0.28);
+    --cyan: #79f0ff;
+    --lime: #c6ff4a;
+    --amber: #ffd166;
+    --magenta: #ff4d8d;
+    --text: #e7f7ff;
+    --dim: #93a8bd;
+    --p1: #ff4d6d;
+    --p2: #4aa3ff;
+    --p3: #ffd166;
+    --danger: #ff3355;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+    user-select: none;
+  }
+  button, input { font-family: inherit; color: inherit; }
+  button { cursor: pointer; }
+  #app { height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(4, 10, 18, 0.96);
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; flex-direction: column; line-height: 1.05; min-width: 150px; }
+  .brand strong { letter-spacing: 0.16em; font-size: 14px; }
+  .brand span { color: var(--cyan); font-size: 11px; letter-spacing: 0.18em; }
+  #hud-eq {
+    flex: 1;
+    text-align: center;
+    font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+    font-size: clamp(18px, 2.4vw, 28px);
+    font-weight: 700;
+    color: #9fb6c9;
+    min-width: 180px;
+  }
+  #hud-eq.partial { color: var(--cyan); }
+  #hud-eq.locked { color: var(--lime); text-shadow: 0 0 14px rgba(198, 255, 74, 0.45); }
+  .hud-play { display: flex; align-items: center; gap: 12px; }
+  .stat { font-size: 11px; letter-spacing: 0.12em; color: var(--dim); }
+  .stat b {
+    display: block;
+    color: var(--text);
+    font-size: 16px;
+    letter-spacing: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .stat b.pop { animation: pop 0.35s ease; }
+  @keyframes pop { 50% { transform: scale(1.18); color: var(--lime); } }
+  .pips { display: flex; gap: 4px; }
+  .pips i { width: 8px; height: 8px; border-radius: 99px; background: #243246; display: block; }
+  .pips i.on { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .pips i.now { background: var(--amber); }
+  #mute, .primary, .wide {
+    border: 1px solid var(--line);
+    background: #102033;
+    color: var(--cyan);
+    letter-spacing: 0.12em;
+    font-weight: 700;
+    padding: 10px 14px;
+  }
+  #mute { min-width: 108px; }
+  #mute[data-muted="1"] { color: var(--amber); border-color: rgba(255, 209, 102, 0.5); }
+  body[data-screen="title"] .hud-play { visibility: hidden; }
+  #title-screen {
+    flex: 1;
+    overflow: auto;
+    display: grid;
+    place-items: center;
+    padding: 28px 16px 40px;
+    background:
+      radial-gradient(ellipse at 15% 10%, rgba(80, 210, 255, 0.14), transparent 42%),
+      radial-gradient(ellipse at 90% 90%, rgba(255, 70, 140, 0.12), transparent 40%),
+      var(--bg);
+  }
+  body:not([data-screen="title"]) #title-screen { display: none; }
+  .title-card { width: min(860px, 100%); }
+  .eyebrow { letter-spacing: 0.22em; color: var(--cyan); font-size: 12px; margin: 0 0 8px; }
+  h1 {
+    margin: 0;
+    font-size: clamp(40px, 8vw, 76px);
+    letter-spacing: 0.08em;
+    line-height: 0.9;
+  }
+  .tagline { margin: 8px 0 0; letter-spacing: 0.28em; color: var(--magenta); font-weight: 700; }
+  .lede { max-width: 62ch; color: var(--dim); line-height: 1.45; }
+  .title-art { width: min(100%, 640px); height: auto; margin: 8px 0 4px; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; }
+  .steps article, .controls article, .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 12px;
+  }
+  .steps h3, .controls h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; color: var(--amber); }
+  .steps p, .controls p, .footnote { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.4; }
+  #start-btn {
+    border: 0;
+    background: linear-gradient(180deg, #dcff73, #8ed81d);
+    color: #142000;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    font-size: 18px;
+    padding: 16px 22px;
+    width: min(100%, 420px);
+    box-shadow: 0 0 28px rgba(198, 255, 74, 0.28);
+  }
+  #start-btn:hover { filter: brightness(1.05); }
+  .controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 16px; }
+  .controls strong { color: var(--text); }
+  .swatch { width: 10px; height: 10px; display: inline-block; margin-right: 6px; }
+  .footnote { margin-top: 14px; font-size: 13px; }
+  #audit { color: #ffb4c4; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  #game { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  body[data-screen="title"] #game { display: none; }
+  .stage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.62fr); }
+  .graph-wrap { position: relative; min-height: 0; height: 100%; background: #050910; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .graph-wrap::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 58%, rgba(0, 0, 0, 0.38) 100%);
+  }
+  #flash {
+    position: absolute;
+    inset: 0;
+    background: #ff3355;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #toasts {
+    position: absolute;
+    top: 12px;
+    left: 0; right: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .toast {
+    background: rgba(6, 16, 28, 0.9);
+    border: 1px solid var(--cyan);
+    color: var(--text);
+    padding: 6px 10px;
+    letter-spacing: 0.08em;
+    font-size: 13px;
+    font-weight: 700;
+    animation: toast 1.7s ease forwards;
+  }
+  @keyframes toast { 0% { transform: translateY(-6px); opacity: 0; } 12% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+  #tip {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%) translateY(8px);
+    width: min(640px, calc(100% - 24px));
+    background: rgba(42, 8, 18, 0.94);
+    border: 1px solid var(--danger);
+    color: #ffd7e1;
+    padding: 10px 12px;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 3;
+    font-size: 15px;
+    line-height: 1.35;
+  }
+  #tip.show { opacity: 1; transform: translateX(-50%) translateY(0); transition: 0.15s ease; }
+  aside {
+    border-left: 1px solid var(--line);
+    background: rgba(7, 16, 28, 0.96);
+    padding: 14px 14px 16px;
+    overflow: auto;
+    min-height: 0;
+  }
+  #kicker { margin: 0; color: var(--magenta); letter-spacing: 0.16em; font-size: 11px; font-weight: 700; }
+  #mission-title { margin: 4px 0 6px; font-size: 24px; line-height: 1.1; }
+  #blurb, #meaning, #instruction, #focus-line, #setup-line { margin: 0 0 8px; line-height: 1.4; }
+  #blurb, #meaning { color: var(--dim); }
+  #instruction { color: var(--amber); font-weight: 700; }
+  #focus-line {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 18px;
+    color: white;
+  }
+  #setup-line { color: var(--cyan); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  th, td { padding: 4px 8px; text-align: right; border-bottom: 1px solid rgba(121, 240, 255, 0.12); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 600; font-size: 12px; }
+  tr.zero td { background: rgba(121, 240, 255, 0.12); color: var(--cyan); }
+  tr.hot td { background: rgba(255, 209, 102, 0.16); color: var(--amber); }
+  .formulas { display: grid; gap: 4px; margin: 8px 0; }
+  .formulas p {
+    margin: 0;
+    padding: 6px 8px;
+    border: 1px solid rgba(121, 240, 255, 0.14);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    color: var(--dim);
+  }
+  .formulas p.hot { color: var(--amber); border-color: rgba(255, 209, 102, 0.45); }
+  #big-eq {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: clamp(22px, 3vw, 34px);
+    font-weight: 800;
+    margin: 8px 0;
+    color: #9fb6c9;
+  }
+  #big-eq.partial { color: var(--cyan); }
+  #big-eq.locked { color: var(--lime); text-shadow: 0 0 12px rgba(198, 255, 74, 0.35); }
+  #solution {
+    white-space: pre-line;
+    color: #d5ffe8;
+    background: rgba(198, 255, 74, 0.06);
+    border: 1px solid rgba(198, 255, 74, 0.2);
+    padding: 10px;
+    line-height: 1.45;
+    user-select: text;
+  }
+  #caption { color: var(--dim); font-size: 13px; min-height: 1.2em; }
+  .cockpit { flex-shrink: 0; border-top: 1px solid var(--line); padding: 10px 14px 12px; background: #07111c; }
+  #phasebar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+  #phasebar div {
+    border: 1px solid rgba(121, 240, 255, 0.16);
+    padding: 6px 8px;
+    color: var(--dim);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  #phasebar div small { display: block; letter-spacing: 0; font-weight: 600; color: #6f8699; }
+  #phasebar div.on { color: #102000; background: var(--amber); border-color: var(--amber); }
+  #phasebar div.on small { color: #3d3420; }
+  #phasebar div.done { color: var(--lime); border-color: rgba(198, 255, 74, 0.4); }
+  .board { position: relative; }
+  #cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .card {
+    position: relative;
+    text-align: left;
+    background: linear-gradient(180deg, #14283c, #0c1828);
+    border: 1px solid #2c516c;
+    min-height: 92px;
+    padding: 10px 12px 12px;
+  }
+  .card:hover { border-color: var(--cyan); }
+  .card .letter { position: absolute; top: 8px; right: 10px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
+  .card .kicker { display: block; color: var(--dim); font-size: 11px; letter-spacing: 0.14em; }
+  .card .val {
+    display: block;
+    margin-top: 6px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: clamp(18px, 2vw, 26px);
+    font-weight: 800;
+  }
+  .card .sub { color: var(--cyan); font-size: 13px; }
+  .card.sel-0 { box-shadow: inset 0 0 0 2px var(--p1); }
+  .card.sel-1 { box-shadow: inset 0 0 0 2px var(--p2); }
+  .card.sel-2 { box-shadow: inset 0 0 0 2px var(--p3); }
+  .card.bad { background: #3a1020; border-color: var(--danger); }
+  .card.good { border-color: var(--lime); box-shadow: inset 0 0 0 2px var(--lime); }
+  .mark {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border: 2px solid;
+    transform: translate(-50%, -50%) rotate(45deg);
+    z-index: 4;
+    pointer-events: none;
+    transition: left 0.12s ease, top 0.12s ease;
+  }
+  .mark span {
+    position: absolute;
+    left: 16px;
+    top: -8px;
+    transform: rotate(-45deg);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+  }
+  .mark.m0 { color: var(--p1); border-color: var(--p1); }
+  .mark.m1 { color: var(--p2); border-color: var(--p2); }
+  .mark.m2 { color: var(--p3); border-color: var(--p3); }
+  .mark.hide { display: none; }
+  .wide, .firing {
+    grid-column: 1 / -1;
+    min-height: 74px;
+    display: grid;
+    place-items: center;
+    letter-spacing: 0.18em;
+    font-weight: 800;
+    font-size: 18px;
+  }
+  .wide { background: linear-gradient(180deg, #dcff73, #8ed81d); color: #142000; border: 0; }
+  .firing { border: 1px solid var(--lime); color: var(--lime); }
+  #clickhint { margin: 8px 0 0; color: var(--dim); font-size: 12px; letter-spacing: 0.04em; }
+  #docks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+  .dock {
+    border: 1px solid rgba(121, 240, 255, 0.16);
+    padding: 8px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2px 8px;
+    min-height: 64px;
+  }
+  .dock .who { font-weight: 800; letter-spacing: 0.08em; }
+  .dock .meta { color: var(--dim); font-size: 12px; grid-column: 1 / -1; }
+  .dock .stars { font-family: ui-monospace, Menlo, monospace; }
+  .shields { display: flex; gap: 4px; }
+  .sh {
+    width: 14px; height: 16px;
+    clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+    background: currentColor;
+    opacity: 0.2;
+  }
+  .sh.on { opacity: 1; }
+  .dock[data-p="0"] { color: var(--p1); }
+  .dock[data-p="1"] { color: var(--p2); }
+  .dock[data-p="2"] { color: var(--p3); }
+  .dock.off { opacity: 0.55; }
+  .dock .who, .dock .meta, .dock .stars { color: var(--text); }
+  .dock[data-p="0"] .who { color: var(--p1); }
+  .dock[data-p="1"] .who { color: var(--p2); }
+  .dock[data-p="2"] .who { color: var(--p3); }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(4, 8, 14, 0.78);
+    backdrop-filter: blur(6px);
+  }
+  #overlay.show { display: flex; }
+  .modal {
+    width: min(680px, 100%);
+    max-height: min(90dvh, 860px);
+    overflow: auto;
+    background: #0c1828;
+    border: 1px solid var(--line);
+    padding: 22px;
+  }
+  .modal h2 { margin: 0 0 8px; letter-spacing: 0.08em; }
+  .modal p { color: var(--dim); line-height: 1.45; }
+  .modal .lesson {
+    white-space: pre-line;
+    color: #e7fff0;
+    background: rgba(198, 255, 74, 0.06);
+    border: 1px solid rgba(198, 255, 74, 0.25);
+    padding: 12px;
+    user-select: text;
+    line-height: 1.45;
+  }
+  .modal .primary { margin-top: 14px; background: var(--lime); color: #142000; border: 0; padding: 12px 16px; }
+  .log { padding-left: 18px; color: var(--text); }
+  .log li { margin: 4px 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  @media (max-width: 980px) {
+    html, body { overflow: auto; }
+    .stage { grid-template-columns: 1fr; }
+    .graph-wrap { height: 54dvh; min-height: 280px; }
+    aside { border-left: 0; border-top: 1px solid var(--line); max-height: none; }
+    #app { height: auto; min-height: 100dvh; overflow: visible; }
+    .steps, .controls, #cards, #docks { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    .steps, .controls, #docks, #phasebar { grid-template-columns: 1fr; }
+    #cards { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-height: 760px) {
+    .card { min-height: 74px; }
+    #mission-title { font-size: 20px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body data-screen="title">
+<div id="app">
+  <header>
+    <div class="brand">
+      <strong>LASER SCOPE</strong>
+      <span>LINEAR INTERCEPTOR</span>
+    </div>
+    <div id="hud-eq">y = mx + c</div>
+    <div class="hud-play">
+      <div class="pips" id="pips"></div>
+      <div class="stat">WAVE <b id="hud-wave">–</b></div>
+      <div class="stat">SCORE <b id="hud-score">0</b></div>
+      <div class="stat">BEST <b id="hud-best">0</b></div>
+    </div>
+    <button id="mute" type="button" data-action="mute">SOUND ON</button>
+  </header>
+
+  <section id="title-screen">
+    <div class="title-card">
+      <p class="eyebrow">SINGAPORE SECONDARY 2 · LINEAR GRAPHS</p>
+      <h1>LASER SCOPE</h1>
+      <p class="tagline">LINEAR INTERCEPTOR</p>
+      <p class="lede">Drone sensors sit on a straight line. Calibrate the y-intercept, tune the gradient, then fire along y = mx + c.</p>
+      <svg class="title-art" viewBox="0 0 640 168" aria-hidden="true">
+        <g stroke="rgba(121,240,255,0.25)" stroke-width="1">
+          <path d="M40 20 H600 M40 56 H600 M40 92 H600 M40 128 H600" />
+          <path d="M80 12 V148 M180 12 V148 M280 12 V148 M380 12 V148 M480 12 V148 M580 12 V148" />
+        </g>
+        <path d="M60 140 H610 M60 140 V16" stroke="#d7fbff" stroke-width="2" fill="none" />
+        <path d="M70 132 L190 112 L310 92 L430 72 L550 52" stroke="#c6ff4a" stroke-width="3" fill="none" />
+        <g fill="#ff4d8d">
+          <polygon points="190,112 198,107 198,117" />
+          <polygon points="310,92 318,87 318,97" />
+          <polygon points="430,72 438,67 438,77" />
+          <polygon points="550,52 558,47 558,57" />
+        </g>
+        <rect x="48" y="120" width="22" height="18" fill="#9fb6c9" />
+        <rect x="68" y="124" width="36" height="8" fill="#c6ff4a" transform="rotate(-11 68 128)" />
+      </svg>
+      <div class="steps">
+        <article>
+          <h3>1 · BASELINE</h3>
+          <p>Read y when x = 0. That vertical intercept is c. The turret clamps to (0, c).</p>
+        </article>
+        <article>
+          <h3>2 · GRADIENT</h3>
+          <p>m = (y₂ − y₁) ÷ (x₂ − x₁). Watch the sign. Positive climbs. Negative drains.</p>
+        </article>
+        <article>
+          <h3>3 · ESTIMATE</h3>
+          <p>Substitute into y = mx + c, or rearrange to find x. The correct beacon vaporizes the wave.</p>
+        </article>
+      </div>
+      <button id="start-btn" type="button" data-action="primary">ARM THE LASER</button>
+      <div class="controls">
+        <article>
+          <h3><i class="swatch" style="background:var(--p1)"></i>P1 RED</h3>
+          <p><strong>Arrow keys</strong> steer. <strong>Space</strong> locks the card. Gamepad 1, button A.</p>
+        </article>
+        <article>
+          <h3><i class="swatch" style="background:var(--p2)"></i>P2 BLUE</h3>
+          <p><strong>W A S D</strong> steer. <strong>F</strong> locks. Gamepad 2, button A. Press either to join.</p>
+        </article>
+        <article>
+          <h3><i class="swatch" style="background:var(--p3)"></i>P3 YELLOW</h3>
+          <p><strong>I J K L</strong> steer. <strong>H</strong> locks. Gamepad 3, button A. Press either to join.</p>
+        </article>
+      </div>
+      <p class="footnote">Three shields each. A wrong lock costs one shield and bends the beam off the drones. Clearing a wave repairs one shield. The engineer who locks the correct value earns a star. Team score is +200 per wave, with a speed bonus for a flawless clear under 50 seconds. 8BitDo pads work best in XInput / standard mode.</p>
+      <p id="audit"></p>
+    </div>
+  </section>
+
+  <div id="game">
+    <div class="stage">
+      <div class="graph-wrap" id="graph-wrap">
+        <canvas id="graph" aria-label="Coordinate grid"></canvas>
+        <div id="flash"></div>
+        <div id="toasts"></div>
+        <div id="tip" role="status"></div>
+      </div>
+      <aside id="intel">
+        <p id="kicker"></p>
+        <h2 id="mission-title">Standing by</h2>
+        <p id="blurb"></p>
+        <div id="table-wrap"></div>
+        <p id="caption"></p>
+        <div id="meaning"></div>
+        <p id="instruction"></p>
+        <p id="focus-line"></p>
+        <p id="setup-line"></p>
+        <div class="formulas">
+          <p id="f-c">c = the value of y when x = 0</p>
+          <p id="f-m">m = (y₂ − y₁) / (x₂ − x₁)</p>
+        </div>
+        <p id="big-eq">y = mx + c</p>
+        <p id="award"></p>
+        <p id="solution" hidden></p>
+      </aside>
+    </div>
+    <section class="cockpit">
+      <div id="phasebar">
+        <div data-step="1">1 · BASELINE <small>y-intercept c</small></div>
+        <div data-step="2">2 · GRADIENT <small>m = rise ÷ run</small></div>
+        <div data-step="3">3 · ESTIMATE <small>y = mx + c</small></div>
+      </div>
+      <div class="board" id="board">
+        <div id="mark0" class="mark m0 hide"><span>P1</span></div>
+        <div id="mark1" class="mark m1 hide"><span>P2</span></div>
+        <div id="mark2" class="mark m2 hide"><span>P3</span></div>
+        <div id="cards"></div>
+      </div>
+      <p id="clickhint">Click a card to lock it in as P1.</p>
+      <div id="docks"></div>
+    </section>
+  </div>
+</div>
+<div id="overlay"></div>
+<div id="live" class="sr" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function round3(n) {
+    return Math.round(n * 1000) / 1000;
+  }
+  function fmt(n) {
+    const r = round3(n);
+    if (r === 0) return '0';
+    return r.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  }
+  function prettyNum(n) {
+    const s = fmt(n);
+    return s.startsWith('-') ? '−' + s.slice(1) : s;
+  }
+  function prettyCoef(m) {
+    if (Math.abs(m - 1) < 1e-9) return '';
+    if (Math.abs(m + 1) < 1e-9) return '−';
+    return prettyNum(m);
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+  }
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+  function yAt(def, x) {
+    return round3(def.m * x + def.c);
+  }
+
+  const CAMPAIGN = [
+    {
+      id: 'spring-a',
+      family: 'HELICAL SPRING',
+      title: 'Helical Spring A',
+      blurb: 'A lab spring is loaded with masses. Length increases at a steady rate. The unstretched length is the y-intercept.',
+      xLabel: 'Mass x (g)',
+      yLabel: 'Length L (cm)',
+      yVar: 'L',
+      cSub: 'cm',
+      mSub: 'cm/g',
+      meaningC: 'c is the original, unstretched length of the spring.',
+      meaningM: 'm is how many centimetres the spring extends for each extra gram.',
+      m: 0.15,
+      c: 5,
+      xs: [0, 20, 50, 80, 100],
+      xTick: 20,
+      xMax: 120,
+      yTick: 5,
+      yMax: 30,
+      pairs: [[1, 3], [1, 4], [2, 4]],
+      mDecoys: [-0.15, 1.5, 0.25],
+      cDecoys: [4, 8, 0],
+      estimate: {
+        mode: 'y',
+        x: 70,
+        unit: 'cm',
+        decoys: [10.5, 17.5, 22.5],
+        prompt: 'Estimate: What is length L when x = 70 g?'
+      },
+      expectY: [5, 8, 12.5, 17, 20],
+      expectAnswer: 15.5
+    },
+    {
+      id: 'spring-b',
+      family: 'HELICAL SPRING',
+      title: 'Helical Spring B',
+      blurb: 'A second spring, wound from different wire. Length still follows L = mx + c.',
+      xLabel: 'Mass x (g)',
+      yLabel: 'Length L (cm)',
+      yVar: 'L',
+      cSub: 'cm',
+      mSub: 'cm/g',
+      meaningC: 'c is the original, unstretched length of this spring.',
+      meaningM: 'm is the extension in centimetres for each extra gram.',
+      m: 0.25,
+      c: 4,
+      xs: [0, 20, 50, 80, 100],
+      xTick: 20,
+      xMax: 120,
+      yTick: 5,
+      yMax: 40,
+      pairs: [[1, 4], [2, 4], [1, 3]],
+      mDecoys: [0.15, -0.25, 2.5],
+      cDecoys: [5, 8, 0],
+      estimate: {
+        mode: 'y',
+        x: 40,
+        unit: 'cm',
+        decoys: [10, 24, 9],
+        prompt: 'Estimate: What is length L when x = 40 g?'
+      },
+      expectY: [4, 9, 16.5, 24, 29],
+      expectAnswer: 14
+    },
+    {
+      id: 'battery',
+      family: 'BATTERY DRAIN',
+      title: 'Battery Power Drain',
+      blurb: 'A drone battery starts full and loses charge at a constant rate. 1.0 means 100%.',
+      xLabel: 'Time x (h)',
+      yLabel: 'Charge y',
+      yVar: 'y',
+      cSub: 'full = 1',
+      mSub: 'per hour',
+      meaningC: 'c is the starting charge. 1.0 means a full battery.',
+      meaningM: 'm is the change in charge each hour. Negative means the battery is draining.',
+      m: -0.1,
+      c: 1,
+      xs: [0, 2, 4, 6, 8, 10],
+      xTick: 2,
+      xMax: 12,
+      yTick: 0.2,
+      yMax: 1.6,
+      pairs: [[1, 4], [2, 5], [1, 5]],
+      mDecoys: [0.1, -1, -0.2],
+      cDecoys: [0, 0.8, 0.5],
+      estimate: {
+        mode: 'y',
+        x: 5,
+        unit: 'charge',
+        decoys: [1.5, 0.4, 0],
+        prompt: 'Estimate: What is the battery charge y when x = 5 hours?'
+      },
+      expectY: [1, 0.8, 0.6, 0.4, 0.2, 0],
+      expectAnswer: 0.5
+    },
+    {
+      id: 'fuel',
+      family: 'FUEL CONSUMPTION',
+      title: 'Fuel Burn',
+      blurb: 'A patrol craft burns fuel at a constant rate. The table shows fuel still in the tank.',
+      xLabel: 'Time x (h)',
+      yLabel: 'Fuel y (L)',
+      yVar: 'y',
+      cSub: 'L',
+      mSub: 'L/h',
+      meaningC: 'c is the fuel in the tank at the start.',
+      meaningM: 'm is the fuel used each hour. Negative means the tank is emptying.',
+      m: -2.5,
+      c: 50,
+      xs: [0, 2, 4, 6, 8, 10],
+      xTick: 2,
+      xMax: 12,
+      yTick: 10,
+      yMax: 80,
+      pairs: [[1, 4], [2, 5], [1, 3]],
+      mDecoys: [2.5, -0.25, -5],
+      cDecoys: [0, 40, 25],
+      estimate: {
+        mode: 'y',
+        x: 7,
+        unit: 'L',
+        decoys: [17.5, 67.5, 35],
+        prompt: 'Estimate: What is the fuel remaining y when x = 7 hours?'
+      },
+      expectY: [50, 45, 40, 35, 30, 25],
+      expectAnswer: 32.5
+    },
+    {
+      id: 'water-fill',
+      family: 'WATER TANK',
+      title: 'Tank Filling',
+      blurb: 'A rooftop tank is filling at a constant rate. Volume climbs in a straight line.',
+      xLabel: 'Time x (min)',
+      yLabel: 'Volume y (L)',
+      yVar: 'y',
+      cSub: 'L',
+      mSub: 'L/min',
+      meaningC: 'c is the volume already in the tank when timing starts.',
+      meaningM: 'm is the volume added each minute.',
+      m: 3,
+      c: 10,
+      xs: [0, 2, 4, 6, 8],
+      xTick: 2,
+      xMax: 10,
+      yTick: 5,
+      yMax: 45,
+      pairs: [[1, 3], [2, 4], [1, 4]],
+      mDecoys: [-3, 0.3, 1],
+      cDecoys: [0, 16, 4],
+      estimate: {
+        mode: 'y',
+        x: 5,
+        unit: 'L',
+        decoys: [15, 28, 35],
+        prompt: 'Estimate: What is the water volume y when x = 5 minutes?'
+      },
+      expectY: [10, 16, 22, 28, 34],
+      expectAnswer: 25
+    },
+    {
+      id: 'water-drain',
+      family: 'WATER TANK',
+      title: 'Tank Draining',
+      blurb: 'The outlet is open. Volume falls at a constant rate.',
+      xLabel: 'Time x (h)',
+      yLabel: 'Volume y (L)',
+      yVar: 'y',
+      cSub: 'L',
+      mSub: 'L/h',
+      meaningC: 'c is the volume in the tank at the start.',
+      meaningM: 'm is the volume lost each hour. Negative means the tank is draining.',
+      m: -4,
+      c: 80,
+      xs: [0, 2, 5, 8, 10],
+      xTick: 2,
+      xMax: 12,
+      yTick: 10,
+      yMax: 100,
+      pairs: [[1, 3], [2, 4], [1, 4]],
+      mDecoys: [4, -2, -8],
+      cDecoys: [0, 40, 60],
+      estimate: {
+        mode: 'y',
+        x: 7,
+        unit: 'L',
+        decoys: [28, 48, 68],
+        prompt: 'Estimate: What is the water volume y when x = 7 hours?'
+      },
+      expectY: [80, 72, 60, 48, 40],
+      expectAnswer: 52
+    },
+    {
+      id: 'spring-c',
+      family: 'HELICAL SPRING',
+      title: 'Helical Spring C',
+      blurb: 'A lighter spring in the same lab. Measure length as the mass increases.',
+      xLabel: 'Mass x (g)',
+      yLabel: 'Length L (cm)',
+      yVar: 'L',
+      cSub: 'cm',
+      mSub: 'cm/g',
+      meaningC: 'c is the original length before any mass is added.',
+      meaningM: 'm is the extension in centimetres for each extra gram.',
+      m: 0.2,
+      c: 6,
+      xs: [0, 10, 30, 50, 70],
+      xTick: 10,
+      xMax: 80,
+      yTick: 2,
+      yMax: 26,
+      pairs: [[1, 3], [2, 4], [1, 4]],
+      mDecoys: [-0.2, 2, 0.5],
+      cDecoys: [0, 4, 8],
+      estimate: {
+        mode: 'y',
+        x: 40,
+        unit: 'cm',
+        decoys: [8, 16, 20],
+        prompt: 'Estimate: What is length L when x = 40 g?'
+      },
+      expectY: [6, 8, 12, 16, 20],
+      expectAnswer: 14
+    },
+    {
+      id: 'fuel-x',
+      family: 'FUEL CONSUMPTION',
+      title: 'Fuel Reserve Clock',
+      blurb: 'Fuel falls in a straight line. This time, solve for the time x.',
+      xLabel: 'Time x (h)',
+      yLabel: 'Fuel y (L)',
+      yVar: 'y',
+      cSub: 'L',
+      mSub: 'L/h',
+      meaningC: 'c is the fuel in the tank at the start.',
+      meaningM: 'm is the fuel used each hour. Negative means the tank is emptying.',
+      m: -5,
+      c: 100,
+      xs: [0, 2, 4, 6, 8, 10],
+      xTick: 2,
+      xMax: 16,
+      yTick: 10,
+      yMax: 110,
+      pairs: [[1, 4], [2, 5], [1, 5]],
+      mDecoys: [5, -0.5, -10],
+      cDecoys: [0, 50, 80],
+      estimate: {
+        mode: 'x',
+        y: 75,
+        unit: 'h',
+        decoys: [4, 8, 15],
+        prompt: 'At what time x will the fuel remaining be 75 L?'
+      },
+      expectY: [100, 90, 80, 70, 60, 50],
+      expectAnswer: 5
+    },
+    {
+      id: 'battery-32',
+      family: 'BATTERY DRAIN',
+      title: 'Battery · 32% Lock',
+      blurb: 'Final intercept. The same drain model: find the time when charge hits 32%.',
+      xLabel: 'Time x (h)',
+      yLabel: 'Charge y',
+      yVar: 'y',
+      cSub: 'full = 1',
+      mSub: 'per hour',
+      meaningC: 'c is the starting charge. 1.0 means a full battery.',
+      meaningM: 'm is the change in charge each hour. Negative means the battery is draining.',
+      m: -0.1,
+      c: 1,
+      xs: [0, 2, 4, 6, 8, 10],
+      xTick: 2,
+      xMax: 12,
+      yTick: 0.2,
+      yMax: 1.2,
+      pairs: [[1, 4], [2, 4], [1, 3]],
+      mDecoys: [0.1, -1, -0.05],
+      cDecoys: [0, 0.8, 0.5],
+      estimate: {
+        mode: 'x',
+        y: 0.32,
+        unit: 'h',
+        decoys: [0.68, 3.2, 8],
+        prompt: 'At what time x will the battery reach 32% (y = 0.32)?'
+      },
+      expectY: [1, 0.8, 0.6, 0.4, 0.2, 0],
+      expectAnswer: 6.8
+    }
+  ];
+
+  function computedAnswer(def) {
+    const est = def.estimate;
+    return est.mode === 'y' ? round3(def.m * est.x + def.c) : round3((est.y - def.c) / def.m);
+  }
+
+  function audit() {
+    const errors = [];
+    CAMPAIGN.forEach((def) => {
+      const ys = def.xs.map((x) => yAt(def, x));
+      ys.forEach((y, i) => {
+        if (Math.abs(y - def.expectY[i]) > 1e-6) errors.push(def.id + ' y[' + i + '] ' + y);
+      });
+      const answer = computedAnswer(def);
+      if (Math.abs(answer - def.expectAnswer) > 1e-6) errors.push(def.id + ' answer ' + answer);
+      const poolC = [def.c, ...def.cDecoys];
+      const poolM = [def.m, ...def.mDecoys];
+      const poolE = [answer, ...def.estimate.decoys];
+      [poolC, poolM, poolE].forEach((pool, idx) => {
+        if (pool.length !== 4) errors.push(def.id + ' pool ' + idx);
+        const seen = new Set(pool.map((n) => fmt(n)));
+        if (seen.size !== pool.length) errors.push(def.id + ' duplicate ' + idx);
+      });
+      if (def.xs[0] !== 0) errors.push(def.id + ' missing origin');
+      if (Math.abs(def.xMax / def.xTick - Math.round(def.xMax / def.xTick)) > 1e-6) errors.push(def.id + ' x tick');
+      if (Math.abs(def.yMax / def.yTick - Math.round(def.yMax / def.yTick)) > 1e-6) errors.push(def.id + ' y tick');
+      def.pairs.forEach(([i, j]) => {
+        const m = (yAt(def, def.xs[j]) - yAt(def, def.xs[i])) / (def.xs[j] - def.xs[i]);
+        if (Math.abs(m - def.m) > 1e-6) errors.push(def.id + ' pair ' + i + ',' + j);
+      });
+      if (def.estimate.mode === 'y' && def.xs.includes(def.estimate.x)) errors.push(def.id + ' ask x in table');
+      if (def.estimate.mode === 'x' && ys.some((y) => Math.abs(y - def.estimate.y) < 1e-6)) errors.push(def.id + ' ask y in table');
+      if (def.xs.some((x) => Math.abs(x - answer) < 1e-6) && def.estimate.mode === 'x') errors.push(def.id + ' answer x in table');
+      const coords = def.estimate.mode === 'y' ? poolE : poolE;
+      coords.forEach((v) => {
+        if (def.estimate.mode === 'y' && (v < -0.001 || v > def.yMax + 0.001)) errors.push(def.id + ' y beacon ' + v);
+        if (def.estimate.mode === 'x' && (v < -0.001 || v > def.xMax + 0.001)) errors.push(def.id + ' x beacon ' + v);
+      });
+      ys.forEach((y) => {
+        if (y < -0.001 || y > def.yMax + 0.001) errors.push(def.id + ' point off chart ' + y);
+      });
+    });
+    return errors;
+  }
+
+  const auditErrors = audit();
+
+  const audio = {
+    ctx: null,
+    master: null,
+    musicGain: null,
+    sfxGain: null,
+    noise: null,
+    muted: false,
+    timer: 0,
+    step: 0,
+    nextTime: 0,
+    eighth: 60 / 118 / 2,
+    boot() {
+      if (!this.ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        const ctx = new AC();
+        this.ctx = ctx;
+        this.master = ctx.createGain();
+        this.master.gain.value = this.muted ? 0 : 0.9;
+        this.master.connect(ctx.destination);
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 2400;
+        this.musicGain = ctx.createGain();
+        this.musicGain.gain.value = 0.55;
+        this.musicGain.connect(filter);
+        filter.connect(this.master);
+        this.sfxGain = ctx.createGain();
+        this.sfxGain.gain.value = 0.85;
+        this.sfxGain.connect(this.master);
+        const len = ctx.sampleRate;
+        this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = this.noise.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+        this.nextTime = ctx.currentTime + 0.08;
+        this.timer = window.setInterval(() => this.schedule(), 40);
+      }
+      if (this.ctx.state !== 'running') this.ctx.resume();
+    },
+    setMuted(v) {
+      this.muted = v;
+      try { localStorage.setItem('laserScopeMuted', v ? '1' : '0'); } catch (err) { /* ignore */ }
+      if (this.master && this.ctx) this.master.gain.setValueAtTime(v ? 0 : 0.9, this.ctx.currentTime);
+      const btn = $('mute');
+      btn.dataset.muted = v ? '1' : '0';
+      btn.textContent = v ? 'MUTED' : 'SOUND ON';
+    },
+    schedule() {
+      const ctx = this.ctx;
+      if (!ctx) return;
+      if (this.muted || ctx.state !== 'running') {
+        this.nextTime = ctx.currentTime + 0.06;
+        return;
+      }
+      const horizon = ctx.currentTime + 0.22;
+      while (this.nextTime < horizon) {
+        this.note(this.step % 16, this.nextTime);
+        this.step = (this.step + 1) % 16;
+        this.nextTime += this.eighth;
+      }
+    },
+    tone(time, freq, dur, type, peak, dest) {
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, time);
+      g.gain.setValueAtTime(0.0001, time);
+      g.gain.exponentialRampToValueAtTime(peak, time + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+      o.connect(g);
+      g.connect(dest);
+      o.start(time);
+      o.stop(time + dur + 0.02);
+    },
+    note(step, time) {
+      const bass = [82.41, 82.41, 123.47, 82.41, 98, 110, 123.47, 73.42];
+      const arp = [164.81, 196, 246.94, 329.63, 293.66, 246.94, 220, 196, 164.81, 196, 246.94, 392, 329.63, 246.94, 220, 164.81];
+      if (step % 2 === 0) this.tone(time, bass[(step / 2) % 8], this.eighth * 1.7, 'triangle', 0.16, this.musicGain);
+      this.tone(time, arp[step], this.eighth * 0.9, 'square', 0.03, this.musicGain);
+      if (step % 4 === 0) {
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(150, time);
+        o.frequency.exponentialRampToValueAtTime(42, time + 0.12);
+        g.gain.setValueAtTime(0.0001, time);
+        g.gain.exponentialRampToValueAtTime(0.2, time + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, time + 0.14);
+        o.connect(g);
+        g.connect(this.musicGain);
+        o.start(time);
+        o.stop(time + 0.16);
+      }
+      if (step % 2 === 1) {
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noise;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 5000;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, time);
+        g.gain.exponentialRampToValueAtTime(0.04, time + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, time + 0.04);
+        src.connect(filter);
+        filter.connect(g);
+        g.connect(this.musicGain);
+        src.start(time, Math.random() * 0.4, 0.05);
+        src.stop(time + 0.05);
+      }
+    },
+    ready() {
+      return this.ctx && this.ctx.state === 'running' && !this.muted;
+    },
+    blip() {
+      if (!this.ready()) return;
+      this.tone(this.ctx.currentTime, 740, 0.05, 'sine', 0.06, this.sfxGain);
+    },
+    clunk() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(180, t);
+      o.frequency.exponentialRampToValueAtTime(55, t + 0.12);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.28, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+      o.connect(g);
+      g.connect(this.sfxGain);
+      o.start(t);
+      o.stop(t + 0.16);
+    },
+    servo() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      const f = this.ctx.createBiquadFilter();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(180, t);
+      o.frequency.exponentialRampToValueAtTime(720, t + 0.28);
+      f.type = 'bandpass';
+      f.frequency.value = 900;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.08, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o.connect(f);
+      f.connect(g);
+      g.connect(this.sfxGain);
+      o.start(t);
+      o.stop(t + 0.32);
+    },
+    laser() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      const f = this.ctx.createBiquadFilter();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(880, t);
+      o.frequency.exponentialRampToValueAtTime(110, t + 0.34);
+      f.type = 'lowpass';
+      f.frequency.setValueAtTime(2400, t);
+      f.frequency.exponentialRampToValueAtTime(420, t + 0.34);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.18, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
+      o.connect(f);
+      f.connect(g);
+      g.connect(this.sfxGain);
+      o.start(t);
+      o.stop(t + 0.4);
+    },
+    pop() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 1400;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.16, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      src.connect(f);
+      f.connect(g);
+      g.connect(this.sfxGain);
+      src.start(t, Math.random() * 0.3, 0.1);
+      src.stop(t + 0.1);
+    },
+    boom() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.setValueAtTime(900, t);
+      f.frequency.exponentialRampToValueAtTime(120, t + 0.4);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+      src.connect(f);
+      f.connect(g);
+      g.connect(this.sfxGain);
+      src.start(t, 0, 0.45);
+      src.stop(t + 0.46);
+      this.tone(t, 70, 0.28, 'sine', 0.3, this.sfxGain);
+    },
+    buzzer() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      [220, 233].forEach((freq) => {
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = 'square';
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.06, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+        o.connect(g);
+        g.connect(this.sfxGain);
+        o.start(t);
+        o.stop(t + 0.3);
+      });
+    },
+    fanfare() {
+      if (!this.ready()) return;
+      const t = this.ctx.currentTime;
+      [523.25, 659.25, 783.99].forEach((freq, i) => this.tone(t + i * 0.08, freq, 0.18, 'triangle', 0.08, this.sfxGain));
+    }
+  };
+
+  try {
+    audio.muted = localStorage.getItem('laserScopeMuted') === '1';
+  } catch (err) {
+    audio.muted = false;
+  }
+
+  const players = [
+    { index: 0, name: 'P1', joined: true, shields: 3, stars: 0, cursor: 0, keys: 'ARROWS + SPACE' },
+    { index: 1, name: 'P2', joined: false, shields: 3, stars: 0, cursor: 1, keys: 'WASD + F' },
+    { index: 2, name: 'P3', joined: false, shields: 3, stars: 0, cursor: 2, keys: 'IJKL + H' }
+  ];
+
+  const state = {
+    screen: 'title',
+    pausedFrom: 'play',
+    phase: 1,
+    wave: 0,
+    score: 0,
+    best: 0,
+    sc: null,
+    options: [],
+    cLocked: false,
+    mLocked: false,
+    shownC: 0,
+    shownM: 0,
+    targetC: 0,
+    targetM: 0,
+    returnTimer: 0,
+    waveMistakes: 0,
+    revealTriangle: false,
+    phase3Hint: false,
+    fire: null,
+    badLine: null,
+    shake: 0,
+    flash: 0,
+    arrive: 1,
+    particles: [],
+    shocks: [],
+    lockTimer: 0,
+    resolving: false,
+    pending: null,
+    tipT: 0,
+    waveT0: 0,
+    starBase: [0, 0, 0],
+    log: [],
+    cleared: 0,
+    lastAward: null
+  };
+
+  try {
+    state.best = Number(localStorage.getItem('laserScopeBest')) || 0;
+  } catch (err) {
+    state.best = 0;
+  }
+
+  const padMem = [null, null, null];
+  let padMask = 0;
+  let viewW = 1;
+  let viewH = 1;
+
+  const canvas = $('graph');
+  const ctx = canvas.getContext('2d');
+
+  function equationText(showM, showC) {
+    const sc = state.sc;
+    if (!sc) return 'y = mx + c';
+    const yv = sc.yVar;
+    if (!showM && !showC) return yv + ' = mx + c';
+    const mText = showM ? prettyCoef(sc.m) : 'm';
+    const xPart = mText + 'x';
+    if (!showC) return yv + ' = ' + xPart + ' + c';
+    if (Math.abs(sc.c) < 1e-9) return yv + ' = ' + xPart;
+    const sign = sc.c < 0 ? '−' : '+';
+    return yv + ' = ' + xPart + ' ' + sign + ' ' + prettyNum(Math.abs(sc.c));
+  }
+
+  function workedText(sc) {
+    const dy = round3(sc.p2.y - sc.p1.y);
+    const dx = round3(sc.p2.x - sc.p1.x);
+    const est = sc.estimate;
+    const check = est.mode === 'y'
+      ? sc.yVar + ' = ' + prettyCoef(sc.m) + ' × ' + prettyNum(est.x) + ' + ' + prettyNum(sc.c) + ' = ' + prettyNum(sc.answer) + ' ' + est.unit
+      : 'x = (' + prettyNum(est.y) + ' − ' + prettyNum(sc.c) + ') ÷ (' + prettyCoef(sc.m) + ') = ' + prettyNum(sc.answer) + ' ' + est.unit;
+    return [
+      equationText(true, true),
+      '',
+      'c = ' + prettyNum(sc.c) + ' ' + sc.cSub,
+      sc.meaningC,
+      '',
+      'm = (' + prettyNum(sc.p2.y) + ' − ' + prettyNum(sc.p1.y) + ') ÷ (' + prettyNum(sc.p2.x) + ' − ' + prettyNum(sc.p1.x) + ') = ' + prettyNum(dy) + ' ÷ ' + prettyNum(dx) + ' = ' + prettyNum(sc.m) + ' ' + sc.mSub,
+      sc.meaningM,
+      '',
+      check
+    ].join('\n');
+  }
+
+  function hintSetup(sc) {
+    const est = sc.estimate;
+    if (est.mode === 'y') return sc.yVar + ' = ' + prettyCoef(sc.m) + ' × ' + prettyNum(est.x) + ' + ' + prettyNum(sc.c);
+    return 'x = (' + prettyNum(est.y) + ' − ' + prettyNum(sc.c) + ') ÷ (' + prettyCoef(sc.m) + ')';
+  }
+
+  function materialize(def) {
+    const points = def.xs.map((x) => ({ x, y: yAt(def, x), dead: false }));
+    const pair = def.pairs[Math.floor(Math.random() * def.pairs.length)];
+    const left = points[pair[0]];
+    const right = points[pair[1]];
+    const p1 = left.x <= right.x ? left : right;
+    const p2 = left.x <= right.x ? right : left;
+    return Object.assign({}, def, {
+      points,
+      p1,
+      p2,
+      answer: computedAnswer(def),
+      xMin: -def.xMax * 0.18,
+      yMin: 0
+    });
+  }
+
+  function toast(text) {
+    const el = document.createElement('div');
+    el.className = 'toast';
+    el.textContent = text;
+    $('toasts').appendChild(el);
+    setTimeout(() => el.remove(), 1800);
+  }
+
+  function showTip(text) {
+    state.tipT = 4;
+    const tip = $('tip');
+    tip.textContent = text;
+    tip.classList.add('show');
+  }
+
+  function hideTip() {
+    $('tip').classList.remove('show');
+  }
+
+  function noteScore() {
+    if (state.score > state.best) {
+      state.best = state.score;
+      try { localStorage.setItem('laserScopeBest', String(state.best)); } catch (err) { /* ignore */ }
+    }
+  }
+
+  function living() {
+    return players.filter((p) => p.joined && p.shields > 0);
+  }
+
+  function mousePlayer() {
+    const live = living();
+    if (!live.length) return 0;
+    const p1 = players[0];
+    if (p1.joined && p1.shields > 0) return 0;
+    return live[0].index;
+  }
+
+  function rumble(i, ms, strong, weak) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads[i];
+    try {
+      if (gp && gp.vibrationActuator && gp.vibrationActuator.playEffect) {
+        gp.vibrationActuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak });
+      }
+    } catch (err) { /* ignore */ }
+  }
+
+  function join(i) {
+    const p = players[i];
+    if (p.joined) return;
+    p.joined = true;
+    p.shields = 3;
+    toast(p.name + ' ONLINE');
+    audio.blip();
+    renderDocks();
+    say(p.name + ' joined');
+  }
+
+  function say(text) {
+    $('live').textContent = text;
+  }
+
+  function syncShell() {
+    document.body.dataset.screen = state.screen;
+  }
+
+  function renderHud() {
+    const eq = $('hud-eq');
+    eq.textContent = equationText(state.mLocked, state.cLocked);
+    eq.classList.toggle('locked', !!(state.sc && state.mLocked));
+    eq.classList.toggle('partial', !!(state.sc && state.cLocked && !state.mLocked));
+    $('hud-wave').textContent = state.sc ? (state.wave + 1) + '/' + CAMPAIGN.length : '–';
+    const score = $('hud-score');
+    const prev = score.textContent;
+    score.textContent = String(state.score);
+    if (prev !== score.textContent) {
+      score.classList.remove('pop');
+      void score.offsetWidth;
+      score.classList.add('pop');
+    }
+    $('hud-best').textContent = String(state.best);
+    $('pips').innerHTML = CAMPAIGN.map((_, i) => {
+      const cls = i < state.cleared ? 'on' : (state.sc && i === state.wave ? 'now' : '');
+      return '<i class="' + cls + '"></i>';
+    }).join('');
+  }
+
+  function renderIntel() {
+    const sc = state.sc;
+    const kicker = $('kicker');
+    const title = $('mission-title');
+    const blurb = $('blurb');
+    const meaning = $('meaning');
+    const instruction = $('instruction');
+    const focus = $('focus-line');
+    const setup = $('setup-line');
+    const caption = $('caption');
+    const big = $('big-eq');
+    const award = $('award');
+    const solution = $('solution');
+    if (!sc) {
+      title.textContent = 'Standing by';
+      return;
+    }
+    kicker.textContent = sc.family + ' · WAVE ' + (state.wave + 1);
+    title.textContent = sc.title;
+    blurb.textContent = sc.blurb;
+    meaning.innerHTML = '<p><b>c</b> · ' + esc(sc.meaningC) + '</p><p><b>m</b> · ' + esc(sc.meaningM) + '</p>';
+    const rows = sc.points.map((p) => {
+      let cls = '';
+      if (state.screen === 'play' && state.phase === 1 && p.x === 0) cls = 'zero';
+      if (state.screen === 'play' && (state.phase === 2 || state.revealTriangle) && (p === sc.p1 || p === sc.p2)) cls = 'hot';
+      return '<tr class="' + cls + '"><td>' + prettyNum(p.x) + '</td><td>' + prettyNum(p.y) + '</td></tr>';
+    }).join('');
+    $('table-wrap').innerHTML = '<table><thead><tr><th>' + esc(sc.xLabel) + '</th><th>' + esc(sc.yLabel) + '</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    big.textContent = equationText(state.mLocked, state.cLocked);
+    big.classList.toggle('locked', state.mLocked);
+    big.classList.toggle('partial', state.cLocked && !state.mLocked);
+    $('f-c').classList.toggle('hot', state.screen === 'play' && state.phase === 1);
+    $('f-m').classList.toggle('hot', state.screen === 'play' && state.phase === 2);
+    setup.textContent = '';
+    award.textContent = '';
+    solution.hidden = true;
+    solution.textContent = '';
+    if (state.screen === 'brief') {
+      instruction.textContent = 'Read the sensor table. The points lie on one straight line.';
+      focus.textContent = 'Engage when the crew is ready.';
+      caption.textContent = 'x = 0 is the vertical intercept.';
+      return;
+    }
+    if (state.screen === 'debrief' || state.screen === 'gameover') {
+      instruction.textContent = state.screen === 'debrief' ? 'Wave cleared. Read the working against the graph.' : 'Shields down. Here is the line you were calibrating.';
+      focus.textContent = '';
+      caption.textContent = '';
+      const awardBits = [];
+      if (state.lastAward) {
+        awardBits.push('Team +' + state.lastAward.base);
+        if (state.lastAward.speed) awardBits.push('Speed bonus +' + state.lastAward.speed + ' (' + state.lastAward.seconds + 's)');
+        else awardBits.push('Calibrated in ' + state.lastAward.seconds + 's');
+        if (state.lastAward.repair) awardBits.push('Shield repair +1');
+      }
+      award.textContent = awardBits.join(' · ');
+      solution.hidden = false;
+      solution.textContent = workedText(sc);
+      $('intel').scrollTop = $('intel').scrollHeight;
+      return;
+    }
+    if (state.phase === 1) {
+      instruction.textContent = 'Identify the starting value when x = 0 (y-intercept c)!';
+      focus.textContent = 'When x = 0, y = ?';
+      caption.textContent = 'The highlighted row is the intercept.';
+    } else if (state.phase === 2) {
+      instruction.textContent = 'Calculate the gradient m = (y₂ − y₁) / (x₂ − x₁)!';
+      focus.textContent = '(' + prettyNum(sc.p1.x) + ', ' + prettyNum(sc.p1.y) + ') → (' + prettyNum(sc.p2.x) + ', ' + prettyNum(sc.p2.y) + ')';
+      caption.textContent = state.revealTriangle
+        ? 'Vertical change = ' + prettyNum(round3(sc.p2.y - sc.p1.y)) + '. Horizontal change = ' + prettyNum(round3(sc.p2.x - sc.p1.x)) + '. Now divide, and keep the sign.'
+        : 'Use the two highlighted sensor points.';
+    } else {
+      instruction.textContent = sc.estimate.prompt;
+      focus.textContent = state.mLocked ? equationText(true, true) : '';
+      caption.textContent = 'That coordinate is not in the table. Calculate it, or estimate between the drones.';
+      if (state.phase3Hint) setup.textContent = hintSetup(sc);
+    }
+  }
+
+  function renderPhasebar() {
+    const steps = [...$('phasebar').children];
+    steps.forEach((el, i) => {
+      const n = i + 1;
+      const done = state.mLocked ? n <= 2 : state.cLocked ? n === 1 : false;
+      const firingDone = state.screen === 'debrief' || state.screen === 'victory';
+      el.classList.toggle('done', firingDone || (state.screen === 'play' && done) || (state.fire && n < 3));
+      el.classList.toggle('on', state.screen === 'play' && !state.fire && state.phase === n);
+    });
+    if (state.screen === 'debrief') {
+      steps.forEach((el) => { el.classList.add('done'); el.classList.remove('on'); });
+    }
+  }
+
+  function renderCards() {
+    const cards = $('cards');
+    if (state.screen === 'brief') {
+      cards.innerHTML = '<button class="wide" type="button" data-action="primary">ENGAGE LASER</button>';
+    } else if (state.screen === 'debrief') {
+      const label = state.wave >= CAMPAIGN.length - 1 ? 'MISSION REPORT' : 'NEXT WAVE';
+      cards.innerHTML = '<button class="wide" type="button" data-action="primary">' + label + '</button>';
+    } else if (state.fire) {
+      cards.innerHTML = '<div class="firing">LASER DISCHARGING</div>';
+    } else if (state.screen === 'play') {
+      cards.innerHTML = state.options.map((opt, i) => (
+        '<button class="card" type="button" data-i="' + i + '">' +
+          '<span class="letter">' + opt.letter + '</span>' +
+          '<span class="kicker">' + opt.kicker + '</span>' +
+          '<span class="val">' + esc(opt.main) + '</span>' +
+          '<span class="sub">' + esc(opt.sub) + '</span>' +
+        '</button>'
+      )).join('');
+    } else {
+      cards.innerHTML = '';
+    }
+    paintCursors();
+    positionMarks(true);
+    requestAnimationFrame(() => positionMarks(true));
+  }
+
+  function paintCursors() {
+    const buttons = [...$('cards').querySelectorAll('.card')];
+    buttons.forEach((btn, i) => {
+      players.forEach((p) => {
+        btn.classList.toggle('sel-' + p.index, p.joined && p.shields > 0 && p.cursor === i && state.screen === 'play' && !state.fire);
+      });
+    });
+  }
+
+  function positionMarks(instant) {
+    const board = $('board');
+    const rect = board.getBoundingClientRect();
+    const buttons = [...$('cards').querySelectorAll('.card')];
+    players.forEach((p, i) => {
+      const mark = $('mark' + i);
+      const show = p.joined && p.shields > 0 && buttons[p.cursor] && state.screen === 'play' && !state.fire;
+      mark.classList.toggle('hide', !show);
+      if (!show) return;
+      const r = buttons[p.cursor].getBoundingClientRect();
+      if (instant) mark.style.transition = 'none';
+      mark.style.left = (r.left - rect.left + 16 + i * 18) + 'px';
+      mark.style.top = (r.bottom - rect.top - 10) + 'px';
+      if (instant) requestAnimationFrame(() => { mark.style.transition = ''; });
+    });
+  }
+
+  function renderDocks() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const mouse = mousePlayer();
+    $('docks').innerHTML = players.map((p) => {
+      const pad = pads[p.index] && pads[p.index].connected ? ' · PAD' : '';
+      let meta = p.keys + pad;
+      if (!p.joined) meta = 'PRESS A KEY OR GAMEPAD TO JOIN';
+      else if (p.shields <= 0) meta = 'OFFLINE';
+      const shields = [0, 1, 2].map((n) => '<i class="sh' + (n < p.shields ? ' on' : '') + '"></i>').join('');
+      return '<div class="dock' + (p.joined && p.shields > 0 ? '' : ' off') + '" data-p="' + p.index + '">' +
+        '<div class="who">' + p.name + '</div>' +
+        '<div class="stars">★ ' + p.stars + '</div>' +
+        '<div class="shields">' + (p.joined ? shields : '') + '</div>' +
+        '<div class="meta">' + meta + '</div>' +
+      '</div>';
+    }).join('');
+    const lead = players[mouse];
+    $('clickhint').textContent = state.screen === 'play'
+      ? (lead && lead.joined && lead.shields > 0
+        ? 'Click a card to lock it in as ' + lead.name + '.'
+        : 'Waiting for an engineer with shields.')
+      : 'Space, F, H, or gamepad A confirms.';
+  }
+
+  function renderOverlay() {
+    const ov = $('overlay');
+    if (state.screen === 'pause') {
+      ov.classList.add('show');
+      ov.innerHTML = '<div class="modal"><h2>PAUSED</h2><p>The grid is frozen. Esc or confirm resumes.</p><button class="primary" type="button" data-action="primary">RESUME</button></div>';
+      return;
+    }
+    if (state.screen === 'gameover') {
+      ov.classList.add('show');
+      const sc = state.sc;
+      ov.innerHTML = '<div class="modal"><h2>SHIELDS DOWN</h2><p>Wave ' + (state.wave + 1) + ' · Score ' + state.score + ' · Best ' + state.best + '</p><div class="lesson">' + esc(sc ? workedText(sc) : '') + '</div><button class="primary" type="button" data-action="primary">RETRY MISSION</button></div>';
+      return;
+    }
+    if (state.screen === 'victory') {
+      ov.classList.add('show');
+      const stars = players.map((p) => p.name + ' ★ ' + p.stars + (p.joined ? '' : ' (standby)')).join('   ');
+      const items = state.log.map((line) => '<li>' + esc(line) + '</li>').join('');
+      ov.innerHTML = '<div class="modal"><h2>LINEAR LOCK ACHIEVED</h2><p>Team score ' + state.score + ' · Best ' + state.best + '</p><p>' + esc(stars) + '</p><ol class="log">' + items + '</ol><button class="primary" type="button" data-action="primary">RUN IT AGAIN</button></div>';
+      return;
+    }
+    ov.classList.remove('show');
+    ov.innerHTML = '';
+  }
+
+  function renderAll() {
+    syncShell();
+    renderHud();
+    renderIntel();
+    renderPhasebar();
+    renderCards();
+    renderDocks();
+    renderOverlay();
+  }
+
+  function buildOptions() {
+    const sc = state.sc;
+    let raw;
+    if (state.phase === 1) {
+      raw = [sc.c, ...sc.cDecoys].map((v) => ({
+        value: v,
+        correct: Math.abs(v - sc.c) < 1e-6,
+        main: 'c = ' + prettyNum(v),
+        sub: sc.cSub,
+        kicker: 'CLAMP'
+      }));
+    } else if (state.phase === 2) {
+      raw = [sc.m, ...sc.mDecoys].map((v) => ({
+        value: v,
+        correct: Math.abs(v - sc.m) < 1e-6,
+        main: 'm = ' + prettyNum(v),
+        sub: sc.mSub,
+        kicker: 'SERVO'
+      }));
+    } else {
+      raw = [sc.answer, ...sc.estimate.decoys].map((v) => ({
+        value: v,
+        correct: Math.abs(v - sc.answer) < 1e-6,
+        main: prettyNum(v),
+        sub: sc.estimate.unit,
+        kicker: 'BEACON'
+      }));
+    }
+    state.options = shuffle(raw).map((opt, i) => Object.assign({ letter: 'ABCD'[i] }, opt));
+  }
+
+  function enterPhase(n) {
+    state.phase = n;
+    state.resolving = false;
+    state.pending = null;
+    state.revealTriangle = false;
+    state.phase3Hint = false;
+    buildOptions();
+    const prompts = [
+      '',
+      'Identify the y-intercept.',
+      'Calculate the gradient.',
+      state.sc.estimate.prompt
+    ];
+    say('Wave ' + (state.wave + 1) + '. ' + prompts[n]);
+    renderAll();
+  }
+
+  function beginWave() {
+    state.sc = materialize(CAMPAIGN[state.wave]);
+    state.phase = 1;
+    state.cLocked = false;
+    state.mLocked = false;
+    state.shownC = 0;
+    state.shownM = 0;
+    state.targetC = 0;
+    state.targetM = 0;
+    state.returnTimer = 0;
+    state.waveMistakes = 0;
+    state.revealTriangle = false;
+    state.phase3Hint = false;
+    state.fire = null;
+    state.badLine = null;
+    state.particles = [];
+    state.shocks = [];
+    state.arrive = 0;
+    state.lockTimer = 0;
+    state.resolving = false;
+    state.pending = null;
+    state.options = [];
+    state.lastAward = null;
+    state.screen = 'brief';
+    hideTip();
+    say(state.sc.title + '. Read the table.');
+    renderAll();
+  }
+
+  function startMission() {
+    state.score = 0;
+    state.wave = 0;
+    state.cleared = 0;
+    state.log = [];
+    players.forEach((p, i) => {
+      p.shields = 3;
+      p.stars = 0;
+      p.cursor = i % 4;
+    });
+    beginWave();
+    resize();
+  }
+
+  function engage() {
+    state.screen = 'play';
+    state.waveT0 = performance.now();
+    state.starBase = players.map((p) => p.stars);
+    enterPhase(1);
+  }
+
+  function award(p) {
+    p.stars += 1;
+    toast(p.name + ' ★');
+    rumble(p.index, 45, 0.2, 0.4);
+  }
+
+  function startFire() {
+    state.fire = { t: 0, duration: 1.05, boomed: false };
+    state.resolving = false;
+    state.pending = null;
+    state.targetC = state.sc.c;
+    state.targetM = state.sc.m;
+    audio.laser();
+    players.forEach((p) => { if (p.joined) rumble(p.index, 120, 0.45, 0.6); });
+    renderCards();
+    renderPhasebar();
+  }
+
+  function finishWave() {
+    if (state.screen === 'debrief') return;
+    const sc = state.sc;
+    const seconds = Math.round((performance.now() - state.waveT0) / 1000);
+    const speed = state.waveMistakes === 0 && seconds < 50;
+    state.score += 200;
+    if (speed) state.score += 100;
+    noteScore();
+    let repair = false;
+    players.forEach((p) => {
+      if (p.joined && p.shields > 0 && p.shields < 3) {
+        p.shields += 1;
+        repair = true;
+      }
+    });
+    state.lastAward = { base: 200, speed: speed ? 100 : 0, seconds, repair };
+    state.cleared += 1;
+    state.log.push((state.wave + 1) + '. ' + equationText(true, true));
+    state.fire = null;
+    state.screen = 'debrief';
+    audio.fanfare();
+    toast(speed ? 'WAVE CLEAR +200 · SPEED +100' : 'WAVE CLEAR +200');
+    if (repair) toast('SHIELD REPAIR +1');
+    say('Wave cleared. ' + equationText(true, true));
+    renderAll();
+  }
+
+  function advance() {
+    if (state.wave >= CAMPAIGN.length - 1) {
+      state.screen = 'victory';
+      say('Mission complete. Score ' + state.score);
+      renderAll();
+      return;
+    }
+    state.wave += 1;
+    beginWave();
+  }
+
+  function triggerGameOver() {
+    state.screen = 'gameover';
+    state.resolving = false;
+    state.pending = null;
+    state.fire = null;
+    noteScore();
+    say('Shields down.');
+    renderAll();
+  }
+
+  function lockIn(i) {
+    if (state.lockTimer > 0 || state.resolving || state.fire) return;
+    if (state.screen !== 'play') return;
+    const p = players[i];
+    if (!p.joined || p.shields <= 0) return;
+    const opt = state.options[p.cursor];
+    if (!opt) return;
+    if (opt.correct) {
+      award(p);
+      if (state.phase === 1) {
+        state.cLocked = true;
+        state.targetC = state.sc.c;
+        state.pending = 'phase2';
+        audio.clunk();
+      } else if (state.phase === 2) {
+        state.mLocked = true;
+        state.targetM = state.sc.m;
+        state.pending = 'phase3';
+        audio.servo();
+      } else {
+        state.pending = 'fire';
+      }
+      state.resolving = true;
+      state.lockTimer = state.pending === 'fire' ? 0.28 : 0.62;
+      const btn = $('cards').querySelector('[data-i="' + p.cursor + '"]');
+      if (btn) btn.classList.add('good');
+      renderHud();
+      renderIntel();
+      renderPhasebar();
+      return;
+    }
+    p.shields -= 1;
+    state.waveMistakes += 1;
+    state.shake = Math.max(state.shake, 0.7);
+    state.flash = 0.65;
+    state.lockTimer = 0.45;
+    audio.buzzer();
+    rumble(i, 140, 0.7, 0.3);
+    const btn = $('cards').querySelector('[data-i="' + p.cursor + '"]');
+    if (btn) {
+      btn.classList.add('bad');
+      setTimeout(() => btn.classList.remove('bad'), 480);
+    }
+    if (state.phase === 1) {
+      state.targetC = opt.value;
+      state.returnTimer = 0.42;
+      state.badLine = { c: opt.value, m: 0, life: 0.55 };
+      showTip('The y-intercept c is the value of y when x = 0. Read that row in the table.');
+    } else if (state.phase === 2) {
+      state.targetM = opt.value;
+      state.returnTimer = 0.42;
+      state.badLine = { c: state.sc.c, m: opt.value, life: 0.55 };
+      state.revealTriangle = true;
+      showTip('Gradient is (Vertical Change) ÷ (Horizontal Change)! Watch the signs (+ or −)!');
+    } else {
+      const est = state.sc.estimate;
+      state.badLine = {
+        life: 0.5,
+        x: est.mode === 'y' ? est.x : opt.value,
+        y: est.mode === 'y' ? opt.value : est.y,
+        direct: true
+      };
+      state.phase3Hint = true;
+      showTip(est.mode === 'y'
+        ? 'Substitute x into y = mx + c. Multiply the gradient by x, then add the intercept.'
+        : 'Rearrange the equation: x = (y − c) / m. Keep the negative sign in the division.');
+    }
+    renderIntel();
+    renderDocks();
+    paintCursors();
+    positionMarks(false);
+    if (!living().length) {
+      state.resolving = true;
+      state.pending = 'over';
+      state.lockTimer = 1.15;
+    }
+  }
+
+  function onPrimary(i) {
+    if (state.screen === 'title') {
+      join(i);
+      startMission();
+      return;
+    }
+    if (state.screen === 'brief') {
+      join(i);
+      engage();
+      return;
+    }
+    if (state.screen === 'debrief') {
+      advance();
+      return;
+    }
+    if (state.screen === 'pause') {
+      state.screen = state.pausedFrom || 'play';
+      renderOverlay();
+      return;
+    }
+    if (state.screen === 'gameover' || state.screen === 'victory') {
+      startMission();
+      return;
+    }
+    if (state.screen === 'play') {
+      const p = players[i];
+      if (!p.joined) {
+        join(i);
+        return;
+      }
+      lockIn(i);
+    }
+  }
+
+  function cardLayout() {
+    const buttons = [...$('cards').querySelectorAll('.card')];
+    if (buttons.length < 4) return 'row';
+    const a = buttons[0].getBoundingClientRect();
+    const b = buttons[1].getBoundingClientRect();
+    return Math.abs(a.top - b.top) < 12 ? 'row' : 'grid';
+  }
+
+  function moveCursor(p, dx, dy) {
+    if (state.screen !== 'play' || state.fire) return;
+    if (!dx && !dy) return;
+    const mode = cardLayout();
+    if (mode === 'row') {
+      const dir = dx !== 0 ? Math.sign(dx) : Math.sign(dy);
+      const next = p.cursor + dir;
+      if (next < 0 || next > 3) return;
+      p.cursor = next;
+    } else {
+      const x = p.cursor % 2;
+      const y = Math.floor(p.cursor / 2);
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+      p.cursor = ny * 2 + nx;
+    }
+    audio.blip();
+    paintCursors();
+    positionMarks(false);
+  }
+
+  const KEYS = {
+    ArrowLeft: { p: 0, dx: -1 },
+    ArrowRight: { p: 0, dx: 1 },
+    ArrowUp: { p: 0, dy: -1 },
+    ArrowDown: { p: 0, dy: 1 },
+    Space: { p: 0, ok: 1 },
+    Enter: { p: 0, ok: 1 },
+    KeyA: { p: 1, dx: -1 },
+    KeyD: { p: 1, dx: 1 },
+    KeyW: { p: 1, dy: -1 },
+    KeyS: { p: 1, dy: 1 },
+    KeyF: { p: 1, ok: 1 },
+    KeyJ: { p: 2, dx: -1 },
+    KeyL: { p: 2, dx: 1 },
+    KeyI: { p: 2, dy: -1 },
+    KeyK: { p: 2, dy: 1 },
+    KeyH: { p: 2, ok: 1 }
+  };
+
+  function onKey(e) {
+    audio.boot();
+    if (e.code === 'KeyM' && !e.repeat) {
+      audio.boot();
+      audio.setMuted(!audio.muted);
+      return;
+    }
+    if (e.code === 'Escape' && !e.repeat) {
+      if (state.screen === 'play' || state.screen === 'brief' || state.screen === 'debrief') {
+        state.pausedFrom = state.screen;
+        state.screen = 'pause';
+        renderOverlay();
+      } else if (state.screen === 'pause') {
+        state.screen = state.pausedFrom || 'play';
+        renderOverlay();
+      }
+      return;
+    }
+    const map = KEYS[e.code];
+    if (!map) return;
+    e.preventDefault();
+    if (e.repeat && (map.ok || !players[map.p].joined)) return;
+    const p = players[map.p];
+    if (!p.joined) {
+      if (state.screen === 'play') {
+        join(p.index);
+        return;
+      }
+      if (map.ok || map.dx || map.dy) onPrimary(p.index);
+      return;
+    }
+    if (state.screen !== 'play') {
+      if (map.ok) onPrimary(p.index);
+      return;
+    }
+    if (map.dx || map.dy) moveCursor(p, map.dx || 0, map.dy || 0);
+    if (map.ok) onPrimary(p.index);
+  }
+
+  function handlePad(i, dx, dy, confirm, dpadEdge) {
+    const p = players[i];
+    const menu = state.screen !== 'play';
+    if (!p.joined) {
+      if (state.screen === 'play' && (confirm || dpadEdge)) join(i);
+      else if (menu && (confirm || dpadEdge)) onPrimary(i);
+      return;
+    }
+    if (menu) {
+      if (confirm || dpadEdge) onPrimary(i);
+      return;
+    }
+    if (dx || dy) moveCursor(p, Math.sign(dx), Math.sign(dy));
+    if (confirm) onPrimary(i);
+  }
+
+  function pollPads(dt) {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    let mask = 0;
+    for (let i = 0; i < 3; i++) {
+      const gp = pads[i];
+      if (gp && gp.connected) mask |= 1 << i;
+      if (!gp || !gp.connected) {
+        padMem[i] = null;
+        continue;
+      }
+      const b0 = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      const dL = !!(gp.buttons[14] && gp.buttons[14].pressed);
+      const dR = !!(gp.buttons[15] && gp.buttons[15].pressed);
+      const dU = !!(gp.buttons[12] && gp.buttons[12].pressed);
+      const dD = !!(gp.buttons[13] && gp.buttons[13].pressed);
+      let dpadH = dL ? -1 : dR ? 1 : 0;
+      let dpadV = dU ? -1 : dD ? 1 : 0;
+      const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+      const ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+      let stickH = ax > 0.55 ? 1 : ax < -0.55 ? -1 : 0;
+      let stickV = ay > 0.55 ? 1 : ay < -0.55 ? -1 : 0;
+      const h = dpadH || stickH;
+      const v = dpadV || stickV;
+      const prev = padMem[i] || { b0: false, h: 0, v: 0, holdH: 0, holdV: 0, dpad: false };
+      let dx = 0;
+      let dy = 0;
+      if (h !== 0 && h !== prev.h) {
+        dx = h;
+        prev.holdH = 0.32;
+      } else if (h !== 0) {
+        prev.holdH -= dt;
+        if (prev.holdH <= 0) {
+          dx = h;
+          prev.holdH = 0.16;
+        }
+      }
+      if (v !== 0 && v !== prev.v) {
+        dy = v;
+        prev.holdV = 0.32;
+      } else if (v !== 0) {
+        prev.holdV -= dt;
+        if (prev.holdV <= 0) {
+          dy = v;
+          prev.holdV = 0.16;
+        }
+      }
+      const confirm = b0 && !prev.b0;
+      const dpadNow = !!(dpadH || dpadV);
+      const dpadEdge = dpadNow && !prev.dpad;
+      prev.b0 = b0;
+      prev.h = h;
+      prev.v = v;
+      prev.dpad = dpadNow;
+      padMem[i] = prev;
+      if (dx || dy || confirm || dpadEdge) handlePad(i, dx, dy, confirm, dpadEdge);
+    }
+    if (mask !== padMask) {
+      padMask = mask;
+      if (state.screen !== 'title') renderDocks();
+    }
+  }
+
+  function explode(sx, sy, big) {
+    const colors = ['#ff4d8d', '#ffe566', '#7ef0ff', '#ffffff'];
+    const count = big ? 36 : 22;
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 50 + Math.random() * (big ? 240 : 160);
+      state.particles.push({
+        x: sx,
+        y: sy,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.4 + Math.random() * 0.35,
+        max: 0.75,
+        color: colors[i % colors.length],
+        r: 1.4 + Math.random() * 2.4
+      });
+    }
+    state.shocks.push({ x: sx, y: sy, r: 6, life: 0.38 });
+    if (state.particles.length > 280) state.particles.splice(0, state.particles.length - 280);
+  }
+
+  function layoutPlot(w, h) {
+    const left = Math.max(72, Math.min(98, w * 0.13));
+    const right = Math.max(48, Math.min(84, w * 0.09));
+    const top = 36;
+    const bottom = 68;
+    return { x: left, y: top, w: Math.max(20, w - left - right), h: Math.max(20, h - top - bottom) };
+  }
+
+  function toScreen(x, y, plot, view) {
+    const sx = plot.x + ((x - view.xMin) / (view.xMax - view.xMin)) * plot.w;
+    const sy = plot.y + ((view.yMax - y) / (view.yMax - view.yMin)) * plot.h;
+    return [sx, sy];
+  }
+
+  function halo(text, x, y) {
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(5, 8, 14, 0.92)';
+    ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
+  }
+
+  function viewOf(sc) {
+    return { xMin: sc.xMin, xMax: sc.xMax, yMin: 0, yMax: sc.yMax, xTick: sc.xTick, yTick: sc.yTick };
+  }
+
+  function drawGrid(plot, view, labels) {
+    ctx.fillStyle = '#07111b';
+    ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+    const origin = toScreen(0, 0, plot, view);
+    ctx.fillStyle = 'rgba(16, 42, 62, 0.55)';
+    ctx.fillRect(plot.x, plot.y, Math.max(0, origin[0] - plot.x), plot.h);
+
+    ctx.font = '700 15px ui-monospace, Menlo, Consolas, monospace';
+    ctx.lineWidth = 1;
+    const xSteps = Math.round(view.xMax / view.xTick);
+    const ySteps = Math.round(view.yMax / view.yTick);
+    const xGap = (toScreen(view.xTick, 0, plot, view)[0] - origin[0]);
+    const yGap = (origin[1] - toScreen(0, view.yTick, plot, view)[1]);
+    const xEvery = xGap < 44 ? 2 : 1;
+    const yEvery = yGap < 28 ? 2 : 1;
+
+    ctx.beginPath();
+    for (let i = 0; i <= xSteps; i++) {
+      const x = round3(i * view.xTick);
+      const sx = toScreen(x, 0, plot, view)[0];
+      ctx.strokeStyle = 'rgba(121, 240, 255, 0.16)';
+      ctx.moveTo(Math.round(sx) + 0.5, plot.y);
+      ctx.lineTo(Math.round(sx) + 0.5, plot.y + plot.h);
+    }
+    for (let i = 0; i <= ySteps; i++) {
+      const y = round3(i * view.yTick);
+      const sy = toScreen(0, y, plot, view)[1];
+      ctx.moveTo(plot.x, Math.round(sy) + 0.5);
+      ctx.lineTo(plot.x + plot.w, Math.round(sy) + 0.5);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = '#e7fbff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(origin[0], plot.y + plot.h);
+    ctx.lineTo(origin[0], plot.y + 8);
+    ctx.moveTo(origin[0], plot.y + 8);
+    ctx.lineTo(origin[0] - 5, plot.y + 16);
+    ctx.moveTo(origin[0], plot.y + 8);
+    ctx.lineTo(origin[0] + 5, plot.y + 16);
+    ctx.moveTo(plot.x, origin[1]);
+    ctx.lineTo(plot.x + plot.w - 8, origin[1]);
+    ctx.moveTo(plot.x + plot.w - 8, origin[1]);
+    ctx.lineTo(plot.x + plot.w - 16, origin[1] - 5);
+    ctx.moveTo(plot.x + plot.w - 8, origin[1]);
+    ctx.lineTo(plot.x + plot.w - 16, origin[1] + 5);
+    ctx.stroke();
+
+    if (!labels) return;
+    ctx.fillStyle = '#e7fbff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let i = 0; i <= xSteps; i++) {
+      if (i % xEvery !== 0 && i !== xSteps) continue;
+      const x = round3(i * view.xTick);
+      const sx = toScreen(x, 0, plot, view)[0];
+      halo(fmt(x), Math.round(sx), Math.round(origin[1] + 8));
+    }
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= ySteps; i++) {
+      if (i % yEvery !== 0 && i !== ySteps) continue;
+      const y = round3(i * view.yTick);
+      if (y === 0) continue;
+      const sy = toScreen(0, y, plot, view)[1];
+      halo(fmt(y), Math.round(origin[0] - 8), Math.round(sy));
+    }
+  }
+
+  function drawAxisTitles(plot, sc) {
+    ctx.fillStyle = '#9fd8ea';
+    ctx.font = '600 13px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    halo(sc.xLabel, plot.x + plot.w * 0.55, plot.y + plot.h + 28);
+    ctx.save();
+    ctx.translate(18, plot.y + plot.h * 0.5);
+    ctx.rotate(-Math.PI / 2);
+    halo(sc.yLabel, 0, 0);
+    ctx.restore();
+  }
+
+  function drawDrone(sx, sy, hot, t) {
+    const bob = reduceMotion ? 0 : Math.sin(t * 3 + sx * 0.02) * 2.5;
+    ctx.save();
+    ctx.translate(sx, sy + bob);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 6 + i * Math.PI / 3;
+      const r = hot ? 13 : 11;
+      const x = Math.cos(a) * r;
+      const y = Math.sin(a) * r;
+      if (i) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ff3b78';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffd0e2';
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(3, -2, 4, 4);
+    ctx.restore();
+  }
+
+  function drawTurret(plot, view, angle) {
+    const [sx, sy] = toScreen(0, state.shownC, plot, view);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.fillStyle = '#8ea4b8';
+    ctx.fillRect(-22, -12, 24, 24);
+    ctx.fillStyle = '#d7f6ff';
+    ctx.fillRect(-8, -16, 10, 32);
+    ctx.rotate(angle);
+    ctx.fillStyle = state.mLocked ? '#c6ff4a' : '#b7fff2';
+    ctx.fillRect(0, -5, 52, 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(46, -2, 8, 4);
+    ctx.restore();
+    ctx.font = '700 12px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = state.cLocked ? '#c6ff4a' : '#ffd166';
+    const label = state.cLocked ? 'c = ' + prettyNum(state.sc.c) : 'c = ?';
+    halo(label, sx - 18, sy - 20);
+  }
+
+  function barrelAngle(plot, view) {
+    const x2 = Math.max(view.xTick, view.xMax * 0.28);
+    const y2 = state.shownM * x2 + state.shownC;
+    const p0 = toScreen(0, state.shownC, plot, view);
+    const p1 = toScreen(x2, y2, plot, view);
+    return Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+  }
+
+  function clipPlot(plot) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+  }
+
+  function drawDataLine(plot, view, m, c, color, width, alpha, xEnd) {
+    const x0 = 0;
+    const y0 = m * x0 + c;
+    const x1 = xEnd;
+    const y1 = m * x1 + c;
+    const a = toScreen(x0, y0, plot, view);
+    const b = toScreen(x1, y1, plot, view);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+    ctx.restore();
+    return b;
+  }
+
+  function drawTriangle(plot, view, sc) {
+    const p1 = sc.p1;
+    const p2 = sc.p2;
+    const corner = { x: p2.x, y: p1.y };
+    const a = toScreen(p1.x, p1.y, plot, view);
+    const c = toScreen(corner.x, corner.y, plot, view);
+    const b = toScreen(p2.x, p2.y, plot, view);
+    ctx.save();
+    ctx.strokeStyle = '#ffd166';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(c[0], c[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '700 13px ui-monospace, Menlo, Consolas, monospace';
+    ctx.fillStyle = '#ffd166';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    halo('Δx = ' + prettyNum(round3(p2.x - p1.x)), (a[0] + c[0]) / 2, Math.max(a[1], c[1]) + 6);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    halo('Δy = ' + prettyNum(round3(p2.y - p1.y)), c[0] + 8, (c[1] + b[1]) / 2);
+    ctx.restore();
+  }
+
+  function drawBeacon(sx, sy, letter, color) {
+    ctx.save();
+    ctx.translate(sx, sy);
+    if (!reduceMotion) ctx.rotate(performance.now() / 700);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -9);
+    ctx.lineTo(9, 0);
+    ctx.lineTo(0, 9);
+    ctx.lineTo(-9, 0);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+    ctx.font = '800 13px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    halo(letter, sx + 12, sy);
+  }
+
+  function drawScenario(sc, t) {
+    const view = viewOf(sc);
+    const plot = layoutPlot(viewW, viewH);
+    drawGrid(plot, view, true);
+    drawAxisTitles(plot, sc);
+    const arrive = 1 - Math.pow(1 - state.arrive, 3);
+
+    if (state.revealTriangle && state.phase === 2) drawTriangle(plot, view, sc);
+
+    if (state.badLine && state.badLine.life > 0) {
+      clipPlot(plot);
+      ctx.setLineDash([7, 5]);
+      if (state.badLine.direct) {
+        drawDataSegment(plot, view, 0, state.sc.c, state.badLine.x, state.badLine.y, '#ff3355', 4, 0.9);
+      } else {
+        drawDataLine(plot, view, state.badLine.m, state.badLine.c, '#ff3355', 4, 0.85, view.xMax);
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    let beamHead = null;
+    if (state.fire) {
+      const travel = Math.max(0, state.fire.t - 0.12);
+      const reach = Math.min(view.xMax, (travel / state.fire.duration) * view.xMax);
+      clipPlot(plot);
+      drawDataLine(plot, view, sc.m, sc.c, 'rgba(198,255,74,0.35)', 14, 1, reach);
+      beamHead = drawDataLine(plot, view, sc.m, sc.c, '#f4ffd2', 2.5, 1, reach);
+      ctx.restore();
+    } else if (state.screen === 'debrief' || state.screen === 'gameover' || state.screen === 'victory') {
+      clipPlot(plot);
+      drawDataLine(plot, view, sc.m, sc.c, 'rgba(198,255,74,0.28)', 10, 1, view.xMax);
+      drawDataLine(plot, view, sc.m, sc.c, '#d6ff6a', 2, 1, view.xMax);
+      ctx.restore();
+    }
+
+    sc.points.forEach((p, idx) => {
+      if (p.dead) return;
+      const shownX = p.x + (1 - arrive) * (view.xMax * 0.85);
+      const [sx, sy] = toScreen(shownX, p.y, plot, view);
+      const hot = (state.phase === 1 && p.x === 0) || (state.phase >= 2 && (p === sc.p1 || p === sc.p2));
+      if (hot) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+        ctx.strokeStyle = p.x === 0 && state.phase === 1 ? '#79f0ff' : '#ffd166';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      drawDrone(sx, sy, hot, t + idx);
+      ctx.font = '600 12px ui-monospace, Menlo, Consolas, monospace';
+      ctx.fillStyle = '#f4fbff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = idx % 2 === 0 ? 'bottom' : 'top';
+      halo('(' + fmt(p.x) + ', ' + fmt(p.y) + ')', sx + 12, sy + (idx % 2 === 0 ? -12 : 12));
+    });
+
+    if (state.screen === 'play' && state.phase === 3 && !state.fire) {
+      const est = sc.estimate;
+      ctx.save();
+      ctx.setLineDash([4, 5]);
+      ctx.strokeStyle = 'rgba(255, 209, 102, 0.85)';
+      ctx.lineWidth = 1.5;
+      if (est.mode === 'y') {
+        const x = toScreen(est.x, 0, plot, view)[0];
+        ctx.beginPath();
+        ctx.moveTo(x, plot.y);
+        ctx.lineTo(x, plot.y + plot.h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '700 13px ui-monospace, Menlo, Consolas, monospace';
+        ctx.fillStyle = '#ffd166';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        halo('x = ' + prettyNum(est.x), x, plot.y - 4);
+      } else {
+        const y = toScreen(0, est.y, plot, view)[1];
+        ctx.beginPath();
+        ctx.moveTo(plot.x, y);
+        ctx.lineTo(plot.x + plot.w, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = '700 13px ui-monospace, Menlo, Consolas, monospace';
+        ctx.fillStyle = '#ffd166';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        halo('y = ' + prettyNum(est.y), plot.x + 8, y - 6);
+      }
+      ctx.restore();
+      state.options.forEach((opt) => {
+        const x = est.mode === 'y' ? est.x : opt.value;
+        const y = est.mode === 'y' ? opt.value : est.y;
+        const [sx, sy] = toScreen(x, y, plot, view);
+        let color = '#9fb6c9';
+        players.forEach((p) => {
+          if (p.joined && p.shields > 0 && state.options[p.cursor] === opt) color = ['#ff4d6d', '#4aa3ff', '#ffd166'][p.index];
+        });
+        drawBeacon(sx, sy, opt.letter, color);
+      });
+    }
+
+    if (beamHead) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(beamHead[0], beamHead[1], 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    drawTurret(plot, view, barrelAngle(plot, view));
+  }
+
+  function drawDataSegment(plot, view, x0, y0, x1, y1, color, width, alpha) {
+    const a = toScreen(x0, y0, plot, view);
+    const b = toScreen(x1, y1, plot, view);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawIdle(t) {
+    const view = { xMin: -1.2, xMax: 10, yMin: 0, yMax: 8, xTick: 1, yTick: 1 };
+    const plot = layoutPlot(viewW, viewH);
+    drawGrid(plot, view, false);
+    ctx.strokeStyle = '#e7fbff';
+    ctx.lineWidth = 2;
+    const origin = toScreen(0, 0, plot, view);
+    ctx.beginPath();
+    ctx.moveTo(origin[0], plot.y + plot.h);
+    ctx.lineTo(origin[0], plot.y + 10);
+    ctx.moveTo(plot.x, origin[1]);
+    ctx.lineTo(plot.x + plot.w - 10, origin[1]);
+    ctx.stroke();
+    const m = 0.45 + Math.sin(t * 0.7) * 0.15;
+    clipPlot(plot);
+    drawDataLine(plot, view, m, 1.2, '#c6ff4a', 3, 0.9, 10);
+    ctx.restore();
+    for (let i = 1; i <= 4; i++) {
+      const x = i * 2;
+      const y = 0.5 * x + 1.2;
+      const [sx, sy] = toScreen(x, y, plot, view);
+      drawDrone(sx, sy, false, t + i);
+    }
+    state.shownC = 1.2;
+    state.shownM = m;
+    state.cLocked = false;
+    state.mLocked = false;
+    state.sc = { c: 1.2, title: '' };
+    drawTurret(plot, view, barrelAngle(plot, view));
+    state.sc = null;
+  }
+
+  function drawParticles() {
+    state.particles.forEach((p) => {
+      ctx.globalAlpha = Math.max(0, p.life / p.max);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.r, p.r);
+    });
+    ctx.globalAlpha = 1;
+    state.shocks.forEach((s) => {
+      ctx.globalAlpha = Math.max(0, s.life * 2);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  function draw(t) {
+    ctx.clearRect(0, 0, viewW, viewH);
+    ctx.fillStyle = '#050910';
+    ctx.fillRect(0, 0, viewW, viewH);
+    if (!state.sc || state.screen === 'title') {
+      if (viewW > 30 && viewH > 30) drawIdle(t);
+    } else if (viewW > 30 && viewH > 30) {
+      drawScenario(state.sc, t);
+    }
+    drawParticles();
+    const amp = (reduceMotion ? 2 : 7) * state.shake;
+    if (amp > 0.2) {
+      canvas.style.transform = 'translate(' + ((Math.random() - 0.5) * amp) + 'px,' + ((Math.random() - 0.5) * amp) + 'px)';
+    } else canvas.style.transform = '';
+    $('flash').style.opacity = String(Math.min(0.45, state.flash));
+  }
+
+  function popDrone(p) {
+    if (p.dead) return;
+    p.dead = true;
+    const plot = layoutPlot(viewW, viewH);
+    const [sx, sy] = toScreen(p.x, p.y, plot, viewOf(state.sc));
+    explode(sx, sy, false);
+    audio.pop();
+    state.shake = Math.max(state.shake, 0.35);
+    state.flash = Math.max(state.flash, 0.22);
+  }
+
+  function update(dt) {
+    state.shake = Math.max(0, state.shake - dt * 1.7);
+    state.flash = Math.max(0, state.flash - dt * 1.5);
+    if (state.tipT > 0) {
+      state.tipT -= dt;
+      if (state.tipT <= 0) hideTip();
+    }
+    if (state.sc) {
+      state.shownC += (state.targetC - state.shownC) * Math.min(1, dt * 7);
+      state.shownM += (state.targetM - state.shownM) * Math.min(1, dt * 5.5);
+      if (state.arrive < 1) state.arrive = Math.min(1, state.arrive + dt / 0.7);
+    }
+    if (state.returnTimer > 0) {
+      state.returnTimer -= dt;
+      if (state.returnTimer <= 0 && state.sc) {
+        state.targetC = state.cLocked ? state.sc.c : 0;
+        state.targetM = state.mLocked ? state.sc.m : 0;
+      }
+    }
+    if (state.badLine) {
+      state.badLine.life -= dt;
+      if (state.badLine.life <= 0) state.badLine = null;
+    }
+    if (state.lockTimer > 0) {
+      state.lockTimer -= dt;
+      if (state.lockTimer <= 0 && state.resolving && state.pending) {
+        const next = state.pending;
+        state.pending = null;
+        state.resolving = false;
+        state.lockTimer = 0;
+        if (next === 'phase2') enterPhase(2);
+        else if (next === 'phase3') enterPhase(3);
+        else if (next === 'fire') startFire();
+        else if (next === 'over') triggerGameOver();
+      }
+    }
+    state.particles.forEach((p) => {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 30 * dt;
+      p.life -= dt;
+    });
+    state.particles = state.particles.filter((p) => p.life > 0);
+    state.shocks.forEach((s) => {
+      s.r += dt * 90;
+      s.life -= dt;
+    });
+    state.shocks = state.shocks.filter((s) => s.life > 0);
+
+    if (state.fire && state.sc) {
+      state.fire.t += dt;
+      if (state.fire.t >= 0.12) {
+        const reach = ((state.fire.t - 0.12) / state.fire.duration) * state.sc.xMax;
+        state.sc.points.forEach((p) => {
+          if (!p.dead && p.x <= reach + 1e-6) popDrone(p);
+        });
+      }
+      if (state.sc.points.every((p) => p.dead) && !state.fire.boomed) {
+        state.fire.boomed = true;
+        audio.boom();
+        state.shake = 1;
+      }
+      if (state.fire.t >= state.fire.duration + 0.15) {
+        state.sc.points.forEach((p) => popDrone(p));
+      }
+      if (state.fire.t >= state.fire.duration + 0.48) finishWave();
+    }
+  }
+
+  function resize() {
+    const rect = $('graph-wrap').getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    viewW = Math.max(1, rect.width);
+    viewH = Math.max(1, rect.height);
+    canvas.width = Math.max(1, Math.round(viewW * dpr));
+    canvas.height = Math.max(1, Math.round(viewH * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    positionMarks(true);
+  }
+
+  document.addEventListener('keydown', onKey);
+  document.addEventListener('pointerdown', () => audio.boot());
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action], [data-i]');
+    if (!el) return;
+    audio.boot();
+    if (el.dataset.action === 'mute') {
+      audio.setMuted(!audio.muted);
+      return;
+    }
+    if (el.dataset.action === 'primary') {
+      onPrimary(mousePlayer());
+      return;
+    }
+    if (el.dataset.i != null && state.screen === 'play') {
+      const pi = mousePlayer();
+      const p = players[pi];
+      if (!p.joined || p.shields <= 0) return;
+      p.cursor = Number(el.dataset.i);
+      paintCursors();
+      positionMarks(false);
+      lockIn(pi);
+    }
+  });
+  window.addEventListener('gamepadconnected', (e) => {
+    toast('GAMEPAD ' + (e.gamepad.index + 1) + ' LINKED');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!audio.ctx) return;
+    if (document.hidden) audio.ctx.suspend();
+    else {
+      audio.ctx.resume();
+      audio.nextTime = audio.ctx.currentTime + 0.06;
+    }
+  });
+  window.addEventListener('resize', resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe($('graph-wrap'));
+
+  if (auditErrors.length) {
+    console.error(auditErrors);
+    $('audit').textContent = auditErrors.join(' | ');
+  }
+  audio.setMuted(audio.muted);
+  renderDocks();
+  renderHud();
+  $('hud-best').textContent = String(state.best);
+
+  let last = performance.now();
+  function step(now) {
+    const dt = Math.min(0.034, (now - last) / 1000);
+    if (dt < 0.008) return;
+    last = now;
+    try {
+      pollPads(dt);
+      if (state.screen !== 'pause' && state.screen !== 'title') update(dt);
+      else if (state.screen === 'title') {
+        state.particles = state.particles.filter((p) => (p.life -= dt) > 0);
+      }
+      if (state.screen !== 'title') draw(now / 1000);
+    } catch (err) {
+      console.error(err);
+      const box = $('audit');
+      if (box && !box.textContent) box.textContent = String(err && err.stack || err);
+    }
+  }
+  function loop(now) {
+    step(now);
+    requestAnimationFrame(loop);
+  }
+  resize();
+  requestAnimationFrame(loop);
+  // Keeps the laser clock moving if the tab stops receiving animation frames.
+  setInterval(() => {
+    const now = performance.now();
+    const rect = $('graph-wrap').getBoundingClientRect();
+    if (rect.width > 20 && (Math.abs(rect.width - viewW) > 2 || Math.abs(rect.height - viewH) > 2)) resize();
+    if (now - last > 48) step(now);
+  }, 32);
+  window.__laserErrors = auditErrors;
+})();
+</script>
+</body>
+</html>

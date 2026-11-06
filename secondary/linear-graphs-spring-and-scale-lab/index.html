@@ -1,0 +1,2396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Spring & Scale Lab: Dual-Crane Equilibrium</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #07141c;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+  }
+  canvas:focus { outline: none; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Spring and Scale Lab: Dual-Crane Equilibrium"></canvas>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<script>
+"use strict";
+(() => {
+  const MASSES = [0, 20, 50, 80, 100];
+  const X_MAX = 120;
+  const FONT = '"Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif';
+
+  const COL = {
+    springA: "#0b6ec4",
+    springABright: "#1c9bff",
+    springB: "#d26500",
+    springBBright: "#ff8a1f",
+    paper: "#f6f1e6",
+    ink: "#1b2b3c",
+    gold: "#ffd15c",
+    good: "#2fce86",
+    bad: "#ff4d5e",
+    cream: "#fff8ec",
+  };
+
+  const CANON = {
+    name: "Standard Springs",
+    mA: 0.15, cA: 5, mB: 0.25, cB: 4,
+    xInt: 10, lInt: 6.5,
+    targetL: 32, targetX: 180,
+    diffMass: 70, diff: 6,
+  };
+
+  const CURATED = [
+    { name: "Light Hook & Heavy Gauge", mA: 0.2, cA: 6, mB: 0.35, cB: 3, xInt: 20, lInt: 10, targetL: 30, targetX: 120, diffMass: 50, diff: 4.5 },
+    { name: "Short Coil Pair", mA: 0.15, cA: 4, mB: 0.25, cB: 3, xInt: 10, lInt: 5.5, targetL: 28, targetX: 160, diffMass: 60, diff: 5 },
+    { name: "Bench C Twins", mA: 0.2, cA: 8, mB: 0.3, cB: 4, xInt: 40, lInt: 16, targetL: 32, targetX: 120, diffMass: 80, diff: 4 },
+    { name: "Field Crane", mA: 0.1, cA: 7, mB: 0.3, cB: 5, xInt: 10, lInt: 8, targetL: 27, targetX: 200, diffMass: 40, diff: 6 },
+    { name: "Copper & Brass", mA: 0.25, cA: 8, mB: 0.35, cB: 3, xInt: 50, lInt: 20.5, targetL: 23, targetX: 60, diffMass: 90, diff: 4 },
+    { name: "Long Arm Pair", mA: 0.1, cA: 4, mB: 0.2, cB: 3, xInt: 10, lInt: 5, targetL: 18, targetX: 140, diffMass: 30, diff: 2 },
+    { name: "Bay 4", mA: 0.2, cA: 7, mB: 0.3, cB: 3, xInt: 40, lInt: 15, targetL: 19, targetX: 60, diffMass: 60, diff: 2 },
+    { name: "Window Pair", mA: 0.2, cA: 6, mB: 0.3, cB: 5, xInt: 10, lInt: 8, targetL: 22, targetX: 80, diffMass: 50, diff: 4 },
+  ];
+
+  const GEN_NAMES = ["North Crane", "South Crane", "Annex Rig", "Dawn Bench", "Amber Pair", "Cobalt Pair", "Quiet Bay", "Storm Hook"];
+
+  const STAGE = {
+    1: "STAGE 1  ·  ORIGINAL LENGTH & GRADIENT DIAL",
+    2: "STAGE 2  ·  EQUAL EQUILIBRIUM DUEL",
+    3: "STAGE 3  ·  ESTIMATION & EXTENSION DIFFERENCE",
+  };
+
+  const view = { w: 1280, h: 720, dpr: 1 };
+  const keys = new Set();
+  const particles = [];
+  const floaters = [];
+  const ui = { cards: [], mute: null };
+  let layout = null;
+  let pointerDrive = false;
+  let REDUCE = false;
+  let canvas, ctx, liveEl;
+
+  const audio = {
+    ctx: null, master: null, musicGain: null, sfxGain: null,
+    muted: false, step: 0, nextNote: 0, stepDur: 0.25, noise: null,
+  };
+
+  const padPrev = [[false, false, false, false, false, false], [false, false, false, false, false, false], [false, false, false, false, false, false]];
+
+  const players = [
+    { id: 0, label: "P1", name: "Red Lab", color: "#ff4b55", hearts: 3, stars: 0, roundStars: 0, contrib: 0, x: 420, y: 640, stun: 0, hover: -1, pad: false,
+      left: ["ArrowLeft"], right: ["ArrowRight"], up: ["ArrowUp"], down: ["ArrowDown"] },
+    { id: 1, label: "P2", name: "Blue Lab", color: "#3c7dff", hearts: 3, stars: 0, roundStars: 0, contrib: 0, x: 640, y: 640, stun: 0, hover: -1, pad: false,
+      left: ["a", "A"], right: ["d", "D"], up: ["w", "W"], down: ["s", "S"] },
+    { id: 2, label: "P3", name: "Yellow Lab", color: "#ffd23f", hearts: 3, stars: 0, roundStars: 0, contrib: 0, x: 860, y: 640, stun: 0, hover: -1, pad: false,
+      left: ["j", "J"], right: ["l", "L"], up: ["i", "I"], down: ["k", "K"] },
+  ];
+
+  const game = {
+    mode: "title",
+    fatal: "",
+    time: 0,
+    wave: 0,
+    round: null,
+    qIndex: 0,
+    timer: 0,
+    lastShown: 99,
+    resolved: false,
+    prestige: 0,
+    prestigeShown: 0,
+    best: 0,
+    known: { cA: false, cB: false, mA: false, mB: false, intersect: false },
+    pointReveal: 1,
+    revealA: 0,
+    revealB: 0,
+    laser: 0,
+    wasEqual: false,
+    visKey: null,
+    shake: 0,
+    hint: null,
+    wrongFlash: null,
+    review: null,
+    clearAge: 0,
+    healed: false,
+    labNote: "",
+    panMass: 0,
+    springA: { cm: 12, target: 12 },
+    springB: { cm: 12, target: 12 },
+    padNotice: null,
+  };
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function len(m, c, x) { return Math.round((m * x + c) * 1000) / 1000; }
+  function isHalf(n) { return Math.abs(n * 2 - Math.round(n * 2)) < 1e-6; }
+  function fmt(n) {
+    const v = Math.round(n * 1000) / 1000;
+    const nearestInt = Math.round(v);
+    if (Math.abs(v - nearestInt) < 0.001) return String(nearestInt);
+    const nearest10 = Math.round(v * 10) / 10;
+    if (Math.abs(v - nearest10) < 0.001) return nearest10.toFixed(1);
+    return (Math.round(v * 100) / 100).toFixed(2);
+  }
+  function fmtM(n) { return (Math.round(n * 100) / 100).toFixed(2); }
+  function eqNamed(letter, m, c) { return `L_${letter} = ${fmtM(m)}x + ${fmt(c)}`; }
+  function fs(n) {
+    const s = clamp(Math.min(view.w / 1280, view.h / 720), 0.72, 1.35);
+    return Math.max(11, Math.round(n * s));
+  }
+  function setFont(weight, size) { ctx.font = `${weight} ${Math.round(size)}px ${FONT}`; }
+  function mulberry32(a) {
+    return function () {
+      a |= 0;
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function shuffle(rng, arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+    }
+    return a;
+  }
+  function shade(hex, amt) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = clamp((n >> 16) + amt, 0, 255);
+    const g = clamp(((n >> 8) & 255) + amt, 0, 255);
+    const b = clamp((n & 255) + amt, 0, 255);
+    return `rgb(${r | 0},${g | 0},${b | 0})`;
+  }
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  function wrap(text, maxW) {
+    const words = String(text).split(" ");
+    const lines = [];
+    let line = "";
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (line && ctx.measureText(test).width > maxW) {
+        lines.push(line);
+        line = word;
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [""];
+  }
+  function cleanMass(n) {
+    if (!isFinite(n) || n <= 0 || n > 500) return null;
+    const nearestInt = Math.round(n);
+    if (Math.abs(n - nearestInt) < 0.02) return nearestInt;
+    const half = Math.round(n * 2) / 2;
+    if (Math.abs(n - half) < 0.02) return half;
+    return null;
+  }
+  function cleanLen(n) {
+    if (!isFinite(n) || n < 0 || n > 80) return null;
+    const nearestInt = Math.round(n);
+    if (Math.abs(n - nearestInt) < 0.02) return nearestInt;
+    const half = Math.round(n * 2) / 2;
+    if (Math.abs(n - half) < 0.02) return half;
+    return null;
+  }
+  function cleanM(n) {
+    if (!isFinite(n) || n <= 0.01 || n > 40) return null;
+    const v = Math.round(n * 100) / 100;
+    if (Math.abs(n - v) > 0.03) return null;
+    return v;
+  }
+  function takeDistinct(correct, rawList, clean, step) {
+    const first = clean(correct);
+    const out = [first == null ? correct : first];
+    for (const raw of rawList) {
+      const v = clean(raw);
+      if (v == null) continue;
+      if (out.some((x) => Math.abs(x - v) < 0.011)) continue;
+      out.push(v);
+      if (out.length >= 4) break;
+    }
+    let k = 1;
+    while (out.length < 4 && k < 24) {
+      const v = clean(Number(out[0]) + step * k);
+      k += 1;
+      if (v == null || out.some((x) => Math.abs(x - v) < 0.011)) continue;
+      out.push(v);
+    }
+    return out.slice(0, 4);
+  }
+
+  function yMaxFor(spec) {
+    let maxL = spec.lInt;
+    if (spec.targetL <= 36) maxL = Math.max(maxL, spec.targetL);
+    for (const x of MASSES) maxL = Math.max(maxL, len(spec.mA, spec.cA, x), len(spec.mB, spec.cB, x));
+    const top = Math.max(35, maxL);
+    return Math.ceil((top - 0.001) / 5) * 5;
+  }
+
+  function generateSpec(seed) {
+    const rng = mulberry32(seed);
+    const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+    const ms = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4];
+    const cs = [3, 4, 5, 6, 7, 8];
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const mA = pick(ms), mB = pick(ms), cA = pick(cs), cB = pick(cs);
+      if (mB < mA + 0.049 || cA <= cB) continue;
+      const dm = Math.round((mB - mA) * 100) / 100;
+      const xInt = Math.round(((cA - cB) / dm) * 100) / 100;
+      if (!isHalf(xInt) || xInt < 8 || xInt > 80) continue;
+      const lA = len(mA, cA, xInt);
+      const lB = len(mB, cB, xInt);
+      if (Math.abs(lA - lB) > 0.02 || !isHalf(lA) || lA < 5 || lA > 28) continue;
+      const maxL = Math.max(len(mA, cA, 100), len(mB, cB, 100));
+      if (maxL > 42) continue;
+      const goodT = [40, 60, 80, 100, 120, 140, 160, 180, 200].filter((tx) => {
+        const tl = len(mA, cA, tx);
+        return isHalf(tl) && tl >= 12 && tl <= 40 && Math.abs((tl - cA) / mA - tx) < 0.05;
+      });
+      if (!goodT.length) continue;
+      const targetX = goodT[Math.floor(rng() * goodT.length)];
+      const targetL = len(mA, cA, targetX);
+      const goodD = [];
+      for (const M of [30, 40, 50, 60, 70, 80, 90]) {
+        const d = Math.round((len(mB, cB, M) - len(mA, cA, M)) * 1000) / 1000;
+        if (d >= 1 && isHalf(d) && d <= 18) goodD.push({ M, d });
+      }
+      if (!goodD.length) continue;
+      const diff = goodD[Math.floor(rng() * goodD.length)];
+      return {
+        name: GEN_NAMES[Math.abs(seed) % GEN_NAMES.length],
+        mA, cA, mB, cB, xInt, lInt: lA, targetX, targetL,
+        diffMass: diff.M, diff: diff.d,
+      };
+    }
+    return null;
+  }
+
+  function specForWave(wave) {
+    if (wave <= 0) return Object.assign({}, CANON);
+    if (wave - 1 < CURATED.length) return Object.assign({}, CURATED[wave - 1]);
+    return generateSpec(9000 + wave * 131) || Object.assign({}, CURATED[wave % CURATED.length]);
+  }
+
+  function numChoices(values, correct, unit, rng) {
+    return shuffle(rng, values.map((v) => ({
+      lines: [`${fmt(v)} ${unit}`],
+      correct: Math.abs(v - correct) < 0.011,
+    })));
+  }
+  function mChoices(values, correct, rng) {
+    return shuffle(rng, values.map((v) => ({
+      lines: [`${fmtM(v)} cm/g`],
+      correct: Math.abs(v - correct) < 0.001,
+    })));
+  }
+  function coordChoices(values, correct, rng) {
+    return shuffle(rng, values.map((v) => ({
+      lines: [`x = ${fmt(v.x)} g`, `L = ${fmt(v.L)} cm`],
+      correct: Math.abs(v.x - correct.x) < 0.011 && Math.abs(v.L - correct.L) < 0.011,
+    })));
+  }
+
+  function gradientChoices(which, round, rng) {
+    const m = which === "A" ? round.mA : round.mB;
+    const other = which === "A" ? round.mB : round.mA;
+    if (round.wave === 0 && which === "A") return mChoices([0.15, 0.25, 1.5, 0.4], 0.15, rng);
+    if (round.wave === 0 && which === "B") return mChoices([0.25, 0.15, 2.5, 0.5], 0.25, rng);
+    const vals = takeDistinct(m, [other, m * 10, m * 2, m + 0.1, Math.abs(m - 0.1), 0.4, 0.5, 0.3, 1.5], cleanM, 0.05);
+    return mChoices(vals, m, rng);
+  }
+  function interceptChoices(which, round, rng) {
+    const c = which === "A" ? round.cA : round.cB;
+    const other = which === "A" ? round.cB : round.cA;
+    const m = which === "A" ? round.mA : round.mB;
+    if (round.wave === 0 && which === "A") return numChoices([5, 4, 8, 0], 5, "cm", rng);
+    if (round.wave === 0 && which === "B") return numChoices([4, 5, 9, 0], 4, "cm", rng);
+    const vals = takeDistinct(c, [other, 0, len(m, c, 20), c + 1, c - 1, c + 2, c + 3], cleanLen, 1);
+    return numChoices(vals, c, "cm", rng);
+  }
+  function intersectChoices(round, rng) {
+    if (round.wave === 0) {
+      return coordChoices([
+        { x: 10, L: 6.5 }, { x: 20, L: 8.5 }, { x: 15, L: 7 }, { x: 5, L: 5.5 },
+      ], { x: 10, L: 6.5 }, rng);
+    }
+    const list = [{ x: round.xInt, L: round.lInt }];
+    const add = (x, L) => {
+      const xx = cleanLen(x);
+      const LL = cleanLen(L);
+      if (xx == null || LL == null || xx <= 0 || LL <= 0 || xx > 220 || LL > 70) return;
+      if (list.some((c) => Math.abs(c.x - xx) < 0.01 && Math.abs(c.L - LL) < 0.01)) return;
+      list.push({ x: xx, L: LL });
+    };
+    add(round.xInt * 2, len(round.mA, round.cA, round.xInt * 2));
+    add(20, len(round.mA, round.cA, 20));
+    add(round.xInt + 10, round.lInt + 1.5);
+    add(Math.max(1, round.xInt - 5), Math.max(0.5, round.lInt - 1));
+    const wrongX = (round.cA - round.cB) / round.mA;
+    add(wrongX, len(round.mA, round.cA, wrongX));
+    add(round.xInt, (round.cA + round.cB) / 2);
+    add(50, len(round.mA, round.cA, 50));
+    let k = 1;
+    while (list.length < 4 && k < 16) {
+      add(round.xInt + 5 * k, round.lInt + 0.5 * k);
+      k += 1;
+    }
+    return coordChoices(list.slice(0, 4), { x: round.xInt, L: round.lInt }, rng);
+  }
+  function massChoices(round, rng) {
+    if (round.wave === 0) return numChoices([180, 108, 18, 27], 180, "g", rng);
+    const L = round.targetL;
+    const raw = [
+      (L - round.cA) / round.mB,
+      (L - round.cA) / (round.mA * 10),
+      L - round.cA,
+      L / round.mA,
+      (L - round.cB) / round.mA,
+      round.targetX / 10,
+      round.targetX + 20,
+      Math.abs(round.targetX - 20),
+    ];
+    return numChoices(takeDistinct(round.targetX, raw, cleanMass, 10), round.targetX, "g", rng);
+  }
+  function diffChoices(round, rng) {
+    if (round.wave === 0) return numChoices([6, 7, 15.5, 21.5], 6, "cm", rng);
+    const lA = len(round.mA, round.cA, round.diffMass);
+    const lB = len(round.mB, round.cB, round.diffMass);
+    const raw = [lA, lB, lA + lB, Math.abs(round.cA - round.cB), (round.mB - round.mA) * round.diffMass, round.diff + 1, Math.abs(round.diff - 1)];
+    return numChoices(takeDistinct(round.diff, raw, cleanLen, 0.5), round.diff, "cm", rng);
+  }
+
+  function gradientWorking(letter, m, c) {
+    const l0 = len(m, c, 0);
+    const l20 = len(m, c, 20);
+    const rise = Math.round((l20 - l0) * 1000) / 1000;
+    return [
+      "Gradient m = rise ÷ run. Any two points on the straight line agree.",
+      `Spring ${letter}: (0 g, ${fmt(l0)} cm) → (20 g, ${fmt(l20)} cm).`,
+      `Rise = ${fmt(l20)} − ${fmt(l0)} = ${fmt(rise)} cm.   Run = 20 − 0 = 20 g.`,
+      `m_${letter} = ${fmt(rise)} / 20 = ${fmtM(m)} cm/g.`,
+      `Original length c_${letter} = ${fmt(c)} cm, so ${eqNamed(letter, m, c)}.`,
+    ];
+  }
+  function intersectWorking(r) {
+    const dm = fmtM(r.mB - r.mA);
+    return [
+      "The springs share a length where the lines cross, so L_A = L_B.",
+      `${eqNamed("A", r.mA, r.cA).replace("L_A", "L_A")}   and   ${eqNamed("B", r.mB, r.cB)}`,
+      `${fmtM(r.mA)}x + ${fmt(r.cA)} = ${fmtM(r.mB)}x + ${fmt(r.cB)}`,
+      `${fmt(r.cA)} − ${fmt(r.cB)} = ${fmtM(r.mB)}x − ${fmtM(r.mA)}x`,
+      `${fmt(r.cA - r.cB)} = ${dm}x`,
+      `x = ${fmt(r.cA - r.cB)} ÷ ${dm} = ${fmt(r.xInt)} g`,
+      `L = ${fmtM(r.mA)} × ${fmt(r.xInt)} + ${fmt(r.cA)} = ${fmt(r.lInt)} cm`,
+      `Check Spring B: ${fmtM(r.mB)} × ${fmt(r.xInt)} + ${fmt(r.cB)} = ${fmt(r.lInt)} cm.`,
+    ];
+  }
+  function massWorking(r) {
+    return [
+      `Spring A follows ${eqNamed("A", r.mA, r.cA)}, and the length is ${fmt(r.targetL)} cm.`,
+      `${fmtM(r.mA)}x + ${fmt(r.cA)} = ${fmt(r.targetL)}`,
+      `${fmtM(r.mA)}x = ${fmt(r.targetL)} − ${fmt(r.cA)} = ${fmt(r.targetL - r.cA)}`,
+      `x = ${fmt(r.targetL - r.cA)} ÷ ${fmtM(r.mA)} = ${fmt(r.targetX)} g`,
+      `Check: ${fmtM(r.mA)} × ${fmt(r.targetX)} + ${fmt(r.cA)} = ${fmt(r.targetL)} cm.`,
+    ];
+  }
+  function diffWorking(r) {
+    const lA = len(r.mA, r.cA, r.diffMass);
+    const lB = len(r.mB, r.cB, r.diffMass);
+    return [
+      `Substitute x = ${fmt(r.diffMass)} into both equations.`,
+      `L_A = ${fmtM(r.mA)} × ${fmt(r.diffMass)} + ${fmt(r.cA)} = ${fmt(lA)} cm`,
+      `L_B = ${fmtM(r.mB)} × ${fmt(r.diffMass)} + ${fmt(r.cB)} = ${fmt(lB)} cm`,
+      `Difference = L_B − L_A = ${fmt(lB)} − ${fmt(lA)} = ${fmt(r.diff)} cm`,
+      `With ${fmt(r.diffMass)} g on each hook, Spring B is longer by ${fmt(r.diff)} cm.`,
+    ];
+  }
+
+  function timerFor(kind, wave) {
+    const base = kind === "interceptA" || kind === "interceptB" ? 22
+      : kind === "gradientA" || kind === "gradientB" ? 36
+      : kind === "intersect" ? 42 : 36;
+    const rush = Math.min(0.22, Math.max(0, wave - 2) * 0.04);
+    return Math.max(16, Math.round(base * (1 - rush)));
+  }
+
+  function buildRound(wave) {
+    const spec = specForWave(wave);
+    const rng = mulberry32(4000 + wave * 97);
+    const round = Object.assign({}, spec, {
+      wave,
+      yMax: yMaxFor(spec),
+      tableA: MASSES.map((x) => len(spec.mA, spec.cA, x)),
+      tableB: MASSES.map((x) => len(spec.mB, spec.cB, x)),
+    });
+    const beyond = round.targetX > X_MAX;
+    round.questions = [
+      {
+        stage: 1, kind: "interceptA", timer: timerFor("interceptA", wave),
+        prompt: "Identify the original length of Spring A (blue), unstretched at x = 0.",
+        scaffold: "Original length is L when the mass is 0 g. Read that cell, or the point on the y-axis.",
+        hint: "Original length is the length at mass 0 g. Read the first value in Spring A's row.",
+        choices: interceptChoices("A", round, rng),
+        answer: `${fmt(round.cA)} cm`,
+        working: [
+          "When mass x = 0 g, the spring has not been stretched by a load.",
+          `The table shows Spring A at 0 g is ${fmt(round.cA)} cm.`,
+          `That y-intercept is c_A = ${fmt(round.cA)} cm.`,
+        ],
+        hot: { rows: ["A"], cols: [0], soft: false },
+      },
+      {
+        stage: 1, kind: "interceptB", timer: timerFor("interceptB", wave),
+        prompt: "Identify the original length of Spring B (orange), unstretched at x = 0.",
+        scaffold: "Do not borrow Spring A's intercept. Read Spring B at x = 0.",
+        hint: "Original length is L at x = 0. Use Spring B's own row, not Spring A's.",
+        choices: interceptChoices("B", round, rng),
+        answer: `${fmt(round.cB)} cm`,
+        working: [
+          "Original length is the unstretched length, read at mass 0 g.",
+          `Spring B at 0 g is ${fmt(round.cB)} cm.`,
+          `So c_B = ${fmt(round.cB)} cm.`,
+        ],
+        hot: { rows: ["B"], cols: [0], soft: false },
+      },
+      {
+        stage: 1, kind: "gradientA", timer: timerFor("gradientA", wave),
+        prompt: "Identify Spring A's extension rate. Gradient m = rise ÷ run.",
+        scaffold: "From x = 0 to x = 20, divide the change in length by 20 g.",
+        hint: "m = rise ÷ run. From 0 g to 20 g, rise is the change in length and run is 20 g.",
+        choices: gradientChoices("A", round, rng),
+        answer: `${fmtM(round.mA)} cm/g`,
+        working: gradientWorking("A", round.mA, round.cA),
+        hot: { rows: ["A"], cols: [0, 1], soft: false },
+      },
+      {
+        stage: 1, kind: "gradientB", timer: timerFor("gradientB", wave),
+        prompt: "Identify Spring B's extension rate. Gradient m = rise ÷ run.",
+        scaffold: "Spring B is steeper if its length climbs faster than Spring A's.",
+        hint: "Use two points on Spring B only. m = (L₂ − L₁) ÷ (x₂ − x₁). From 0 g to 20 g is an easy run.",
+        choices: gradientChoices("B", round, rng),
+        answer: `${fmtM(round.mB)} cm/g`,
+        working: gradientWorking("B", round.mB, round.cB),
+        hot: { rows: ["B"], cols: [0, 1], soft: false },
+      },
+      {
+        stage: 2, kind: "intersect", timer: timerFor("intersect", wave),
+        prompt: "Find the common length when both springs stretch to the EXACT SAME length under the same mass.",
+        scaffold: "Set L_A = L_B, solve for x, then substitute back to find L.",
+        hint: "Set m_A x + c_A equal to m_B x + c_B. Gather the x terms, solve for x, then find L.",
+        choices: intersectChoices(round, rng),
+        answer: `x = ${fmt(round.xInt)} g, L = ${fmt(round.lInt)} cm`,
+        working: intersectWorking(round),
+        hot: { rows: ["A", "B"], cols: null, soft: true },
+      },
+      {
+        stage: 3, kind: "solveMass", timer: timerFor("solveMass", wave),
+        prompt: `Calculate mass x such that Spring A is extended to ${fmt(round.targetL)} cm.`,
+        scaffold: beyond
+          ? `Use ${eqNamed("A", round.mA, round.cA)}.  x = (L − c) ÷ m. This mass is beyond 120 g, so solve it.`
+          : `Use ${eqNamed("A", round.mA, round.cA)}.  x = (L − c) ÷ m.`,
+        hint: "Rearrange L = mx + c into x = (L − c) ÷ m. Subtract the original length first, then divide by the gradient.",
+        choices: massChoices(round, rng),
+        answer: `${fmt(round.targetX)} g`,
+        working: massWorking(round),
+        hot: { rows: ["A"], cols: null, soft: true },
+      },
+      {
+        stage: 3, kind: "difference", timer: timerFor("difference", wave),
+        prompt: `Estimate the difference in lengths between both springs when ${fmt(round.diffMass)} g is added.`,
+        scaffold: `Find both lengths at ${fmt(round.diffMass)} g, then subtract: L_B − L_A.`,
+        hint: "Put the same mass into both equations so you have two lengths, then subtract. Difference = L_B − L_A.",
+        choices: diffChoices(round, rng),
+        answer: `${fmt(round.diff)} cm`,
+        working: diffWorking(round),
+        hot: { rows: ["A", "B"], cols: null, soft: true },
+      },
+    ];
+    return round;
+  }
+
+  function selfTest() {
+    const r0 = buildRound(0);
+    if (r0.mA !== 0.15 || r0.cA !== 5 || r0.mB !== 0.25 || r0.cB !== 4) throw new Error("canon coefficients");
+    if (r0.xInt !== 10 || r0.lInt !== 6.5 || r0.targetX !== 180 || r0.targetL !== 32 || r0.diff !== 6) throw new Error("canon targets");
+    const expectA = [5, 8, 12.5, 17, 20];
+    const expectB = [4, 9, 16.5, 24, 29];
+    for (let i = 0; i < 5; i++) {
+      if (Math.abs(r0.tableA[i] - expectA[i]) > 0.001) throw new Error("table A");
+      if (Math.abs(r0.tableB[i] - expectB[i]) > 0.001) throw new Error("table B");
+    }
+    const exact = (q, line) => q.choices.some((c) => c.lines.indexOf(line) !== -1);
+    const gA = r0.questions[2];
+    const gB = r0.questions[3];
+    for (const line of ["0.15 cm/g", "0.25 cm/g", "1.50 cm/g", "0.40 cm/g"]) {
+      if (!exact(gA, line)) throw new Error("gradient A bank " + line);
+    }
+    for (const line of ["0.25 cm/g", "0.15 cm/g", "2.50 cm/g", "0.50 cm/g"]) {
+      if (!exact(gB, line)) throw new Error("gradient B bank " + line);
+    }
+    const inter = r0.questions[4];
+    const good = inter.choices.find((c) => c.correct);
+    if (!good || good.lines.indexOf("x = 10 g") === -1 || good.lines.indexOf("L = 6.5 cm") === -1) throw new Error("intersect answer");
+    for (const line of ["L = 8.5 cm", "L = 7 cm", "L = 5.5 cm"]) {
+      if (!exact(inter, line)) throw new Error("intersect trap " + line);
+    }
+    for (const line of ["180 g", "108 g", "18 g", "27 g"]) {
+      if (!exact(r0.questions[5], line)) throw new Error("mass bank " + line);
+    }
+    for (const line of ["6 cm", "7 cm", "15.5 cm", "21.5 cm"]) {
+      if (!exact(r0.questions[6], line)) throw new Error("diff bank " + line);
+    }
+    for (let w = 0; w < 16; w++) {
+      const r = buildRound(w);
+      if (r.questions.length !== 7) throw new Error("count " + w);
+      const a = len(r.mA, r.cA, r.xInt);
+      const b = len(r.mB, r.cB, r.xInt);
+      if (Math.abs(a - r.lInt) > 0.02 || Math.abs(b - r.lInt) > 0.02) throw new Error("intersect " + w);
+      const d = len(r.mB, r.cB, r.diffMass) - len(r.mA, r.cA, r.diffMass);
+      if (Math.abs(d - r.diff) > 0.02) throw new Error("diff " + w);
+      if (Math.abs((r.targetL - r.cA) / r.mA - r.targetX) > 0.05) throw new Error("mass " + w);
+      for (const q of r.questions) {
+        if (q.choices.length !== 4) throw new Error("choices " + w + " " + q.kind);
+        if (q.choices.filter((c) => c.correct).length !== 1) throw new Error("one correct " + w + " " + q.kind);
+        const texts = q.choices.map((c) => c.lines.join("|"));
+        if (new Set(texts).size !== 4) throw new Error("dup " + w + " " + q.kind);
+      }
+    }
+  }
+
+  function currentQ() {
+    if (!game.round || game.qIndex < 0 || game.qIndex >= game.round.questions.length) return null;
+    return game.round.questions[game.qIndex];
+  }
+
+  function announce(text) {
+    if (!liveEl) return;
+    liveEl.textContent = "";
+    setTimeout(() => { liveEl.textContent = text; }, 30);
+  }
+
+  function saveBest() {
+    if (game.prestige > game.best) game.best = game.prestige;
+    try { localStorage.setItem("springScaleBest", String(game.best | 0)); } catch (e) { /* ignore */ }
+  }
+
+  function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+  function ensureAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audio.ctx) {
+      const actx = new AC();
+      audio.ctx = actx;
+      audio.master = actx.createGain();
+      audio.master.gain.value = audio.muted ? 0 : 0.85;
+      audio.master.connect(actx.destination);
+      audio.sfxGain = actx.createGain();
+      audio.sfxGain.gain.value = 0.72;
+      audio.sfxGain.connect(audio.master);
+      const filter = actx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 2400;
+      audio.musicGain = actx.createGain();
+      audio.musicGain.gain.value = 0.4;
+      audio.musicGain.connect(filter);
+      filter.connect(audio.master);
+      audio.step = 0;
+      audio.nextNote = actx.currentTime + 0.06;
+      audio.stepDur = 60 / 116 / 2;
+      const lenBuf = actx.sampleRate * 0.5;
+      const buf = actx.createBuffer(1, lenBuf, actx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < lenBuf; i++) data[i] = Math.random() * 2 - 1;
+      audio.noise = buf;
+    }
+    if (audio.ctx.state === "suspended") audio.ctx.resume();
+  }
+
+  function toggleMute() {
+    audio.muted = !audio.muted;
+    try { localStorage.setItem("springScaleMute", audio.muted ? "1" : "0"); } catch (e) { /* ignore */ }
+    if (audio.master && audio.ctx) {
+      audio.master.gain.setTargetAtTime(audio.muted ? 0 : 0.85, audio.ctx.currentTime, 0.03);
+    }
+    announce(audio.muted ? "Sound off" : "Sound on");
+  }
+
+  function tone(type, freq, t, dur, gain, dest) {
+    if (!audio.ctx || !(freq > 0)) return;
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.001, gain), t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.03, dur));
+    o.connect(g);
+    g.connect(dest);
+    o.start(t);
+    o.stop(t + dur + 0.03);
+  }
+
+  function noiseHit(t, dur, gain, filterType, freq) {
+    if (!audio.ctx || !audio.noise) return;
+    const src = audio.ctx.createBufferSource();
+    src.buffer = audio.noise;
+    const filter = audio.ctx.createBiquadFilter();
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(freq, t);
+    const g = audio.ctx.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(audio.sfxGain);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+
+  function scheduleStep(step, time) {
+    const dest = audio.musicGain;
+    const roots = [48, 48, 41, 43];
+    const root = roots[Math.floor(step / 4)];
+    if (step % 2 === 0) tone("square", midi(root), time, 0.16, 0.07, dest);
+    if (step % 4 === 0) {
+      const o = audio.ctx.createOscillator();
+      const g = audio.ctx.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(170, time);
+      o.frequency.exponentialRampToValueAtTime(52, time + 0.11);
+      g.gain.setValueAtTime(0.16, time);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + 0.13);
+      o.connect(g); g.connect(dest);
+      o.start(time); o.stop(time + 0.15);
+    }
+    if (step % 8 === 4) noiseHit(time, 0.12, 0.12, "bandpass", 900);
+    noiseHit(time, step % 2 ? 0.05 : 0.03, 0.035, "highpass", 4000);
+    const mel = [72, 76, 79, 76, 74, 72, 67, 69, 72, 67, 64, 67, 69, 72, 76, 79];
+    if (step !== 6 && step !== 14) tone("triangle", midi(mel[step]), time, 0.18, 0.055, dest);
+    if (step % 4 === 0) tone("sine", midi(root + 7), time, 0.22, 0.03, dest);
+  }
+
+  function musicTick() {
+    if (!audio.ctx || audio.muted) return;
+    const now = audio.ctx.currentTime;
+    if (audio.nextNote < now - 0.05) audio.nextNote = now + 0.02;
+    let guard = 0;
+    while (audio.nextNote < now + 0.22 && guard < 6) {
+      scheduleStep(audio.step, audio.nextNote);
+      audio.step = (audio.step + 1) % 16;
+      audio.nextNote += audio.stepDur;
+      guard += 1;
+    }
+  }
+
+  function sfxTick() { if (!audio.ctx) return; tone("square", 1480, audio.ctx.currentTime, 0.04, 0.035, audio.sfxGain); }
+  function sfxClock() { if (!audio.ctx) return; tone("square", 980, audio.ctx.currentTime, 0.028, 0.025, audio.sfxGain); }
+  function sfxCorrect() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    tone("triangle", 660, t, 0.1, 0.08, audio.sfxGain);
+    tone("triangle", 880, t + 0.08, 0.16, 0.08, audio.sfxGain);
+  }
+  function sfxBuzzer() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    tone("square", 196, t, 0.22, 0.05, audio.sfxGain);
+    tone("square", 146, t, 0.24, 0.04, audio.sfxGain);
+  }
+  function sfxBoing() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(640, t);
+    o.frequency.exponentialRampToValueAtTime(110, t + 0.28);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+    o.connect(g); g.connect(audio.sfxGain);
+    o.start(t); o.stop(t + 0.36);
+    noiseHit(t, 0.12, 0.05, "bandpass", 700);
+  }
+  function sfxShatter() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    noiseHit(t, 0.28, 0.34, "highpass", 1200);
+    tone("square", 170, t, 0.18, 0.05, audio.sfxGain);
+    tone("sawtooth", 86, t, 0.2, 0.04, audio.sfxGain);
+  }
+  function sfxChord() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+      tone("triangle", f, t + i * 0.035, 0.95, 0.06, audio.sfxGain);
+      tone("sine", f * 1.003, t + i * 0.035, 1.15, 0.025, audio.sfxGain);
+    });
+  }
+  function sfxSoft() { if (!audio.ctx) return; tone("sine", 320, audio.ctx.currentTime, 0.05, 0.03, audio.sfxGain); }
+
+  function burst(x, y, color, n, speed) {
+    if (REDUCE) return;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = speed * (0.45 + Math.random() * 0.7);
+      particles.push({
+        x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 30,
+        life: 0.45 + Math.random() * 0.35, age: 0, color, r: 1.6 + Math.random() * 2,
+      });
+    }
+    if (particles.length > 120) particles.splice(0, particles.length - 120);
+  }
+  function floater(x, y, text, color) {
+    floaters.push({ x, y, text, color, age: 0, life: 1.15 });
+  }
+
+  function applyKnown(q) {
+    if (!q) return;
+    if (q.kind === "interceptA") game.known.cA = true;
+    if (q.kind === "interceptB") game.known.cB = true;
+    if (q.kind === "gradientA") game.known.mA = true;
+    if (q.kind === "gradientB") game.known.mB = true;
+    if (q.kind === "intersect") game.known.intersect = true;
+  }
+
+  function beginWave() {
+    game.round = buildRound(game.wave);
+    game.qIndex = 0;
+    game.known = { cA: false, cB: false, mA: false, mB: false, intersect: false };
+    game.pointReveal = 0;
+    game.revealA = 0;
+    game.revealB = 0;
+    game.laser = 0;
+    game.wasEqual = false;
+    game.visKey = null;
+    game.healed = false;
+    game.reticlesSnapped = false;
+    players.forEach((p) => { p.roundStars = 0; p.stun = 0; });
+    beginQuestion();
+  }
+
+  function beginQuestion() {
+    const q = currentQ();
+    game.mode = "play";
+    game.resolved = false;
+    game.timer = q ? q.timer : 20;
+    game.lastShown = Math.ceil(game.timer);
+    game.hint = null;
+    game.wrongFlash = null;
+    game.review = null;
+    if (q) {
+      const opts = q.choices.map((c, i) => `Choice ${i + 1}: ${c.lines.join(", ")}`).join(". ");
+      announce(`${STAGE[q.stage]}. ${q.prompt} ${opts}`);
+    }
+  }
+
+  function openReview(title) {
+    const q = currentQ();
+    game.mode = "review";
+    game.review = { title, age: 0 };
+    if (q) announce(`${title}. Answer: ${q.answer}. ${q.working.join(" ")}`);
+  }
+
+  function onCorrect(player) {
+    if (game.resolved || game.mode !== "play") return;
+    const q = currentQ();
+    game.resolved = true;
+    const bonus = Math.round((game.timer / q.timer) * 100);
+    const gain = 100 + bonus;
+    game.prestige += gain;
+    player.stars += 1;
+    player.roundStars += 1;
+    player.contrib += gain;
+    applyKnown(q);
+    saveBest();
+    if (q.kind === "intersect") {
+      sfxChord();
+      game.wasEqual = true;
+    } else sfxCorrect();
+    burst(player.x, player.y, player.color, 16, 160);
+    floater(player.x, player.y - 28, `+${gain}  ★`, player.color);
+    openReview(`${player.name} locked the correct reading`);
+  }
+
+  function onWrong(player) {
+    if (game.resolved || game.mode !== "play") return;
+    if (player.hearts <= 0 || player.stun > 0) return;
+    const q = currentQ();
+    player.hearts -= 1;
+    player.stun = 0.85;
+    game.shake = REDUCE ? 0 : 0.34;
+    game.hint = { text: q.hint, who: player, life: 4.6 };
+    game.wrongFlash = { index: player.hover, life: 0.42 };
+    sfxShatter();
+    burst(player.x, player.y, "#d7f4ff", 12, 200);
+    announce(`${player.name} cracked a flask. ${q.hint}`);
+    if (players.every((p) => p.hearts <= 0)) {
+      game.resolved = true;
+      applyKnown(q);
+      sfxBuzzer();
+      game.mode = "over";
+      game.review = { title: "All flasks shattered", age: 0 };
+    }
+  }
+
+  function onTimeout() {
+    if (game.resolved || game.mode !== "play") return;
+    game.resolved = true;
+    game.timer = 0;
+    applyKnown(currentQ());
+    sfxBuzzer();
+    openReview("Time's up — read the working, then continue");
+  }
+
+  function submit(pid, cardIndex) {
+    const player = players[pid];
+    const q = currentQ();
+    if (!q || game.mode !== "play" || game.resolved) return;
+    if (player.hearts <= 0 || player.stun > 0) { sfxSoft(); return; }
+    const choice = q.choices[cardIndex];
+    if (!choice) { sfxSoft(); return; }
+    player.hover = cardIndex;
+    if (choice.correct) onCorrect(player);
+    else onWrong(player);
+  }
+
+  function cardAt(x, y) {
+    let best = -1;
+    let bestD = 26;
+    for (const c of ui.cards) {
+      const cx = clamp(x, c.x, c.x + c.w);
+      const cy = clamp(y, c.y, c.y + c.h);
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < bestD) { bestD = d; best = c.i; }
+    }
+    return best;
+  }
+
+  function confirmPlayer(pid) {
+    const card = cardAt(players[pid].x, players[pid].y);
+    if (card < 0) { sfxSoft(); return; }
+    submit(pid, card);
+  }
+
+  function nextQuestion() {
+    game.qIndex += 1;
+    if (!game.round || game.qIndex >= game.round.questions.length) finishRound();
+    else beginQuestion();
+  }
+
+  function finishRound() {
+    const before = players.map((p) => p.hearts);
+    players.forEach((p) => { if (p.hearts < 3) p.hearts += 1; });
+    game.healed = before.some((h, i) => players[i].hearts > h);
+    game.prestige += 200;
+    saveBest();
+    game.mode = "clear";
+    game.clearAge = 0;
+    game.review = { title: "Experiment complete", age: 0 };
+    sfxChord();
+    game.wasEqual = true;
+    burst(view.w * 0.5, view.h * 0.45, COL.gold, 28, 220);
+    announce(`Experiment complete. Plus 200 lab prestige. ${eqNamed("A", game.round.mA, game.round.cA)}. ${eqNamed("B", game.round.mB, game.round.cB)}.`);
+  }
+
+  function advance() {
+    if (game.mode === "review") {
+      if (!game.review || game.review.age < 0.28) return;
+      nextQuestion();
+    } else if (game.mode === "clear") {
+      if (game.clearAge < 0.28) return;
+      game.wave += 1;
+      beginWave();
+    } else if (game.mode === "over") {
+      if (!game.review || game.review.age < 0.28) return;
+      players.forEach((p) => { p.hearts = Math.max(p.hearts, 2); });
+      nextQuestion();
+    }
+  }
+
+  function startGame() {
+    ensureAudio();
+    game.prestige = 0;
+    game.prestigeShown = 0;
+    game.wave = 0;
+    game.fatal = "";
+    players.forEach((p, i) => {
+      p.hearts = 3;
+      p.stars = 0;
+      p.roundStars = 0;
+      p.contrib = 0;
+      p.stun = 0;
+      p.x = view.w * (0.42 + i * 0.12);
+      p.y = view.h * 0.78;
+    });
+    beginWave();
+    if (canvas) canvas.focus();
+  }
+
+  function desiredVisual() {
+    const r = game.round;
+    if (game.mode === "title" || !r) {
+      const m = 72 + Math.sin(game.time * 0.8) * 16;
+      return { a: len(0.15, 5, m), b: len(0.25, 4, m), mass: m, equal: false, note: "" };
+    }
+    if (game.mode === "clear") {
+      return { a: r.lInt, b: r.lInt, mass: r.xInt, equal: true, note: "Equal equilibrium" };
+    }
+    const modelA = game.known.mA && game.known.cA;
+    const modelB = game.known.mB && game.known.cB;
+    const q = currentQ();
+    if (q && q.kind === "difference" && modelA && modelB) {
+      return {
+        a: len(r.mA, r.cA, r.diffMass),
+        b: len(r.mB, r.cB, r.diffMass),
+        mass: r.diffMass,
+        equal: false,
+        note: `${fmt(r.diffMass)} g on each pan`,
+      };
+    }
+    if (q && q.kind === "solveMass" && modelA) {
+      if (r.targetX <= 100) {
+        return {
+          a: len(r.mA, r.cA, r.targetX),
+          b: modelB ? len(r.mB, r.cB, r.targetX) : 12,
+          mass: r.targetX,
+          equal: false,
+          note: "Load set for the Spring A target",
+        };
+      }
+      return {
+        a: game.known.intersect ? r.lInt : len(r.mA, r.cA, 50),
+        b: game.known.intersect ? r.lInt : (modelB ? len(r.mB, r.cB, 50) : 12),
+        mass: game.known.intersect ? r.xInt : 50,
+        equal: !!game.known.intersect,
+        note: `${fmt(r.targetL)} cm is past this rig — solve L = mx + c`,
+      };
+    }
+    if (q && q.kind === "intersect" && modelA && modelB && !game.resolved) {
+      return { a: len(r.mA, r.cA, 50), b: len(r.mB, r.cB, 50), mass: 50, equal: false, note: "50 g — the lengths still differ" };
+    }
+    if (game.known.intersect && modelA && modelB) {
+      return { a: r.lInt, b: r.lInt, mass: r.xInt, equal: true, note: "Equal equilibrium" };
+    }
+    if (modelA && modelB) {
+      return { a: len(r.mA, r.cA, 50), b: len(r.mB, r.cB, 50), mass: 50, equal: false, note: "50 g sample load" };
+    }
+    return {
+      a: game.known.cA ? r.cA : 12,
+      b: game.known.cB ? r.cB : 12,
+      mass: 0,
+      equal: false,
+      note: game.known.cA || game.known.cB ? "Unstretched length locked" : "",
+    };
+  }
+
+  function tagFor(which, targetCm) {
+    if (game.mode === "title") return "";
+    const knownC = which === "A" ? game.known.cA : game.known.cB;
+    const knownM = which === "A" ? game.known.mA : game.known.mB;
+    if (!knownC) return "?";
+    if (game.panMass > 0.8 && knownM) return `${fmt(targetCm)} cm`;
+    const r = game.round;
+    return `${fmt(which === "A" ? r.cA : r.cB)} cm`;
+  }
+
+  function pointOf(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+  function contains(b, p) {
+    return b && p.x >= b.x && p.y >= b.y && p.x <= b.x + b.w && p.y <= b.y + b.h;
+  }
+
+  function onKeyDown(e) {
+    keys.add(e.key);
+    if (e.key === " " || e.key.indexOf("Arrow") === 0) e.preventDefault();
+    if (e.repeat) return;
+    if (e.key === "m" || e.key === "M") { ensureAudio(); toggleMute(); return; }
+    ensureAudio();
+    const k = e.key;
+    if (game.mode === "title") {
+      if (k === " " || k === "Enter") startGame();
+      return;
+    }
+    if (game.mode === "review" || game.mode === "clear" || game.mode === "over") {
+      if (k === " " || k === "Enter" || k === "f" || k === "F" || k === "h" || k === "H") advance();
+      return;
+    }
+    if (k === "ArrowLeft" || k === "ArrowRight" || k === "ArrowUp" || k === "ArrowDown") pointerDrive = false;
+    if (k === " " || k === "Enter") confirmPlayer(0);
+    else if (k === "f" || k === "F") confirmPlayer(1);
+    else if (k === "h" || k === "H") confirmPlayer(2);
+    else if (k === "1" || k === "2" || k === "3" || k === "4") submit(0, Number(k) - 1);
+  }
+  function onKeyUp(e) { keys.delete(e.key); }
+
+  function onPointerDown(e) {
+    const p = pointOf(e);
+    if (contains(ui.mute, p)) { ensureAudio(); toggleMute(); return; }
+    ensureAudio();
+    if (game.mode === "title") { startGame(); return; }
+    if (game.mode === "review" || game.mode === "clear" || game.mode === "over") { advance(); return; }
+    players[0].x = p.x;
+    players[0].y = p.y;
+    pointerDrive = true;
+    const card = cardAt(p.x, p.y);
+    if (card >= 0) submit(0, card);
+  }
+  function onPointerMove(e) {
+    if (e.pointerType === "touch") return;
+    const p = pointOf(e);
+    players[0].x = p.x;
+    players[0].y = p.y;
+    pointerDrive = true;
+  }
+
+  function pollPads(dt) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < 3; i++) {
+      const gp = pads && pads[i];
+      const p = players[i];
+      p.pad = !!(gp && gp.connected);
+      if (!gp || !gp.connected) {
+        padPrev[i].fill(false);
+        continue;
+      }
+      let mx = 0;
+      let my = 0;
+      const ax = gp.axes[0] || 0;
+      const ay = gp.axes[1] || 0;
+      if (Math.abs(ax) > 0.2) mx = Math.sign(ax) * Math.pow(Math.abs(ax), 1.12);
+      if (Math.abs(ay) > 0.2) my = Math.sign(ay) * Math.pow(Math.abs(ay), 1.12);
+      if (gp.buttons[14] && gp.buttons[14].pressed) mx = -1;
+      if (gp.buttons[15] && gp.buttons[15].pressed) mx = 1;
+      if (gp.buttons[12] && gp.buttons[12].pressed) my = -1;
+      if (gp.buttons[13] && gp.buttons[13].pressed) my = 1;
+      if (mx || my) {
+        const mag = Math.hypot(mx, my);
+        const s = mag > 1 ? 1 / mag : 1;
+        p.x = clamp(p.x + mx * s * 760 * dt, 14, view.w - 14);
+        p.y = clamp(p.y + my * s * 760 * dt, 14, view.h - 14);
+        if (i === 0) pointerDrive = false;
+      }
+      const pressed = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      if (pressed && !padPrev[i][0]) {
+        ensureAudio();
+        if (game.mode === "title") startGame();
+        else if (game.mode === "play") confirmPlayer(i);
+        else advance();
+      }
+      padPrev[i][0] = pressed;
+    }
+  }
+
+  function axisDown(p, dir) { return p[dir].some((k) => keys.has(k)); }
+
+  function update(dt) {
+    game.time += dt;
+    if (game.shake > 0) game.shake = Math.max(0, game.shake - dt);
+    if (game.hint) {
+      game.hint.life -= dt;
+      if (game.hint.life <= 0) game.hint = null;
+    }
+    if (game.wrongFlash) {
+      game.wrongFlash.life -= dt;
+      if (game.wrongFlash.life <= 0) game.wrongFlash = null;
+    }
+    if (game.padNotice) {
+      game.padNotice.life -= dt;
+      if (game.padNotice.life <= 0) game.padNotice = null;
+    }
+    if (game.review) game.review.age += dt;
+    if (game.mode === "clear") game.clearAge += dt;
+
+    const vis = desiredVisual();
+    game.labNote = vis.note;
+    game.springA.target = vis.a;
+    game.springB.target = vis.b;
+    game.panMass = vis.mass;
+    const follow = 1 - Math.pow(0.0015, dt);
+    game.springA.cm = lerp(game.springA.cm, game.springA.target, follow);
+    game.springB.cm = lerp(game.springB.cm, game.springB.target, follow);
+    const wantLaser = vis.equal ? 1 : 0;
+    game.laser = lerp(game.laser, wantLaser, 1 - Math.pow(0.012, dt));
+    if (vis.equal && !game.wasEqual && game.mode !== "title" && game.mode !== "clear") sfxChord();
+    game.wasEqual = vis.equal || game.mode === "clear";
+    const visKey = `${game.mode}|${game.wave}|${game.qIndex}|${Math.round(vis.mass)}|${vis.equal ? 1 : 0}`;
+    if (game.visKey == null) game.visKey = visKey;
+    else if (game.visKey !== visKey) {
+      const prevMass = Number(game.visKey.split("|")[3]);
+      game.visKey = visKey;
+      if (game.mode !== "title" && Math.abs(prevMass - vis.mass) > 2) sfxBoing();
+    }
+
+    if (game.mode !== "title") {
+      if (game.pointReveal < 1) {
+        const before = game.pointReveal;
+        game.pointReveal = Math.min(1, game.pointReveal + dt / 1.15);
+        [0.2, 0.4, 0.6, 0.8, 1].forEach((s) => { if (before < s && game.pointReveal >= s) sfxTick(); });
+      }
+      if (game.known.mA && game.known.cA && game.revealA < 1) {
+        const before = game.revealA;
+        game.revealA = Math.min(1, game.revealA + dt / 1.05);
+        [0.25, 0.5, 0.75, 1].forEach((s) => { if (before < s && game.revealA >= s) sfxTick(); });
+      }
+      if (game.known.mB && game.known.cB && game.revealB < 1) {
+        const before = game.revealB;
+        game.revealB = Math.min(1, game.revealB + dt / 1.05);
+        [0.25, 0.5, 0.75, 1].forEach((s) => { if (before < s && game.revealB >= s) sfxTick(); });
+      }
+    }
+
+    if (game.mode === "play" && !game.resolved) {
+      game.timer -= dt;
+      const shown = Math.ceil(Math.max(0, game.timer));
+      if (shown !== game.lastShown) {
+        if (shown <= 5 && shown > 0) sfxClock();
+        game.lastShown = shown;
+      }
+      if (game.timer <= 0) onTimeout();
+    }
+
+    pollPads(dt);
+    players.forEach((p) => {
+      if (p.stun > 0) p.stun = Math.max(0, p.stun - dt);
+      const gp = p.pad && navigator.getGamepads && navigator.getGamepads()[p.id];
+      let stick = false;
+      if (gp) {
+        const ax = gp.axes[0] || 0;
+        const ay = gp.axes[1] || 0;
+        stick = Math.abs(ax) > 0.2 || Math.abs(ay) > 0.2 || (gp.buttons[12] && gp.buttons[12].pressed) || (gp.buttons[13] && gp.buttons[13].pressed) || (gp.buttons[14] && gp.buttons[14].pressed) || (gp.buttons[15] && gp.buttons[15].pressed);
+      }
+      if (stick) return;
+      if (p.id === 0 && pointerDrive) return;
+      let mx = 0;
+      let my = 0;
+      if (axisDown(p, "left")) mx -= 1;
+      if (axisDown(p, "right")) mx += 1;
+      if (axisDown(p, "up")) my -= 1;
+      if (axisDown(p, "down")) my += 1;
+      const mag = Math.hypot(mx, my);
+      if (!mag) return;
+      p.x = clamp(p.x + (mx / mag) * 760 * dt, 14, view.w - 14);
+      p.y = clamp(p.y + (my / mag) * 760 * dt, 14, view.h - 14);
+    });
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age += dt;
+      p.vy += 520 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.age >= p.life) particles.splice(i, 1);
+    }
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].age += dt;
+      floaters[i].y -= 28 * dt;
+      if (floaters[i].age >= floaters[i].life) floaters.splice(i, 1);
+    }
+    game.prestigeShown = lerp(game.prestigeShown, game.prestige, 1 - Math.pow(0.02, dt));
+  }
+
+  function computeLayout() {
+    const w = view.w;
+    const h = view.h;
+    const gap = 10;
+    const topH = clamp(h * 0.075, 54, 76);
+    const bottomH = clamp(h * (h < 780 ? 0.3 : 0.33), h < 780 ? 188 : 214, 300);
+    const midY = topH + 6;
+    const midH = Math.max(120, h - midY - bottomH - 8);
+    const stacked = w < 860;
+    let lab;
+    let graph;
+    if (!stacked) {
+      const labW = clamp(w * 0.36, Math.min(250, w * 0.34), 500);
+      lab = { x: gap, y: midY, w: labW, h: midH };
+      graph = { x: lab.x + lab.w + gap, y: midY, w: w - lab.x - lab.w - gap * 2, h: midH };
+    } else {
+      const labH = clamp(midH * 0.5, Math.min(210, midH * 0.48), midH * 0.56);
+      lab = { x: gap, y: midY, w: w - gap * 2, h: labH };
+      graph = { x: gap, y: midY + labH + 8, w: w - gap * 2, h: Math.max(110, midH - labH - 8) };
+    }
+    const bottom = { x: gap, y: h - bottomH + 2, w: w - gap * 2, h: bottomH - 10 };
+    const headH = fs(118);
+    const playerRow = stacked;
+    const playerW = playerRow ? bottom.w - 16 : clamp(w * 0.17, 156, 220);
+    const playerH = playerRow ? Math.max(36, fs(40)) : Math.max(70, bottom.h - headH - 8);
+    const playerBox = { x: bottom.x + 8, y: bottom.y + headH, w: playerW, h: playerH };
+    const cardArea = playerRow
+      ? { x: bottom.x + 8, y: playerBox.y + playerBox.h + 6, w: bottom.w - 16, h: Math.max(64, bottom.y + bottom.h - playerBox.y - playerBox.h - 12) }
+      : { x: playerBox.x + playerBox.w + 8, y: playerBox.y, w: Math.max(80, bottom.w - playerW - 28), h: playerBox.h };
+    return { topH, lab, graph, bottom, playerBox, cardArea, stacked, headH };
+  }
+
+  function drawBackdrop() {
+    const g = ctx.createLinearGradient(0, 0, 0, view.h);
+    g.addColorStop(0, "#18445a");
+    g.addColorStop(0.42, "#0e2636");
+    g.addColorStop(1, "#07141c");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, view.w, view.h);
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = "#9ad7ff";
+    ctx.lineWidth = 1;
+    for (let x = 40; x < view.w; x += 48) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x - 30, view.h);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawHelix(x, yTop, yBot, color) {
+    const lenPx = Math.max(26, yBot - yTop);
+    const coils = 11;
+    const amp = clamp(16 - (lenPx - 70) * 0.035, 7, 16);
+    const steps = coils * 10;
+    const path = () => {
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const px = x + Math.sin(t * coils * Math.PI * 2) * amp;
+        const py = yTop + t * lenPx;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+    };
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    path();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 6;
+    ctx.stroke();
+    path();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3.2;
+    ctx.stroke();
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const s = Math.sin(t * coils * Math.PI * 2);
+      if (s <= 0.15) continue;
+      const px = x + s * (amp - 1);
+      const py = yTop + t * lenPx;
+      const prev = Math.sin(((i - 1) / steps) * coils * Math.PI * 2);
+      if (i === 0 || prev <= 0.15) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+  }
+
+  function drawPan(x, y, mass) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = "#d5dee6";
+    ctx.beginPath();
+    ctx.moveTo(-28, 0);
+    ctx.lineTo(28, 0);
+    ctx.lineTo(18, 10);
+    ctx.lineTo(-18, 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 28, 6, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "#f5f8fa";
+    ctx.fill();
+    ctx.strokeStyle = "#8496a4";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    const discs = mass <= 0.8 ? 0 : Math.min(5, Math.max(1, Math.round(mass / 18)));
+    for (let i = 0; i < discs; i++) {
+      ctx.beginPath();
+      ctx.ellipse(0, -6 - i * 6.5, 15 - i * 0.3, 3.5, 0, 0, Math.PI * 2);
+      ctx.fillStyle = i % 2 ? "#3d4c59" : "#1c2832";
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawTag(x, y, text, color) {
+    if (!text) return;
+    setFont(800, fs(13));
+    const w = ctx.measureText(text).width + 14;
+    const h = fs(20);
+    roundRect(x - w / 2, y - h / 2, w, h, 8);
+    ctx.fillStyle = "rgba(7,16,26,0.82)";
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.fillStyle = "#f4f8fc";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, x, y + 0.5);
+  }
+
+  function drawApparatus(rect, showTable) {
+    roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.35)";
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
+    ctx.fillStyle = "#102838";
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+    ctx.clip();
+    const glow = ctx.createRadialGradient(rect.x + rect.w * 0.5, rect.y + 10, 10, rect.x + rect.w * 0.5, rect.y + 20, rect.w * 0.55);
+    glow.addColorStop(0, "rgba(255, 214, 140, 0.28)");
+    glow.addColorStop(1, "rgba(255, 214, 140, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h * 0.55);
+
+    const springNeed = Math.min(150, Math.max(96, rect.h * 0.42));
+    const tableH = showTable ? clamp(rect.h - springNeed, 78, 150) : 18;
+    const table = { x: rect.x + 12, y: rect.y + rect.h - tableH - 10, w: rect.w - 24, h: tableH - 4 };
+    const floorY = showTable ? table.y - 8 : rect.y + rect.h - 28;
+    ctx.fillStyle = "#0b1c28";
+    ctx.fillRect(rect.x, floorY, rect.w, rect.y + rect.h - floorY);
+    ctx.fillStyle = "#1d4a3c";
+    ctx.fillRect(rect.x, floorY, rect.w, 8);
+
+    const cx = rect.x + rect.w * 0.5;
+    const clampY = rect.y + Math.max(28, rect.h * 0.07);
+    const leftX = cx - Math.min(78, rect.w * 0.2);
+    const rightX = cx + Math.min(78, rect.w * 0.2);
+    const yTop = rect.y + 16;
+    const yBase = floorY;
+
+    ctx.fillStyle = "#6a4d2c";
+    roundRect(cx - 86, yBase - 12, 172, 14, 4);
+    ctx.fill();
+    ctx.fillStyle = "#8b6840";
+    roundRect(cx - 76, yBase - 16, 152, 8, 3);
+    ctx.fill();
+    const brass = ctx.createLinearGradient(cx - 8, 0, cx + 8, 0);
+    brass.addColorStop(0, "#7a5424");
+    brass.addColorStop(0.38, "#f6de9a");
+    brass.addColorStop(0.72, "#e0b85c");
+    brass.addColorStop(1, "#6b481c");
+    ctx.fillStyle = brass;
+    ctx.fillRect(cx - 6, yTop, 12, yBase - yTop);
+    roundRect(leftX - 18, clampY - 5, rightX - leftX + 36, 11, 3);
+    ctx.fill();
+    [leftX, rightX].forEach((hx) => {
+      ctx.fillStyle = "#5a3e16";
+      roundRect(hx - 9, clampY - 9, 18, 18, 3);
+      ctx.fill();
+      ctx.fillStyle = "#f3d78a";
+      ctx.beginPath();
+      ctx.arc(hx, clampY, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    const zoneTop = clampY + 14;
+    const zoneBot = floorY - 36;
+    const yMax = game.mode === "title" || !game.round ? 35 : game.round.yMax;
+    const yFor = (cm) => {
+      const t = clamp(cm / yMax, 0, 1);
+      return zoneTop + t * Math.max(40, zoneBot - zoneTop);
+    };
+    const bob = REDUCE ? 0 : Math.sin(game.time * 2.4) * 1.4;
+    const ends = [
+      { x: leftX, cm: game.springA.cm, target: game.springA.target, color: COL.springABright, which: "A", phase: 0 },
+      { x: rightX, cm: game.springB.cm, target: game.springB.target, color: COL.springBBright, which: "B", phase: 1.4 },
+    ];
+    if (game.laser > 0.08) {
+      const yL = yFor(ends[0].cm) + 16;
+      ctx.save();
+      ctx.globalAlpha = 0.35 * game.laser;
+      ctx.strokeStyle = COL.gold;
+      ctx.lineWidth = 10;
+      ctx.beginPath();
+      ctx.moveTo(leftX - 24, yL);
+      ctx.lineTo(rightX + 24, yL);
+      ctx.stroke();
+      ctx.globalAlpha = game.laser;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+    ends.forEach((s) => {
+      const extra = REDUCE ? 0 : Math.sin(game.time * 2.4 + s.phase) * 1.3;
+      const end = yFor(s.cm) + (game.mode === "title" ? bob : extra * 0.35);
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(s.x, clampY + 6);
+      ctx.lineTo(s.x, clampY + 12);
+      ctx.stroke();
+      drawHelix(s.x, clampY + 12, end, s.color);
+      ctx.beginPath();
+      ctx.moveTo(s.x, end);
+      ctx.lineTo(s.x, end + 12);
+      ctx.strokeStyle = "#d5dee6";
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      drawPan(s.x, end + 14, game.panMass);
+      const label = tagFor(s.which, s.target);
+      if (label) drawTag(s.x, end + 32, label, s.color);
+    });
+
+    if (game.panMass > 0.8 && game.mode !== "title") {
+      setFont(800, fs(12));
+      ctx.fillStyle = "#f6e7c4";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`${fmt(game.panMass)} g each`, cx, clampY - 10);
+    }
+    if (showTable && game.labNote) {
+      setFont(700, fs(11));
+      ctx.fillStyle = "#d7ecff";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      const lines = wrap(game.labNote, rect.w * 0.46).slice(0, 2);
+      lines.forEach((line, i) => ctx.fillText(line, rect.x + 12, rect.y + 8 + i * fs(14)));
+    }
+    if (showTable && game.round) drawTable(table, game.round, currentQ());
+    ctx.restore();
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 1.5;
+    roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+    ctx.stroke();
+  }
+
+  function drawTable(rect, round, q) {
+    roundRect(rect.x, rect.y, rect.w, rect.h, 10);
+    ctx.fillStyle = "#f3ecdc";
+    ctx.fill();
+    ctx.fillStyle = "#c4473a";
+    roundRect(rect.x + 10, rect.y + 6, rect.w - 20, 6, 2);
+    ctx.fill();
+    setFont(800, fs(11));
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("EXPERIMENTAL RESULTS    L in cm", rect.x + 10, rect.y + 22);
+    const top = rect.y + 32;
+    const labelW = Math.min(92, rect.w * 0.24);
+    const colW = (rect.w - labelW - 16) / 5;
+    const rowH = (rect.h - 40) / 3;
+    const hot = q && q.hot;
+    for (let c = 0; c < 5; c++) {
+      const x = rect.x + labelW + c * colW;
+      ctx.fillStyle = "rgba(27,43,60,0.06)";
+      if (c % 2 === 0) ctx.fillRect(x, top, colW, rowH * 3);
+    }
+    const paintHot = (rowName, rowIndex) => {
+      if (!hot || hot.rows.indexOf(rowName) === -1) return;
+      for (let c = 0; c < 5; c++) {
+        if (hot.cols && hot.cols.indexOf(c) === -1) continue;
+        const x = rect.x + labelW + c * colW + 2;
+        const y = top + rowH * rowIndex + 2;
+        ctx.fillStyle = hot.soft ? "rgba(255, 196, 80, 0.28)" : "rgba(255, 186, 48, 0.72)";
+        roundRect(x, y, colW - 4, rowH - 4, 4);
+        ctx.fill();
+      }
+    };
+    paintHot("A", 1);
+    paintHot("B", 2);
+    setFont(800, fs(12));
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = "center";
+    MASSES.forEach((m, i) => {
+      ctx.fillText(String(m), rect.x + labelW + colW * i + colW / 2, top + rowH * 0.5);
+    });
+    ctx.textAlign = "left";
+    ctx.fillText("x (g)", rect.x + 10, top + rowH * 0.5);
+    const drawRow = (name, color, values, row) => {
+      const y = top + rowH * (row + 0.5);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(rect.x + 16, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = COL.ink;
+      ctx.textAlign = "left";
+      setFont(800, fs(12));
+      ctx.fillText(name, rect.x + 24, y);
+      ctx.textAlign = "center";
+      values.forEach((v, i) => ctx.fillText(fmt(v), rect.x + labelW + colW * i + colW / 2, y));
+    };
+    drawRow("Spring A", COL.springA, round.tableA, 1);
+    drawRow("Spring B", COL.springB, round.tableB, 2);
+  }
+
+  function drawCross(x, y, color, size) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.3;
+    ctx.beginPath();
+    ctx.moveTo(x - size, y - size);
+    ctx.lineTo(x + size, y + size);
+    ctx.moveTo(x + size, y - size);
+    ctx.lineTo(x - size, y + size);
+    ctx.stroke();
+  }
+
+  function drawGraph(rect) {
+    const round = game.round;
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.28)";
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
+    roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+    ctx.fillStyle = COL.paper;
+    ctx.fill();
+    ctx.restore();
+    if (!round) return;
+    const yMax = round.yMax;
+    const left = Math.max(46, fs(52));
+    const bottom = Math.max(30, fs(34));
+    const top = Math.max(44, fs(50));
+    const right = Math.max(16, fs(18));
+    const plot = {
+      x: Math.round(rect.x + left),
+      y: Math.round(rect.y + top),
+      w: Math.max(30, Math.round(rect.w - left - right)),
+      h: Math.max(30, Math.round(rect.h - top - bottom)),
+    };
+    layout.plot = plot;
+    const mapX = (mass) => plot.x + (mass / X_MAX) * plot.w;
+    const mapY = (L) => plot.y + plot.h - (L / yMax) * plot.h;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+    ctx.fillStyle = "#fbf7ef";
+    ctx.fillRect(plot.x, plot.y, plot.w, plot.h);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(48, 84, 120, 0.16)";
+    for (let x = 0; x <= X_MAX; x += 10) {
+      ctx.beginPath();
+      ctx.moveTo(mapX(x), plot.y);
+      ctx.lineTo(mapX(x), plot.y + plot.h);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= yMax; y += 1) {
+      ctx.beginPath();
+      ctx.moveTo(plot.x, mapY(y));
+      ctx.lineTo(plot.x + plot.w, mapY(y));
+      ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(28, 58, 92, 0.45)";
+    ctx.lineWidth = 1.25;
+    for (let x = 0; x <= X_MAX; x += 20) {
+      ctx.beginPath();
+      ctx.moveTo(mapX(x), plot.y);
+      ctx.lineTo(mapX(x), plot.y + plot.h);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= yMax; y += 5) {
+      ctx.beginPath();
+      ctx.moveTo(plot.x, mapY(y));
+      ctx.lineTo(plot.x + plot.w, mapY(y));
+      ctx.stroke();
+    }
+
+    const q = currentQ();
+    const showGuide = q && (game.mode === "play" || game.mode === "review" || game.mode === "over");
+    if (showGuide && q.kind === "solveMass" && round.targetL <= yMax + 0.01) {
+      ctx.save();
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = COL.springA;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(plot.x, mapY(round.targetL));
+      ctx.lineTo(plot.x + plot.w, mapY(round.targetL));
+      ctx.stroke();
+      ctx.restore();
+      if (game.mode !== "play" && round.targetX <= X_MAX) {
+        ctx.fillStyle = COL.gold;
+        ctx.beginPath();
+        ctx.arc(mapX(round.targetX), mapY(round.targetL), 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (showGuide && q.kind === "difference") {
+      const x = mapX(round.diffMass);
+      const yA = mapY(len(round.mA, round.cA, round.diffMass));
+      const yB = mapY(len(round.mB, round.cB, round.diffMass));
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = "rgba(27,43,60,0.55)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(x, plot.y);
+      ctx.lineTo(x, plot.y + plot.h);
+      ctx.stroke();
+      ctx.restore();
+      const y1 = Math.min(yA, yB);
+      const y2 = Math.max(yA, yB);
+      ctx.strokeStyle = COL.gold;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 10, y1);
+      ctx.lineTo(x + 10, y2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x + 6, y1); ctx.lineTo(x + 14, y1);
+      ctx.moveTo(x + 6, y2); ctx.lineTo(x + 14, y2);
+      ctx.stroke();
+      setFont(800, fs(12));
+      ctx.fillStyle = COL.ink;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      const gapLabel = game.mode === "play" ? "?" : `${fmt(round.diff)} cm`;
+      ctx.fillText(gapLabel, x + 16, (y1 + y2) / 2);
+    }
+
+    drawSeries(mapX, mapY, round.mA, round.cA, COL.springA, game.revealA);
+    drawSeries(mapX, mapY, round.mB, round.cB, COL.springB, game.revealB);
+
+    if ((q && (q.kind === "gradientA" || q.kind === "gradientB") && game.mode !== "play") || (game.mode === "review" && q && (q.kind === "gradientA" || q.kind === "gradientB"))) {
+      const which = q.kind === "gradientA" ? "A" : "B";
+      const m = which === "A" ? round.mA : round.mB;
+      const c = which === "A" ? round.cA : round.cB;
+      const color = which === "A" ? COL.springA : COL.springB;
+      const x0 = mapX(0), y0 = mapY(c), x1 = mapX(20), y1 = mapY(len(m, c, 20));
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.lineTo(x1, y1);
+      ctx.stroke();
+      ctx.restore();
+      setFont(800, fs(11));
+      ctx.fillStyle = color;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText("run 20 g", (x0 + x1) / 2, y0 + 4);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`rise ${fmt(len(m, c, 20) - c)} cm`, x1 + 4, (y0 + y1) / 2);
+    }
+
+    const shown = Math.min(5, Math.floor(game.pointReveal * 5 + 1e-4));
+    for (let i = 0; i < shown; i++) {
+      const x = MASSES[i];
+      drawPoint(mapX(x), mapY(round.tableA[i]), COL.springA);
+      drawPoint(mapX(x), mapY(round.tableB[i]), COL.springB);
+    }
+
+    if (game.laser > 0.04) {
+      const px = mapX(round.xInt);
+      const py = mapY(round.lInt);
+      ctx.save();
+      ctx.globalAlpha = game.laser;
+      ctx.strokeStyle = COL.gold;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(plot.x, py);
+      ctx.lineTo(plot.x + plot.w, py);
+      ctx.stroke();
+      ctx.globalAlpha = game.laser * 0.28;
+      ctx.lineWidth = 8;
+      ctx.stroke();
+      ctx.globalAlpha = game.laser;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(px, py, 7 + Math.sin(game.time * 5) * 1.4, 0, Math.PI * 2);
+      ctx.stroke();
+      if (!REDUCE) {
+        ctx.fillStyle = COL.gold;
+        for (let i = 0; i < 4; i++) {
+          const t = (game.time * 0.18 + i / 4) % 1;
+          ctx.fillRect(plot.x + t * plot.w, py - 1.4, 3, 3);
+        }
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+
+    ctx.strokeStyle = COL.ink;
+    ctx.fillStyle = COL.ink;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(plot.x, plot.y);
+    ctx.lineTo(plot.x, plot.y + plot.h);
+    ctx.lineTo(plot.x + plot.w, plot.y + plot.h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(plot.x, plot.y + 2);
+    ctx.lineTo(plot.x - 4, plot.y + 10);
+    ctx.lineTo(plot.x + 4, plot.y + 10);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(plot.x + plot.w - 2, plot.y + plot.h);
+    ctx.lineTo(plot.x + plot.w - 10, plot.y + plot.h - 4);
+    ctx.lineTo(plot.x + plot.w - 10, plot.y + plot.h + 4);
+    ctx.closePath();
+    ctx.fill();
+
+    setFont(700, fs(12));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (let x = 0; x <= X_MAX; x += 20) {
+      if (x === 0) continue;
+      ctx.fillText(String(x), mapX(x), plot.y + plot.h + 6);
+    }
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (let y = 0; y <= yMax; y += 5) {
+      if (y === 0) continue;
+      ctx.fillText(String(y), plot.x - 6, mapY(y));
+    }
+    ctx.textAlign = "right";
+    ctx.textBaseline = "top";
+    ctx.fillText("0", plot.x - 6, plot.y + plot.h + 4);
+    setFont(800, fs(13));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("Mass x (g)", plot.x + plot.w / 2, rect.y + rect.h - 8);
+    ctx.save();
+    ctx.translate(rect.x + 16, plot.y + plot.h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText("Length L (cm)", 0, 0);
+    ctx.restore();
+
+    setFont(800, fs(15));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.ink;
+    ctx.fillText("Graph of L against x", rect.x + 16, rect.y + fs(16));
+    const eqA = game.known.mA && game.known.cA ? eqNamed("A", round.mA, round.cA) : game.known.cA ? `L_A = mx + ${fmt(round.cA)}` : "L_A = mx + c";
+    const eqB = game.known.mB && game.known.cB ? eqNamed("B", round.mB, round.cB) : game.known.cB ? `L_B = mx + ${fmt(round.cB)}` : "L_B = mx + c";
+    setFont(800, fs(13));
+    const legendY = rect.y + fs(34);
+    drawCross(rect.x + 22, legendY, COL.springA, 4);
+    ctx.fillStyle = COL.springA;
+    ctx.textAlign = "left";
+    ctx.fillText(eqA, rect.x + 32, legendY);
+    const shift = Math.max(170, ctx.measureText(eqA).width + 56);
+    drawCross(rect.x + 22 + shift, legendY, COL.springB, 4);
+    ctx.fillStyle = COL.springB;
+    ctx.fillText(eqB, rect.x + 32 + shift, legendY);
+  }
+
+  function drawPoint(x, y, color) {
+    ctx.beginPath();
+    ctx.arc(x, y, 6.5, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(246,241,230,0.94)";
+    ctx.fill();
+    drawCross(x, y, color, 5);
+  }
+
+  function drawSeries(mapX, mapY, m, c, color, reveal) {
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    if (reveal < 0.02) {
+      const n = Math.min(5, Math.floor(game.pointReveal * 5 + 1e-4));
+      if (n < 2) return;
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const px = mapX(MASSES[i]);
+        const py = mapY(len(m, c, MASSES[i]));
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.3;
+      ctx.stroke();
+      return;
+    }
+    const reach = X_MAX * Math.min(1, reveal);
+    ctx.beginPath();
+    const steps = 28;
+    for (let i = 0; i <= steps; i++) {
+      const x = (reach * i) / steps;
+      const px = mapX(x);
+      const py = mapY(m * x + c);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 5.2;
+    ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+  }
+
+  function drawFlask(x, y, filled, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(-3.2, -8);
+    ctx.lineTo(-2.4, -2);
+    ctx.quadraticCurveTo(-8, 1, -6.5, 7);
+    ctx.quadraticCurveTo(0, 12, 6.5, 7);
+    ctx.quadraticCurveTo(8, 1, 2.4, -2);
+    ctx.lineTo(3.2, -8);
+    ctx.closePath();
+    ctx.fillStyle = filled ? color : "rgba(255,255,255,0.08)";
+    ctx.fill();
+    ctx.strokeStyle = filled ? shade(color, -20) : "rgba(255,255,255,0.45)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPlayers(rect) {
+    const row = layout.stacked;
+    players.forEach((p, i) => {
+      const slot = row
+        ? { x: rect.x + (rect.w / 3) * i, y: rect.y, w: rect.w / 3, h: rect.h }
+        : { x: rect.x, y: rect.y + (rect.h / 3) * i, w: rect.w, h: rect.h / 3 };
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      setFont(800, fs(13));
+      ctx.fillStyle = p.color;
+      const name = p.pad ? `${p.label} PAD` : p.label;
+      ctx.fillText(name, slot.x + 4, slot.y + slot.h * (row ? 0.5 : 0.32));
+      const nameW = ctx.measureText(name).width;
+      for (let h = 0; h < 3; h++) drawFlask(slot.x + nameW + 22 + h * 16, slot.y + slot.h * (row ? 0.5 : 0.32), h < p.hearts, p.color);
+      setFont(700, fs(12));
+      ctx.fillStyle = "#d7e6f2";
+      const starY = row ? slot.y + slot.h * 0.5 : slot.y + slot.h * 0.72;
+      const starX = row ? slot.x + nameW + 74 : slot.x + 4;
+      ctx.fillText(`★ ${p.stars}   ${p.contrib | 0}`, starX, starY);
+    });
+  }
+
+  function drawCard(c, choice) {
+    const hovers = players.filter((p) => p.hover === c.i && p.hearts > 0);
+    const hot = hovers[0];
+    const bad = game.wrongFlash && game.wrongFlash.index === c.i;
+    const good = game.mode !== "play" && choice.correct && (game.mode === "review" || game.mode === "over");
+    roundRect(c.x, c.y, c.w, c.h, 14);
+    const g = ctx.createLinearGradient(c.x, c.y, c.x, c.y + c.h);
+    g.addColorStop(0, hot ? "#274f68" : "#1a384c");
+    g.addColorStop(1, "#102433");
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = hot || good || bad ? 3 : 1.5;
+    ctx.strokeStyle = bad ? COL.bad : good ? COL.good : hot ? hot.color : "rgba(255,255,255,0.16)";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(c.x + 16, c.y + 16, 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = good ? COL.good : bad ? COL.bad : hot ? hot.color : "#35566c";
+    ctx.fill();
+    setFont(800, fs(11));
+    ctx.fillStyle = "rgba(220,236,246,0.7)";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(c.i + 1), c.x + c.w - 10, c.y + 16);
+    let size = fs(Math.min(26, c.h * 0.28));
+    setFont(800, size);
+    while (size > 12 && choice.lines.some((line) => ctx.measureText(line).width > c.w - 20)) {
+      size -= 1;
+      setFont(800, size);
+    }
+    ctx.textAlign = "center";
+    const block = choice.lines.length * (size + 3);
+    let y = c.y + c.h * 0.58 - block / 2 + size / 2;
+    const widest = Math.max(...choice.lines.map((line) => ctx.measureText(line).width));
+    roundRect(c.x + c.w / 2 - widest / 2 - 7, y - size * 0.72, widest + 14, block + size * 0.35, 8);
+    ctx.fillStyle = "rgba(8, 18, 28, 0.78)";
+    ctx.fill();
+    ctx.fillStyle = "#f4f8fb";
+    choice.lines.forEach((line) => {
+      ctx.fillText(line, c.x + c.w / 2, y);
+      y += size + 3;
+    });
+    hovers.forEach((p, i) => {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(c.x + 16 + i * 12, c.y + c.h - 12, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function drawReticle(p) {
+    if (game.mode === "title") return;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.globalAlpha = p.hearts <= 0 ? 0.35 : p.stun > 0 ? 0.55 : 1;
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0.5, Math.PI * 2 - 0.35);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-15, 0); ctx.lineTo(-5, 0);
+    ctx.moveTo(5, 0); ctx.lineTo(15, 0);
+    ctx.moveTo(0, -15); ctx.lineTo(0, -5);
+    ctx.moveTo(0, 5); ctx.lineTo(0, 15);
+    ctx.stroke();
+    setFont(800, fs(11));
+    ctx.fillStyle = p.color;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(p.label, 12, -12);
+    ctx.restore();
+  }
+
+  function drawHint() {
+    if (!game.hint || game.mode !== "play") return;
+    const maxW = Math.min(480, view.w - 28);
+    setFont(650, fs(15));
+    const lines = wrap(game.hint.text, maxW - 24);
+    const lh = fs(20);
+    const h = lines.length * lh + 18;
+    const w = maxW;
+    let x = clamp(game.hint.who.x - w / 2, 10, view.w - w - 10);
+    let y = layout.bottom.y - h - 12;
+    roundRect(x, y, w, h, 12);
+    ctx.fillStyle = COL.cream;
+    ctx.fill();
+    ctx.strokeStyle = game.hint.who.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    lines.forEach((line, i) => ctx.fillText(line, x + 12, y + 12 + lh * i + lh / 2));
+  }
+
+  function drawMute(b) {
+    roundRect(b.x, b.y, b.w, b.h, 12);
+    ctx.fillStyle = audio.muted ? "#5a2430" : "#1c4d62";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.2)";
+    ctx.stroke();
+    setFont(800, fs(12));
+    ctx.fillStyle = "#f4f8fb";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(audio.muted ? (b.w < 70 ? "OFF" : "SOUND OFF") : (b.w < 70 ? "ON" : "SOUND ON"), b.x + b.w / 2, b.y + b.h / 2);
+  }
+
+  function drawTop() {
+    const q = currentQ();
+    const y = layout.topH * 0.5;
+    const narrow = view.w < 760;
+    setFont(800, narrow ? fs(15) : fs(18));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#f4f8fb";
+    const brand = narrow ? "SPRING LAB" : "SPRING & SCALE LAB";
+    ctx.fillText(brand, 14, y);
+    let left = 14 + ctx.measureText(brand).width + 14;
+
+    const muteW = narrow ? fs(58) : fs(96);
+    const mute = { x: view.w - muteW - 10, y: 9, w: muteW, h: Math.max(28, layout.topH - 18) };
+    ui.mute = mute;
+    setFont(800, fs(13));
+    const prestige = narrow ? `${Math.round(game.prestigeShown)}` : `PRESTIGE ${Math.round(game.prestigeShown)}`;
+    const prestigeW = ctx.measureText(prestige).width;
+    let right = mute.x - 12;
+    ctx.textAlign = "right";
+    ctx.fillStyle = COL.gold;
+    ctx.fillText(prestige, right, y);
+    right -= prestigeW + 14;
+    if (game.mode === "play" && q) {
+      const cx = right - 16;
+      const frac = clamp(game.timer / q.timer, 0, 1);
+      ctx.beginPath();
+      ctx.arc(cx, y, 15, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(255,255,255,0.15)";
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, y, 15, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+      ctx.strokeStyle = frac < 0.18 ? COL.bad : frac < 0.4 ? "#ffcf70" : "#7dffa6";
+      ctx.stroke();
+      setFont(800, fs(12));
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#f4f8fb";
+      ctx.fillText(String(Math.max(0, Math.ceil(game.timer))), cx, y + 1);
+      right = cx - 24;
+    }
+    if (game.mode !== "title" && game.round && right - left > 70) {
+      setFont(700, fs(13));
+      ctx.textAlign = "left";
+      ctx.fillStyle = "#b7d4e6";
+      const full = `Exp ${game.wave + 1}  ·  ${game.round.name}`;
+      const short = `Exp ${game.wave + 1}`;
+      const exp = ctx.measureText(full).width < right - left - 70 ? full : short;
+      if (ctx.measureText(exp).width < right - left - 8) {
+        ctx.fillText(exp, left, y);
+        left += ctx.measureText(exp).width + 12;
+      }
+      if (q && left + 7 * 14 < right) {
+        for (let i = 0; i < 7; i++) {
+          ctx.beginPath();
+          ctx.arc(left + 6 + i * 14, y, 3.5, 0, Math.PI * 2);
+          ctx.fillStyle = i < game.qIndex ? COL.good : i === game.qIndex ? COL.gold : "rgba(255,255,255,0.22)";
+          ctx.fill();
+        }
+      }
+    }
+    drawMute(mute);
+  }
+
+  function drawConsole() {
+    const b = layout.bottom;
+    roundRect(b.x, b.y, b.w, b.h, 16);
+    ctx.fillStyle = "#0c1c28";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    const q = currentQ();
+    if (!q) return;
+    let textY = b.y + fs(8);
+    setFont(800, fs(13));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#8fd4ff";
+    ctx.fillText(STAGE[q.stage], b.x + fs(14), textY);
+    textY += fs(18);
+    setFont(800, fs(18));
+    ctx.fillStyle = "#f4f8fb";
+    const promptLines = wrap(q.prompt, b.w - fs(28)).slice(0, 2);
+    promptLines.forEach((line) => {
+      ctx.fillText(line, b.x + fs(14), textY);
+      textY += fs(22);
+    });
+    textY += fs(2);
+    setFont(650, fs(13));
+    ctx.fillStyle = "#e7c27a";
+    wrap(q.scaffold, b.w - fs(28)).slice(0, 2).forEach((line) => {
+      ctx.fillText(line, b.x + fs(14), textY);
+      textY += fs(16);
+    });
+    ui.cards = [];
+    const area = layout.cardArea;
+    const gap = 8;
+    const cw = (area.w - gap * 3) / 4;
+    q.choices.forEach((choice, i) => {
+      const card = { i, x: area.x + i * (cw + gap), y: area.y, w: cw, h: area.h };
+      ui.cards.push(card);
+    });
+    if (!game.reticlesSnapped && ui.cards.length === 4) {
+      players.forEach((p, i) => {
+        const c = ui.cards[Math.min(i, ui.cards.length - 1)];
+        p.x = c.x + c.w * (0.28 + i * 0.14);
+        p.y = c.y + 18;
+      });
+      game.reticlesSnapped = true;
+    }
+    players.forEach((p) => { p.hover = cardAt(p.x, p.y); });
+    q.choices.forEach((choice, i) => drawCard(ui.cards[i], choice));
+    drawPlayers(layout.playerBox);
+  }
+
+  function drawNotebook(title, lines, answer, foot) {
+    const parkLeft = view.w >= 1000 && layout && layout.lab;
+    const w = parkLeft ? Math.min(layout.lab.w - 16, 560) : Math.min(560, view.w - 24);
+    const maxText = w - 36;
+    setFont(700, fs(15));
+    const wrapped = [];
+    lines.forEach((line) => wrap(line, maxText).forEach((part) => wrapped.push(part)));
+    const maxH = parkLeft ? layout.lab.h - 16 : Math.min(view.h * 0.46, (layout && layout.bottom ? layout.bottom.h + 80 : view.h * 0.46));
+    let lh = fs(21);
+    let h = fs(86) + wrapped.length * lh;
+    if (h > maxH) {
+      lh = Math.max(fs(14), Math.floor((maxH - fs(86)) / Math.max(1, wrapped.length)));
+      h = Math.min(maxH, fs(86) + wrapped.length * lh);
+    }
+    const x = parkLeft ? layout.lab.x + 8 : (view.w - w) / 2;
+    const y = parkLeft ? layout.lab.y + 8 : Math.max(layout ? layout.graph.y + 8 : 12, view.h - h - 10);
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.35)";
+    ctx.shadowBlur = 18;
+    roundRect(x, y, w, h, 16);
+    ctx.fillStyle = "#fff9ef";
+    ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = "#e4d3ae";
+    ctx.lineWidth = 2;
+    roundRect(x, y, w, h, 16);
+    ctx.stroke();
+    setFont(800, fs(18));
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(title, x + 18, y + 14);
+    setFont(800, fs(16));
+    ctx.fillStyle = "#8a5a00";
+    ctx.fillText(`Answer:  ${answer}`, x + 18, y + 40);
+    setFont(650, Math.min(fs(15), lh - 2));
+    ctx.fillStyle = COL.ink;
+    wrapped.forEach((line, i) => ctx.fillText(line, x + 18, y + fs(68) + i * lh));
+    setFont(800, fs(13));
+    ctx.fillStyle = "#3d6d8a";
+    ctx.fillText(foot, x + 18, y + h - fs(20));
+  }
+
+  function drawClear() {
+    const r = game.round;
+    const lines = [
+      eqNamed("A", r.mA, r.cA),
+      eqNamed("B", r.mB, r.cB),
+      `Same length at x = ${fmt(r.xInt)} g,  L = ${fmt(r.lInt)} cm`,
+      `Team lab prestige +200`,
+    ];
+    players.forEach((p) => lines.push(`${p.name}: ${p.roundStars} star${p.roundStars === 1 ? "" : "s"} this experiment`));
+    if (game.healed) lines.push("Careful handling: each cracked flask is restored by 1.");
+    drawNotebook("Experiment complete", lines, "Both models locked", "Space, A, or click for the next experiment");
+  }
+
+  function drawTitle() {
+    const wide = view.w >= 980;
+    const lab = wide
+      ? { x: 20, y: 78, w: Math.min(500, view.w * 0.4), h: view.h - 110 }
+      : { x: 12, y: 70, w: view.w - 24, h: Math.max(180, view.h * 0.34) };
+    drawApparatus(lab, false);
+    const px = wide ? lab.x + lab.w + 28 : 28;
+    const py = wide ? 86 : lab.y + lab.h + 16;
+    const pw = view.w - px - 24;
+    setFont(800, fs(13));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#8fd4ff";
+    ctx.fillText("SINGAPORE SECONDARY 2   ·   G2 LINEAR GRAPHS", px, py);
+    let titleSize = fs(46);
+    setFont(800, titleSize);
+    while (titleSize > 26 && ctx.measureText("SPRING & SCALE LAB").width > pw) {
+      titleSize -= 2;
+      setFont(800, titleSize);
+    }
+    ctx.fillStyle = "#f7fbff";
+    ctx.fillText("SPRING & SCALE LAB", px, py + fs(22));
+    setFont(700, fs(20));
+    ctx.fillStyle = COL.gold;
+    ctx.fillText("Dual-Crane Equilibrium", px, py + fs(22) + titleSize + 4);
+    setFont(650, fs(16));
+    ctx.fillStyle = "#d5e4ef";
+    const blurb = wrap("Read the spring table. Build L = mx + c for both cranes. Then find the mass where their lengths match.", pw);
+    blurb.slice(0, 3).forEach((line, i) => ctx.fillText(line, px, py + fs(22) + titleSize + fs(36) + i * fs(22)));
+    const controls = [
+      ["#ff4b55", "P1 Red", "Arrows move   ·   Space locks   ·   keys 1–4   ·   Pad A"],
+      ["#3c7dff", "P2 Blue", "W A S D move   ·   F locks   ·   Pad A"],
+      ["#ffd23f", "P3 Yellow", "I J K L move   ·   H locks   ·   Pad A"],
+    ];
+    const cy = py + fs(22) + titleSize + fs(36) + blurb.slice(0, 3).length * fs(22) + 16;
+    controls.forEach((row, i) => {
+      const y = cy + i * fs(28);
+      ctx.fillStyle = row[0];
+      ctx.beginPath();
+      ctx.arc(px + 7, y + 8, 5, 0, Math.PI * 2);
+      ctx.fill();
+      setFont(800, fs(14));
+      ctx.fillStyle = row[0];
+      const labelW = ctx.measureText(row[1]).width;
+      ctx.fillText(row[1], px + 20, y);
+      setFont(650, fs(14));
+      ctx.fillStyle = "#d5e4ef";
+      ctx.fillText(row[2], px + 20 + labelW + 14, y);
+    });
+    const by = cy + fs(100);
+    const bw = Math.min(320, pw);
+    const pulse = 0.5 + 0.5 * Math.sin(game.time * 3);
+    roundRect(px, by, bw, fs(48), 12);
+    ctx.fillStyle = `rgba(255, 209, 92, ${0.9})`;
+    ctx.fill();
+    setFont(800, fs(18));
+    ctx.fillStyle = "#2a2108";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("BEGIN EXPERIMENT", px + bw / 2, by + fs(24));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    setFont(650, fs(13));
+    ctx.fillStyle = `rgba(215, 228, 239, ${0.7 + pulse * 0.3})`;
+    ctx.fillText("Space, click, or gamepad A.   First correct lock earns the star.   A wrong lock cracks only your flask.", px, by + fs(58));
+    if (game.best > 0) {
+      setFont(800, fs(14));
+      ctx.fillStyle = COL.gold;
+      ctx.fillText(`Best lab prestige  ${game.best | 0}`, px, by + fs(82));
+    }
+    setFont(650, fs(12));
+    ctx.fillStyle = "#9eb4c4";
+    ctx.fillText("8BitDo: standard / X-input layout. D-pad or stick moves, A confirms.", px, by + fs(104));
+  }
+
+  function render() {
+    layout = computeLayout();
+    ui.cards = [];
+    ctx.clearRect(0, 0, view.w, view.h);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.shadowBlur = 0;
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    if (game.fatal) {
+      ctx.fillStyle = "#fff8ec";
+      ctx.fillRect(0, 0, view.w, view.h);
+      setFont(700, 18);
+      ctx.fillStyle = "#1b2b3c";
+      ctx.fillText(game.fatal, 24, 40);
+      return;
+    }
+    drawBackdrop();
+    if (game.mode === "title") {
+      drawTitle();
+      drawTop();
+      return;
+    }
+    ctx.save();
+    if (game.shake > 0) {
+      const m = game.shake * 8;
+      ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+    }
+    drawApparatus(layout.lab, true);
+    drawGraph(layout.graph);
+    ctx.restore();
+    drawConsole();
+    if (game.mode === "play" || game.mode === "review") players.forEach(drawReticle);
+    particles.forEach((p) => {
+      ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    floaters.forEach((f) => {
+      ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+      setFont(800, fs(16));
+      ctx.fillStyle = f.color;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(f.text, f.x, f.y);
+    });
+    ctx.globalAlpha = 1;
+    drawHint();
+    const q = currentQ();
+    if (game.mode === "review" && q && game.review) {
+      drawNotebook(game.review.title, q.working, q.answer, "Space, A, or click to continue");
+    } else if (game.mode === "over" && q && game.review) {
+      drawNotebook(game.review.title, q.working, q.answer, "Flasks return to 2. Space or click to continue.");
+    } else if (game.mode === "clear") drawClear();
+    if (game.padNotice) {
+      setFont(800, fs(14));
+      ctx.fillStyle = "#f4f8fb";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(game.padNotice.text, 16, layout.topH + 8);
+    }
+    drawTop();
+  }
+
+  function frame(ts) {
+    if (!frame.last) frame.last = ts;
+    const dt = Math.min(0.05, (ts - frame.last) / 1000 || 0);
+    frame.last = ts;
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    view.dpr = Math.min(2, window.devicePixelRatio || 1);
+    view.w = Math.max(360, window.innerWidth);
+    view.h = Math.max(520, window.innerHeight);
+    canvas.width = Math.round(view.w * view.dpr);
+    canvas.height = Math.round(view.h * view.dpr);
+    canvas.style.width = `${view.w}px`;
+    canvas.style.height = `${view.h}px`;
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  }
+
+  function boot() {
+    try { selfTest(); } catch (err) {
+      console.error(err);
+      game.fatal = err && err.message ? err.message : String(err);
+    }
+    canvas = document.getElementById("game");
+    ctx = canvas.getContext("2d");
+    liveEl = document.getElementById("live");
+    try {
+      audio.muted = localStorage.getItem("springScaleMute") === "1";
+      game.best = Number(localStorage.getItem("springScaleBest") || 0) || 0;
+    } catch (e) { /* ignore */ }
+    REDUCE = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    resize();
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", () => keys.clear());
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    window.addEventListener("gamepadconnected", (e) => {
+      game.padNotice = { text: `Gamepad ${e.gamepad.index + 1} ready`, life: 2.6 };
+    });
+    canvas.focus();
+    requestAnimationFrame(frame);
+  }
+
+  if (typeof window !== "undefined") {
+    window.__springLab = {
+      get state() {
+        const q = currentQ();
+        return {
+          mode: game.mode,
+          wave: game.wave,
+          qIndex: game.qIndex,
+          kind: q && q.kind,
+          prompt: q && q.prompt,
+          answer: q && q.answer,
+          choices: q ? q.choices.map((c) => ({ text: c.lines.join(" | "), correct: c.correct })) : [],
+          prestige: game.prestige,
+          hearts: players.map((p) => p.hearts),
+          stars: players.map((p) => p.stars),
+          known: Object.assign({}, game.known),
+          fatal: game.fatal,
+          timer: game.timer,
+        };
+      },
+      cards() { return ui.cards.map((c) => ({ i: c.i, x: c.x, y: c.y, w: c.w, h: c.h })); },
+      start: startGame,
+    };
+  }
+
+  if (typeof document === "undefined") selfTest();
+  else boot();
+})();
+</script>
+</body>
+</html>
