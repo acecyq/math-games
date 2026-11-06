@@ -72,6 +72,16 @@ const LEVEL_NAME = {
   3: 'Mixed numbers and regrouping',
 };
 
+const YEARS = [
+  { id: 'p4', short: 'P4', name: 'Primary 4', line: 'Friendly denominators' },
+  { id: 'p5', short: 'P5', name: 'Primary 5', line: 'Unlike denominators' },
+  { id: 'p6', short: 'P6', name: 'Primary 6', line: 'Mixed numbers' },
+];
+
+function yearInfo(id) {
+  return YEARS.find((year) => year.id === id) || YEARS[0];
+}
+
 const TOPPING = {
   pepperoni: { label: 'Pepperoni' },
   mushroom: { label: 'Mushroom' },
@@ -143,10 +153,13 @@ const game = {
   mark: null,
   timeLeft: 0,
   timeMax: 90,
+  difficulty: 'p4',
   team: 0,
   served: 0,
   lost: 0,
   record: 0,
+  records: { p4: 0, p5: 0, p6: 0 },
+  seen: new Set(),
   newRecord: false,
   starsTotal: 0,
   lastStars: 0,
@@ -328,9 +341,9 @@ function scriptedShift() {
 }
 
 const PAIR_BANK = {
-  1: [[2, 4], [2, 6], [2, 8], [2, 10], [3, 6], [3, 9], [4, 8], [4, 12], [5, 10], [6, 12]],
-  2: [[3, 4], [3, 5], [3, 8], [4, 5], [2, 5], [2, 7], [2, 9], [4, 10], [3, 7], [4, 6]],
-  3: [[2, 3], [2, 4], [2, 6], [3, 4], [3, 6], [4, 6], [4, 12], [3, 12], [2, 8]],
+  1: [[2, 4], [2, 6], [2, 8], [2, 10], [2, 12], [3, 6], [3, 9], [3, 12], [4, 8], [4, 12], [5, 10], [6, 12]],
+  2: [[3, 4], [3, 5], [3, 8], [3, 7], [3, 10], [4, 5], [4, 6], [4, 7], [4, 9], [4, 10], [2, 5], [2, 7], [2, 9], [5, 6], [5, 8], [6, 8]],
+  3: [[2, 3], [2, 4], [2, 6], [3, 4], [3, 6], [4, 6], [3, 12], [4, 12], [2, 8]],
 };
 
 function isCommonMultiple(v, d1, d2) {
@@ -395,57 +408,147 @@ function generateShift(seed) {
   return orders;
 }
 
-function patienceFor(order) {
-  const level = order.level || 1;
+function patienceFor() {
   const rush = game.served + game.lost;
-  const base = [0, 100, 118, 136][level];
-  const floor = [0, 48, 56, 64][level];
-  return Math.max(floor, base - rush * 6);
+  const diff = game.difficulty || 'p4';
+  const step = diff === 'p4' ? 3 : diff === 'p5' ? 4 : 5;
+  const floor = diff === 'p4' ? 36 : diff === 'p5' ? 32 : 28;
+  return Math.round(Math.max(floor, 60 - rush * step));
 }
 
-function generateOrder(slot) {
-  const rand = mulberry32((Date.now() ^ (slot * 9973) ^ (game.shift * 131)) >>> 0);
-  const keys = Object.keys(TOPPING).filter((k) => k !== 'combo');
-  const level = slot < 2 ? 1 : slot < 4 ? 2 : (slot % 4 === 0 ? 2 : 3);
-  const op = slot % 2 === 0 ? '+' : '-';
-  for (let guard = 0; guard < 24; guard++) {
-    const pairs = PAIR_BANK[level];
-    const pair = pairs[Math.floor(rand() * pairs.length)];
-    const d1 = pair[0];
-    const d2 = pair[1];
-    if (lcm(d1, d2) > (level === 3 ? 12 : 24)) continue;
-    const wholeA = level === 3 && rand() < 0.85 ? 1 + Math.floor(rand() * 2) : 0;
-    const wholeB = level === 3 && rand() < 0.4 ? 1 + Math.floor(rand() * 2) : 0;
-    const a = { w: wholeA, n: 1 + Math.floor(rand() * (d1 - 1)), d: d1 };
-    const b = { w: wholeB, n: 1 + Math.floor(rand() * (d2 - 1)), d: d2 };
-    if (op === '-' && compareFrac(a, b) <= 0) continue;
-    const s = solve({ op, a, b });
-    if (s.combined.w < 0 || (s.final.w === 0 && s.final.n === 0)) continue;
-    let t1 = keys[Math.floor(rand() * keys.length)];
-    let t2 = keys[Math.floor(rand() * keys.length)];
-    if (t2 === t1) t2 = keys[(keys.indexOf(t1) + 3) % keys.length];
-    a.topping = t1;
-    b.topping = t2;
-    return {
-      level, op, a, b,
-      customer: CUSTOMERS[Math.floor(rand() * CUSTOMERS.length)],
-      cutters: makeCutters(rand, s.L, d1, d2),
-    };
+function relatedDenoms(d1, d2) {
+  return d1 !== d2 && (d1 % d2 === 0 || d2 % d1 === 0);
+}
+
+function levelForSlot(slot) {
+  if (game.difficulty === 'p4') return 1;
+  if (game.difficulty === 'p5') return slot < 1 ? 1 : 2;
+  if (slot < 1) return 2;
+  return 3;
+}
+
+function orderFits(level, order, sol) {
+  if (!sol || sol.combined.w < 0) return false;
+  if (sol.final.w === 0 && sol.final.n === 0) return false;
+  const d1 = order.a.d;
+  const d2 = order.b.d;
+  if (level === 1) {
+    return relatedDenoms(d1, d2)
+      && order.a.w === 0 && order.b.w === 0
+      && !sol.needsRegroup
+      && sol.combined.w === 0
+      && sol.combined.n < sol.L;
   }
-  return scriptedShift()[slot % 6];
+  if (level === 2) {
+    return !relatedDenoms(d1, d2)
+      && order.a.w === 0 && order.b.w === 0
+      && !sol.needsRegroup
+      && sol.L <= 24;
+  }
+  return (order.a.w > 0 || order.b.w > 0)
+    && sol.L <= 12
+    && (order.op === '+' || sol.needsRegroup);
 }
 
-function loadRecord() {
+function orderKey(op, a, b) {
+  return `${op}|${a.w}|${a.n}|${a.d}|${b.w}|${b.n}|${b.d}`;
+}
+
+function buildOrder(level, op, a, b, rand, seen) {
+  if (a.d === b.d) return null;
+  if (gcd(a.n, a.d) > 1 || gcd(b.n, b.d) > 1) return null;
+  const key = orderKey(op, a, b);
+  if (seen.has(key)) return null;
+  if (op === '-' && compareFrac(a, b) <= 0) return null;
+  const sol = solve({ op, a, b });
+  if (!orderFits(level, { op, a, b }, sol)) return null;
+  const toppings = Object.keys(TOPPING).filter((name) => name !== 'combo');
+  let t1 = toppings[Math.floor(rand() * toppings.length)];
+  let t2 = toppings[Math.floor(rand() * toppings.length)];
+  if (t2 === t1) t2 = toppings[(toppings.indexOf(t1) + 3) % toppings.length];
+  a.topping = t1;
+  b.topping = t2;
+  seen.add(key);
+  return {
+    level, op, a, b,
+    customer: CUSTOMERS[Math.floor(rand() * CUSTOMERS.length)],
+    cutters: makeCutters(rand, sol.L, a.d, b.d),
+  };
+}
+
+function randomDraft(level, rand) {
+  const pairs = PAIR_BANK[level];
+  const pair = pairs[Math.floor(rand() * pairs.length)];
+  const swap = rand() < 0.5;
+  const d1 = swap ? pair[1] : pair[0];
+  const d2 = swap ? pair[0] : pair[1];
+  const op = rand() < 0.5 ? '+' : '-';
+  const wholeA = level === 3 ? 1 + Math.floor(rand() * 2) : 0;
+  const wholeB = level === 3 && op === '+' && rand() < 0.75 ? 1 + Math.floor(rand() * 2) : 0;
+  return {
+    op,
+    a: { w: wholeA, n: 1 + Math.floor(rand() * (d1 - 1)), d: d1 },
+    b: { w: wholeB, n: 1 + Math.floor(rand() * (d2 - 1)), d: d2 },
+  };
+}
+
+function generateOrder(slot, relaxed) {
+  if (!game.seen) game.seen = new Set();
+  const seen = game.seen;
+  const level = levelForSlot(slot);
+  const rand = mulberry32((Date.now() ^ Math.floor(Math.random() * 1e9) ^ (slot * 9973) ^ (game.shift * 131)) >>> 0);
+  for (let guard = 0; guard < 80; guard++) {
+    const draft = randomDraft(level, rand);
+    const made = buildOrder(level, draft.op, draft.a, draft.b, rand, seen);
+    if (made) return made;
+  }
+  const pairs = PAIR_BANK[level];
+  const offset = (slot * 5 + game.served * 3 + game.lost) % 11;
+  for (let pass = 0; pass < pairs.length * 2; pass++) {
+    const pair = pairs[(pass + offset) % pairs.length];
+    const swaps = pass % 2 === 0 ? [pair[0], pair[1]] : [pair[1], pair[0]];
+    const d1 = swaps[0];
+    const d2 = swaps[1];
+    for (let na = 1; na < d1; na++) {
+      for (let nb = 1; nb < d2; nb++) {
+        const ops = level === 3 ? ['-', '+'] : ['+', '-'];
+        for (let i = 0; i < ops.length; i++) {
+          const op = ops[i];
+          const wholeA = level === 3 ? 1 + ((na + offset) % 2) : 0;
+          const wholeB = level === 3 && op === '+' ? 1 : 0;
+          const made = buildOrder(level, op, { w: wholeA, n: na, d: d1 }, { w: wholeB, n: nb, d: d2 }, rand, seen);
+          if (made) return made;
+        }
+      }
+    }
+  }
+  if (!relaxed && seen.size) {
+    seen.delete(seen.values().next().value);
+    return generateOrder(slot, true);
+  }
+  return null;
+}
+
+function loadRecords() {
+  const blank = { p4: 0, p5: 0, p6: 0 };
   try {
-    const n = Number(localStorage.getItem('pizza-slicer-express-record'));
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-  } catch (err) {
-    return 0;
-  }
+    const raw = localStorage.getItem('pizza-slicer-express-records');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      YEARS.forEach((year) => {
+        const n = Number(parsed[year.id]);
+        if (Number.isFinite(n) && n > 0) blank[year.id] = Math.floor(n);
+      });
+      return blank;
+    }
+    const old = Number(localStorage.getItem('pizza-slicer-express-record'));
+    if (Number.isFinite(old) && old > 0) blank.p6 = Math.floor(old);
+  } catch (err) { /* private mode */ }
+  return blank;
 }
 
-function saveRecord(n) {
-  try { localStorage.setItem('pizza-slicer-express-record', String(n)); } catch (err) { /* private mode */ }
+function saveRecords(records) {
+  try { localStorage.setItem('pizza-slicer-express-records', JSON.stringify(records)); } catch (err) { /* private mode */ }
 }
 
 function selfCheck() {
@@ -710,7 +813,10 @@ function font(size, weight) {
 }
 
 function liveText() {
-  if (game.mode === 'title') return 'Pizza Slicer Express. Press start to open the kitchen. Three chefs can play at once.';
+  if (game.mode === 'title') {
+    const year = yearInfo(game.difficulty);
+    return `Pizza Slicer Express. ${year.name} is selected. ${year.line}. Open the kitchen when the crew is ready.`;
+  }
   if (game.mode === 'finale') return `Kitchen closed. Team earnings $${game.team}. Record $${game.record}. ${game.served} orders served.`;
   if (game.mode === 'timeout') {
     if (game.lost >= 3) return 'Three customers left. The kitchen is closed. See the team earnings.';
@@ -967,7 +1073,7 @@ function beginOrder() {
   game.help = false;
   const prev = game.orderIndex > 0 ? game.orders[game.orderIndex - 1] : null;
   if (!prev || prev.level !== order.level) {
-    game.ribbon = `Level ${order.level} · ${LEVEL_NAME[order.level]}`;
+    game.ribbon = `${yearInfo(game.difficulty).name} · ${LEVEL_NAME[order.level]}`;
     game.ribbonT = 2.1;
   } else {
     game.ribbon = '';
@@ -979,12 +1085,15 @@ function beginOrder() {
   announce();
 }
 
-function startGame(generated) {
+function startGame() {
   if (game.mode === 'play') return;
   audio.ensure();
-  game.generated = !!generated;
+  game.generated = true;
   game.shift += 1;
-  game.orders = scriptedShift();
+  game.seen = new Set();
+  game.record = game.records[game.difficulty] || 0;
+  const first = generateOrder(0);
+  game.orders = [first];
   game.orderIndex = 0;
   game.team = 0;
   game.served = 0;
@@ -1003,15 +1112,26 @@ function startGame(generated) {
 function nextOrder() {
   if (game.busy && game.mode === 'play') return;
   game.orderIndex += 1;
-  if (game.orderIndex >= game.orders.length) game.orders.push(generateOrder(game.orderIndex));
+  if (game.orderIndex >= game.orders.length) {
+    const made = generateOrder(game.orderIndex);
+    if (!made) {
+      endShift();
+      return;
+    }
+    game.orders.push(made);
+  }
   beginOrder();
 }
 
 function endShift() {
-  game.newRecord = game.team > game.record;
+  const best = game.records[game.difficulty] || 0;
+  game.newRecord = game.team > best;
   if (game.newRecord) {
+    game.records[game.difficulty] = game.team;
     game.record = game.team;
-    saveRecord(game.team);
+    saveRecords(game.records);
+  } else {
+    game.record = best;
   }
   game.mode = 'finale';
   game.help = false;
@@ -1303,8 +1423,14 @@ function movePlayers(dt) {
   const speed = clamp(view.w * 0.52, 340, 860);
   PLAYERS.forEach((p) => {
     if (!p.placed && game.ui) {
-      p.x = view.w * (0.2 + p.i * 0.3);
-      p.y = view.h - 30;
+      const year = game.ui.years && game.ui.years[p.i];
+      if (year) {
+        p.x = year.x + year.w / 2;
+        p.y = year.y - 22;
+      } else {
+        p.x = view.w * (0.2 + p.i * 0.3);
+        p.y = view.h - 30;
+      }
       p.placed = true;
     }
     const k = keyDirs(p);
@@ -1358,8 +1484,7 @@ function resolvePadAndKeys() {
     PLAYERS.forEach((p) => {
       if (!p.justA) return;
       const spot = hotspotAt(p.x, p.y, 8);
-      if (spot && (spot.id === 'mute' || spot.id === 'help')) activate(spot, p);
-      else startGame(false);
+      if (spot) activate(spot, p);
     });
     return;
   }
@@ -1406,8 +1531,7 @@ function resolvePointer() {
       }
       if (game.mode === 'title') {
         const spot = hotspotAt(e.x, e.y, 0);
-        if (spot && (spot.id === 'mute' || spot.id === 'help')) activate(spot, PLAYERS[0]);
-        else startGame(false);
+        if (spot) activate(spot, nearestPlayer(e.x, e.y));
         return;
       }
       const piece = pieceAt(e.x, e.y);
@@ -1657,16 +1781,33 @@ function layout() {
     sourceZone: null,
     plateZone: null,
     start: null,
+    years: [],
     next: null,
     replay: null,
     closeHelp: null,
   };
   if (mode === 'title') {
+    const cardW = Math.min(860, W - 36);
+    const cardH = Math.min(640, H - hud - 16);
+    const cardX = (W - cardW) / 2;
+    const cardY = hud + 8;
+    ui.card = { x: cardX, y: cardY, w: cardW, h: cardH };
+    const gap = 10;
+    const bw = (cardW - 48 - gap * 2) / 3;
+    const bh = narrow ? 62 : 70;
+    const by = cardY + cardH - (narrow ? 138 : 150);
+    ui.years = YEARS.map((year, i) => ({
+      id: year.id,
+      x: cardX + 24 + i * (bw + gap),
+      y: by,
+      w: bw,
+      h: bh,
+    }));
     ui.start = {
-      x: W * 0.5 - Math.min(220, W * 0.28),
-      y: H * 0.62,
-      w: Math.min(440, W * 0.56),
-      h: clamp(64 * u, 52, 78),
+      x: cardX + 24,
+      y: by + bh + 12,
+      w: cardW - 48,
+      h: 50,
     };
   }
   if (mode === 'success' || mode === 'timeout' || mode === 'finale') {
@@ -1777,8 +1918,19 @@ function buildHotspots() {
     game.hotspots = list;
     return;
   }
-  if (game.mode === 'title' && ui.start) {
-    list.push({ id: 'start', ...ui.start, onPress: () => startGame(false) });
+  if (game.mode === 'title') {
+    (ui.years || []).forEach((rect) => {
+      list.push({
+        id: `year-${rect.id}`,
+        ...rect,
+        onPress: () => {
+          game.difficulty = rect.id;
+          game.record = game.records[rect.id] || 0;
+          announce();
+        },
+      });
+    });
+    if (ui.start) list.push({ id: 'start', ...ui.start, onPress: () => startGame() });
   } else if ((game.mode === 'success' || game.mode === 'timeout') && ui.next) {
     list.push({
       id: 'next',
@@ -1789,7 +1941,7 @@ function buildHotspots() {
       },
     });
   } else if (game.mode === 'finale' && ui.next) {
-    list.push({ id: 'again', ...ui.next, onPress: () => startGame(false) });
+    list.push({ id: 'again', ...ui.next, onPress: () => startGame() });
   } else if (game.mode === 'play') {
     if (ui.roll) list.push({ id: 'roll', ...ui.roll, onPress: (p) => onRoll(p) });
     if (ui.unbox) list.push({ id: 'unbox', ...ui.unbox, onPress: (p) => onUnbox(p) });
@@ -1977,7 +2129,7 @@ function drawHud() {
   ctx.fillStyle = '#ffd7a8';
   ctx.fillText('Fraction Pizzeria', 14, ui.narrow ? 34 : 46);
 
-  const tillText = game.mode === 'title' ? `Best $${game.record}` : `$${game.team}`;
+  const tillText = game.mode === 'title' ? `Best $${game.records[game.difficulty] || 0}` : `$${game.team}`;
   ctx.font = font(ui.narrow ? 14 : 16, 800);
   const tillW = Math.max(ui.narrow ? 78 : 108, ctx.measureText(tillText).width + 22);
   const showStrikes = game.mode !== 'title' && ui.help.x > 280;
@@ -2321,7 +2473,7 @@ function drawTicket() {
     ctx.textBaseline = 'top';
     ctx.fillStyle = INK;
     ctx.font = font(14, 800);
-    ctx.fillText(`${o.customer.name} · Customer ${game.orderIndex + 1} · Lv ${o.level}`, t.x + 68, t.y + 14);
+    ctx.fillText(`${yearInfo(game.difficulty).short} · ${o.customer.name} · #${game.orderIndex + 1}`, t.x + 68, t.y + 14);
     ctx.font = font(13, 700);
     const line = `${fracText(o.a)} ${TOPPING[o.a.topping].label} ${o.op === '+' ? '+' : '−'} ${fracText(o.b)} ${TOPPING[o.b.topping].label}`;
     ctx.fillText(line, t.x + 68, t.y + 34);
@@ -2337,7 +2489,7 @@ function drawTicket() {
   ctx.fillText(`CUSTOMER ${game.orderIndex + 1}`, t.x + 14, t.y + 16);
   ctx.fillStyle = TOMATO;
   ctx.textAlign = 'right';
-  ctx.fillText(`LEVEL ${o.level}`, t.x + t.w - 14, t.y + 16);
+  ctx.fillText(yearInfo(game.difficulty).short, t.x + t.w - 14, t.y + 16);
   ctx.textAlign = 'left';
   ctx.fillStyle = '#7a4b32';
   ctx.font = font(12, 700);
@@ -3160,29 +3312,28 @@ function drawCard(x, y, w, h) {
 
 function drawTitle() {
   const ui = game.ui;
-  const w = Math.min(860, ui.W - 36);
-  const h = Math.min(560, ui.H - 36);
-  const x = (ui.W - w) / 2;
-  const y = Math.max(ui.hud + 8, (ui.H - h) / 2);
+  const card = ui.card;
+  if (!card) return;
+  const { x, y, w, h } = card;
   drawCard(x, y, w, h);
   ctx.textAlign = 'center';
   ctx.fillStyle = TOMATO;
-  ctx.font = font(ui.narrow ? 28 : 46, 800);
+  ctx.font = font(ui.narrow ? 28 : 44, 800);
   ctx.textBaseline = 'top';
-  ctx.fillText('Pizza Slicer Express', ui.W / 2, y + 28);
+  ctx.fillText('Pizza Slicer Express', ui.W / 2, y + 22);
   ctx.fillStyle = INK;
   ctx.font = font(ui.narrow ? 16 : 22, 800);
-  ctx.fillText('Fraction Pizzeria', ui.W / 2, y + (ui.narrow ? 66 : 82));
+  ctx.fillText('Fraction Pizzeria', ui.W / 2, y + (ui.narrow ? 58 : 74));
   ctx.font = font(ui.narrow ? 13 : 16, 700);
   ctx.fillStyle = '#7a4b32';
-  const sub = wrap('One shared till. Each customer leaves a little less time. Three lost customers close the kitchen.', w - 80, font(ui.narrow ? 13 : 16, 700));
-  sub.forEach((ln, i) => ctx.fillText(ln, ui.W / 2, y + (ui.narrow ? 96 : 116) + i * 20));
-  const stepsY = y + (ui.narrow ? 140 : 170);
+  const sub = wrap('Pick a year. Every customer brings a new fraction. Three lost customers close the kitchen.', w - 72, font(ui.narrow ? 13 : 16, 700));
+  sub.forEach((ln, i) => ctx.fillText(ln, ui.W / 2, y + (ui.narrow ? 86 : 108) + i * 20));
+  const stepsY = y + (ui.narrow ? 132 : 156);
   const labels = ['1  Common denominator', '2  Reslice the pizzas', '3  Add or subtract tops', '4  Simplify and stamp'];
   ctx.font = font(ui.narrow ? 13 : 16, 800);
   ctx.fillStyle = INK;
   if (ui.narrow) {
-    labels.forEach((ln, i) => ctx.fillText(ln, ui.W / 2, stepsY + i * 22));
+    labels.forEach((ln, i) => ctx.fillText(ln, ui.W / 2, stepsY + i * 20));
   } else {
     labels.forEach((ln, i) => {
       const col = i % 2;
@@ -3192,35 +3343,47 @@ function drawTitle() {
     });
     ctx.textAlign = 'center';
   }
-  const crewY = stepsY + (ui.narrow ? 100 : 80);
+  const yearTop = ui.years && ui.years.length ? ui.years[0].y : y + h - 140;
+  const crewY = Math.max(stepsY + (ui.narrow ? 92 : 70), yearTop - (ui.narrow ? 108 : 120));
   const crew = [
     { ...PLAYERS[0], person: { skin: '#f6c99a', hair: '#3a2418', shirt: '#ff4b4b', style: 'short' }, keys: 'Arrows + Space' },
     { ...PLAYERS[1], person: { skin: '#f1c27d', hair: '#1c1c1c', shirt: '#3c8dff', style: 'bob' }, keys: 'WASD + F' },
     { ...PLAYERS[2], person: { skin: '#e0ac69', hair: '#6b2410', shirt: '#e0a020', style: 'curly' }, keys: 'IJKL + H' },
   ];
-  crew.forEach((c, i) => {
-    const cx = x + w * (0.2 + i * 0.3);
-    drawPerson(cx, crewY, ui.narrow ? 0.45 : 0.55, c.person, 'happy', true);
-    ctx.fillStyle = c.color;
-    ctx.font = font(13, 800);
-    ctx.textAlign = 'center';
-    ctx.fillText(c.name, cx, crewY + (ui.narrow ? 48 : 58));
+  if (crewY + 70 < yearTop) {
+    crew.forEach((c, i) => {
+      const cx = x + w * (0.2 + i * 0.3);
+      drawPerson(cx, crewY, ui.narrow ? 0.4 : 0.5, c.person, 'happy', true);
+      ctx.fillStyle = c.color;
+      ctx.font = font(12, 800);
+      ctx.textAlign = 'center';
+      ctx.fillText(c.name, cx, crewY + (ui.narrow ? 42 : 52));
+      ctx.fillStyle = INK;
+      ctx.font = font(11, 700);
+      ctx.fillText(c.keys, cx, crewY + (ui.narrow ? 56 : 68));
+    });
+  }
+  (ui.years || []).forEach((rect) => {
+    const year = yearInfo(rect.id);
+    const on = game.difficulty === year.id;
+    const lift = buttonChrome(rect, { accent: on });
     ctx.fillStyle = INK;
-    ctx.font = font(12, 700);
-    ctx.fillText(c.keys, cx, crewY + (ui.narrow ? 64 : 76));
+    ctx.font = font(ui.narrow ? 16 : 18, 800);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(year.name, rect.x + rect.w / 2, rect.y + rect.h * 0.38 - lift);
+    ctx.fillStyle = '#7a4b32';
+    ctx.font = font(ui.narrow ? 11 : 13, 700);
+    ctx.fillText(year.line, rect.x + rect.w / 2, rect.y + rect.h * 0.72 - lift);
   });
   if (ui.start) {
     const lift = buttonChrome(ui.start, { accent: true });
     ctx.fillStyle = INK;
-    ctx.font = font(S(22), 800);
+    ctx.font = font(ui.narrow ? 18 : 22, 800);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('Open the kitchen', ui.start.x + ui.start.w / 2, ui.start.y + ui.start.h / 2 - lift);
+    ctx.fillText(`Open ${yearInfo(game.difficulty).name}`, ui.start.x + ui.start.w / 2, ui.start.y + ui.start.h / 2 - lift);
   }
-  ctx.font = font(12, 700);
-  ctx.fillStyle = '#7a4b32';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText('Mouse, keys, or three 8BitDo pads. Any chef can answer. The till belongs to the whole crew.', ui.W / 2, y + h - 28);
 }
 
 function drawHelp() {
@@ -3246,6 +3409,7 @@ function drawHelp() {
     'P3 yellow: I J K L and H, or gamepad 3. The bottom face button is the action button.',
     'On small orders you can drag slices into the box. A click or the action button transfers a slice too.',
     'The till is shared. Each new customer has less time. After 3 customers leave, the kitchen closes.',
+    'Choose Primary 4, 5, or 6. Every order is a new fraction, so the answer has to be worked out.',
   ];
   ctx.font = font(14, 700);
   let ly = y + 64;
@@ -3329,7 +3493,8 @@ function drawOverlayCard() {
     ctx.fillText(`Team earnings  $${game.team}`, ui.W / 2, y + 186);
     ctx.fillStyle = game.newRecord ? TOMATO : INK;
     ctx.font = font(18, 800);
-    ctx.fillText(game.newRecord ? `New record  $${game.record}` : `Record to beat  $${game.record}`, ui.W / 2, y + 226);
+    const year = yearInfo(game.difficulty);
+    ctx.fillText(game.newRecord ? `New ${year.short} record  $${game.record}` : `${year.name} record  $${game.record}`, ui.W / 2, y + 226);
   }
   if (ui.next && (game.mode === 'success' || game.mode === 'timeout' || game.mode === 'finale')) {
     const lift = buttonChrome(ui.next, { accent: true });
@@ -3496,7 +3661,8 @@ function toWorld(sx, sy) {
   };
 }
 
-game.record = loadRecord();
+game.records = loadRecords();
+game.record = game.records.p4 || 0;
 selfCheck();
 announce();
 resize();
