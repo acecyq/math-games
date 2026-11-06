@@ -124,6 +124,7 @@
     border-radius: 0.7em;
     padding: 0.35em 0.7em;
     color: var(--ink);
+    white-space: nowrap;
   }
   .choices button[aria-pressed="true"] {
     background: var(--red);
@@ -170,12 +171,31 @@
   }
   .term.filled { background: #c8f5d4; color: #146b32; }
   .step { font-weight: 900; color: #b86a12; font-size: 0.82em; }
-  .scores { display: flex; flex-wrap: wrap; gap: 0.4em; margin: 0.4em 0 0.6em; }
+  .scores { display: flex; flex-wrap: wrap; gap: 0.4em; margin: 0.55em 0 0.35em; }
   .scores div {
     background: white;
     border-radius: 0.6em;
-    padding: 0.3em 0.55em;
-    font-weight: 900;
+    padding: 0.35em 0.7em 0.45em;
+    min-width: 6.4em;
+  }
+  .scores span {
+    display: block;
+    font-size: 0.72em;
+    font-weight: 800;
+    color: #8a4b22;
+  }
+  .scores strong {
+    font-family: 'Fredoka', system-ui, sans-serif;
+    font-size: 1.4em;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .scores em {
+    display: block;
+    font-style: normal;
+    font-weight: 800;
+    font-size: 0.78em;
+    color: #8a4b22;
   }
   #touch {
     position: absolute;
@@ -208,7 +228,7 @@
   .cluster[data-p="0"] button { border-color: #c4293a; }
   .cluster[data-p="1"] button { border-color: #2457d6; }
   .cluster[data-p="2"] button { border-color: #c49212; }
-  .cluster button[data-act="g"] { width: 3.3em; }
+  .cluster button[data-act="g"] { width: 4.8em; }
   .cluster.stunned button { filter: grayscale(0.4); }
   .cluster.out { opacity: 0.35; }
   .hidden { display: none !important; }
@@ -240,14 +260,23 @@
   <section id="title" class="panel">
     <h1>Number Train Coupler</h1>
     <div class="sub">The Runaway Freight</div>
-    <p>A freight train is rolling toward the tunnel with numbers missing. Find the step, grab the crate that completes the pattern, and drop it on the flashing flatcar.</p>
+    <p>A freight train is rolling toward the tunnel with numbers missing. Find the step, grab the crate that completes the pattern, and drop it on the flashing flatcar. Grab again away from the flatcar to put a crate back.</p>
     <p>Each engineer has 3 hearts. A wrong crate stuns that crane. If an empty flatcar reaches the tunnel, the whole team loses a heart.</p>
+    <p>Work together and send as many trains through as you can. Each train you save gives the next one one second less.</p>
     <div class="row">
       <span>How many engineers?</span>
       <div class="choices" id="choices">
         <button type="button" data-n="1" aria-pressed="true">1</button>
         <button type="button" data-n="2" aria-pressed="false">2</button>
         <button type="button" data-n="3" aria-pressed="false">3</button>
+      </div>
+    </div>
+    <div class="row">
+      <span>Starting time</span>
+      <div class="choices" id="diffChoices" role="group" aria-label="Starting time">
+        <button type="button" data-diff="easy" aria-pressed="false">Easy · 30s</button>
+        <button type="button" data-diff="medium" aria-pressed="true">Medium · 25s</button>
+        <button type="button" data-diff="hard" aria-pressed="false">Hard · 15s</button>
       </div>
     </div>
     <div class="row">
@@ -287,6 +316,12 @@
     { name: 'P2', crane: 'Blue', color: '#2d6bff', dark: '#1a3f9a' },
     { name: 'P3', crane: 'Yellow', color: '#f0b429', dark: '#8d6410' }
   ];
+  const DIFFS = {
+    easy: { label: 'Easy', start: 30 },
+    medium: { label: 'Medium', start: 25 },
+    hard: { label: 'Hard', start: 15 }
+  };
+  const TIME_FLOOR = 8;
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const canvas = document.getElementById('c');
@@ -311,17 +346,18 @@
     players: [],
     playerCount: 1,
     level: 1,
+    difficulty: 'medium',
     round: 1,
+    saved: 0,
     clearsInLevel: 0,
-    heat: 0,
     pattern: null,
     layout: null,
     trainLeft: 40,
     speed: 12,
     scroll: 0,
     wheelAngle: 0,
-    timeLeft: 15,
-    slotTime: 15,
+    timeLeft: 25,
+    slotTime: 25,
     celebrate: 0,
     pendingCrates: false,
     timerFrozen: false,
@@ -334,8 +370,6 @@
     countT: 0,
     teachT: 0,
     teachKind: 'saved',
-    roundScores: [],
-    best: 0,
     shake: 0,
     flash: 0,
     flashColor: '#fff',
@@ -350,8 +384,6 @@
     travel: 0,
     padNote: ''
   };
-
-  try { G.best = Number(localStorage.getItem('ntc-best') || 0) || 0; } catch (e) { /* ignore */ }
 
   /* ---------- helpers ---------- */
 
@@ -388,9 +420,6 @@
   }
   function signedFmt(n) {
     return (n > 0 ? '+' : '−') + fmt(Math.abs(n));
-  }
-  function teamScore() {
-    return G.players.reduce((s, p) => s + p.score, 0);
   }
   function say(text) { liveEl.textContent = text; }
   function setMessage(text, kind, hold) {
@@ -879,9 +908,12 @@
     const top = RAIL_Y - WHEEL_R - h + 6;
     return { x: G.trainLeft, w: L.engineW, h, top };
   }
-  function slotDuration() {
-    const base = G.level <= 1 ? 15 : G.level === 2 ? 13.5 : 12;
-    return Math.max(10, base - G.heat * 0.35);
+  function slotDuration(saved) {
+    const done = saved == null ? G.saved : saved;
+    return Math.max(TIME_FLOOR, DIFFS[G.difficulty].start - done);
+  }
+  function trainsSentLabel(n) {
+    return n === 1 ? '1 train' : n + ' trains';
   }
   function levelName() {
     if (G.level <= 1) return 'Same step';
@@ -988,7 +1020,6 @@
         color: PLAYER_DEFS[i].color,
         dark: PLAYER_DEFS[i].dark,
         hearts: 3,
-        score: 0,
         x: xs[i],
         vx: 0,
         hold: null,
@@ -1009,14 +1040,6 @@
     touchEl.classList.toggle('hidden', G.mode !== 'play');
   }
 
-  function rememberBest() {
-    const s = teamScore();
-    if (s > G.best) {
-      G.best = s;
-      try { localStorage.setItem('ntc-best', String(s)); } catch (e) { /* ignore */ }
-    }
-  }
-
   function beginRound(longCount) {
     G.pattern = generatePattern(G.level);
     applyLayout(G.pattern.missing.length);
@@ -1028,7 +1051,6 @@
     G.pendingCrates = false;
     G.timerFrozen = false;
     G.glow = {};
-    G.roundScores = [];
     spawnCrates();
     G.players.forEach((p) => {
       p.hold = null;
@@ -1050,8 +1072,8 @@
     G.players = makePlayers(G.playerCount);
     G.level = 1;
     G.round = 1;
+    G.saved = 0;
     G.clearsInLevel = 0;
-    G.heat = 0;
     G.paused = false;
     beginRound(true);
   }
@@ -1062,14 +1084,14 @@
     G.teachT = kind === 'saved' ? 4.4 : 4.8;
     showClusters();
     const title = kind === 'saved' ? 'The freight is safe!' : 'The flatcar reached the tunnel!';
-    const who = G.roundScores.length
-      ? G.roundScores.map((r) => PLAYER_DEFS[r.id].crane + ' crane +' + r.pts).join(' · ')
+    const next = kind === 'saved'
+      ? '<p>Next train: <b>' + slotDuration(G.saved + 1) + ' seconds</b>.</p>'
       : '';
     teachEl.innerHTML =
       '<h2>' + title + '</h2>' +
       '<p>' + ruleSentence(G.pattern) + '</p>' +
       '<div class="seq">' + sequenceHTML(G.pattern) + '</div>' +
-      (who ? '<p>' + who + '</p>' : '') +
+      next +
       '<div class="row"><button type="button" class="play" id="nextBtn">Next train</button></div>';
     teachEl.classList.remove('hidden');
     document.getElementById('nextBtn').addEventListener('click', () => advanceFromTeach());
@@ -1079,14 +1101,14 @@
   function advanceFromTeach() {
     if (G.mode !== 'teach') return;
     if (G.teachKind === 'saved') {
-      G.clearsInLevel++;
+      G.saved++;
       G.round++;
-      if (G.level < 3 && G.clearsInLevel >= 2) {
-        G.level++;
-        G.clearsInLevel = 0;
-      } else if (G.level >= 3 && G.clearsInLevel >= 3) {
-        G.heat = Math.min(5, G.heat + 1);
-        G.clearsInLevel = 0;
+      if (G.level < 3) {
+        G.clearsInLevel++;
+        if (G.clearsInLevel >= 2) {
+          G.level++;
+          G.clearsInLevel = 0;
+        }
       }
     } else {
       G.round++;
@@ -1095,15 +1117,18 @@
   }
 
   function openGameOver() {
-    rememberBest();
     G.mode = 'gameover';
     showClusters();
-    const rows = G.players.map((p) => '<div style="border:3px solid ' + p.color + '">' + p.name + ' · ' + p.crane + ' · ' + p.score + '</div>').join('');
+    const far = trainsSentLabel(G.saved);
+    const diff = DIFFS[G.difficulty].label;
     const rule = G.pattern ? '<p>' + ruleSentence(G.pattern) + '</p><div class="seq">' + sequenceHTML(G.pattern) + '</div>' : '';
     overEl.innerHTML =
       '<h2>Out of steam</h2>' +
-      '<p>Team score <b>' + teamScore() + '</b> · Best ' + G.best + '</p>' +
-      '<div class="scores">' + rows + '</div>' +
+      '<div class="scores">' +
+        '<div><span>Engineers</span><strong>' + G.players.length + '</strong></div>' +
+        '<div><span>Difficulty</span><strong>' + diff + '</strong></div>' +
+        '<div><span>How far</span><strong>' + far + '</strong><em>' + levelName() + '</em></div>' +
+      '</div>' +
       rule +
       '<div class="row"><button type="button" class="play" id="againBtn">Run again</button>' +
       '<button type="button" class="ghost" id="menuBtn">Main menu</button></div>';
@@ -1117,7 +1142,7 @@
       showClusters();
       demoPattern();
     });
-    say('Out of steam. Team score ' + teamScore());
+    say('Out of steam. ' + G.players.length + ' engineers. ' + diff + '. ' + far + '. ' + levelName() + '.');
   }
 
   function anyoneAlive() {
@@ -1170,20 +1195,16 @@
     p.anim = null;
   }
 
-  function succeedDrop(p, savedTime) {
+  function succeedDrop(p) {
     const idx = activeIndex();
     const answer = G.pattern.terms[idx];
-    const bonus = Math.max(0, Math.ceil(savedTime) * 10);
-    const pts = 150 + bonus;
-    p.score += pts;
-    G.roundScores.push({ id: p.id, pts });
     G.pattern.solved[idx] = true;
     G.pattern.placed[idx] = answer;
     G.glow[idx] = 1.15;
     const c = carGeom(idx);
     burst(c.x + c.w / 2, c.top + 20, 18, '#b7f7c8', 120, 0.7, 'steam');
     burst(c.x + c.w / 2, c.top + 30, 14, '#ffe08a', 160, 0.8, 'confetti');
-    floater(c.x + c.w / 2, c.top - 10, '+' + pts, p.color);
+    floater(c.x + c.w / 2, c.top - 10, 'Coupled!', p.color);
     sfxClank();
     sfxSteam();
     G.shake = 5;
@@ -1240,7 +1261,7 @@
       return;
     }
     if (crate.value === G.pattern.terms[idx]) {
-      succeedDrop(p, p.anim ? p.anim.savedTime : G.timeLeft);
+      succeedDrop(p);
     } else {
       failDrop(p);
     }
@@ -1279,14 +1300,14 @@
       p.anim = { kind: 'grab', t: 0, dur: 0.42, crate, attached: false, lockX: crate.x };
       sfxGrab();
     } else if (!alignedCar(p)) {
-      setMessage('Move over the flashing flatcar, then drop.', 'info', 1.3);
-      sfxBeep(false);
       p.vx = 0;
+      p.anim = { kind: 'release', t: 0, dur: 0.34, resolved: false, lockX: p.x };
+      sfxGrab();
     } else {
       const c = carGeom(activeIndex());
       p.x = c.x + c.w / 2;
       G.timerFrozen = true;
-      p.anim = { kind: 'drop', t: 0, dur: 0.4, savedTime: G.timeLeft, resolved: false, lockX: p.x };
+      p.anim = { kind: 'drop', t: 0, dur: 0.4, resolved: false, lockX: p.x };
       sfxGrab();
     }
   }
@@ -1414,6 +1435,21 @@
         }
         p.magnetY = lerp(deck, MAGNET_REST, (u - 0.62) / 0.38);
       }
+    } else if (p.anim.kind === 'release') {
+      const low = CARRY_Y + 64;
+      if (u < 0.45) p.magnetY = lerp(CARRY_Y, low, easeInOut(u / 0.45));
+      else {
+        if (!p.anim.resolved) {
+          p.anim.resolved = true;
+          if (p.hold) {
+            p.hold.heldBy = null;
+            p.hold = null;
+          }
+          setMessage('Crate set back down.', 'info', 1.2);
+          say('Crate set back down.');
+        }
+        p.magnetY = lerp(low, MAGNET_REST, (u - 0.45) / 0.55);
+      }
     } else if (p.anim.kind === 'whiff') {
       const mid = MAGNET_REST + 64;
       p.magnetY = u < 0.5 ? lerp(MAGNET_REST, mid, u / 0.5) : lerp(mid, MAGNET_REST, (u - 0.5) / 0.5);
@@ -1430,7 +1466,7 @@
       }
       const inputOn = G.mode === 'play' && p.stun <= 0 && p.hearts > 0;
       const w = inputOn ? wants(p) : { L: false, R: false, grabEdge: false };
-      const locked = p.anim && (p.anim.kind === 'drop' || (p.anim.kind === 'grab' && !p.anim.attached));
+      const locked = p.anim && (p.anim.kind === 'drop' || p.anim.kind === 'release' || (p.anim.kind === 'grab' && !p.anim.attached));
       if (!locked && p.stun <= 0 && p.hearts > 0 && (G.mode === 'play' || G.mode === 'countdown')) {
         const accel = 2400;
         const maxV = 560;
@@ -1442,14 +1478,14 @@
       } else if (p.stun > 0 || p.hearts <= 0) {
         p.vx *= Math.max(0, 1 - 12 * dt);
       }
-      if (!(p.anim && p.anim.lockX != null && (p.anim.kind === 'drop' || (p.anim.kind === 'grab' && !p.anim.attached)))) {
+      if (!(p.anim && p.anim.lockX != null && (p.anim.kind === 'drop' || p.anim.kind === 'release' || (p.anim.kind === 'grab' && !p.anim.attached)))) {
         p.x = clamp(p.x + p.vx * dt, 70, VW - 70);
       }
       if (w.grabEdge && G.mode === 'play' && G.celebrate <= 0) pressAction(p);
       updateAnim(p, dt);
       const btn = touchEl.querySelector('.cluster[data-p="' + p.id + '"] [data-act="g"]');
       const cluster = touchEl.querySelector('.cluster[data-p="' + p.id + '"]');
-      if (btn) btn.textContent = p.hold ? 'DROP' : 'GRAB';
+      if (btn) btn.textContent = p.hold ? (alignedCar(p) ? 'DROP' : 'LET GO') : 'GRAB';
       if (cluster) {
         cluster.classList.toggle('stunned', p.stun > 0);
         cluster.classList.toggle('out', p.hearts <= 0);
@@ -2213,14 +2249,15 @@
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.font = '700 18px Fredoka, system-ui, sans-serif';
-    ctx.fillText('Lv ' + G.level + ' · ' + levelName(), 14, 27);
+    ctx.fillText(levelName(), 14, 27);
     ctx.font = '700 16px Fredoka, system-ui, sans-serif';
     ctx.fillStyle = '#ffe08a';
-    ctx.fillText('Round ' + G.round, 250, 27);
+    ctx.fillText('Train ' + G.round, 200, 27);
+    ctx.fillText(trainsSentLabel(G.saved) + ' sent', 310, 27);
 
     const n = Math.max(1, G.players.length);
-    const chipW = n === 3 ? 168 : 190;
-    let chipX = 360;
+    const chipW = n === 3 ? 160 : 176;
+    let chipX = n === 3 ? 488 : n === 2 ? 540 : 700;
     for (let i = 0; i < G.players.length; i++) {
       const p = G.players[i];
       ctx.fillStyle = p.hearts <= 0 ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.12)';
@@ -2233,31 +2270,29 @@
       ctx.textAlign = 'left';
       ctx.fillText(p.name, chipX + 16, 27);
       for (let h = 0; h < 3; h++) drawHeart(chipX + 56 + h * 18, 27, 1.05, h < p.hearts);
-      ctx.fillStyle = '#ffe08a';
-      ctx.textAlign = 'right';
-      ctx.font = '800 15px Nunito, system-ui, sans-serif';
-      const label = p.stun > 0 ? 'STUN' : String(p.score);
-      ctx.fillText(label, chipX + chipW - 8, 27);
+      if (p.stun > 0) {
+        ctx.fillStyle = '#ffe08a';
+        ctx.textAlign = 'right';
+        ctx.font = '800 13px Nunito, system-ui, sans-serif';
+        ctx.fillText('STUN', chipX + chipW - 8, 27);
+      }
       chipX += chipW + 8;
     }
 
     ctx.textAlign = 'right';
-    ctx.fillStyle = '#fff';
-    ctx.font = '700 15px Fredoka, system-ui, sans-serif';
-    ctx.fillText('TEAM ' + teamScore(), VW - 168, 18);
     const t = G.mode === 'play' || G.mode === 'countdown' ? Math.max(0, G.timeLeft) : G.slotTime;
     const warn = G.mode === 'play' && t < 5;
     ctx.fillStyle = warn ? '#ff8d8d' : '#fff';
     ctx.font = '700 20px Fredoka, system-ui, sans-serif';
-    ctx.fillText(t.toFixed(1) + 's', VW - 168, 38);
+    ctx.fillText(t.toFixed(1) + 's', VW - 168, 20);
 
     const barX = VW - 156;
     ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    rr(barX, 44, 100, 6, 3);
+    rr(barX, 34, 100, 6, 3);
     ctx.fill();
     const frac = G.slotTime ? clamp(G.timeLeft / G.slotTime, 0, 1) : 1;
     ctx.fillStyle = warn ? '#ff5d6c' : frac < 0.5 ? '#ffbf3c' : '#5dffb0';
-    rr(barX, 44, 100 * frac, 6, 3);
+    rr(barX, 34, 100 * frac, 6, 3);
     ctx.fill();
 
     drawMuteButton();
@@ -2371,8 +2406,8 @@
     G.players.forEach((p) => { p.homeX = p.x; });
     applyLayout(2);
     G.trainLeft = G.layout.homeLeft;
-    G.slotTime = 15;
-    G.timeLeft = 15;
+    G.slotTime = DIFFS[G.difficulty].start;
+    G.timeLeft = G.slotTime;
     spawnCrates();
     G.crates.forEach((c) => { c.y = c.homeY; });
     G.message = 'Find the step, then load the flashing flatcar.';
@@ -2420,6 +2455,16 @@
     if (!btn) return;
     G.playerCount = Number(btn.dataset.n);
     document.querySelectorAll('#choices button').forEach((b) => {
+      b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+    });
+  });
+  document.getElementById('diffChoices').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn || !DIFFS[btn.dataset.diff]) return;
+    G.difficulty = btn.dataset.diff;
+    G.slotTime = DIFFS[G.difficulty].start;
+    G.timeLeft = G.slotTime;
+    document.querySelectorAll('#diffChoices button').forEach((b) => {
       b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
     });
   });
