@@ -289,7 +289,7 @@
       </div>
     </header>
     <div id="squad"></div>
-    <div id="lesson" aria-live="polite">Round to the nearest ten, hundred, or thousand. The digit on the right decides.</div>
+    <div id="lesson" aria-live="polite">Each round, the place is a surprise. Mark that place, then the digit on its right.</div>
     <div id="stageWrap">
       <canvas id="game" width="1280" height="720" aria-label="Rounding machine"></canvas>
     </div>
@@ -299,12 +299,12 @@
   <div class="modal-backdrop" id="startModal">
     <div class="modal" role="dialog" aria-labelledby="startTitle">
       <h2 id="startTitle">Digit Squeezer</h2>
-      <p class="sub">A factory that teaches rounding. 24 numbers: nearest ten, then hundred, then thousand.</p>
+      <p class="sub">A factory that teaches rounding. Each round picks nearest ten, hundred, or thousand at random.</p>
       <p id="checkError" hidden></p>
       <div class="steps">
-        <div><b>Step 1.</b> A gear marks the place. Whack the deciding digit immediately on its right.</div>
-        <div><b>Step 2.</b> If that digit is 0–4, pull <b>Roll Down</b>. If it is 5–9, pull <b>Boost Up</b>.</div>
-        <div><b>Then</b> every digit to the right becomes 0. A 9 rolls over like a slot machine — 79&nbsp;999 becomes 80&nbsp;000.</div>
+        <div><b>Step 1.</b> Read the banner. Whack that place. Nearest hundred means the hundreds digit.</div>
+        <div><b>Step 2.</b> Whack the digit immediately on its right. Nearest thousand means the hundreds digit.</div>
+        <div><b>Step 3.</b> If that digit is 0–4, pull <b>Roll Down</b>. If it is 5–9, pull <b>Boost Up</b>. A 9 rolls over — 79&nbsp;999 becomes 80&nbsp;000.</div>
       </div>
       <div class="ctrls">
         <div class="c1"><strong>P1 · Red</strong>Arrows move<br>Space swings<br>8BitDo 1: D-pad + A</div>
@@ -416,6 +416,7 @@
     phaseT: 0,
     team: 0,
     solved: 0,
+    placeHitters: [],
     lockers: [],
     pullers: [],
     leverChoice: null,
@@ -460,6 +461,11 @@
     if (place === 10) return "ones";
     if (place === 100) return "tens";
     return "hundreds";
+  }
+  function targetWord(place) {
+    if (place === 10) return "tens";
+    if (place === 100) return "hundreds";
+    return "thousands";
   }
   function shuffle(list) {
     var a = list.slice();
@@ -526,11 +532,11 @@
   function buildQuestions() {
     var out = [];
     STAGES.forEach(function (stage) {
-      shuffle(stage.nums).forEach(function (n) {
+      stage.nums.forEach(function (n) {
         out.push(makeQuestion(n, stage.place));
       });
     });
-    return out;
+    return shuffle(out);
   }
 
   // ─── Audio (oscillators only) ─────────────────────────────────
@@ -833,7 +839,7 @@
   }
 
   function guideY() {
-    if (state.phase === "aim" || state.phase === "clamp" || state.phase === "spin") {
+    if (state.phase === "place" || state.phase === "aim" || state.phase === "clamp" || state.phase === "spin") {
       return GEO.digY + GEO.digH * 0.5;
     }
     if (state.phase === "drop" || state.phase === "lever") {
@@ -948,12 +954,12 @@
   function standingLesson() {
     var q = state.q;
     if (state.screen === "start") {
-      return "Round to the nearest ten, hundred, or thousand. The digit on the right decides.";
+      return "Each round, the place is a surprise. Mark that place, then the digit on its right.";
     }
     if (state.screen === "over") {
       return state.won
-        ? "Every number was squeezed. 0–4 stays, 5–9 rounds up, and 9s roll over."
-        : "The castle gears ran out. Look at the neighbour on the right, then choose the lever.";
+        ? "Every number was squeezed. Mark the place, read the digit on its right, then round."
+        : "The castle gears ran out. Mark the place in the banner, then the digit on its right.";
     }
     if (state.phase === "stage") {
       var info = stageInfo();
@@ -961,15 +967,19 @@
     }
     if (!q) return "Get ready.";
     if (state.msg) return state.msg;
+    if (state.phase === "place") {
+      return "Step 1: Round to the nearest " + placeLower(q.place) +
+        ". Whack the " + targetWord(q.place) + " digit.";
+    }
     if (state.phase === "aim") {
-      return "Step 1: The gear marks the " + placeLower(q.place) +
-        "s place. Whack the " + decideWord(q.place) + " digit — the neighbour on its right.";
+      return "Step 2: The " + targetWord(q.place) +
+        " place is marked. Whack the " + decideWord(q.place) + " digit — the one immediately on its right.";
     }
     if (state.phase === "clamp" || state.phase === "drop") {
       return "Deciding digit locked: " + q.deciding + ". Get ready to pull a lever.";
     }
     if (state.phase === "lever") {
-      return "Step 2: The deciding digit is " + q.deciding +
+      return "Step 3: The deciding digit is " + q.deciding +
         ". 0, 1, 2, 3, 4 → Roll Down. 5, 6, 7, 8, 9 → Boost Up.";
     }
     return successLesson(q);
@@ -1058,8 +1068,9 @@
 
   function startQuestion() {
     state.q = state.questions[state.qIndex];
-    state.phase = "aim";
+    state.phase = "place";
     state.phaseT = 0;
+    state.placeHitters = [];
     state.lockers = [];
     state.pullers = [];
     state.leverChoice = null;
@@ -1100,7 +1111,7 @@
   }
 
   function beginSpin(pullers) {
-    var ids = state.lockers.slice();
+    var ids = (state.placeHitters || []).concat(state.lockers);
     state.phase = "spin";
     state.phaseT = 0;
     state.pullers = pullers.map(function (p) { return p.id; });
@@ -1179,20 +1190,49 @@
     if (state.players.every(function (pl) { return !pl.alive; })) state.doom = 2.3;
   }
 
-  function applyDigitHits(list) {
-    if (state.phase !== "aim" || !state.q) return;
+  function applyPlaceHits(list) {
+    if (state.phase !== "place" || !state.q) return;
     var good = [];
+    var q = state.q;
     list.forEach(function (p) {
       if (!p.alive || p.stun > 0) return;
       var hit = digitAt(p.x, p.y);
       if (!hit) { AudioBus.soft(); return; }
-      if (hit.i === state.q.decideIndex) good.push(p);
+      if (hit.i === q.targetIndex) good.push(p);
       else {
         AudioBus.squeak();
-        if (hit.i === state.q.targetIndex) {
-          setMsg("That is the place itself. Whack the neighbour on its right — that digit decides.", "warn", 2.5);
+        if (hit.i === q.decideIndex) {
+          setMsg("That " + decideWord(q.place) + " digit decides, but not yet. First whack the " + targetWord(q.place) + " digit.", "warn", 2.5);
         } else {
-          setMsg("Not that one. Whack the digit immediately to the right of the gear.", "warn", 2.5);
+          setMsg("Not that place. Round to the nearest " + placeLower(q.place) + ", so whack the " + targetWord(q.place) + " digit.", "warn", 2.5);
+        }
+        hurt(p, 2);
+      }
+    });
+    if (good.length && state.phase === "place") {
+      state.phase = "aim";
+      state.phaseT = 0;
+      state.placeHitters = good.map(function (p) { return p.id; });
+      AudioBus.clank();
+      state.shake = 0.1;
+    }
+  }
+
+  function applyDigitHits(list) {
+    if (state.phase !== "aim" || !state.q) return;
+    var good = [];
+    var q = state.q;
+    list.forEach(function (p) {
+      if (!p.alive || p.stun > 0) return;
+      var hit = digitAt(p.x, p.y);
+      if (!hit) { AudioBus.soft(); return; }
+      if (hit.i === q.decideIndex) good.push(p);
+      else {
+        AudioBus.squeak();
+        if (hit.i === q.targetIndex) {
+          setMsg("That place is already marked. Now whack the " + decideWord(q.place) + " digit, on its right.", "warn", 2.5);
+        } else {
+          setMsg("Not that one. Whack the digit immediately to the right of the " + targetWord(q.place) + " place.", "warn", 2.5);
         }
         hurt(p, 2);
       }
@@ -1235,15 +1275,7 @@
       endGame(true);
       return;
     }
-    if (state.questions[state.qIndex].place !== state.questions[state.qIndex - 1].place) {
-      state.phase = "stage";
-      state.phaseT = 0;
-      state.q = null;
-      state.leversOn = false;
-      state.msg = "";
-      state.msgKind = "";
-      updateHUD();
-    } else startQuestion();
+    startQuestion();
   }
 
   function trySkip() {
@@ -1292,13 +1324,14 @@
     state.msgT = 0;
     state.doom = 0;
     state.leversOn = false;
+    state.placeHitters = [];
     state.lockers = [];
     state.pullers = [];
     state.leverChoice = null;
     startModal.hidden = true;
     overModal.hidden = true;
     buildSquad();
-    updateHUD();
+    startQuestion();
   }
 
   function setMenuFocus(i) {
@@ -1362,7 +1395,8 @@
         fires.push(p);
       }
     }
-    if (state.phase === "aim") applyDigitHits(fires);
+    if (state.phase === "place") applyPlaceHits(fires);
+    else if (state.phase === "aim") applyDigitHits(fires);
     else if (state.phase === "lever") applyLeverHits(fires);
     else if ((state.phase === "stage" || state.phase === "spin") && fires.length) trySkip();
   }
@@ -1599,8 +1633,9 @@
     var boxes = digitBoxes(q.digits.length);
     var spinning = state.phase === "spin" && q === state.q;
     boxes.forEach(function (box, i) {
-      var target = i === q.targetIndex;
-      var locked = i === q.decideIndex && state.phase !== "aim" && state.phase !== "attract" && state.screen !== "start";
+      var marked = !(state.screen === "play" && state.phase === "place" && q === state.q);
+      var target = i === q.targetIndex && marked;
+      var locked = i === q.decideIndex && (state.phase === "clamp" || state.phase === "drop" || state.phase === "lever" || state.phase === "spin");
       var glyph = String(shownDigit(q, i));
       var blurring = spinning && q.digits[i] !== q.answerDigits[i] && spinLocal(i) < 1;
       var grd = ctx.createLinearGradient(box.x, box.y, box.x + box.w, box.y + box.h);
@@ -1666,7 +1701,7 @@
     if ((state.phase === "aim" || state.screen === "start") && q.decideIndex >= 0) {
       drawNeighbourArrow(boxes[q.targetIndex], boxes[q.decideIndex]);
     }
-    if (state.q && state.phase !== "aim" && state.phase !== "stage" && state.screen === "play") {
+    if (state.q && q === state.q && (state.phase === "clamp" || state.phase === "drop" || state.phase === "lever" || state.phase === "spin")) {
       drawClamp(boxes[q.decideIndex], state.phase === "clamp" ? clamp(state.phaseT / 0.46, 0, 1) : 1);
     }
     return boxes;
@@ -1766,22 +1801,26 @@
         ctx.fill();
         ctx.fillStyle = "#ffe7a8";
         ctx.font = "800 14px Nunito, Trebuchet MS, sans-serif";
-        ctx.fillText("LOCKED UNTIL STEP 2", box.x + box.w / 2 + 10, y + 166);
+        ctx.fillText("LOCKED UNTIL STEP 3", box.x + box.w / 2 + 10, y + 166);
       }
       ctx.restore();
     });
     }
 
   function drawCoach() {
-    var text = "STEP 1  ·  WHACK THE RIGHT-HAND NEIGHBOUR";
+    var text = "STEP 1  ·  WHACK THE PLACE IN THE BANNER";
     var bg = "#1a100c";
     var fg = "#ffe7a8";
     if (state.msgKind === "warn" && state.msg) {
       text = state.msg;
       bg = "#8d1424";
       fg = "#fff";
+    } else if (state.phase === "place" && state.q) {
+      text = "STEP 1  ·  WHACK THE " + targetWord(state.q.place).toUpperCase() + " DIGIT";
+    } else if (state.phase === "aim" && state.q) {
+      text = "STEP 2  ·  WHACK THE " + decideWord(state.q.place).toUpperCase() + " DIGIT ON THE RIGHT";
     } else if (state.phase === "lever") {
-      text = "STEP 2  ·  " + state.q.deciding + " DECIDES   ·   0–4 DOWN   ·   5–9 UP";
+      text = "STEP 3  ·  " + state.q.deciding + " DECIDES   ·   0–4 DOWN   ·   5–9 UP";
     } else if (state.phase === "clamp" || state.phase === "drop") {
       text = "CLAMP LOCKED  ·  DIGIT " + (state.q ? state.q.deciding : "");
     } else if (state.phase === "spin" && state.q) {
@@ -1807,7 +1846,7 @@
     state.players.forEach(function (p) {
       if (!p.alive) return;
       var box = null;
-      if (state.phase === "aim") box = digitAt(p.x, p.y);
+      if (state.phase === "place" || state.phase === "aim") box = digitAt(p.x, p.y);
       else if (state.phase === "lever") box = leverAt(p.x, p.y);
       if (!box) return;
       ctx.strokeStyle = p.color;
@@ -2057,7 +2096,8 @@
     p.y = clamp(w.y, 120, 680);
     p.vx = 0;
     p.swing = 1;
-    if (state.phase === "aim") applyDigitHits([p]);
+    if (state.phase === "place") applyPlaceHits([p]);
+    else if (state.phase === "aim") applyDigitHits([p]);
     else if (state.phase === "lever") applyLeverHits([p]);
     else trySkip();
   });
