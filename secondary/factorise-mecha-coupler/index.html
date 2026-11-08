@@ -1,0 +1,2356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Mecha Coupler: Twin-Claw Assembly</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23070b12'/%3E%3Cpath d='M6 8h8l2 6H8z' fill='%233ecbff'/%3E%3Cpath d='M26 8h-8l-2 6h8z' fill='%23ffb020'/%3E%3Crect x='13' y='16' width='6' height='10' rx='1' fill='%23d7e6ff'/%3E%3C/svg%3E" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070b12;
+    overflow: hidden;
+    font-family: system-ui, "Segoe UI", "Avenir Next", sans-serif;
+  }
+  body { display: flex; flex-direction: column; }
+  canvas {
+    display: block;
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    touch-action: none;
+    cursor: crosshair;
+    outline: none;
+  }
+  #bar {
+    min-height: 42px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 12px;
+    background: linear-gradient(#141c2a, #0b1018);
+    border-top: 3px solid #3ecbff;
+    color: #c5d4ea;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+  }
+  #bar b { color: #ffd15c; font-weight: 750; }
+  #mute {
+    appearance: none;
+    border: 2px solid #3ecbff;
+    background: #061018;
+    color: #d9f6ff;
+    font: 750 13px/1 system-ui, "Segoe UI", sans-serif;
+    letter-spacing: 0.08em;
+    padding: 7px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    flex: none;
+  }
+  #mute[aria-pressed="true"] {
+    border-color: #6d7c96;
+    color: #9aabc4;
+    background: #121820;
+  }
+  #mute:focus-visible { outline: 2px solid #ffd15c; outline-offset: 2px; }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Mecha Coupler. Factorise a four-term expression by grouping. Player 1 uses arrow keys and space, or gamepad 1 button A. Player 2 uses W A S D and F. Player 3 uses I J K L and H. Press M to mute and Escape to pause."></canvas>
+<div id="bar">
+  <span id="hint">SEC 1 · FACTORISATION BY GROUPING · <b>M</b> MUTE · <b>ESC</b> PAUSE</span>
+  <button id="mute" type="button" aria-pressed="false" aria-label="Mute sound">SOUND ON</button>
+</div>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+(() => {
+  'use strict';
+
+  const FONT = 'system-ui, "Segoe UI", "Avenir Next", sans-serif';
+  const COL = {
+    text: '#e7f2ff',
+    dim: '#93a4c4',
+    gold: '#ffd15c',
+    cyan: '#3ecbff',
+    amber: '#ffb020',
+    green: '#3dff9a',
+    red: '#ff3b55',
+    blue: '#3aa0ff',
+    yellow: '#ffd23a',
+    neg: '#ff8b6a',
+    steel: '#8ea0b8',
+  };
+  const TIER = {
+    1: {
+      name: 'POSITIVE PAIRS',
+      tip: 'Take the HCF of each pair: the largest factor shared by both terms.',
+    },
+    2: {
+      name: 'SIGN TRAP',
+      tip: 'A minus may sit inside the bracket. The wrong sign flips every term in that bracket.',
+    },
+    3: {
+      name: 'NEGATIVE EXTRACT',
+      tip: 'When both terms are negative, extract a negative factor so the bracket matches the other claw.',
+    },
+  };
+
+  const view = { w: 1280, h: 720, dpr: 1 };
+  let bootError = '';
+  let UI = null;
+
+  function gcd(a, b) {
+    a = Math.abs(a);
+    b = Math.abs(b);
+    while (b) {
+      const t = a % b;
+      a = b;
+      b = t;
+    }
+    return a || 1;
+  }
+
+  function cloneF(f) {
+    return { c: f.c, v: Object.assign({}, f.v || {}) };
+  }
+
+  function mul(a, b) {
+    const v = Object.assign({}, a.v);
+    Object.keys(b.v).forEach((k) => { v[k] = (v[k] || 0) + b.v[k]; });
+    return { c: a.c * b.c, v };
+  }
+
+  function sameVars(a, b) {
+    const keys = new Set(Object.keys(a.v).concat(Object.keys(b.v)));
+    for (const k of keys) if ((a.v[k] || 0) !== (b.v[k] || 0)) return false;
+    return true;
+  }
+
+  function factorEq(a, b) {
+    return !!a && !!b && a.c === b.c && sameVars(a, b);
+  }
+
+  function divides(term, factor) {
+    if (!factor.c || term.c % factor.c !== 0) return false;
+    return Object.keys(factor.v).every((k) => (term.v[k] || 0) >= factor.v[k]);
+  }
+
+  function divTerm(term, factor) {
+    if (!divides(term, factor)) return null;
+    const v = {};
+    Object.keys(term.v).forEach((k) => {
+      const left = term.v[k] - (factor.v[k] || 0);
+      if (left > 0) v[k] = left;
+    });
+    return { c: term.c / factor.c, v };
+  }
+
+  function bracketFrom(pair, factor) {
+    const a = divTerm(pair[0], factor);
+    const b = divTerm(pair[1], factor);
+    if (!a || !b) return null;
+    return [a, b];
+  }
+
+  function bracketsEqual(a, b) {
+    return !!a && !!b && factorEq(a[0], b[0]) && factorEq(a[1], b[1]);
+  }
+
+  function isNegation(a, b) {
+    if (!a || !b) return false;
+    return a[0].c === -b[0].c && a[1].c === -b[1].c && sameVars(a[0], b[0]) && sameVars(a[1], b[1]);
+  }
+
+  function isScalarMultiple(big, small) {
+    if (!big || !small) return false;
+    if (!sameVars(big[0], small[0]) || !sameVars(big[1], small[1])) return false;
+    if (!small[0].c || !small[1].c) return false;
+    if (big[0].c % small[0].c || big[1].c % small[1].c) return false;
+    const k1 = big[0].c / small[0].c;
+    const k2 = big[1].c / small[1].c;
+    return k1 === k2 && Math.abs(k1) > 1;
+  }
+
+  function fmtVars(v) {
+    return Object.keys(v).filter((k) => v[k] > 0).sort().map((k) => {
+      if (v[k] === 1) return k;
+      if (v[k] === 2) return k + '²';
+      return k + '^' + v[k];
+    }).join('');
+  }
+
+  function fmtBare(f) {
+    const mag = Math.abs(f.c);
+    const vars = fmtVars(f.v);
+    if (vars && mag === 1) return vars;
+    return String(mag) + vars;
+  }
+
+  function fmtChoice(f, side) {
+    const bare = fmtBare(f);
+    if (f.c < 0) return '−' + bare;
+    if (side === 'right') return '+' + bare;
+    return bare;
+  }
+
+  function fmtBin(a, b) {
+    const left = a.c < 0 ? '−' + fmtBare(a) : fmtBare(a);
+    const right = (b.c < 0 ? '− ' : '+ ') + fmtBare(b);
+    return '(' + left + ' ' + right + ')';
+  }
+
+  function fmtExpression(terms) {
+    return terms.map((t, i) => {
+      const bare = fmtBare(t);
+      if (i === 0) return t.c < 0 ? '−' + bare : bare;
+      return (t.c < 0 ? '− ' : '+ ') + bare;
+    }).join(' ');
+  }
+
+  function fmtPlate(t, index) {
+    const bare = fmtBare(t);
+    if (index === 0) return t.c < 0 ? '−' + bare : bare;
+    return (t.c < 0 ? '−' : '+') + bare;
+  }
+
+  function fmtGrouping(terms, right) {
+    const left = fmtBin(terms[0], terms[1]);
+    if (right.c < 0 && terms[2].c < 0 && terms[3].c < 0) {
+      return left + ' − ' + fmtBin({ c: -terms[2].c, v: terms[2].v }, { c: -terms[3].c, v: terms[3].v });
+    }
+    return left + ' + ' + fmtBin(terms[2], terms[3]);
+  }
+
+  function fmtClaw(factor, inner, side) {
+    const bracket = fmtBin(inner[0], inner[1]);
+    if (factor.c < 0) return '−' + fmtBare(factor) + bracket;
+    if (side === 'right') return '+' + fmtBare(factor) + bracket;
+    return fmtBare(factor) + bracket;
+  }
+
+  function fmtWorked(L, R, inner) {
+    const b = fmtBin(inner[0], inner[1]);
+    const left = fmtBare(L) + b;
+    if (R.c < 0) return left + ' − ' + fmtBare({ c: -R.c, v: R.v }) + b;
+    return left + ' + ' + fmtBare(R) + b;
+  }
+
+  function fmtSignedBare(f) {
+    const bare = fmtBare(f);
+    return f.c < 0 ? '−' + bare : bare;
+  }
+
+  function masterLabel(o) {
+    if (o.kind === 'product') return fmtBin(o.L, o.R) + fmtBin(o.inner[0], o.inner[1]);
+    if (o.kind === 'triple') return '(' + fmtSignedBare(o.L) + ')(' + fmtSignedBare(o.R) + ')' + fmtBin(o.inner[0], o.inner[1]);
+    return fmtBin(o.L, o.R) + ' + ' + fmtBin(o.inner[0], o.inner[1]);
+  }
+
+  function simplifyCouple(L, R, bracket) {
+    const gi = gcd(bracket[0].c, bracket[1].c);
+    const go = gcd(L.c, R.c);
+    const g = gi * go;
+    if (g <= 1) return '';
+    const L2 = { c: L.c / go, v: L.v };
+    const R2 = { c: R.c / go, v: R.v };
+    const B2 = bracket.map((t) => ({ c: t.c / gi, v: t.v }));
+    return String(g) + fmtBin(L2, R2) + fmtBin(B2[0], B2[1]);
+  }
+
+  function expandCouple(L, R, inner) {
+    return [mul(L, inner[0]), mul(L, inner[1]), mul(R, inner[0]), mul(R, inner[1])];
+  }
+
+  function polyKey(terms) {
+    return terms.map((t) => t.c + '*' + fmtVars(t.v)).sort().join(',');
+  }
+
+  function divisors(n) {
+    n = Math.abs(n);
+    const d = [];
+    for (let i = 1; i <= n; i++) if (n % i === 0) d.push(i);
+    return d;
+  }
+
+  function isPrime(n) {
+    if (n < 2) return false;
+    for (let i = 2; i * i <= n; i++) if (n % i === 0) return false;
+    return true;
+  }
+
+  function oneSidedCoeffs(coeffA, coeffB) {
+    const a = Math.abs(coeffA);
+    const b = Math.abs(coeffB);
+    return divisors(a).filter((d) => d > 1 && b % d !== 0);
+  }
+
+  function makeChoices(correct, pair, tier, side) {
+    const sign = correct.c < 0 ? -1 : 1;
+    const mag = Math.abs(correct.c);
+    const distractors = [];
+    const add = (f) => {
+      if (!f || !f.c) return;
+      const n = cloneF(f);
+      if (factorEq(n, correct) || distractors.some((d) => factorEq(d, n))) return;
+      distractors.push(n);
+    };
+    if (tier >= 2 && side === 'right') add({ c: -correct.c, v: correct.v });
+    divisors(mag).filter((d) => d > 1 && d < mag).sort((a, b) => b - a).slice(0, 2)
+      .forEach((d) => add({ c: sign * d, v: correct.v }));
+    const vkeys = Object.keys(correct.v);
+    if (vkeys.length) {
+      const v = Object.assign({}, correct.v);
+      delete v[vkeys[0]];
+      add({ c: correct.c, v });
+    }
+    if (vkeys.length && isPrime(mag)) add({ c: sign, v: correct.v });
+    const s1 = oneSidedCoeffs(pair[0].c, pair[1].c);
+    const s2 = oneSidedCoeffs(pair[1].c, pair[0].c);
+    if (s1.length) add({ c: sign * Math.max.apply(null, s1), v: correct.v });
+    if (s2.length) add({ c: sign * Math.min.apply(null, s2), v: correct.v });
+    if (mag !== 1) add({ c: sign, v: Object.assign({}, correct.v) });
+    let bump = 1;
+    while (distractors.length < 3 && bump < 15) {
+      add({ c: correct.c + sign * bump, v: Object.assign({}, correct.v) });
+      bump++;
+    }
+    return shuffle(distractors.slice(0, 3).concat([cloneF(correct)]));
+  }
+
+  function buildOptions(tier, L, R, inner) {
+    L = cloneF(L);
+    R = cloneF(R);
+    inner = inner.map(cloneF);
+    const opts = [];
+    const add = (o) => {
+      o.label = masterLabel(o);
+      if (opts.some((x) => x.label === o.label)) return false;
+      opts.push(o);
+      return true;
+    };
+    add({ kind: 'product', L, R, inner, correct: true });
+    if (tier >= 2) {
+      add({
+        kind: 'product',
+        L,
+        R: { c: -R.c, v: Object.assign({}, R.v) },
+        inner: inner.map((t) => ({ c: Math.abs(t.c), v: Object.assign({}, t.v) })),
+        correct: false,
+        trap: 'sign',
+      });
+    } else {
+      const slip = Math.abs(inner[0].c) + 1;
+      add({
+        kind: 'product',
+        L,
+        R,
+        inner: [cloneF(inner[0]), { c: inner[1].c + Math.sign(inner[1].c || 1) * slip, v: Object.assign({}, inner[1].v) }],
+        correct: false,
+        trap: 'slip',
+      });
+    }
+    add({ kind: 'triple', L, R, inner, correct: false, trap: 'triple' });
+    add({ kind: 'sum', L, R, inner, correct: false, trap: 'sum' });
+    let k = 2;
+    while (opts.length < 4 && k < 12) {
+      add({
+        kind: 'product',
+        L,
+        R,
+        inner: [cloneF(inner[0]), { c: inner[1].c + Math.sign(inner[1].c || 1) * k, v: Object.assign({}, inner[1].v) }],
+        correct: false,
+        trap: 'slip',
+      });
+      k++;
+    }
+    return shuffle(opts);
+  }
+
+  function assemble(tier, left, right, inner) {
+    left = cloneF(left);
+    right = cloneF(right);
+    inner = inner.map(cloneF);
+    const terms = [
+      mul(left, inner[0]), mul(left, inner[1]),
+      mul(right, inner[0]), mul(right, inner[1]),
+    ];
+    return {
+      tier,
+      left,
+      right,
+      inner,
+      terms,
+      leftChoices: makeChoices(left, [terms[0], terms[1]], tier, 'left'),
+      rightChoices: makeChoices(right, [terms[2], terms[3]], tier, 'right'),
+      options: buildOptions(tier, left, right, inner),
+      expr: fmtExpression(terms),
+      grouping: fmtGrouping(terms, right),
+    };
+  }
+
+  function diagnose(problem, leftF, rightF) {
+    const lt = [problem.terms[0], problem.terms[1]];
+    const rt = [problem.terms[2], problem.terms[3]];
+    const lb = bracketFrom(lt, leftF);
+    const rb = bracketFrom(rt, rightF);
+    const leftCanon = factorEq(leftF, problem.left);
+    const rightCanon = factorEq(rightF, problem.right);
+    const match = !!(lb && rb && bracketsEqual(lb, rb));
+    let message = '';
+    if (match) message = 'MATCH CONFIRMED: COMMON BINOMIAL FOUND!';
+    else if (!lb && !rb) message = 'Neither factor divides its pair. A common factor has to divide both terms exactly.';
+    else if (!lb) message = 'Left factor ' + fmtChoice(leftF, 'left') + ' does not divide both ' + fmtPlate(lt[0], 0) + ' and ' + fmtPlate(lt[1], 1) + '.';
+    else if (!rb) message = 'Right factor ' + fmtChoice(rightF, 'right') + ' does not divide both ' + fmtPlate(rt[0], 0) + ' and ' + fmtPlate(rt[1], 1) + '.';
+    else if (isNegation(lb, rb)) message = 'Mismatch! ' + fmtBin(lb[0], lb[1]) + ' does not match ' + fmtBin(rb[0], rb[1]) + '. Did you forget to extract the negative sign?';
+    else if (isScalarMultiple(lb, rb) || isScalarMultiple(rb, lb)) message = 'Mismatch! ' + fmtBin(lb[0], lb[1]) + ' does not match ' + fmtBin(rb[0], rb[1]) + '. Incomplete HCF — a common factor is still inside one bracket.';
+    else message = 'Mismatch! ' + fmtBin(lb[0], lb[1]) + ' does not match ' + fmtBin(rb[0], rb[1]) + '. The brackets must be identical before the master clamp can couple.';
+    return { match, lb, rb, leftCanon, rightCanon, message };
+  }
+
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  function pickVars(n) {
+    const pool = ['a', 'b', 'c', 'd', 'm', 'n', 'p', 'q', 'r', 'x', 'y'];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = tmp;
+    }
+    return pool.slice(0, n);
+  }
+
+  function pickCoprime() {
+    return pick([
+      [2, 3], [3, 2], [2, 5], [5, 2], [3, 4], [4, 3], [3, 5], [5, 3], [4, 5], [5, 4],
+      [2, 7], [3, 7], [4, 7], [5, 7], [6, 7], [7, 2], [7, 3], [7, 4], [7, 5], [7, 6],
+      [7, 8], [5, 6], [5, 8], [3, 8], [5, 9], [4, 9], [2, 9], [8, 3], [8, 5], [8, 9],
+      [9, 2], [9, 4], [9, 5], [3, 10], [7, 10], [9, 8], [4, 11], [5, 11], [6, 11], [7, 9],
+    ]);
+  }
+
+  const SHAPES = {
+    1: ['mono', 'quad', 'linear', 'mixed'],
+    2: ['mono', 'linear', 'quad', 'mixed'],
+    3: ['double', 'const', 'mixed', 'tail'],
+  };
+
+  function genMono(tier, negInner) {
+    const vars = pickVars(2);
+    const A = pick([4, 5, 6, 8, 9, 10, 12]);
+    const B = pick([3, 5, 7, 9, 11]);
+    const pair = pickCoprime();
+    const C = pair[0];
+    const D = negInner ? -pair[1] : pair[1];
+    return assemble(tier, { c: A, v: { [vars[0]]: 1 } }, { c: B, v: {} }, [{ c: C, v: { [vars[1]]: 1 } }, { c: D, v: {} }]);
+  }
+
+  function genQuad(tier, negSecond) {
+    const vars = pickVars(4);
+    const pair = pickCoprime();
+    const D = negSecond ? -pair[1] : pair[1];
+    return assemble(tier,
+      { c: pick([3, 4, 5, 6, 7, 8]), v: { [vars[0]]: 1 } },
+      { c: pick([3, 4, 5, 6, 7]), v: { [vars[1]]: 1 } },
+      [{ c: pair[0], v: { [vars[2]]: 1 } }, { c: D, v: { [vars[3]]: 1 } }]);
+  }
+
+  function genMixed(tier, negSecond) {
+    const vars = pickVars(3);
+    const pair = pickCoprime();
+    const D = negSecond ? -pair[1] : pair[1];
+    return assemble(tier,
+      { c: pick([3, 4, 5, 6, 7, 8]), v: { [vars[0]]: 1 } },
+      { c: pick([3, 4, 5, 6, 7]), v: { [vars[1]]: 1 } },
+      [{ c: pair[0], v: { [vars[2]]: 1 } }, { c: D, v: {} }]);
+  }
+
+  function genLinear(tier, negSecond) {
+    const vars = pickVars(3);
+    const A = pick([4, 5, 6, 7, 8, 9]);
+    const B = pick([3, 5, 7, 9]);
+    const pair = pickCoprime();
+    const D = negSecond ? -pair[1] : pair[1];
+    return assemble(tier,
+      { c: A, v: { [vars[0]]: 1 } },
+      { c: B, v: {} },
+      [{ c: pair[0], v: { [vars[1]]: 1 } }, { c: D, v: { [vars[2]]: 1 } }]);
+  }
+
+  function genDoubleNeg() {
+    const vars = pickVars(4);
+    let A;
+    let B;
+    if (Math.random() < 0.65) {
+      const g = pick([2, 3, 3]);
+      A = g * pick([2, 3, 4]);
+      B = g * pick([3, 5]);
+      if (A === B) B += g;
+    } else {
+      A = pick([4, 5, 6, 8]);
+      B = pick([3, 5, 7, 9]);
+    }
+    const pair = pickCoprime();
+    return assemble(3,
+      { c: A, v: { [vars[0]]: 1 } },
+      { c: -B, v: { [vars[1]]: 1 } },
+      [{ c: pair[0], v: { [vars[2]]: 1 } }, { c: pair[1], v: { [vars[3]]: 1 } }]);
+  }
+
+  function genConstNeg() {
+    const vars = pickVars(3);
+    const pair = pickCoprime();
+    return assemble(3,
+      { c: pick([4, 6, 8, 10, 12, 14, 15]), v: { [vars[0]]: 1 } },
+      { c: -pick([3, 5, 7, 9, 11]), v: {} },
+      [{ c: pair[0], v: { [vars[1]]: 1 } }, { c: pair[1], v: { [vars[2]]: 1 } }]);
+  }
+
+  function genTier3Mixed() {
+    const vars = pickVars(3);
+    const pair = pickCoprime();
+    let A = pick([4, 5, 6, 8, 9, 10]);
+    let B = pick([3, 5, 7, 9]);
+    if (Math.random() < 0.4) {
+      const g = pick([2, 3]);
+      A = g * pick([2, 3, 4]);
+      B = g * pick([3, 5]);
+      if (A === B) B += g;
+    }
+    return assemble(3,
+      { c: A, v: { [vars[0]]: 1 } },
+      { c: -B, v: { [vars[1]]: 1 } },
+      [{ c: pair[0], v: { [vars[2]]: 1 } }, { c: pair[1], v: {} }]);
+  }
+
+  function genTail() {
+    const vars = pickVars(2);
+    const pair = pickCoprime();
+    return assemble(3,
+      { c: pick([4, 6, 8, 10, 12, 14, 15]), v: { [vars[0]]: 1 } },
+      { c: -pick([3, 5, 7, 9, 11]), v: {} },
+      [{ c: pair[0], v: { [vars[1]]: 1 } }, { c: pair[1], v: {} }]);
+  }
+
+  function genShape(tier, shape) {
+    if (tier === 1) {
+      if (shape === 'quad') return genQuad(1, false);
+      if (shape === 'linear') return genLinear(1, false);
+      if (shape === 'mixed') return genMixed(1, false);
+      return genMono(1, false);
+    }
+    if (tier === 2) {
+      if (shape === 'quad') return genQuad(2, true);
+      if (shape === 'linear') return genLinear(2, true);
+      if (shape === 'mixed') return genMixed(2, true);
+      return genMono(2, true);
+    }
+    if (shape === 'const') return genConstNeg();
+    if (shape === 'mixed') return genTier3Mixed();
+    if (shape === 'tail') return genTail();
+    return genDoubleNeg();
+  }
+
+  function acceptable(p) {
+    if (p.terms.some((t) => t.c === 0 || Math.abs(t.c) > 48)) return false;
+    if (p.terms.some((t) => Object.keys(t.v).some((k) => t.v[k] !== 1))) return false;
+    if (p.leftChoices.length !== 4 || p.rightChoices.length !== 4) return false;
+    if (p.options.length !== 4) return false;
+    return true;
+  }
+
+  function genTier(tier) {
+    const shapes = SHAPES[tier];
+    for (let i = 0; i < 40; i++) {
+      const p = genShape(tier, shapes[i % shapes.length]);
+      if (acceptable(p)) return p;
+    }
+    throw new Error('Could not generate a tier ' + tier + ' hull');
+  }
+
+  function shapeOf(spec) {
+    const Lv = Object.keys(spec.left.v).length;
+    const Rv = Object.keys(spec.right.v).length;
+    const iv = Object.keys(spec.inner[0].v).length + Object.keys(spec.inner[1].v).length;
+    if (spec.right.c < 0) {
+      if (Lv && Rv && iv === 2) return 'double';
+      if (Lv && !Rv && iv === 2) return 'const';
+      if (Lv && Rv && iv === 1) return 'mixed';
+      return 'tail';
+    }
+    if (Lv && Rv && iv === 2) return 'quad';
+    if (Lv && !Rv && iv === 2) return 'linear';
+    if (Lv && Rv && iv === 1) return 'mixed';
+    return 'mono';
+  }
+
+  function structureKey(p) {
+    const order = [];
+    function vid(v) {
+      return Object.keys(v).sort().map((k) => {
+        let i = order.indexOf(k);
+        if (i < 0) { order.push(k); i = order.length - 1; }
+        return String.fromCharCode(97 + i);
+      }).join('');
+    }
+    function piece(f) { return f.c + vid(f.v); }
+    return [p.tier, shapeOf(p), piece(p.left), piece(p.right), piece(p.inner[0]), piece(p.inner[1])].join(':');
+  }
+
+  function numberKey(p) {
+    return [p.left, p.right, p.inner[0], p.inner[1]].map((f) => Math.abs(f.c)).join(',');
+  }
+
+  function varsKey(p) {
+    const names = [];
+    [p.left, p.right, p.inner[0], p.inner[1]].forEach((f) => {
+      Object.keys(f.v).forEach((k) => { if (names.indexOf(k) < 0) names.push(k); });
+    });
+    return names.slice().sort().join('');
+  }
+
+  const FEATURED = [
+    { tier: 1, left: { c: 12, v: { m: 1 } }, right: { c: 7, v: {} }, inner: [{ c: 2, v: { n: 1 } }, { c: 3, v: {} }] },
+    { tier: 1, left: { c: 5, v: { a: 1 } }, right: { c: 3, v: { d: 1 } }, inner: [{ c: 3, v: { b: 1 } }, { c: 5, v: { c: 1 } }] },
+    { tier: 2, left: { c: 10, v: { m: 1 } }, right: { c: 7, v: {} }, inner: [{ c: 2, v: { n: 1 } }, { c: -3, v: {} }] },
+    { tier: 2, left: { c: 7, v: { p: 1 } }, right: { c: 3, v: {} }, inner: [{ c: 3, v: { x: 1 } }, { c: -2, v: { y: 1 } }] },
+    { tier: 3, left: { c: 6, v: { a: 1 } }, right: { c: -9, v: { b: 1 } }, inner: [{ c: 3, v: { x: 1 } }, { c: 2, v: { y: 1 } }] },
+    { tier: 3, left: { c: 8, v: { p: 1 } }, right: { c: -5, v: {} }, inner: [{ c: 2, v: { q: 1 } }, { c: 3, v: { r: 1 } }] },
+  ];
+
+  const memory = {
+    exprs: new Set(),
+    structs: [],
+    numbers: [],
+    vars: [],
+    featured: {},
+    shape: { 1: 0, 2: 0, 3: 0 },
+    ready: false,
+  };
+  let persist = false;
+
+  function blankMemory() {
+    memory.exprs = new Set();
+    memory.structs = [];
+    memory.numbers = [];
+    memory.vars = [];
+    memory.featured = {};
+    memory.shape = { 1: 0, 2: 0, 3: 0 };
+    memory.ready = true;
+  }
+
+  function loadMemory() {
+    if (memory.ready) return;
+    memory.ready = true;
+    const freshShape = () => ({
+      1: Math.floor(Math.random() * 4),
+      2: Math.floor(Math.random() * 4),
+      3: Math.floor(Math.random() * 4),
+    });
+    try {
+      if (typeof sessionStorage === 'undefined') {
+        memory.shape = freshShape();
+        return;
+      }
+      const raw = sessionStorage.getItem('mecha-coupler-seen-v1');
+      if (!raw) {
+        memory.shape = freshShape();
+        return;
+      }
+      const data = JSON.parse(raw);
+      (data.exprs || []).forEach((e) => memory.exprs.add(e));
+      memory.structs = data.structs || [];
+      memory.numbers = data.numbers || [];
+      memory.vars = data.vars || [];
+      memory.featured = data.featured || {};
+      memory.shape = data.shape || { 1: 0, 2: 0, 3: 0 };
+    } catch (err) {
+      memory.shape = freshShape();
+    }
+  }
+
+  function saveMemory() {
+    if (!persist) return;
+    try {
+      if (typeof sessionStorage === 'undefined') return;
+      sessionStorage.setItem('mecha-coupler-seen-v1', JSON.stringify({
+        exprs: Array.from(memory.exprs).slice(-80),
+        structs: memory.structs.slice(-48),
+        numbers: memory.numbers.slice(-48),
+        vars: memory.vars.slice(-12),
+        featured: memory.featured,
+        shape: memory.shape,
+      }));
+    } catch (err) { /* private browsing */ }
+  }
+
+  function tooFamiliar(p) {
+    if (memory.exprs.has(p.expr)) return true;
+    if (memory.structs.indexOf(structureKey(p)) >= 0) return true;
+    if (memory.numbers.indexOf(numberKey(p)) >= 0) return true;
+    if (memory.vars.slice(-4).indexOf(varsKey(p)) >= 0) return true;
+    return false;
+  }
+
+  function commitProblem(tier, p, nextShape) {
+    memory.exprs.add(p.expr);
+    memory.structs.push(structureKey(p));
+    if (memory.structs.length > 48) memory.structs = memory.structs.slice(-48);
+    memory.numbers.push(numberKey(p));
+    if (memory.numbers.length > 48) memory.numbers = memory.numbers.slice(-48);
+    memory.vars.push(varsKey(p));
+    if (memory.vars.length > 12) memory.vars = memory.vars.slice(-12);
+    memory.shape[tier] = nextShape % SHAPES[tier].length;
+    saveMemory();
+    return p;
+  }
+
+  function peekFeatured(tier, shape) {
+    for (let i = 0; i < FEATURED.length; i++) {
+      const spec = FEATURED[i];
+      if (memory.featured[i]) continue;
+      if (spec.tier !== tier || shapeOf(spec) !== shape) continue;
+      return { spec: spec, i: i };
+    }
+    return null;
+  }
+
+  function resetFactory() {
+    loadMemory();
+  }
+
+  function createProblem(tier) {
+    loadMemory();
+    const shapes = SHAPES[tier];
+    const start = memory.shape[tier] || 0;
+    for (let s = 0; s < shapes.length; s++) {
+      const shape = shapes[(start + s) % shapes.length];
+      const featured = peekFeatured(tier, shape);
+      if (featured) {
+        const p = assemble(featured.spec.tier, featured.spec.left, featured.spec.right, featured.spec.inner);
+        if (acceptable(p) && !tooFamiliar(p)) {
+          memory.featured[featured.i] = true;
+          return commitProblem(tier, p, start + s + 1);
+        }
+      }
+      for (let n = 0; n < 16; n++) {
+        let p = null;
+        try { p = genShape(tier, shape); } catch (err) { p = null; }
+        if (p && acceptable(p) && !tooFamiliar(p)) return commitProblem(tier, p, start + s + 1);
+      }
+    }
+    for (let n = 0; n < 30; n++) {
+      const shape = shapes[(start + n) % shapes.length];
+      const p = genShape(tier, shape);
+      if (p && acceptable(p) && !memory.exprs.has(p.expr) && memory.structs.indexOf(structureKey(p)) < 0 && memory.numbers.indexOf(numberKey(p)) < 0) {
+        return commitProblem(tier, p, start + 1);
+      }
+    }
+    const p = genShape(tier, shapes[start % shapes.length]);
+    return commitProblem(tier, p, start + 1);
+  }
+
+  function choiceSet(list, side) {
+    return list.map((f) => fmtChoice(f, side)).sort().join('|');
+  }
+
+  function validateProblem(p) {
+    const expanded = expandCouple(p.left, p.right, p.inner);
+    if (polyKey(expanded) !== polyKey(p.terms)) throw new Error('expand ' + p.expr);
+    const lb = bracketFrom(p.terms.slice(0, 2), p.left);
+    const rb = bracketFrom(p.terms.slice(2), p.right);
+    if (!bracketsEqual(lb, p.inner) || !bracketsEqual(rb, p.inner)) throw new Error('bracket ' + p.expr);
+    if (!p.leftChoices.some((f) => factorEq(f, p.left))) throw new Error('left missing ' + p.expr);
+    if (!p.rightChoices.some((f) => factorEq(f, p.right))) throw new Error('right missing ' + p.expr);
+    if (new Set(p.leftChoices.map((f) => fmtChoice(f, 'left'))).size !== 4) throw new Error('left dup ' + p.expr);
+    if (new Set(p.rightChoices.map((f) => fmtChoice(f, 'right'))).size !== 4) throw new Error('right dup ' + p.expr);
+    if (p.tier >= 2) {
+      const flip = { c: -p.right.c, v: Object.assign({}, p.right.v) };
+      if (!p.rightChoices.some((f) => factorEq(f, flip))) throw new Error('no sign trap ' + p.expr);
+      const bad = bracketFrom(p.terms.slice(2), flip);
+      if (!bad || !isNegation(bad, p.inner)) throw new Error('sign trap bracket ' + p.expr);
+    } else if (p.rightChoices.some((f) => f.c < 0) || p.leftChoices.some((f) => f.c < 0)) {
+      throw new Error('tier 1 sign leak ' + p.expr);
+    }
+    if (p.tier === 1 && p.terms.some((t) => t.c < 0)) throw new Error('tier 1 negative term ' + p.expr);
+    if (p.tier === 2 && p.right.c < 0) throw new Error('tier 2 outer negative ' + p.expr);
+    if (p.tier === 3 && p.right.c >= 0) throw new Error('tier 3 missing negative extract ' + p.expr);
+    const labels = p.options.map((o) => o.label);
+    if (new Set(labels).size !== 4) throw new Error('option labels ' + p.expr + ' ' + labels.join(' / '));
+    if (p.options.filter((o) => o.correct).length !== 1) throw new Error('correct count ' + p.expr);
+    const correct = p.options.find((o) => o.correct);
+    if (correct.label !== fmtBin(p.left, p.right) + fmtBin(p.inner[0], p.inner[1])) throw new Error('master label ' + correct.label);
+    if (polyKey(expandCouple(correct.L, correct.R, correct.inner)) !== polyKey(p.terms)) throw new Error('master expand ' + p.expr);
+    const sign = p.options.find((o) => o.trap === 'sign');
+    if (sign && polyKey(expandCouple(sign.L, sign.R, sign.inner)) === polyKey(p.terms)) throw new Error('sign trap equivalent ' + p.expr);
+  }
+
+  function selfTest() {
+    blankMemory();
+    try {
+    const featured = FEATURED.map((spec) => assemble(spec.tier, spec.left, spec.right, spec.inner));
+    const expectExpr = [
+      '24mn + 36m + 14n + 21',
+      '15ab + 25ac + 9bd + 15cd',
+      '20mn − 30m + 14n − 21',
+      '21px − 14py + 9x − 6y',
+      '18ax + 12ay − 27bx − 18by',
+      '16pq + 24pr − 10q − 15r',
+    ];
+    featured.forEach((p, i) => {
+      if (p.expr !== expectExpr[i]) throw new Error('expr ' + i + ' got ' + p.expr);
+      validateProblem(p);
+    });
+    if (choiceSet(featured[2].leftChoices, 'left') !== ['10', '10m', '2m', '5m'].sort().join('|')) {
+      throw new Error('left choices ' + choiceSet(featured[2].leftChoices, 'left'));
+    }
+    if (choiceSet(featured[2].rightChoices, 'right') !== ['+14', '+3', '+7', '−7'].sort().join('|')) {
+      throw new Error('right choices ' + choiceSet(featured[2].rightChoices, 'right'));
+    }
+    if (featured[2].grouping !== '(20mn − 30m) + (14n − 21)') throw new Error(featured[2].grouping);
+    if (featured[4].grouping !== '(18ax + 12ay) − (27bx + 18by)') throw new Error(featured[4].grouping);
+    if (featured[5].grouping !== '(16pq + 24pr) − (10q + 15r)') throw new Error(featured[5].grouping);
+    if (fmtClaw(featured[2].left, featured[2].inner, 'left') !== '10m(2n − 3)') throw new Error('claw L');
+    if (fmtClaw(featured[2].right, featured[2].inner, 'right') !== '+7(2n − 3)') throw new Error('claw R');
+    if (fmtClaw(featured[4].left, featured[4].inner, 'left') !== '6a(3x + 2y)') throw new Error('claw 6a');
+    if (fmtClaw(featured[4].right, featured[4].inner, 'right') !== '−9b(3x + 2y)') throw new Error('claw -9b');
+    const labels2 = featured[2].options.map((o) => o.label);
+    ['(10m + 7)(2n − 3)', '(10m − 7)(2n + 3)', '(10m)(7)(2n − 3)', '(10m + 7) + (2n − 3)'].forEach((s) => {
+      if (labels2.indexOf(s) < 0) throw new Error('missing option ' + s + ' in ' + labels2.join(' | '));
+    });
+    const labels3 = featured[4].options.map((o) => o.label);
+    ['(6a − 9b)(3x + 2y)', '(6a + 9b)(3x + 2y)', '(6a)(−9b)(3x + 2y)', '(6a − 9b) + (3x + 2y)'].forEach((s) => {
+      if (labels3.indexOf(s) < 0) throw new Error('missing tier3 option ' + s + ' in ' + labels3.join(' | '));
+    });
+    if (simplifyCouple(featured[4].left, featured[4].right, featured[4].inner) !== '3(2a − 3b)(3x + 2y)') {
+      throw new Error('simplify ' + simplifyCouple(featured[4].left, featured[4].right, featured[4].inner));
+    }
+    const plus9 = { c: 9, v: { b: 1 } };
+    const diag = diagnose(featured[4], featured[4].left, plus9);
+    const expectedMsg = 'Mismatch! (3x + 2y) does not match (−3x − 2y). Did you forget to extract the negative sign?';
+    if (diag.message !== expectedMsg) throw new Error('diag ' + diag.message);
+    const partialL = { c: 2, v: { a: 1 } };
+    const partialR = { c: -3, v: { b: 1 } };
+    const partial = diagnose(featured[4], partialL, partialR);
+    if (!partial.match) throw new Error('partial should couple ' + partial.message);
+    if (simplifyCouple(partialL, partialR, partial.lb) !== '3(2a − 3b)(3x + 2y)') throw new Error('partial simplify');
+    if (fmtWorked(featured[2].left, featured[2].right, featured[2].inner) !== '10m(2n − 3) + 7(2n − 3)') throw new Error('worked');
+    if (fmtWorked(featured[4].left, featured[4].right, featured[4].inner) !== '6a(3x + 2y) − 9b(3x + 2y)') throw new Error('worked3');
+    for (let tier = 1; tier <= 3; tier++) {
+      const uniq = new Set();
+      for (let i = 0; i < 24; i++) {
+        const p = genTier(tier);
+        validateProblem(p);
+        uniq.add(p.expr);
+      }
+      if (uniq.size < 8) throw new Error('variety tier ' + tier + ' only ' + uniq.size);
+    }
+    const exprs = [];
+    const structs = [];
+    const numbers = [];
+    const shapesByTier = { 1: [], 2: [], 3: [] };
+    for (let n = 0; n < 12; n++) {
+      for (let tier = 1; tier <= 3; tier++) {
+        const p = createProblem(tier);
+        validateProblem(p);
+        if (exprs.indexOf(p.expr) >= 0) throw new Error('repeat expr ' + p.expr);
+        const sk = structureKey(p);
+        if (structs.indexOf(sk) >= 0) throw new Error('repeat structure ' + sk + ' ' + p.expr);
+        const nk = numberKey(p);
+        if (numbers.indexOf(nk) >= 0) throw new Error('repeat numbers ' + nk + ' ' + p.expr);
+        exprs.push(p.expr);
+        structs.push(sk);
+        numbers.push(nk);
+        shapesByTier[tier].push(shapeOf(p));
+      }
+    }
+    [1, 2, 3].forEach((tier) => {
+      const list = shapesByTier[tier];
+      for (let i = 1; i < list.length; i++) {
+        if (list[i] === list[i - 1]) throw new Error('same shape tier ' + tier + ' ' + list.join(','));
+      }
+      if (new Set(list).size < 4) throw new Error('shapes tier ' + tier + ' ' + list.join(','));
+    });
+    resetFactory();
+    const again = createProblem(1);
+    validateProblem(again);
+    if (exprs.indexOf(again.expr) >= 0) throw new Error('shift replay ' + again.expr);
+    if (structs.indexOf(structureKey(again)) >= 0) throw new Error('shift structure ' + again.expr);
+    } finally {
+      blankMemory();
+      memory.ready = false;
+    }
+  }
+
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  const AudioBus = {
+    ctx: null,
+    master: null,
+    music: null,
+    sfx: null,
+    noise: null,
+    muted: false,
+    started: false,
+    step: 0,
+    next: 0,
+    ensure() {
+      if (this.ctx) return true;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      try { this.ctx = new AC(); } catch (err) { return false; }
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : 0.9;
+      const comp = this.ctx.createDynamicsCompressor();
+      comp.threshold.value = -14;
+      comp.knee.value = 18;
+      comp.ratio.value = 3;
+      comp.attack.value = 0.005;
+      comp.release.value = 0.18;
+      this.master.connect(comp);
+      comp.connect(this.ctx.destination);
+      this.music = this.ctx.createGain();
+      this.music.gain.value = 0.34;
+      this.music.connect(this.master);
+      this.sfx = this.ctx.createGain();
+      this.sfx.gain.value = 0.85;
+      this.sfx.connect(this.master);
+      const len = this.ctx.sampleRate;
+      this.noise = this.ctx.createBuffer(1, len, len);
+      const data = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      return true;
+    },
+    start() {
+      if (!this.ensure()) return;
+      const resume = this.ctx.resume();
+      if (resume && resume.catch) resume.catch(() => {});
+      if (!this.started) {
+        this.started = true;
+        this.step = 0;
+        this.next = this.ctx.currentTime + 0.05;
+      }
+      this.master.gain.setTargetAtTime(this.muted ? 0 : 0.9, this.ctx.currentTime, 0.03);
+    },
+    toggle() {
+      this.muted = !this.muted;
+      if (this.ctx) this.master.gain.setTargetAtTime(this.muted ? 0 : 0.9, this.ctx.currentTime, 0.03);
+      const btn = document.getElementById('mute');
+      if (btn) {
+        btn.textContent = this.muted ? 'SOUND OFF' : 'SOUND ON';
+        btn.setAttribute('aria-pressed', this.muted ? 'true' : 'false');
+      }
+    },
+    tick() {
+      if (!this.ctx || !this.started || this.muted) return;
+      const t = this.ctx.currentTime;
+      if (this.next < t - 0.25) this.next = t + 0.02;
+      const stepDur = 60 / 126 / 4;
+      let guard = 0;
+      while (this.next < t + 0.22 && guard++ < 24) {
+        try { this.fire(this.step % 32, this.next); }
+        catch (err) { /* keep the line running */ }
+        this.step++;
+        this.next += stepDur;
+      }
+    },
+    fire(step, when) {
+      const bass = [33, 0, 33, 0, 40, 0, 33, 0, 36, 0, 36, 0, 31, 0, 28, 0, 33, 0, 33, 45, 40, 0, 36, 0, 31, 0, 33, 0, 28, 0, 26, 0];
+      const lead = [0, 0, 67, 0, 0, 70, 0, 74, 0, 0, 70, 0, 67, 0, 0, 62, 0, 0, 74, 0, 0, 77, 0, 74, 0, 70, 0, 67, 0, 62, 0, 0];
+      if (bass[step]) this.tone(when, 440 * 2 ** ((bass[step] - 69) / 12), 0.12, 'square', 0.07, this.music, 240);
+      if (lead[step]) this.tone(when, 440 * 2 ** ((lead[step] - 69) / 12), 0.16, 'square', 0.045, this.music, 1800);
+      if (step % 8 === 0) this.kick(when);
+      if (step % 8 === 4) this.snare(when);
+      if (step % 2 === 0) this.hat(when, step % 4 === 2);
+    },
+    tone(when, freq, dur, type, gain, dest, cut) {
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(Math.max(40, freq), when);
+      let node = o;
+      if (cut) {
+        const f = this.ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.setValueAtTime(cut, when);
+        o.connect(f);
+        node = f;
+      }
+      node.connect(g);
+      g.connect(dest || this.sfx);
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), when + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      o.start(when);
+      o.stop(when + dur + 0.02);
+    },
+    noiseBurst(when, dur, gain, hp, dest) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = hp ? 'highpass' : 'lowpass';
+      filter.frequency.value = hp || 900;
+      const g = this.ctx.createGain();
+      src.connect(filter);
+      filter.connect(g);
+      g.connect(dest || this.sfx);
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), when + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      src.start(when);
+      src.stop(when + dur + 0.02);
+    },
+    kick(when) {
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(150, when);
+      o.frequency.exponentialRampToValueAtTime(42, when + 0.12);
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.exponentialRampToValueAtTime(0.55, when + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + 0.16);
+      o.connect(g);
+      g.connect(this.music);
+      o.start(when);
+      o.stop(when + 0.18);
+    },
+    snare(when) {
+      this.tone(when, 180, 0.12, 'triangle', 0.12, this.music, 1200);
+      this.noiseBurst(when, 0.1, 0.18, 1800, this.music);
+    },
+    hat(when, open) {
+      this.noiseBurst(when, open ? 0.07 : 0.03, open ? 0.08 : 0.05, 7000, this.music);
+    },
+    grip() {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime;
+      this.noiseBurst(t, 0.16, 0.22, 400);
+      this.tone(t, 120, 0.18, 'sine', 0.28);
+      this.tone(t + 0.04, 540, 0.07, 'square', 0.06, this.sfx, 2000);
+    },
+    scan() {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(280, t);
+      o.frequency.exponentialRampToValueAtTime(980, t + 0.35);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.08, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+      o.connect(g);
+      g.connect(this.sfx);
+      o.start(t);
+      o.stop(t + 0.42);
+    },
+    match() {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime;
+      [523, 659, 784, 1046].forEach((f, i) => this.tone(t + i * 0.07, f, 0.22, 'sine', 0.12));
+    },
+    buzz() {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime;
+      this.tone(t, 90, 0.28, 'sawtooth', 0.08, this.sfx, 500);
+      this.tone(t, 134, 0.28, 'square', 0.05, this.sfx, 700);
+      this.noiseBurst(t, 0.18, 0.16, 2000);
+    },
+    clang() {
+      if (!this.ctx || this.muted) return;
+      const t = this.ctx.currentTime;
+      [170, 265, 430, 640].forEach((f, i) => this.tone(t, f, 0.55, 'triangle', 0.22 / (i + 1)));
+      this.noiseBurst(t, 0.28, 0.2, 900);
+      this.noiseBurst(t + 0.05, 0.4, 0.08, 2500);
+    },
+  };
+
+  const G = {
+    mode: 'title',
+    stage: 'arrive',
+    stageT: 0,
+    inputLock: 0,
+    problem: null,
+    leftLock: null,
+    rightLock: null,
+    burned: { left: {}, right: {}, master: {} },
+    starred: { left: false, right: false },
+    score: 0,
+    built: 0,
+    streak: 0,
+    retries: 0,
+    masterMiss: 0,
+    overtime: false,
+    shake: 0,
+    flash: 0,
+    flashColor: '#3dff9a',
+    belt: 0,
+    mechX: -700,
+    time: 0,
+    players: [],
+    keys: new Set(),
+    particles: [],
+    floats: [],
+    toast: '',
+    toastT: 0,
+    diag: null,
+    matched: null,
+    options: [],
+    pendingOver: 0,
+    simplify: '',
+    loopError: '',
+  };
+
+  function makePlayers() {
+    return [
+      { id: 0, name: 'P1', role: 'RED', color: '#ff3b55', up: 'arrowup', down: 'arrowdown', left: 'arrowleft', right: 'arrowright', fire: ' ', pad: 0, x: 280, y: 520, joined: true, cells: 3, stars: 0, prevA: false },
+      { id: 1, name: 'P2', role: 'BLUE', color: '#3aa0ff', up: 'w', down: 's', left: 'a', right: 'd', fire: 'f', pad: 1, x: 1100, y: 520, joined: false, cells: 3, stars: 0, prevA: false },
+      { id: 2, name: 'P3', role: 'YELLOW', color: '#ffd23a', up: 'i', down: 'k', left: 'j', right: 'l', fire: 'h', pad: 2, x: 800, y: 640, joined: false, cells: 3, stars: 0, prevA: false },
+    ];
+  }
+
+  function living() {
+    return G.players.filter((p) => p.joined && p.cells > 0);
+  }
+
+  function say(text) {
+    const el = document.getElementById('live');
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
+  function toast(text) {
+    G.toast = text;
+    G.toastT = 2.4;
+  }
+
+  function floatText(msg, x, y, color) {
+    G.floats.push({ msg, x, y, color: color || COL.gold, age: 0, life: 0.9 });
+  }
+
+  function burst(x, y, color, n, speed) {
+    if (G.reduce) return;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = speed * (0.35 + Math.random());
+      G.particles.push({
+        x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 20,
+        age: 0, life: 0.35 + Math.random() * 0.4, color, size: 2 + Math.random() * 3,
+      });
+    }
+    if (G.particles.length > 180) G.particles.splice(0, G.particles.length - 180);
+  }
+
+  function tierNow() {
+    if (G.overtime) return 3;
+    if (G.built < 3) return 1;
+    if (G.built < 6) return 2;
+    return 3;
+  }
+
+  function placeReticles() {
+    if (!UI) return;
+    const spots = [
+      UI.leftCards && UI.leftCards[0],
+      UI.rightCards && UI.rightCards[0],
+      (UI.leftCards && UI.leftCards[3]) || UI.dock,
+    ];
+    G.players.forEach((p, i) => {
+      const r = spots[i];
+      if (!r) return;
+      p.x = r.x + r.w * 0.5;
+      p.y = r.y + r.h * 0.5;
+    });
+  }
+
+  function beginRound() {
+    const tier = tierNow();
+    G.problem = createProblem(tier);
+    G.stage = 'arrive';
+    G.stageT = 0;
+    G.leftLock = null;
+    G.rightLock = null;
+    G.burned = { left: {}, right: {}, master: {} };
+    G.starred = { left: false, right: false };
+    G.diag = null;
+    G.matched = null;
+    G.options = [];
+    G.retries = 0;
+    G.masterMiss = 0;
+    G.simplify = '';
+    G.pendingOver = 0;
+    G.mechX = -((UI && UI.chassis && UI.chassis.w) || 700) - 80;
+    G.inputLock = 0.15;
+    say('Assembly ' + (G.built + 1) + ', tier ' + tier + '. ' + G.problem.expr + '. Group as ' + G.problem.grouping);
+  }
+
+  function startShift(overtime) {
+    AudioBus.start();
+    G.mode = 'play';
+    G.score = 0;
+    G.built = 0;
+    G.streak = 0;
+    G.overtime = !!overtime;
+    G.players = makePlayers();
+    G.particles = [];
+    G.floats = [];
+    G.shake = 0;
+    resetFactory();
+    const params = new URLSearchParams(location.search);
+    const force = Number(params.get('tier'));
+    if (!overtime && force >= 1 && force <= 3) G.built = (force - 1) * 3;
+    if (overtime) G.overtime = true;
+    beginRound();
+    placeReticles();
+  }
+
+  function endShift() {
+    G.mode = 'over';
+    say('Shift over. Factory output ' + G.score + '. Hulls coupled ' + G.built + '.');
+  }
+
+  function partnerIndexes(side, factor) {
+    const problem = G.problem;
+    const mine = side === 'left' ? problem.terms.slice(0, 2) : problem.terms.slice(2);
+    const bracket = bracketFrom(mine, factor);
+    if (!bracket) return [];
+    const other = side === 'left' ? problem.rightChoices : problem.leftChoices;
+    const otherTerms = side === 'left' ? problem.terms.slice(2) : problem.terms.slice(0, 2);
+    const burned = side === 'left' ? G.burned.right : G.burned.left;
+    const hits = [];
+    other.forEach((f, i) => {
+      if (burned[i]) return;
+      const ob = bracketFrom(otherTerms, f);
+      if (ob && bracketsEqual(ob, bracket)) hits.push(i);
+    });
+    return hits;
+  }
+
+  function loseCell(p, reason) {
+    if (!p || p.cells <= 0) return;
+    p.cells -= 1;
+    floatText('−1 CELL', p.x, p.y - 28, '#ff8b9a');
+    toast(p.name + ' lost a shield cell. ' + reason);
+    if (!living().length) G.pendingOver = 1.15;
+  }
+
+  function awardStar(p, side) {
+    if (!p || G.starred[side]) return;
+    G.starred[side] = true;
+    p.stars += 1;
+    floatText('+1 ★', p.x, p.y - 36, p.color);
+  }
+
+  function lockClaw(p, card) {
+    if (G.burned[card.zone][card.index]) return;
+    if (card.zone === 'left' && G.leftLock) return;
+    if (card.zone === 'right' && G.rightLock) return;
+    const rec = { index: card.index, factor: card.factor, playerId: p.id };
+    if (card.zone === 'left') G.leftLock = rec;
+    else G.rightLock = rec;
+    AudioBus.grip();
+    burst(card.x + card.w / 2, card.y + card.h / 2, card.zone === 'left' ? COL.cyan : COL.amber, 12, 160);
+    const canon = card.zone === 'left' ? G.problem.left : G.problem.right;
+    if (factorEq(card.factor, canon)) awardStar(p, card.zone);
+    if (G.leftLock && G.rightLock) {
+      G.stage = 'pull';
+      G.stageT = 0;
+      G.inputLock = 0.25;
+      AudioBus.scan();
+    }
+  }
+
+  function finishScan() {
+    const d = diagnose(G.problem, G.leftLock.factor, G.rightLock.factor);
+    G.diag = d;
+    if (d.match) {
+      if (!G.starred.left) awardStar(G.players[G.leftLock.playerId], 'left');
+      if (!G.starred.right) awardStar(G.players[G.rightLock.playerId], 'right');
+      G.matched = { L: cloneF(G.leftLock.factor), R: cloneF(G.rightLock.factor), bracket: d.lb.map(cloneF) };
+      G.options = buildOptions(G.problem.tier, G.matched.L, G.matched.R, G.matched.bracket);
+      G.simplify = simplifyCouple(G.matched.L, G.matched.R, G.matched.bracket);
+      G.stage = 'couple';
+      G.stageT = 0;
+      G.inputLock = 0.28;
+      G.flash = 0.35;
+      G.flashColor = COL.green;
+      AudioBus.match();
+      say(d.message + ' ' + fmtWorked(G.matched.L, G.matched.R, G.matched.bracket));
+      return;
+    }
+    G.retries += 1;
+    G.streak = 0;
+    G.stage = 'mismatch';
+    G.stageT = 0;
+    G.shake = G.reduce ? 0 : 8;
+    G.flash = 0.25;
+    G.flashColor = '#ff3b55';
+    AudioBus.buzz();
+    const signFail = d.lb && d.rb && isNegation(d.lb, d.rb);
+    [['left', G.leftLock, d.leftCanon, d.lb], ['right', G.rightLock, d.rightCanon, d.rb]].forEach((row) => {
+      const side = row[0];
+      const lock = row[1];
+      const canon = row[2];
+      const bracket = row[3];
+      const badSign = signFail && !canon;
+      const noDivide = !bracket;
+      if (badSign || noDivide) loseCell(G.players[lock.playerId], side === 'left' ? 'Left claw rejected.' : 'Right claw rejected.');
+      if (!canon && (noDivide || partnerIndexes(side, lock.factor).length === 0)) G.burned[side][lock.index] = true;
+    });
+    say(d.message);
+  }
+
+  function lockMaster(p, card) {
+    if (G.burned.master[card.index]) return;
+    const opt = G.options[card.index];
+    if (opt.correct) {
+      const clean = G.retries === 0 && G.masterMiss === 0;
+      let gain = 250;
+      if (clean) {
+        gain += 50;
+        G.streak += 1;
+        if (G.streak % 3 === 0) gain += 100;
+      } else G.streak = 0;
+      G.score += gain;
+      p.stars += 2;
+      G.built += 1;
+      floatText('+' + gain, card.x + card.w / 2, card.y, COL.gold);
+      AudioBus.clang();
+      burst(card.x + card.w / 2, card.y + card.h / 2, COL.gold, 28, 260);
+      G.flash = 0.4;
+      G.flashColor = COL.gold;
+      G.stage = 'celebrate';
+      G.stageT = 0;
+      G.inputLock = 0.4;
+      const done = fmtBin(G.matched.L, G.matched.R) + fmtBin(G.matched.bracket[0], G.matched.bracket[1]);
+      say('Coupled ' + done + (G.simplify ? '. Simplifies further to ' + G.simplify : '') + '. Plus ' + gain + '.');
+      return;
+    }
+    G.masterMiss += 1;
+    G.streak = 0;
+    G.burned.master[card.index] = true;
+    G.shake = G.reduce ? 0 : 6;
+    AudioBus.buzz();
+    let why = 'That clamp does not rebuild the hull.';
+    if (opt.trap === 'sign') why = 'Sign trap. The clamp keeps the signs you extracted. It does not flip them.';
+    else if (opt.trap === 'triple') why = 'The outer factors add together inside one bracket. They are not three separate factors.';
+    else if (opt.trap === 'sum') why = 'The master clamp multiplies the brackets. It does not add them.';
+    loseCell(p, why);
+    toast(why);
+    G.inputLock = 0.45;
+  }
+
+  function pointIn(r, x, y) {
+    return !!r && x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+  }
+
+  function cardAt(x, y) {
+    if (!UI) return null;
+    const lists = [];
+    if (G.stage === 'extract') {
+      (UI.leftCards || []).forEach((r, i) => lists.push(Object.assign({ zone: 'left', index: i, factor: G.problem.leftChoices[i] }, r)));
+      (UI.rightCards || []).forEach((r, i) => lists.push(Object.assign({ zone: 'right', index: i, factor: G.problem.rightChoices[i] }, r)));
+    } else if (G.stage === 'couple') {
+      (UI.masterCards || []).forEach((r, i) => lists.push(Object.assign({ zone: 'master', index: i }, r)));
+    }
+    for (let i = lists.length - 1; i >= 0; i--) if (pointIn(lists[i], x, y)) return lists[i];
+    return null;
+  }
+
+  function onFire(p) {
+    if (!p || G.inputLock > 0) return;
+    if (G.mode === 'title') { startShift(false); return; }
+    if (G.mode === 'pause') { G.mode = 'play'; return; }
+    if (G.mode === 'over') { startShift(false); return; }
+    if (G.mode === 'victory') { startShift(true); return; }
+    if (G.mode !== 'play' || p.cells <= 0) return;
+    if (G.stage !== 'extract' && G.stage !== 'couple') return;
+    const card = cardAt(p.x, p.y);
+    if (!card) return;
+    if (G.stage === 'extract') lockClaw(p, card);
+    else lockMaster(p, card);
+  }
+
+  function padTop(r, t) {
+    return { x: r.x, y: r.y + t, w: r.w, h: Math.max(40, r.h - t) };
+  }
+
+  function gridCards(area) {
+    const gap = 8;
+    const cw = (area.w - gap) / 2;
+    const ch = (area.h - gap) / 2;
+    const rects = [];
+    for (let i = 0; i < 4; i++) {
+      const c = i % 2;
+      const r = (i / 2) | 0;
+      rects.push({ x: area.x + c * (cw + gap), y: area.y + r * (ch + gap), w: cw, h: ch });
+    }
+    return rects;
+  }
+
+  function stackCards(area, n) {
+    const gap = 8;
+    const ch = (area.h - gap * (n - 1)) / n;
+    const rects = [];
+    for (let i = 0; i < n; i++) rects.push({ x: area.x, y: area.y + i * (ch + gap), w: area.w, h: ch });
+    return rects;
+  }
+
+  function layout() {
+    const w = view.w;
+    const h = view.h;
+    const narrow = w < 980;
+    const hudH = narrow ? 84 : 60;
+    const margin = narrow ? 8 : 16;
+    const chassisH = h < 680 ? 76 : narrow ? 90 : Math.min(128, Math.floor(h * 0.16));
+    const chassisW = Math.min(w - margin * 2, narrow ? w - margin * 2 : 880);
+    const chassis = { x: (w - chassisW) / 2, y: hudH + 8, w: chassisW, h: chassisH };
+    const status = { x: margin, y: chassis.y + chassis.h + 8, w: w - margin * 2, h: narrow ? 52 : 58 };
+    const top = status.y + status.h + 8;
+    const bottom = h - 8;
+    const bodyH = Math.max(80, bottom - top);
+    const choosing = G.mode === 'play' && G.stage === 'couple';
+    const reviewing = G.mode === 'play' && (G.stage === 'couple' || G.stage === 'celebrate' || G.stage === 'launch');
+    const diagnostic = G.mode === 'play' && (G.stage === 'pull' || G.stage === 'scan' || G.stage === 'mismatch');
+    let leftCol = null;
+    let rightCol = null;
+    let dock = null;
+    let leftCards = [];
+    let rightCards = [];
+    let masterCards = [];
+    if (narrow) {
+      if (reviewing && !choosing) {
+        dock = { x: margin, y: top, w: w - margin * 2, h: Math.max(140, bottom - top) };
+      } else {
+      const dockH = choosing ? Math.min(72, bodyH * 0.2) : diagnostic ? Math.min(150, Math.max(96, bodyH * 0.34)) : Math.min(96, Math.max(68, bodyH * 0.24));
+      dock = { x: margin, y: top, w: w - margin * 2, h: dockH };
+      const gridTop = dock.y + dock.h + 8;
+      const gridH = Math.max(80, bottom - gridTop);
+      if (choosing) masterCards = stackCards({ x: margin, y: gridTop, w: w - margin * 2, h: gridH }, 4);
+      else {
+        const gap = 8;
+        const colW = (w - margin * 2 - gap) / 2;
+        leftCol = { x: margin, y: gridTop, w: colW, h: gridH };
+        rightCol = { x: margin + colW + gap, y: gridTop, w: colW, h: gridH };
+        leftCards = gridCards(padTop(leftCol, 22));
+        rightCards = gridCards(padTop(rightCol, 22));
+      }
+      }
+    } else {
+      const gap = 14;
+      const sideW = Math.min(360, Math.max(240, (w - 460) / 2));
+      const groupW = Math.min(w - margin * 2, sideW * 2 + 480 + gap * 2);
+      const x0 = (w - groupW) / 2;
+      const midW = groupW - sideW * 2 - gap * 2;
+      leftCol = { x: x0, y: top, w: sideW, h: bodyH };
+      dock = { x: x0 + sideW + gap, y: top, w: midW, h: bodyH };
+      rightCol = { x: dock.x + midW + gap, y: top, w: sideW, h: bodyH };
+      if (choosing) masterCards = gridCards({ x: dock.x + 16, y: dock.y + Math.min(168, dock.h * 0.34), w: dock.w - 32, h: Math.max(80, dock.h - Math.min(184, dock.h * 0.38)) });
+      else if (!reviewing) {
+        leftCards = gridCards(padTop(leftCol, 28));
+        rightCards = gridCards(padTop(rightCol, 28));
+      }
+    }
+    return { narrow, hudH, margin, chassis, status, dock, leftCol, rightCol, leftCards, rightCards, masterCards, w, h, choosing, reviewing };
+  }
+
+  function movePlayer(p, ax, ay, dt) {
+    if (!ax && !ay) return;
+    const mag = Math.hypot(ax, ay) || 1;
+    const speed = Math.max(460, view.w * 0.72);
+    p.x = clamp(p.x + (ax / mag) * speed * dt, 16, view.w - 16);
+    p.y = clamp(p.y + (ay / mag) * speed * dt, UI.hudH + 8, view.h - 16);
+  }
+
+  function pollPads(dt) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    G.players.forEach((p) => {
+      const gp = pads[p.pad];
+      if (!gp || !gp.connected) return;
+      let ax = gp.axes[0] || 0;
+      let ay = gp.axes[1] || 0;
+      if (Math.abs(ax) < 0.22) ax = 0;
+      if (Math.abs(ay) < 0.22) ay = 0;
+      if (gp.buttons[14] && gp.buttons[14].pressed) ax = -1;
+      if (gp.buttons[15] && gp.buttons[15].pressed) ax = 1;
+      if (gp.buttons[12] && gp.buttons[12].pressed) ay = -1;
+      if (gp.buttons[13] && gp.buttons[13].pressed) ay = 1;
+      const a = gp.buttons[0] && gp.buttons[0].pressed;
+      if ((ax || ay || a) && !p.joined) {
+        p.joined = true;
+        toast(p.name + ' joined the line');
+      }
+      if (p.joined && p.cells > 0) movePlayer(p, ax, ay, dt);
+      if (a && !p.prevA) onFire(p);
+      p.prevA = !!a;
+    });
+  }
+
+  function update(dt) {
+    G.time += dt;
+    G.belt += dt;
+    if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 18);
+    if (G.flash > 0) G.flash = Math.max(0, G.flash - dt);
+    if (G.toastT > 0) G.toastT -= dt;
+    if (G.inputLock > 0) G.inputLock = Math.max(0, G.inputLock - dt);
+    G.particles.forEach((p) => {
+      p.age += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 30 * dt;
+    });
+    G.particles = G.particles.filter((p) => p.age < p.life);
+    G.floats.forEach((f) => { f.age += dt; f.y -= 28 * dt; });
+    G.floats = G.floats.filter((f) => f.age < f.life);
+    if (G.pendingOver > 0) {
+      G.pendingOver -= dt;
+      if (G.pendingOver <= 0 && G.mode === 'play') endShift();
+    }
+    if (G.mode !== 'play') {
+      pollPads(dt);
+      return;
+    }
+    G.players.forEach((p) => {
+      if (!p.joined || p.cells <= 0) return;
+      const ax = (G.keys.has(p.right) ? 1 : 0) - (G.keys.has(p.left) ? 1 : 0);
+      const ay = (G.keys.has(p.down) ? 1 : 0) - (G.keys.has(p.up) ? 1 : 0);
+      movePlayer(p, ax, ay, dt);
+    });
+    pollPads(dt);
+    G.stageT += dt;
+    if (G.stage === 'arrive') {
+      const target = 0;
+      G.mechX += (target - G.mechX) * Math.min(1, dt * 4.5);
+      if (G.stageT > 0.95 && Math.abs(G.mechX) < 8) {
+        G.mechX = 0;
+        G.stage = 'extract';
+        G.stageT = 0;
+      }
+    } else if (G.stage === 'pull' && G.stageT > 0.62) {
+      G.stage = 'scan';
+      G.stageT = 0;
+    } else if (G.stage === 'scan' && G.stageT > 0.72) {
+      finishScan();
+    } else if (G.stage === 'mismatch' && G.stageT > 1.85) {
+      G.leftLock = null;
+      G.rightLock = null;
+      G.diag = G.diag;
+      if (G.pendingOver > 0) return;
+      G.stage = 'extract';
+      G.stageT = 0;
+      G.inputLock = 0.2;
+    } else if (G.stage === 'celebrate' && G.stageT > 0.55) {
+      G.stage = 'launch';
+      G.stageT = 0;
+    } else if (G.stage === 'launch') {
+      G.mechX += dt * Math.max(420, view.w * 0.55);
+      if (!G.reduce) burst(UI.chassis.x + 30 + G.mechX, UI.chassis.y + UI.chassis.h * 0.7, '#ffb020', 1, 40);
+      if (G.stageT > 2.15) {
+        if (G.built >= 9 && !G.overtime) {
+          G.mode = 'victory';
+          say('Shift complete. Factory output ' + G.score + '.');
+        } else beginRound();
+      }
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, rr);
+    else {
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    }
+  }
+
+  function text(ctx, str, x, y, opt) {
+    const o = opt || {};
+    ctx.save();
+    ctx.globalAlpha = o.alpha == null ? 1 : o.alpha;
+    ctx.font = (o.weight || 700) + ' ' + (o.size || 16) + 'px ' + FONT;
+    ctx.textAlign = o.align || 'center';
+    ctx.textBaseline = o.base || 'middle';
+    ctx.fillStyle = o.color || COL.text;
+    ctx.fillText(str, x, y);
+    ctx.restore();
+  }
+
+  function textFit(ctx, str, x, y, maxW, opt) {
+    const o = opt || {};
+    let size = o.size || 28;
+    const min = o.min || 12;
+    const weight = o.weight || 800;
+    while (size > min) {
+      ctx.font = weight + ' ' + size + 'px ' + FONT;
+      if (ctx.measureText(str).width <= maxW) break;
+      size -= 1;
+    }
+    text(ctx, str, x, y, Object.assign({}, o, { size, weight }));
+    return size;
+  }
+
+  function wrapText(ctx, str, x, y, maxW, opt) {
+    const o = opt || {};
+    const size = o.size || 16;
+    const weight = o.weight || 650;
+    ctx.font = weight + ' ' + size + 'px ' + FONT;
+    const words = String(str).split(' ');
+    const lines = [];
+    let line = '';
+    words.forEach((word) => {
+      const test = line ? line + ' ' + word : word;
+      if (ctx.measureText(test).width > maxW && line) {
+        lines.push(line);
+        line = word;
+      } else line = test;
+    });
+    if (line) lines.push(line);
+    const lh = o.lh || size + 6;
+    const start = y - ((lines.length - 1) * lh) / 2;
+    lines.forEach((ln, i) => text(ctx, ln, x, start + i * lh, Object.assign({}, o, { size, weight })));
+    return lines.length;
+  }
+
+  function drawChunks(ctx, chunks, x, y, maxW, opt) {
+    const o = opt || {};
+    let size = o.size || 28;
+    const min = o.min || 13;
+    const weight = o.weight || 800;
+    let widths = [];
+    let total = Infinity;
+    while (size > min) {
+      ctx.font = weight + ' ' + size + 'px ' + FONT;
+      widths = chunks.map((c) => ctx.measureText(c.t).width);
+      total = widths.reduce((a, b) => a + b, 0);
+      if (total <= maxW) break;
+      size -= 1;
+    }
+    let cx = x - total / 2;
+    if (o.align === 'left') cx = x;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = weight + ' ' + size + 'px ' + FONT;
+    chunks.forEach((c, i) => {
+      ctx.fillStyle = c.color;
+      ctx.fillText(c.t, cx, y);
+      cx += widths[i];
+    });
+  }
+
+  function exprChunks(terms) {
+    return terms.map((t, i) => {
+      const bare = fmtBare(t);
+      const piece = i === 0 ? (t.c < 0 ? '−' + bare : bare) : (t.c < 0 ? ' − ' + bare : ' + ' + bare);
+      return { t: piece, color: t.c < 0 ? COL.neg : COL.text };
+    });
+  }
+
+  function drawHazard(ctx, x, y, w, h) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    const stripe = h * 1.6;
+    for (let i = -h; i < w + h; i += stripe) {
+      ctx.fillStyle = (Math.floor(i / stripe) % 2 === 0) ? '#f5c400' : '#16120a';
+      ctx.beginPath();
+      ctx.moveTo(x + i, y);
+      ctx.lineTo(x + i + h, y);
+      ctx.lineTo(x + i + h - h, y + h);
+      ctx.lineTo(x + i - h, y + h);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawBackground(ctx) {
+    const w = view.w;
+    const h = view.h;
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#182233');
+    g.addColorStop(0.42, '#0d141f');
+    g.addColorStop(1, '#070a10');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(90, 120, 150, 0.22)';
+    ctx.lineWidth = 2;
+    const span = 90;
+    const shift = (G.belt * 18) % span;
+    for (let x = -span + shift; x < w + span; x += span) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + span * 0.5, 64);
+      ctx.lineTo(x + span, 0);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(62, 203, 255, 0.05)';
+    ctx.fillRect(0, 64, w, 8);
+    ctx.fillStyle = 'rgba(255, 176, 32, 0.05)';
+    ctx.fillRect(0, 76, w, 4);
+    const fy = h - 18;
+    drawHazard(ctx, 0, fy, w, 10);
+    ctx.fillStyle = '#101722';
+    ctx.fillRect(0, fy + 10, w, 8);
+  }
+
+  function drawChassis(ctx, rect) {
+    const x = rect.x + G.mechX;
+    const y = rect.y;
+    const w = rect.w;
+    const h = rect.h;
+    ctx.save();
+    roundRect(ctx, x, y + h - 16, w, 22, 8);
+    ctx.fillStyle = '#1a2433';
+    ctx.fill();
+    const rollers = Math.max(4, Math.floor(w / 46));
+    for (let i = 0; i < rollers; i++) {
+      const rx = x + 24 + i * ((w - 48) / Math.max(1, rollers - 1));
+      ctx.beginPath();
+      ctx.arc(rx, y + h + 4, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#2a3648';
+      ctx.fill();
+      ctx.strokeStyle = '#7f91a8';
+      ctx.stroke();
+    }
+    const chevron = (G.belt * 80) % 28;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 8, y + h - 12, w - 16, 14);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(62,203,255,0.35)';
+    ctx.lineWidth = 2;
+    for (let i = -28 + chevron; i < w; i += 28) {
+      ctx.beginPath();
+      ctx.moveTo(x + i, y + h - 10);
+      ctx.lineTo(x + i + 10, y + h - 4);
+      ctx.lineTo(x + i, y + h + 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    roundRect(ctx, x, y, w, h - 8, 16);
+    const body = ctx.createLinearGradient(x, y, x, y + h);
+    body.addColorStop(0, '#3c4d63');
+    body.addColorStop(0.45, '#243140');
+    body.addColorStop(1, '#151c27');
+    ctx.fillStyle = body;
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#9eb0c6';
+    ctx.stroke();
+    ctx.fillStyle = '#101820';
+    roundRect(ctx, x + 18, y + 10, w * 0.18, 12, 4);
+    ctx.fill();
+    ctx.fillStyle = COL.cyan;
+    ctx.globalAlpha = 0.8 + Math.sin(G.time * 6) * 0.2;
+    ctx.fillRect(x + 22, y + 13, w * 0.1, 6);
+    ctx.globalAlpha = 1;
+
+    const gap = 10;
+    const innerX = x + 16;
+    const innerW = w - 32;
+    const plateW = (innerW - gap * 5) / 4;
+    const plateH = Math.max(32, h - 46);
+    const plateY = y + 28;
+    const terms = G.problem ? G.problem.terms : [];
+    for (let i = 0; i < 4; i++) {
+      const px = innerX + gap + i * (plateW + gap) + (i >= 2 ? gap : 0);
+      roundRect(ctx, px, plateY, plateW, plateH, 8);
+      ctx.fillStyle = '#0c121b';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = i < 2 ? 'rgba(62,203,255,0.85)' : 'rgba(255,176,32,0.9)';
+      ctx.stroke();
+      if (terms[i]) {
+        textFit(ctx, fmtPlate(terms[i], i), px + plateW / 2, plateY + plateH / 2, plateW - 12, {
+          size: plateH > 52 ? 28 : 20,
+          min: 12,
+          color: terms[i].c < 0 ? COL.neg : '#f2f7ff',
+        });
+      }
+    }
+    const laserX = x + w / 2;
+    ctx.save();
+    ctx.shadowColor = '#ff4d6a';
+    ctx.shadowBlur = G.reduce ? 0 : 16;
+    ctx.strokeStyle = '#ff5a74';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(laserX, y + 6);
+    ctx.lineTo(laserX, y + h - 12);
+    ctx.stroke();
+    ctx.restore();
+    text(ctx, 'PAIR 1', x + w * 0.25, y + 18, { size: 11, color: COL.cyan, weight: 800 });
+    text(ctx, 'PAIR 2', x + w * 0.75, y + 18, { size: 11, color: COL.amber, weight: 800 });
+    if (G.stage === 'launch') {
+      ctx.fillStyle = '#ffb020';
+      const flame = 10 + Math.sin(G.time * 30) * 8;
+      ctx.beginPath();
+      ctx.moveTo(x + 18, y + h * 0.55);
+      ctx.lineTo(x - flame, y + h * 0.62);
+      ctx.lineTo(x + 18, y + h * 0.7);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawClaw(ctx, col, side, locked) {
+    if (!col) return;
+    const color = side === 'left' ? COL.cyan : COL.amber;
+    const x = col.x + 16;
+    const y = col.y + 12;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    const open = locked ? 3 : 6;
+    ctx.beginPath();
+    ctx.moveTo(x - 7, y - 6);
+    ctx.lineTo(x + 7, y - 6);
+    ctx.moveTo(x, y - 6);
+    ctx.lineTo(x, y);
+    ctx.moveTo(x - 2, y);
+    ctx.lineTo(x - open, y + 6);
+    ctx.moveTo(x + 2, y);
+    ctx.lineTo(x + open, y + 6);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCard(ctx, rect, label, opt) {
+    const o = opt || {};
+    ctx.save();
+    ctx.globalAlpha = o.burned ? 0.45 : 1;
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 12);
+    ctx.fillStyle = o.locked ? '#182838' : '#101820';
+    ctx.fill();
+    ctx.lineWidth = o.hot ? 4 : 2;
+    ctx.strokeStyle = o.burned ? '#ff5a74' : (o.hot || o.color || '#8ea0b8');
+    ctx.stroke();
+    if (o.burned) {
+      ctx.strokeStyle = 'rgba(255,90,116,0.8)';
+      ctx.beginPath();
+      ctx.moveTo(rect.x + 12, rect.y + 12);
+      ctx.lineTo(rect.x + rect.w - 12, rect.y + rect.h - 12);
+      ctx.stroke();
+    }
+    const color = o.burned ? '#ffb0bc' : (String(label).indexOf('−') === 0 ? COL.neg : '#f4f8ff');
+    textFit(ctx, label, rect.x + rect.w / 2, rect.y + rect.h / 2 + (o.tag ? -6 : 0), rect.w - 16, {
+      size: Math.min(32, Math.floor(rect.h * 0.42)),
+      min: 12,
+      color,
+    });
+    if (o.tag) text(ctx, o.tag, rect.x + rect.w / 2, rect.y + rect.h - 14, { size: 11, color: o.color || COL.dim });
+    ctx.restore();
+  }
+
+  function visualCard(x, y) {
+    if (!UI) return null;
+    const lists = [].concat(UI.leftCards || [], UI.rightCards || [], UI.masterCards || []);
+    for (let i = lists.length - 1; i >= 0; i--) if (pointIn(lists[i], x, y)) return lists[i];
+    return null;
+  }
+
+  function hoverColor(rect) {
+    const hits = G.players.filter((p) => p.joined && p.cells > 0 && pointIn(rect, p.x, p.y));
+    return hits.length ? hits[hits.length - 1].color : '';
+  }
+
+  function drawDockPanel(ctx, rect) {
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 16);
+    ctx.fillStyle = 'rgba(8, 14, 24, 0.92)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(215, 230, 255, 0.35)';
+    ctx.stroke();
+  }
+
+  function drawPlay(ctx) {
+    const ui = UI;
+    const p = G.problem;
+    drawBackground(ctx);
+    if (p) drawChassis(ctx, ui.chassis);
+    drawChunks(ctx, exprChunks(p.terms), ui.status.x + ui.status.w / 2, ui.status.y + ui.status.h / 2, ui.status.w - 12, {
+      size: ui.narrow ? 20 : 28,
+      min: 13,
+    });
+
+    if (ui.leftCol) {
+      text(ctx, 'LEFT CLAW', ui.leftCol.x + ui.leftCol.w / 2, ui.leftCol.y + 12, { size: 12, color: COL.cyan, weight: 800 });
+      drawClaw(ctx, ui.leftCol, 'left', !!G.leftLock);
+    }
+    if (ui.rightCol) {
+      text(ctx, 'RIGHT CLAW', ui.rightCol.x + ui.rightCol.w / 2, ui.rightCol.y + 12, { size: 12, color: COL.amber, weight: 800 });
+      drawClaw(ctx, ui.rightCol, 'right', !!G.rightLock);
+    }
+
+    if (!ui.reviewing) {
+      ui.leftCards.forEach((rect, i) => {
+        const factor = p.leftChoices[i];
+        const locked = G.leftLock && G.leftLock.index === i;
+        drawCard(ctx, rect, fmtChoice(factor, 'left'), {
+          color: COL.cyan,
+          burned: !!G.burned.left[i],
+          locked,
+          hot: hoverColor(rect),
+          tag: locked ? G.players[G.leftLock.playerId].name + ' LOCK' : '',
+        });
+      });
+      ui.rightCards.forEach((rect, i) => {
+        const factor = p.rightChoices[i];
+        const locked = G.rightLock && G.rightLock.index === i;
+        drawCard(ctx, rect, fmtChoice(factor, 'right'), {
+          color: COL.amber,
+          burned: !!G.burned.right[i],
+          locked,
+          hot: hoverColor(rect),
+          tag: locked ? G.players[G.rightLock.playerId].name + ' LOCK' : '',
+        });
+      });
+    } else if (ui.reviewing && ui.leftCol && G.matched) {
+      drawCard(ctx, { x: ui.leftCol.x, y: ui.leftCol.y + 36, w: ui.leftCol.w, h: ui.leftCol.h - 48 }, fmtClaw(G.matched.L, G.matched.bracket, 'left'), { color: COL.cyan, locked: true });
+      drawCard(ctx, { x: ui.rightCol.x, y: ui.rightCol.y + 36, w: ui.rightCol.w, h: ui.rightCol.h - 48 }, fmtClaw(G.matched.R, G.matched.bracket, 'right'), { color: COL.amber, locked: true });
+    }
+
+    if (ui.dock) {
+      drawDockPanel(ctx, ui.dock);
+      const cx = ui.dock.x + ui.dock.w / 2;
+      const tier = TIER[p.tier];
+      if (G.stage === 'extract' || G.stage === 'arrive') {
+        text(ctx, 'GROUP IN PAIRS', cx, ui.dock.y + 22, { size: 12, color: COL.gold, weight: 800 });
+        textFit(ctx, p.grouping, cx, ui.dock.y + (ui.narrow ? 46 : 58), ui.dock.w - 28, { size: ui.narrow ? 16 : 22, min: 12, color: COL.text });
+        if (!ui.narrow) wrapText(ctx, tier.tip, cx, ui.dock.y + ui.dock.h * 0.62, ui.dock.w - 36, { size: 16, color: COL.dim, weight: 650 });
+      } else if (G.stage === 'pull' || G.stage === 'scan' || G.stage === 'mismatch') {
+        const lb = G.leftLock && bracketFrom(p.terms.slice(0, 2), G.leftLock.factor);
+        const rb = G.rightLock && bracketFrom(p.terms.slice(2), G.rightLock.factor);
+        const leftLine = lb ? fmtClaw(G.leftLock.factor, lb, 'left') : 'REJECTED';
+        const rightLine = rb ? fmtClaw(G.rightLock.factor, rb, 'right') : 'REJECTED';
+        textFit(ctx, leftLine, cx, ui.dock.y + 28, ui.dock.w - 24, { size: 22, min: 12, color: COL.cyan });
+        textFit(ctx, rightLine, cx, ui.dock.y + (ui.narrow ? 52 : 62), ui.dock.w - 24, { size: 22, min: 12, color: COL.amber });
+        if (G.stage === 'scan') {
+          const sweep = (G.stageT / 0.72);
+          ctx.strokeStyle = COL.green;
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(ui.dock.x + 16, ui.dock.y + 18 + sweep * (ui.dock.h - 36));
+          ctx.lineTo(ui.dock.x + ui.dock.w - 16, ui.dock.y + 18 + sweep * (ui.dock.h - 36));
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+        if (G.diag && G.stage === 'mismatch') {
+          wrapText(ctx, G.diag.message, cx, ui.dock.y + ui.dock.h * (ui.narrow ? 0.72 : 0.68), ui.dock.w - 28, {
+            size: ui.narrow ? 13 : 16,
+            color: '#ffd0d6',
+            weight: 700,
+          });
+        }
+      } else if (G.matched) {
+        text(ctx, G.stage === 'couple' ? 'MASTER COUPLING CLAMP' : 'HULL COUPLED', cx, ui.dock.y + 20, { size: 12, color: COL.gold, weight: 800 });
+        textFit(ctx, fmtWorked(G.matched.L, G.matched.R, G.matched.bracket), cx, ui.dock.y + (ui.narrow ? 42 : 52), ui.dock.w - 24, { size: ui.narrow ? 14 : 18, min: 11, color: COL.text });
+        const product = fmtBin(G.matched.L, G.matched.R) + fmtBin(G.matched.bracket[0], G.matched.bracket[1]);
+        if (G.stage !== 'couple') {
+          textFit(ctx, '= ' + product, cx, ui.dock.y + (ui.narrow ? 64 : 84), ui.dock.w - 24, { size: 18, min: 12, color: COL.green });
+          if (G.simplify) textFit(ctx, 'Simplifies further: ' + G.simplify, cx, ui.dock.y + (ui.narrow ? 84 : 112), ui.dock.w - 24, { size: 15, min: 11, color: COL.gold });
+        } else if (!ui.narrow) {
+          text(ctx, 'Add the outer factors. Keep the shared bracket.', cx, ui.dock.y + 82, { size: 14, color: COL.dim, weight: 650 });
+        }
+      }
+    }
+
+    if (G.stage === 'couple') {
+      ui.masterCards.forEach((rect, i) => {
+        const opt = G.options[i];
+        if (!opt) return;
+        drawCard(ctx, rect, opt.label, {
+          color: '#d5e6ff',
+          burned: !!G.burned.master[i],
+          hot: hoverColor(rect),
+        });
+      });
+    }
+
+    G.players.forEach((pl) => {
+      if (!pl.joined) return;
+      const card = visualCard(pl.x, pl.y);
+      ctx.save();
+      ctx.globalAlpha = pl.cells > 0 ? 1 : 0.35;
+      ctx.fillStyle = pl.color;
+      ctx.strokeStyle = pl.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pl.x, pl.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      if (!card) {
+        ctx.beginPath();
+        ctx.arc(pl.x, pl.y, 14, 0.6, Math.PI * 1.3);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(pl.x, pl.y, 14, Math.PI + 0.6, Math.PI * 2 + 0.05);
+        ctx.stroke();
+        text(ctx, pl.name, pl.x, pl.y - 22, { size: 11, color: pl.color, weight: 800 });
+      } else {
+        text(ctx, pl.name, card.x + 12, card.y + 14, { size: 11, color: pl.color, weight: 800, align: 'left' });
+      }
+      ctx.restore();
+    });
+  }
+
+  function drawPlayerChip(ctx, p, x, y, chipW, tall) {
+    roundRect(ctx, x, y, chipW, tall ? 30 : 44, 8);
+    ctx.fillStyle = 'rgba(8,12,20,0.88)';
+    ctx.fill();
+    ctx.strokeStyle = p.joined ? p.color : '#3c4a60';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    text(ctx, p.name, x + 8, y + (tall ? 15 : 22), { size: 12, color: p.color, align: 'left', weight: 800 });
+    if (!p.joined) {
+      text(ctx, p.id === 1 ? 'PRESS F' : 'PRESS H', x + chipW - 8, y + (tall ? 15 : 22), { size: 11, color: COL.dim, align: 'right' });
+      return;
+    }
+    if (tall || chipW < 150) {
+      text(ctx, p.cells + '·' + p.stars + '★', x + chipW - 8, y + (tall ? 15 : 22), { size: 12, color: COL.gold, align: 'right' });
+      return;
+    }
+    for (let b = 0; b < 3; b++) {
+      roundRect(ctx, x + 42 + b * 16, y + 14, 12, 16, 2);
+      ctx.fillStyle = b < p.cells ? p.color : '#1c2636';
+      ctx.fill();
+      ctx.strokeStyle = b < p.cells ? p.color : '#7d8da3';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    text(ctx, p.stars + '★', x + chipW - 8, y + 22, { size: 13, color: COL.gold, align: 'right' });
+  }
+
+  function drawHUD(ctx) {
+    const w = view.w;
+    const stacked = w < 760;
+    const hull = (G.overtime ? 'OVERTIME' : ('HULL ' + Math.min(G.built + 1, 9) + ' / 9'))
+      + (G.problem ? ('  ·  TIER ' + G.problem.tier + ' ' + TIER[G.problem.tier].name) : '');
+    if (stacked) {
+      text(ctx, 'MECHA COUPLER', 12, 16, { size: 13, color: COL.cyan, align: 'left', weight: 800 });
+      textFit(ctx, hull, 12, 34, w * 0.62, { size: 11, min: 9, color: COL.dim, weight: 700, align: 'left' });
+      text(ctx, G.score.toLocaleString('en-SG'), w - 12, 24, { size: 20, color: COL.gold, align: 'right', weight: 800 });
+      const gap = 6;
+      const cw = (w - 16 - gap * 2) / 3;
+      G.players.forEach((p, i) => drawPlayerChip(ctx, p, 8 + i * (cw + gap), 48, cw, true));
+      return;
+    }
+    text(ctx, 'MECHA COUPLER', 16, 20, { size: 16, color: COL.cyan, align: 'left', weight: 800 });
+    const chipW = Math.min(176, Math.max(124, (w - 520) / 3));
+    const x0 = w - 12 - (chipW * 3 + 12);
+    const scoreX = Math.max(230, Math.min(x0 - 110, 280));
+    textFit(ctx, hull, 16, 42, Math.max(120, scoreX - 28), { size: 12, min: 10, color: COL.dim, weight: 700, align: 'left' });
+    text(ctx, 'OUTPUT', scoreX, 16, { size: 11, color: COL.dim, align: 'left' });
+    text(ctx, G.score.toLocaleString('en-SG'), scoreX, 40, { size: 24, color: COL.gold, align: 'left', weight: 800 });
+    G.players.forEach((p, i) => drawPlayerChip(ctx, p, x0 + i * (chipW + 6), 8, chipW, false));
+  }
+
+  let titleSample = null;
+  function titleExample() {
+    if (!titleSample) {
+      titleSample = assemble(2, { c: 10, v: { m: 1 } }, { c: 7, v: {} }, [{ c: 2, v: { n: 1 } }, { c: -3, v: {} }]);
+    }
+    return titleSample;
+  }
+
+  function drawTitle(ctx) {
+    drawBackground(ctx);
+    const w = view.w;
+    const h = view.h;
+    textFit(ctx, 'MECHA COUPLER', w / 2, h * 0.1, w - 40, { size: w < 700 ? 32 : 54, min: 26, color: COL.cyan, weight: 800 });
+    textFit(ctx, 'TWIN-CLAW ASSEMBLY', w / 2, h * 0.1 + (w < 700 ? 36 : 48), w - 40, { size: w < 700 ? 16 : 22, min: 13, color: COL.amber, weight: 800 });
+    textFit(ctx, 'Singapore Sec 1  ·  Factorise four terms by grouping in pairs', w / 2, h * 0.1 + (w < 700 ? 62 : 80), w - 32, { size: 16, min: 12, color: COL.dim, weight: 650 });
+
+    const sample = titleExample();
+    if (h > 560) {
+      const cards = [
+        ['1  EXTRACT', 'Each claw pulls a common factor from its pair.', fmtClaw(sample.left, sample.inner, 'left') + '    ' + fmtClaw(sample.right, sample.inner, 'right')],
+        ['2  MATCH', 'The brackets left behind must be identical.', 'A wrong sign flips the whole bracket.'],
+        ['3  COUPLE', 'Add the outer factors, then multiply.', '(10m + 7)(2n − 3)'],
+      ];
+      const gap = 12;
+      const cw = Math.min(420, (w - 48 - gap * 2) / (w < 900 ? 1 : 3));
+      const cols = w < 900 ? 1 : 3;
+      const ch = 112;
+      cards.forEach((card, i) => {
+        if (cols === 1 && i > 0 && h < 820) return;
+        const col = cols === 1 ? 0 : i;
+        const row = cols === 1 ? i : 0;
+        const x = (w - (cw * cols + gap * (cols - 1))) / 2 + col * (cw + gap);
+        const y = h * 0.26 + row * (ch + 10);
+        roundRect(ctx, x, y, cw, ch, 12);
+        ctx.fillStyle = 'rgba(10,16,28,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = i === 1 ? COL.amber : i === 2 ? COL.green : COL.cyan;
+        ctx.stroke();
+        text(ctx, card[0], x + 16, y + 22, { size: 14, color: COL.gold, align: 'left', weight: 800 });
+        textFit(ctx, card[1], x + cw / 2, y + 52, cw - 28, { size: 14, min: 11, color: '#d5e4f8', weight: 650 });
+        textFit(ctx, card[2], x + cw / 2, y + 82, cw - 28, { size: 16, min: 12, color: COL.text, weight: 800 });
+      });
+    }
+
+    const controls = [
+      ['P1 RED', 'Arrows + Space', 'Gamepad 1 · A'],
+      ['P2 BLUE', 'W A S D + F', 'Gamepad 2 · A'],
+      ['P3 YELLOW', 'I J K L + H', 'Gamepad 3 · A'],
+    ];
+    if (h > 500) {
+      controls.forEach((c, i) => {
+        const cw = Math.min(300, (w - 40) / 3);
+        const x = (w - cw * 3) / 2 + i * cw;
+        text(ctx, c[0], x + cw / 2, h * 0.72, { size: 13, color: [COL.red, COL.blue, COL.yellow][i], weight: 800 });
+        text(ctx, c[1], x + cw / 2, h * 0.72 + 20, { size: 13, color: COL.text, weight: 650 });
+        text(ctx, c[2], x + cw / 2, h * 0.72 + 38, { size: 12, color: COL.dim, weight: 650 });
+      });
+    }
+    const pulse = 0.55 + Math.sin(G.time * 4) * 0.45;
+    textFit(ctx, 'PRESS SPACE, CLICK, OR GAMEPAD A TO START THE LINE', w / 2, h * 0.9, w - 24, {
+      size: w < 700 ? 14 : 22,
+      min: 12,
+      color: COL.gold,
+      alpha: 0.65 + pulse * 0.35,
+    });
+  }
+
+  function drawOverlay(ctx, title, lines) {
+    ctx.fillStyle = 'rgba(4, 8, 14, 0.72)';
+    ctx.fillRect(0, 0, view.w, view.h);
+    const w = Math.min(760, view.w - 32);
+    const h = Math.min(420, view.h - 40);
+    const x = (view.w - w) / 2;
+    const y = (view.h - h) / 2;
+    roundRect(ctx, x, y, w, h, 16);
+    ctx.fillStyle = '#101826';
+    ctx.fill();
+    ctx.strokeStyle = COL.gold;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    textFit(ctx, title, view.w / 2, y + 42, w - 32, { size: 28, min: 16, color: COL.gold });
+    lines.forEach((line, i) => {
+      textFit(ctx, line, view.w / 2, y + 92 + i * 32, w - 40, { size: 16, min: 12, color: COL.text, weight: 650 });
+    });
+  }
+
+  function render() {
+    const ctx = G.ctx;
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    ctx.clearRect(0, 0, view.w, view.h);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    if (bootError) {
+      drawBackground(ctx);
+      text(ctx, 'FACTORISATION CHECK FAILED', view.w / 2, 70, { size: 24, color: COL.red });
+      String(bootError).split('\n').slice(0, 16).forEach((line, i) => {
+        text(ctx, line.slice(0, 140), 20, 120 + i * 24, { size: 14, align: 'left', color: '#ffd0d6', weight: 650 });
+      });
+      return;
+    }
+    ctx.save();
+    if (G.shake > 0.2) ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+    if (G.mode === 'title') drawTitle(ctx);
+    else {
+      drawPlay(ctx);
+      drawHUD(ctx);
+      G.particles.forEach((p) => {
+        ctx.globalAlpha = 1 - p.age / p.life;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      });
+      ctx.globalAlpha = 1;
+      G.floats.forEach((f) => text(ctx, f.msg, f.x, f.y, { size: 18, color: f.color, alpha: 1 - f.age / f.life }));
+      if (G.toast && G.toastT > 0) {
+        textFit(ctx, G.toast, view.w / 2, view.h - 28, view.w - 24, { size: 14, min: 11, color: '#ffe1a8', alpha: Math.min(1, G.toastT) });
+      }
+      if (G.mode === 'pause') {
+        drawOverlay(ctx, 'LINE PAUSED', [
+          'Any crew member can lock either claw or the master clamp.',
+          'P1 arrows + space    P2 WASD + F    P3 IJKL + H',
+          '8BitDo in X-input mode: stick aims, button A engages.',
+          'Press Esc, click, or A to resume. Press R to end the shift.',
+        ]);
+      } else if (G.mode === 'over') {
+        const lines = [
+          'Hulls coupled  ' + G.built + '    ·    Factory output  ' + G.score.toLocaleString('en-SG'),
+        ];
+        G.players.forEach((p) => lines.push(p.name + ' ' + p.role + '    stars ' + p.stars + '    cells ' + p.cells + '/3'));
+        lines.push('Press Space, click, or gamepad A for a new shift.');
+        drawOverlay(ctx, 'SHIELD CELLS DEPLETED', lines);
+      } else if (G.mode === 'victory') {
+        const lines = [
+          'Nine hulls walked off the line.',
+          'Factory output  ' + G.score.toLocaleString('en-SG'),
+        ];
+        G.players.forEach((p) => { if (p.joined) lines.push(p.name + ' engineering stars  ' + p.stars); });
+        lines.push('Press Space, click, or A for tier 3 overtime.');
+        drawOverlay(ctx, 'SHIFT COMPLETE', lines);
+      }
+    }
+    if (G.flash > 0) {
+      ctx.fillStyle = G.flashColor;
+      ctx.globalAlpha = G.flash * 0.18;
+      ctx.fillRect(0, 0, view.w, view.h);
+    }
+    if (G.loopError) {
+      text(ctx, G.loopError.split('\n')[0], view.w / 2, 80, { size: 14, color: COL.red });
+    }
+    ctx.restore();
+  }
+
+  function resize() {
+    const bar = document.getElementById('bar');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = window.innerWidth;
+    const h = Math.max(1, window.innerHeight - (bar ? bar.offsetHeight : 0));
+    view.w = w;
+    view.h = h;
+    view.dpr = dpr;
+    G.canvas.width = Math.max(1, Math.floor(w * dpr));
+    G.canvas.height = Math.max(1, Math.floor(h * dpr));
+    G.canvas.style.width = w + 'px';
+    G.canvas.style.height = h + 'px';
+  }
+
+  function toView(clientX, clientY) {
+    const r = G.canvas.getBoundingClientRect();
+    return {
+      x: (clientX - r.left) * (view.w / r.width),
+      y: (clientY - r.top) * (view.h / r.height),
+    };
+  }
+
+  function boot() {
+    persist = true;
+    G.canvas = document.getElementById('game');
+    G.ctx = G.canvas.getContext('2d');
+    G.players = makePlayers();
+    G.reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    resize();
+    UI = layout();
+    window.addEventListener('resize', () => { resize(); UI = layout(); });
+    window.addEventListener('keydown', (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      AudioBus.start();
+      if (e.repeat) {
+        if (e.key === ' ' || e.key.startsWith('Arrow')) e.preventDefault();
+        return;
+      }
+      const key = e.key === ' ' ? ' ' : e.key.toLowerCase();
+      G.keys.add(key);
+      const block = [' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd', 'f', 'i', 'j', 'k', 'l', 'h'];
+      if (block.indexOf(key) >= 0) e.preventDefault();
+      if (key === 'escape') {
+        e.preventDefault();
+        if (G.mode === 'play') G.mode = 'pause';
+        else if (G.mode === 'pause') G.mode = 'play';
+        return;
+      }
+      if (key === 'm') { e.preventDefault(); AudioBus.toggle(); return; }
+      if (key === 'r' && (G.mode === 'pause' || G.mode === 'victory')) { endShift(); G.mode = 'title'; return; }
+      G.players.forEach((p) => {
+        if (key === p.up || key === p.down || key === p.left || key === p.right || key === p.fire) {
+          if (!p.joined) { p.joined = true; toast(p.name + ' joined the line'); }
+        }
+        if (key === p.fire) onFire(p);
+      });
+    });
+    window.addEventListener('keyup', (e) => {
+      const key = e.key === ' ' ? ' ' : e.key.toLowerCase();
+      G.keys.delete(key);
+    });
+    window.addEventListener('blur', () => G.keys.clear());
+    window.addEventListener('gamepadconnected', (e) => toast('Gamepad linked: ' + (e.gamepad.id || 'pad')));
+    G.canvas.addEventListener('pointerdown', (e) => {
+      G.canvas.focus();
+      AudioBus.start();
+      const v = toView(e.clientX, e.clientY);
+      if (G.mode === 'title') { startShift(false); return; }
+      if (G.mode === 'pause') { G.mode = 'play'; return; }
+      if (G.mode === 'over') { startShift(false); return; }
+      if (G.mode === 'victory') { startShift(true); return; }
+      const actor = G.players[0].cells > 0 ? G.players[0] : living()[0];
+      if (!actor) return;
+      actor.x = clamp(v.x, 16, view.w - 16);
+      actor.y = clamp(v.y, 16, view.h - 16);
+      onFire(actor);
+    });
+    document.getElementById('mute').addEventListener('click', () => {
+      AudioBus.start();
+      AudioBus.toggle();
+      G.canvas.focus();
+    });
+    G.canvas.focus();
+    window.MECHA.step = (dt) => {
+      UI = layout();
+      window.MECHA.UI = UI;
+      try { update(dt || 1 / 60); render(); }
+      catch (err) { G.loopError = (err && err.stack) ? err.stack : String(err); }
+    };
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+      last = now;
+      UI = layout();
+      if (window.MECHA) window.MECHA.UI = UI;
+      try {
+        if (!document.hidden) {
+          update(dt);
+          AudioBus.tick();
+        }
+        render();
+      } catch (err) {
+        G.loopError = (err && err.stack) ? err.stack : String(err);
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  try {
+    selfTest();
+    if (typeof window === 'undefined') console.log('SELFTEST OK');
+  } catch (err) {
+    bootError = (err && err.stack) ? err.stack : String(err);
+    if (typeof window === 'undefined') throw err;
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MECHA = { G, selfTest, assemble, createProblem, diagnose, genTier };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  }
+})();
+</script>
+</body>
+</html>
