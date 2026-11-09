@@ -319,7 +319,7 @@
           <button class="diff on" type="button" data-diff="1">Medium</button>
           <button class="diff" type="button" data-diff="2">Hard</button>
         </div>
-        <p class="diff-note" id="diffNote">4 rounds each pond · medium numbers, up to 36</p>
+        <p class="diff-note" id="diffNote">4 rounds each pond · 3 frogs from pond 3 · up to 48</p>
         <div class="plays" style="margin-bottom:10px">
           <button class="play focus" type="button" data-count="1">1 Player</button>
           <button class="play" type="button" data-count="2">2 Players</button>
@@ -365,9 +365,9 @@
   var TRACK_LEFT = 156;
   var TRACK_RIGHT = 1236;
   var DIFFS = [
-    { name: "Easy", rounds: 3, minL: 4, maxL: 24, maxTrack: 52, maxHops: 20, note: "3 rounds each pond · small numbers, up to 24" },
-    { name: "Medium", rounds: 4, minL: 8, maxL: 36, maxTrack: 76, maxHops: 30, note: "4 rounds each pond · medium numbers, up to 36" },
-    { name: "Hard", rounds: 5, minL: 24, maxL: 60, maxTrack: 124, maxHops: 24, note: "5 rounds each pond · large numbers, up to 60" }
+    { name: "Easy", rounds: 3, minL: 4, maxL: 24, maxTrack: 52, maxHops: 20, minStep: 2, note: "3 rounds each pond · 2 frogs, then 3 · up to 24", ponds: ["coprime", "factor", "tricky", "triple"] },
+    { name: "Medium", rounds: 4, minL: 16, maxL: 48, maxTrack: 104, maxHops: 32, minStep: 3, note: "4 rounds each pond · 3 frogs from pond 3 · up to 48", ponds: ["coprime", "tricky", "triple", "tripleHard"] },
+    { name: "Hard", rounds: 5, minL: 24, maxL: 60, maxTrack: 128, maxHops: 36, minStep: 3, note: "5 rounds each pond · 3 frogs from the start, then 4 · up to 60", ponds: ["triple", "tripleHard", "quad", "quadHard"] }
   ];
   var PAD_BASES = [
     { x: 200, y: 612 },
@@ -378,35 +378,51 @@
   var FROG_STYLES = [
     { name: "Frog A", color: "#3cb44a", belly: "#e7ffb5", dark: "#1c6b28", trail: "#2f9e3a", cheek: "rgba(255,120,140,0.55)" },
     { name: "Frog B", color: "#2f9fe8", belly: "#e5f6ff", dark: "#135a96", trail: "#1d7ec4", cheek: "rgba(255,150,170,0.5)" },
-    { name: "Frog C", color: "#b06cff", belly: "#f6e8ff", dark: "#5c2d96", trail: "#8a45d6", cheek: "rgba(255,140,170,0.5)" }
+    { name: "Frog C", color: "#b06cff", belly: "#f6e8ff", dark: "#5c2d96", trail: "#8a45d6", cheek: "rgba(255,140,170,0.5)" },
+    { name: "Frog D", color: "#f08a24", belly: "#ffe8c8", dark: "#a35210", trail: "#e07012", cheek: "rgba(255,150,160,0.55)" }
   ];
   var PLAYER_META = [
     { name: "P1", color: "#ff3b4e", keys: "Left/Right + Space", confirm: "Space" },
     { name: "P2", color: "#2f6bff", keys: "A/D + F", confirm: "KeyF" },
     { name: "P3", color: "#e2a400", keys: "J/L + H", confirm: "KeyH" }
   ];
-  var LEVELS = [
-    {
+  var PONDS = {
+    coprime: {
       name: "Little Hops",
       frogCount: 2,
       blurb: "Small steps. Skip-count each frog until both lists share a number. The first shared number is the lowest common multiple."
     },
-    {
+    factor: {
       name: "Factor Friends",
       frogCount: 2,
       blurb: "Sometimes one hop fits inside the other. Then the bigger number is the first meeting, because the smaller frog lands there too."
     },
-    {
+    tricky: {
       name: "Tricky Twins",
       frogCount: 2,
       blurb: "These frogs meet more than once. 24 can be a shared pad and still be wrong, if they already met at 12. Wait for the LOWEST common multiple."
     },
-    {
+    triple: {
       name: "Triple Leap",
       frogCount: 3,
       blurb: "Three frogs now. The winning lilypad is the first number that fits every single hop."
+    },
+    tripleHard: {
+      name: "Triple Twist",
+      frogCount: 3,
+      blurb: "Three frogs, and the biggest hop is not the answer. Keep skip-counting until every list shares a number."
+    },
+    quad: {
+      name: "Quad Leap",
+      frogCount: 4,
+      blurb: "Four frogs now. A lilypad counts only when every frog can land on it. Find the first one."
+    },
+    quadHard: {
+      name: "Full Squad",
+      frogCount: 4,
+      blurb: "Four frogs, and none of the hop sizes is the meeting pad. Skip-count all four lists to the first shared number."
     }
-  ];
+  };
 
   var MELODY = [
     659.25, 783.99, 880, 783.99,
@@ -576,6 +592,7 @@
     var diff = activeDiff();
     var steps = entry.steps;
     var L = lcmAll(steps);
+    if (steps.some(function (s) { return s < (diff.minStep || 2); })) return null;
     if (L < diff.minL || L > diff.maxL) return null;
     var limit = diff.maxTrack - 4;
     var trap = entry.trap && entry.trap <= limit ? entry.trap : L * 2;
@@ -610,30 +627,33 @@
   function fitsDiff(entry, diff) {
     var L = lcmAll(entry.steps);
     if (L < diff.minL || L > diff.maxL) return false;
+    if (entry.steps.some(function (s) { return s < (diff.minStep || 2); })) return false;
     var limit = diff.maxTrack - 4;
     var trap = entry.trap && entry.trap <= limit ? entry.trap : L * 2;
     if (trap > limit || trap <= L || trap % L !== 0) return false;
     return trap / Math.min.apply(null, entry.steps) <= diff.maxHops;
   }
 
-  function lessonShape(levelIndex, steps) {
+  function lessonShape(kind, steps) {
     var s = steps.slice().sort(function (a, b) { return a - b; });
     var i;
-    if (levelIndex === 0) return s.length === 2 && gcd(s[0], s[1]) === 1;
-    if (levelIndex === 1) return s.length === 2 && s[1] % s[0] === 0 && s[1] > s[0];
-    if (levelIndex === 2) return s.length === 2 && gcd(s[0], s[1]) > 1 && s[1] % s[0] !== 0;
-    if (s.length !== 3 || s[0] < 2) return false;
+    if (kind === "coprime") return s.length === 2 && gcd(s[0], s[1]) === 1;
+    if (kind === "factor") return s.length === 2 && s[1] % s[0] === 0 && s[1] > s[0];
+    if (kind === "tricky") return s.length === 2 && gcd(s[0], s[1]) > 1 && s[1] % s[0] !== 0;
+    var need = kind.indexOf("quad") === 0 ? 4 : 3;
+    if (s.length !== need) return false;
     for (i = 1; i < s.length; i++) if (s[i] === s[i - 1]) return false;
-    return true;
+    if (kind === "tripleHard" || kind === "quadHard") return lcmAll(s) > s[s.length - 1];
+    return kind === "triple" || kind === "quad";
   }
 
-  function buildCatalog(levelIndex, diff) {
+  function buildCatalog(kind, diff) {
     var found = [];
     var seen = {};
     function add(steps) {
       var key = steps.join(",");
       var L, partial, hits;
-      if (seen[key] || !lessonShape(levelIndex, steps) || !fitsDiff({ steps: steps }, diff)) return;
+      if (seen[key] || !lessonShape(kind, steps) || !fitsDiff({ steps: steps }, diff)) return;
       L = lcmAll(steps);
       partial = partialBelow(steps, L);
       if (partial == null || partial >= L) return;
@@ -644,19 +664,33 @@
       found.push(steps.slice());
     }
     var max = diff.maxL;
-    var a, b, c;
-    if (levelIndex === 3) {
-      for (a = 2; a <= max; a++) {
+    var min = diff.minStep || 2;
+    var a, b, c, d, ab, abc;
+    if (kind.indexOf("quad") === 0) {
+      for (a = min; a <= max; a++) {
         for (b = a + 1; b <= max; b++) {
+          ab = lcm(a, b);
+          if (ab > max) continue;
+          for (c = b + 1; c <= max; c++) {
+            abc = lcm(ab, c);
+            if (abc > max) continue;
+            for (d = c + 1; d <= max; d++) add([a, b, c, d]);
+          }
+        }
+      }
+    } else if (kind.indexOf("triple") === 0) {
+      for (a = min; a <= max; a++) {
+        for (b = a + 1; b <= max; b++) {
+          if (lcm(a, b) > max) continue;
           for (c = b + 1; c <= max; c++) add([a, b, c]);
         }
       }
-    } else if (levelIndex === 1) {
-      for (a = 2; a <= Math.floor(max / 2); a++) {
+    } else if (kind === "factor") {
+      for (a = min; a <= Math.floor(max / 2); a++) {
         for (b = a * 2; b <= max; b += a) add([a, b]);
       }
     } else {
-      for (a = 2; a <= max; a++) {
+      for (a = min; a <= max; a++) {
         for (b = a + 1; b <= max; b++) add([a, b]);
       }
     }
@@ -664,30 +698,30 @@
   }
 
   var CATALOGS = DIFFS.map(function (diff) {
-    return LEVELS.map(function (level, li) { return buildCatalog(li, diff); });
+    return diff.ponds.map(function (key) { return buildCatalog(key, diff); });
   });
 
   function auditCatalog() {
     var problems = [];
     DIFFS.forEach(function (diff, di) {
-      LEVELS.forEach(function (level, li) {
+      diff.ponds.forEach(function (key, li) {
         var cat = CATALOGS[di][li];
         var seen = {};
         if (cat.length < diff.rounds) problems.push(diff.name + " pond " + (li + 1) + " only " + cat.length);
         cat.forEach(function (steps) {
-          var key = steps.join(",");
+          var keySteps = steps.join(",");
           var L = lcmAll(steps);
           var partial = partialBelow(steps, L);
-          if (seen[key]) problems.push("dup " + key);
-          seen[key] = true;
-          if (!lessonShape(li, steps)) problems.push("shape " + diff.name + " " + key);
-          if (!fitsDiff({ steps: steps }, diff)) problems.push("fit " + diff.name + " " + key);
+          if (seen[keySteps]) problems.push("dup " + keySteps);
+          seen[keySteps] = true;
+          if (!lessonShape(key, steps)) problems.push("shape " + diff.name + " " + keySteps);
+          if (!fitsDiff({ steps: steps }, diff)) problems.push("fit " + diff.name + " " + keySteps);
           steps.forEach(function (s) {
-            if (L % s !== 0) problems.push("bad L " + key);
+            if (L % s !== 0) problems.push("bad L " + keySteps);
           });
-          if (partial == null || partial >= L) problems.push("partial " + key);
-          else if (steps.filter(function (s) { return partial % s === 0; }).length !== 1) problems.push("partial hits " + key);
-          if (steps.some(function (s) { return (L - 1) % s === 0; })) problems.push("miss " + key);
+          if (partial == null || partial >= L) problems.push("partial " + keySteps);
+          else if (steps.filter(function (s) { return partial % s === 0; }).length !== 1) problems.push("partial hits " + keySteps);
+          if (steps.some(function (s) { return (L - 1) % s === 0; })) problems.push("miss " + keySteps);
         });
       });
     });
@@ -722,7 +756,22 @@
   }
 
   function togetherPhrase(count) {
-    return count === 2 ? "BOTH frogs" : "ALL THREE frogs";
+    if (count === 2) return "BOTH frogs";
+    if (count === 3) return "ALL THREE frogs";
+    if (count === 4) return "ALL FOUR frogs";
+    return "ALL the frogs";
+  }
+
+  function pondList() {
+    return activeDiff().ponds.map(function (key) {
+      var pond = PONDS[key];
+      return { key: key, name: pond.name, frogCount: pond.frogCount, blurb: pond.blurb };
+    });
+  }
+
+  function currentPond() {
+    var ponds = pondList();
+    return ponds[Math.min(state.levelIndex, ponds.length - 1)];
   }
 
   function hopList(step, limit) {
@@ -796,19 +845,22 @@
         (no.length > 1 ? " splash — those frogs never land there." : " splashes — that frog never lands there.") +
         " −1 heart.<br>The first pad for every frog is still out there. Skip-count again.";
     } else {
-      html = "<b>" + n + "</b> is an off-by-one. Neither frog lands on it, so everyone splashes. −1 heart.<br>" +
+      html = "<b>" + n + "</b> is an off-by-one. " +
+        (q.steps.length === 2 ? "Neither frog lands on it" : "None of the frogs land on it") +
+        ", so everyone splashes. −1 heart.<br>" +
         state.frogs.map(function (f) { return f.name + " hops " + f.step + ", " + (f.step * 2) + ", " + (f.step * 3) + "…"; }).join(" · ");
     }
     setPrompt(html, "bad");
   }
 
   function updateChips() {
-    var idx = clamp(state.levelIndex, 0, LEVELS.length - 1);
-    var level = LEVELS[idx];
-    var shown = Math.min(state.levelIndex + 1, LEVELS.length);
+    var ponds = pondList();
+    var idx = clamp(state.levelIndex, 0, ponds.length - 1);
+    var level = ponds[idx];
+    var shown = Math.min(state.levelIndex + 1, ponds.length);
     var diff = activeDiff();
     diffChip.textContent = diff.name;
-    levelChip.textContent = "Pond " + shown + "/" + LEVELS.length + " · " + level.name;
+    levelChip.textContent = "Pond " + shown + "/" + ponds.length + " · " + level.name;
     roundChip.textContent = "Round " + Math.min(state.roundInLevel + 1, diff.rounds) + "/" + diff.rounds;
   }
 
@@ -884,6 +936,9 @@
 
   function setupFrogs(steps) {
     var count = steps.length;
+    var mid = (count - 1) / 2;
+    var xSpread = count >= 4 ? 32 : 58;
+    var ySpread = count >= 4 ? 12 : 18;
     state.frogs = steps.map(function (step, i) {
       var style = FROG_STYLES[i];
       return {
@@ -895,8 +950,8 @@
         dark: style.dark,
         trail: style.trail,
         cheek: style.cheek,
-        xBias: (i - (count - 1) / 2) * 58,
-        yBias: (i - (count - 1) / 2) * 18,
+        xBias: (i - mid) * xSpread,
+        yBias: (i - mid) * ySpread,
         blinkAt: 1 + Math.random() * 2,
         blinkUntil: 0
       };
@@ -904,11 +959,12 @@
   }
 
   function openLevel() {
-    if (state.levelIndex >= LEVELS.length) {
+    var ponds = pondList();
+    if (state.levelIndex >= ponds.length) {
       showEnd("win");
       return;
     }
-    var level = LEVELS[state.levelIndex];
+    var level = ponds[state.levelIndex];
     state.roundInLevel = 0;
     state.screen = "banner";
     state.phase = "banner";
@@ -921,7 +977,7 @@
     state.turtle = 0;
     state.dragon.catch = false;
     state.lockout = 0.7;
-    setupFrogs(level.frogCount === 3 ? [2, 3, 5] : [4, 6]);
+    setupFrogs(level.frogCount >= 4 ? [4, 6, 8, 12] : level.frogCount === 3 ? [2, 3, 5] : [4, 6]);
     state.frogs.forEach(function (f) { f.step = 0; });
     bannerTitle.textContent = activeDiff().name + " · Pond " + (state.levelIndex + 1) + " · " + level.name;
     bannerText.textContent = level.blurb + " " + activeDiff().rounds + " rounds in this pond.";
@@ -942,7 +998,9 @@
     }
     pool = fresh.length ? fresh : catalog;
     if (!pool.length) {
-      return prepareEntry({ steps: LEVELS[state.levelIndex].frogCount === 3 ? [4, 6, 8] : [4, 6] });
+      var level = currentPond();
+      var backup = level.frogCount >= 4 ? [4, 6, 10, 12] : level.frogCount === 3 ? [4, 6, 8] : (activeDiff().minL >= 16 ? [5, 7] : [4, 6]);
+      return prepareEntry({ steps: backup });
     }
     least = Infinity;
     numbers = [];
@@ -1949,7 +2007,7 @@
           if (run.visited.indexOf(n) !== -1) {
             ctx.fillStyle = state.frogs[idx] ? state.frogs[idx].color : run.color;
             ctx.beginPath();
-            ctx.arc(x + (idx - 1) * 4, TRACK_Y - 14, 3.3, 0, Math.PI * 2);
+            ctx.arc(x + (idx - (state.anim.frogs.length - 1) / 2) * 5, TRACK_Y - 14, 3.3, 0, Math.PI * 2);
             ctx.fill();
           }
         });
@@ -2121,6 +2179,24 @@
     return { x: p.x, y: p.y, sx: sx, sy: sy, drowned: !!(run.finished && run.drowned) };
   }
 
+  function drawFrogEye(style, x, y, pupilX, shineX) {
+    ctx.beginPath();
+    ctx.fillStyle = "#fff";
+    ctx.ellipse(x, y, 6.2, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = style.dark;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.fillStyle = "#1a1a1a";
+    ctx.arc(pupilX, y + 1, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.fillStyle = "#fff";
+    ctx.arc(shineX, y - 0.2, 1.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   function drawFrogSprite(style, sx, sy, blink, drowned) {
     ctx.scale((drowned ? 1.15 : 1.22) * sx, (drowned ? 0.62 : 1.22) * sy);
     if (!drowned) {
@@ -2159,28 +2235,14 @@
       ctx.beginPath();
       ctx.moveTo(-13, -30);
       ctx.lineTo(-4, -30);
+      ctx.stroke();
+      ctx.beginPath();
       ctx.moveTo(4, -30);
       ctx.lineTo(13, -30);
       ctx.stroke();
     } else {
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.ellipse(-8, -30, 6.2, 7, 0, 0, Math.PI * 2);
-      ctx.ellipse(8, -30, 6.2, 7, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = style.dark;
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-      ctx.fillStyle = "#1a1a1a";
-      ctx.beginPath();
-      ctx.arc(-6.2, -29, 2.8, 0, Math.PI * 2);
-      ctx.arc(9.6, -29, 2.8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#fff";
-      ctx.beginPath();
-      ctx.arc(-5.2, -30.2, 1.1, 0, Math.PI * 2);
-      ctx.arc(10.6, -30.2, 1.1, 0, Math.PI * 2);
-      ctx.fill();
+      drawFrogEye(style, -8, -30, -6.2, -5.2);
+      drawFrogEye(style, 8, -30, 9.6, 10.6);
     }
     ctx.strokeStyle = style.dark;
     ctx.lineWidth = 1.5;
@@ -2192,6 +2254,31 @@
     ctx.ellipse(-8, -2, 5, 3, 0.2, 0, Math.PI * 2);
     ctx.ellipse(8, -2, 5, 3, -0.2, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  function squadBadgePos(f, pose) {
+    var n = state.frogs.length;
+    var base = (state.phase === "choose" || state.screen !== "play") ? 62 : 58;
+    if (n < 4) return { x: pose.x, y: pose.y - base };
+    var poses = state.frogs.map(frogPose);
+    var minX = poses[0].x;
+    var maxX = poses[0].x;
+    var minY = poses[0].y;
+    poses.forEach(function (p) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+    });
+    if (maxX - minX > 200) return { x: pose.x, y: pose.y - base };
+    var mid = (n - 1) / 2;
+    var spread = 90;
+    var center = (minX + maxX) / 2;
+    var half = 50;
+    var left = center - mid * spread - half;
+    var right = center + mid * spread + half;
+    if (left < 120) center += 120 - left;
+    if (right > VW - 18) center -= right - (VW - 18);
+    return { x: center + (f.index - mid) * spread, y: Math.min(minY - 76, TRACK_Y - 148) };
   }
 
   function drawBadge(x, y, text, color) {
@@ -2226,9 +2313,11 @@
         ctx.stroke();
       }
       if (f.step && (state.phase === "choose" || state.screen !== "play")) {
-        drawBadge(pose.x, pose.y - 62, f.name.split(" ")[1] + " · " + f.step + "m", f.color);
+        var tag = squadBadgePos(f, pose);
+        drawBadge(tag.x, tag.y, f.name.split(" ")[1] + " · " + f.step + "m", f.color);
       } else if (f.step && state.phase !== "return") {
-        drawBadge(pose.x, pose.y - 58, f.step + "m", f.color);
+        var hopTag = squadBadgePos(f, pose);
+        drawBadge(hopTag.x, hopTag.y, f.step + "m", f.color);
       }
     });
   }
