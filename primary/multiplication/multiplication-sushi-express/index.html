@@ -1,0 +1,2084 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Sushi Express — Conveyor Multiplication Rush</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #10060f;
+    overflow: hidden;
+    color: #fff8ee;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+    cursor: pointer;
+  }
+  #live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Sushi Express, a conveyor multiplication game"></canvas>
+<div id="live" aria-live="polite"></div>
+<script>
+"use strict";
+
+/* ============================================================
+   Sushi Express — Conveyor Multiplication Rush
+   Long multiplication: partial products, soy-sauce place holders,
+   then column addition. One canvas, three local chefs.
+   ============================================================ */
+
+var W = 1280;
+var H = 720;
+
+var PLACE = ["ones", "tens", "hundreds", "thousands", "ten-thousands", "hundred-thousands", "millions", "ten-millions"];
+var PLACE_SHORT = ["1s", "10s", "100s", "1k", "10k", "100k", "1M", "10M"];
+var RIMS = ["#e23b4a", "#3c7dff", "#1fa971", "#f0c14a", "#f4f0e8", "#c46a2f"];
+
+var MENU = [
+  { tier: 1, name: "Easy", a: 9, b: 5 },
+  { tier: 1, name: "Easy", a: 23, b: 8 },
+  { tier: 1, name: "Easy", a: 478, b: 6 },
+  { tier: 2, name: "Medium", a: 29, b: 35 },
+  { tier: 2, name: "Medium", a: 169, b: 83 },
+  { tier: 2, name: "Medium", a: 7639, b: 42 },
+  { tier: 3, name: "Hard", a: 478, b: 391 },
+  { tier: 3, name: "Hard", a: 8395, b: 601 },
+  { tier: 3, name: "Hard", a: 7492, b: 5738 }
+];
+
+var TIER_BLURB = {
+  1: "Single-digit multipliers. Plate the ones digit, then park the wasabi carry.",
+  2: "Two-digit multipliers. A soy sauce 0 must lock the ones place before the tens row.",
+  3: "Big banquet orders. Each extra place needs another soy dish. A 0 in the multiplier shifts the row even further."
+};
+
+/* ------------------------------ math engine ------------------------------ */
+
+function toDigits(n) {
+  var d = [];
+  var x = Math.abs(Math.round(n));
+  do {
+    d.push(x % 10);
+    x = Math.floor(x / 10);
+  } while (x > 0);
+  return d;
+}
+
+function fmt(n) {
+  var s = String(Math.round(n));
+  return s.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function placeName(i) {
+  return PLACE[i] || "next place";
+}
+
+function shuffle(arr) {
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+
+function buildOrder(a, b) {
+  var aDigits = toDigits(a);
+  var bDigits = toDigits(b);
+  var rows = [];
+  var steps = [];
+
+  for (var p = 0; p < bDigits.length; p++) {
+    var m = bDigits[p];
+    if (m === 0) continue;
+    var rowIndex = rows.length;
+    var prodDigits = [];
+    var carry = 0;
+    var skipped = [];
+    for (var q = 0; q < p; q++) if (bDigits[q] === 0) skipped.push(q);
+
+    for (var s = 0; s < p; s++) {
+      steps.push({
+        type: "soy",
+        row: rowIndex,
+        slot: s,
+        shift: p,
+        m: m,
+        skipped: skipped,
+        write: 0
+      });
+    }
+
+    for (var i = 0; i < aDigits.length; i++) {
+      var prod = aDigits[i] * m + carry;
+      var write = prod % 10;
+      var nextCarry = Math.floor(prod / 10);
+      var last = i === aDigits.length - 1;
+      steps.push({
+        type: "digit",
+        row: rowIndex,
+        column: i,
+        displayCol: p + i,
+        aCol: i,
+        bCol: p,
+        aDigit: aDigits[i],
+        m: m,
+        carryIn: carry,
+        prod: prod,
+        write: write,
+        shift: p
+      });
+      prodDigits.push(write);
+      if (nextCarry > 0) {
+        steps.push({
+          type: "carry",
+          row: rowIndex,
+          column: i + 1,
+          displayCol: p + i + 1,
+          carry: nextCarry,
+          write: nextCarry,
+          writesDigit: last,
+          shift: p
+        });
+        if (last) prodDigits.push(nextCarry);
+      }
+      carry = last ? 0 : nextCarry;
+    }
+
+    rows.push({
+      m: m,
+      shift: p,
+      prodDigits: prodDigits,
+      soyPlaced: 0,
+      shown: prodDigits.map(function () { return false; }),
+      carries: {}
+    });
+  }
+
+  if (rows.length > 1) {
+    var lines = rows.map(function (r) {
+      var full = [];
+      for (var z = 0; z < r.shift; z++) full.push(0);
+      for (var di = 0; di < r.prodDigits.length; di++) full.push(r.prodDigits[di]);
+      return full;
+    });
+    var max = 0;
+    for (var li = 0; li < lines.length; li++) max = Math.max(max, lines[li].length);
+    var addCarry = 0;
+    for (var col = 0; col < max || addCarry > 0; col++) {
+      if (col > 16) break;
+      var colParts = [];
+      for (var rli = 0; rli < lines.length; rli++) {
+        if (col < lines[rli].length) colParts.push(lines[rli][col]);
+      }
+      var sum = addCarry;
+      for (var pi = 0; pi < colParts.length; pi++) sum += colParts[pi];
+      var digit = sum % 10;
+      var nextC = Math.floor(sum / 10);
+      var nextHas = col + 1 < max;
+      steps.push({
+        type: "add-digit",
+        col: col,
+        parts: colParts,
+        carryIn: addCarry,
+        sum: sum,
+        write: digit,
+        isFinal: nextC === 0 && !nextHas
+      });
+      if (nextC > 0) {
+        if (nextHas) {
+          steps.push({
+            type: "add-carry",
+            col: col + 1,
+            carry: nextC,
+            write: nextC,
+            writesDigit: false
+          });
+          addCarry = nextC;
+        } else {
+          steps.push({
+            type: "add-carry",
+            col: col + 1,
+            carry: nextC,
+            write: nextC,
+            writesDigit: true
+          });
+          addCarry = 0;
+        }
+      } else {
+        addCarry = 0;
+      }
+    }
+  }
+
+  return {
+    a: a,
+    b: b,
+    aDigits: aDigits,
+    bDigits: bDigits,
+    rows: rows,
+    steps: steps,
+    sumShown: {},
+    sumCarries: {},
+    addBannerShown: false
+  };
+}
+
+function commitStep(order, step) {
+  if (step.type === "soy") {
+    var row = order.rows[step.row];
+    row.soyPlaced = Math.max(row.soyPlaced, step.slot + 1);
+  } else if (step.type === "digit") {
+    order.rows[step.row].shown[step.column] = true;
+  } else if (step.type === "carry") {
+    if (step.writesDigit) order.rows[step.row].shown[step.column] = true;
+    else order.rows[step.row].carries[step.displayCol] = step.carry;
+  } else if (step.type === "add-digit") {
+    order.sumShown[step.col] = step.write;
+  } else if (step.type === "add-carry") {
+    order.sumCarries[step.col] = step.carry;
+    if (step.writesDigit) order.sumShown[step.col] = step.carry;
+  }
+}
+
+function rowComplete(r) {
+  if (r.soyPlaced < r.shift) return false;
+  for (var i = 0; i < r.shown.length; i++) if (!r.shown[i]) return false;
+  return true;
+}
+
+function settledValue(order) {
+  for (var i = 0; i < order.rows.length; i++) {
+    if (!rowComplete(order.rows[i])) return -1;
+  }
+  if (order.rows.length === 1) {
+    var r = order.rows[0];
+    var n = 0;
+    for (var d = 0; d < r.prodDigits.length; d++) n += r.prodDigits[d] * Math.pow(10, d + r.shift);
+    return n;
+  }
+  var sum = 0;
+  for (var key in order.sumShown) {
+    if (Object.prototype.hasOwnProperty.call(order.sumShown, key)) {
+      sum += order.sumShown[key] * Math.pow(10, Number(key));
+    }
+  }
+  return sum;
+}
+
+function rowValue(r) {
+  var n = 0;
+  for (var i = 0; i < r.prodDigits.length; i++) n += r.prodDigits[i] * Math.pow(10, i);
+  return n * Math.pow(10, r.shift);
+}
+
+function neededCols(order) {
+  var m = Math.max(order.aDigits.length, order.bDigits.length);
+  for (var i = 0; i < order.rows.length; i++) {
+    m = Math.max(m, order.rows[i].shift + order.rows[i].prodDigits.length);
+  }
+  m = Math.max(m, toDigits(order.a * order.b).length);
+  return m;
+}
+
+function makeChoices(step) {
+  var correct = step.write;
+  var bag = [];
+  function push(n) {
+    if (typeof n !== "number" || !isFinite(n)) return;
+    n = Math.round(n);
+    if (n < 0 || n > 9 || n === correct || bag.indexOf(n) !== -1) return;
+    bag.push(n);
+  }
+  if (step.type === "soy") {
+    push(1); push(2); push(5); push(8); push(3); push(4);
+  } else if (step.type === "carry" || step.type === "add-carry") {
+    push(0); push(correct + 1); push(correct - 1); push(correct + 2); push(1);
+  } else if (step.type === "digit") {
+    var raw = step.aDigit * step.m;
+    push(raw % 10);
+    push(Math.floor(step.prod / 10));
+    push(correct + 1);
+    push(correct - 1);
+    push((step.aDigit * (step.m + 1)) % 10);
+    push((step.aDigit * Math.max(0, step.m - 1)) % 10);
+  } else {
+    var without = step.sum - (step.carryIn || 0);
+    push(without % 10);
+    push(Math.floor(step.sum / 10));
+    push(correct + 1);
+    push(correct - 1);
+    push((correct + 3) % 10);
+  }
+  var fill = 0;
+  while (bag.length < 3 && fill < 10) {
+    push(fill);
+    fill++;
+  }
+  var picks = shuffle([correct].concat(bag.slice(0, 3)));
+  function kindOf(value) {
+    if (step.type === "soy") return value === correct ? "soy" : "plate";
+    if (step.type === "carry" || step.type === "add-carry") return "wasabi";
+    return "plate";
+  }
+  return picks.map(function (value) {
+    return { value: value, correct: value === correct, kind: kindOf(value) };
+  });
+}
+
+function promptFor(step) {
+  if (!step) return "Order up.";
+  if (step.type === "soy") {
+    var by = step.m * Math.pow(10, step.shift);
+    var line = "This row is ×" + fmt(by) + ", not ×" + step.m + ". Set a soy sauce 0 in the " + placeName(step.slot) + " place.";
+    if (step.slot === 0 && step.skipped && step.skipped.length) {
+      var names = step.skipped.map(placeName).join(" and ");
+      line = "The multiplier has 0 in the " + names + ". " + line;
+    }
+    return line;
+  }
+  if (step.type === "digit") {
+    var where = placeName(step.displayCol).toUpperCase();
+    var work = step.m + " × " + step.aDigit;
+    if (step.carryIn) return where + ". Work out " + work + " and add the wasabi. Plate one digit.";
+    return where + ". Work out " + work + ". Plate one digit.";
+  }
+  if (step.type === "carry") {
+    if (step.writesDigit) return "The leftover carry is the next digit. Place one wasabi in the " + placeName(step.displayCol) + ".";
+    return "Carry one wasabi onto the " + placeName(step.displayCol) + ".";
+  }
+  if (step.type === "add-digit") {
+    var head = placeName(step.col).toUpperCase() + " column";
+    if (step.carryIn) return head + ". Add the digits, including the wasabi. Plate one digit.";
+    return head + ". Add the digits in the gold column. Plate one digit.";
+  }
+  if (step.type === "add-carry") {
+    if (step.writesDigit) return "The leftover carry is the leading digit. Place one wasabi in the " + placeName(step.col) + ".";
+    return "Carry one wasabi into the " + placeName(step.col) + " column.";
+  }
+  return "";
+}
+
+function wrongHint(step, picked) {
+  if (!step) return "Try the highlighted column.";
+  if (step.type === "soy") return "Soy sauce is a 0. It holds the place so the row shifts. It is not the product.";
+  if (step.type === "digit" && picked === Math.floor(step.prod / 10) && picked !== step.write) {
+    return "Plate the ones digit. The rest is the wasabi carry.";
+  }
+  if (step.type === "digit" && step.carryIn && picked === ((step.aDigit * step.m) % 10) && picked !== step.write) {
+    return "Add the wasabi already on this column before you plate.";
+  }
+  if (step.type === "carry" || step.type === "add-carry") return "That wasabi does not match the carry.";
+  if (step.type === "add-digit" && picked === Math.floor(step.sum / 10) && picked !== step.write) {
+    return "Plate the ones digit of the column. The rest is the wasabi carry.";
+  }
+  return "Not that dish. Check the gold column and try again.";
+}
+
+function auditCurriculum() {
+  for (var i = 0; i < MENU.length; i++) {
+    var item = MENU[i];
+    var order = buildOrder(item.a, item.b);
+    if (!order.steps.length) return "No steps for " + item.a + "×" + item.b;
+    for (var s = 0; s < order.steps.length; s++) {
+      var choices = makeChoices(order.steps[s]);
+      if (choices.length !== 4) return "Choice count " + item.a + "×" + item.b;
+      var ok = false;
+      var seen = {};
+      for (var c = 0; c < choices.length; c++) {
+        if (seen[choices[c].value]) return "Duplicate choice";
+        seen[choices[c].value] = 1;
+        if (choices[c].correct && choices[c].value === order.steps[s].write) ok = true;
+      }
+      if (!ok) return "Missing correct plate for " + item.a + "×" + item.b;
+      commitStep(order, order.steps[s]);
+    }
+    var v = settledValue(order);
+    if (v !== item.a * item.b) return item.a + "×" + item.b + " plated " + v + " instead of " + (item.a * item.b);
+  }
+  return "";
+}
+
+/* --------------------------------- audio --------------------------------- */
+
+var audio = {
+  ctx: null,
+  master: null,
+  musicGain: null,
+  sfxGain: null,
+  noise: null,
+  muted: false,
+  nextTime: 0,
+  step: 0,
+  started: false
+};
+
+function audioInit() {
+  if (audio.ctx) return;
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  var ctx = new AC();
+  audio.ctx = ctx;
+  audio.master = ctx.createGain();
+  audio.master.gain.value = 0.9;
+  audio.master.connect(ctx.destination);
+  audio.musicGain = ctx.createGain();
+  audio.musicGain.gain.value = audio.muted ? 0 : 0.2;
+  audio.musicGain.connect(audio.master);
+  audio.sfxGain = ctx.createGain();
+  audio.sfxGain.gain.value = audio.muted ? 0 : 0.75;
+  audio.sfxGain.connect(audio.master);
+  var len = ctx.sampleRate;
+  var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  audio.noise = buf;
+  audio.nextTime = ctx.currentTime + 0.05;
+  audio.started = true;
+}
+
+function audioUnlock() {
+  audioInit();
+  if (audio.ctx && audio.ctx.state === "suspended") audio.ctx.resume();
+}
+
+function midiHz(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+function envGain(t, dur, peak) {
+  var g = audio.ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(peak, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  return g;
+}
+
+function scheduleTone(hz, t, dur, type, peak, dest, slideHz) {
+  var o = audio.ctx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(hz, t);
+  if (slideHz) o.frequency.exponentialRampToValueAtTime(Math.max(40, slideHz), t + dur);
+  var g = envGain(t, dur, peak);
+  o.connect(g);
+  g.connect(dest);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function scheduleNoise(t, dur, peak, freq, type) {
+  var src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  src.loop = true;
+  var f = audio.ctx.createBiquadFilter();
+  f.type = type || "bandpass";
+  f.frequency.setValueAtTime(freq, t);
+  f.Q.value = 0.7;
+  var g = envGain(t, dur, peak);
+  src.connect(f);
+  f.connect(g);
+  g.connect(audio.sfxGain);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+var BASS = [38, 0, 38, 0, 45, 0, 43, 0, 38, 0, 41, 0, 36, 0, 43, 38];
+var LEAD = [74, 78, 81, 74, 86, 81, 78, 74, 76, 81, 74, 69, 73, 74, 71, 69];
+var KICK = [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0];
+var WOOD = [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0];
+var HAT = [1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1];
+
+function musicTick() {
+  if (!audio.ctx || audio.muted || !audio.started) return;
+  var ctx = audio.ctx;
+  var horizon = ctx.currentTime + 0.18;
+  var stepDur = (60 / 146) / 4;
+  while (audio.nextTime < horizon) {
+    var i = audio.step % 16;
+    var t = audio.nextTime;
+    if (BASS[i]) scheduleTone(midiHz(BASS[i]), t, stepDur * 1.6, "triangle", 0.22, audio.musicGain, midiHz(BASS[i]) * 0.99);
+    if (LEAD[i]) scheduleTone(midiHz(LEAD[i]), t, stepDur * 0.85, "square", 0.045, audio.musicGain);
+    if (i % 8 === 4) scheduleTone(midiHz(LEAD[i] + 12), t, stepDur * 0.4, "square", 0.02, audio.musicGain);
+    if (KICK[i]) scheduleTone(150, t, 0.09, "sine", 0.34, audio.musicGain, 52);
+    if (WOOD[i]) scheduleTone(620, t, 0.045, "square", 0.05, audio.musicGain, 240);
+    if (HAT[i]) scheduleNoise(t, 0.03, 0.05, 7000, "highpass");
+    audio.nextTime += stepDur;
+    audio.step++;
+  }
+}
+
+function sfxClink() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime;
+  scheduleNoise(t, 0.09, 0.12, 1800, "highpass");
+  scheduleTone(1480, t, 0.07, "sine", 0.16, audio.sfxGain);
+  scheduleTone(1960, t + 0.012, 0.08, "sine", 0.08, audio.sfxGain);
+}
+
+function sfxSlide() {
+  if (!audio.ctx || audio.muted) return;
+  scheduleNoise(audio.ctx.currentTime, 0.1, 0.08, 900, "bandpass");
+}
+
+function sfxSquish() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime;
+  scheduleTone(240, t, 0.14, "sine", 0.22, audio.sfxGain, 70);
+  scheduleNoise(t, 0.08, 0.1, 400, "lowpass");
+}
+
+function sfxBell() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime;
+  scheduleTone(880, t, 0.55, "sine", 0.2, audio.sfxGain);
+  scheduleTone(1320, t, 0.45, "sine", 0.1, audio.sfxGain);
+  scheduleTone(1760, t + 0.02, 0.35, "triangle", 0.05, audio.sfxGain);
+}
+
+function sfxCheer() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime + 0.08;
+  var notes = [523, 659, 784, 1046];
+  for (var i = 0; i < notes.length; i++) scheduleTone(notes[i], t + i * 0.07, 0.18, "triangle", 0.1, audio.sfxGain);
+  scheduleNoise(t, 0.25, 0.06, 2500, "highpass");
+}
+
+function sfxShatter() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime;
+  scheduleNoise(t, 0.28, 0.28, 1400, "bandpass");
+  scheduleTone(180, t, 0.2, "sawtooth", 0.08, audio.sfxGain, 60);
+  scheduleTone(90, t + 0.02, 0.22, "square", 0.05, audio.sfxGain);
+}
+
+function sfxBuzz() {
+  if (!audio.ctx || audio.muted) return;
+  var t = audio.ctx.currentTime;
+  scheduleTone(110, t, 0.22, "sawtooth", 0.08, audio.sfxGain);
+  scheduleTone(92, t, 0.22, "square", 0.04, audio.sfxGain);
+}
+
+function loadMute() {
+  try { audio.muted = localStorage.getItem("sushiExpressMuted") === "1"; } catch (e) { audio.muted = false; }
+}
+
+function toggleMute() {
+  audioUnlock();
+  audio.muted = !audio.muted;
+  try { localStorage.setItem("sushiExpressMuted", audio.muted ? "1" : "0"); } catch (e) {}
+  if (audio.musicGain) audio.musicGain.gain.setTargetAtTime(audio.muted ? 0 : 0.2, audio.ctx.currentTime, 0.02);
+  if (audio.sfxGain) audio.sfxGain.gain.value = audio.muted ? 0 : 0.75;
+  if (!audio.muted && audio.ctx) audio.nextTime = audio.ctx.currentTime + 0.05;
+}
+
+/* --------------------------------- state --------------------------------- */
+
+var canvas, ctx, live;
+var view = { s: 1, ox: 0, oy: 0 };
+var keys = {};
+var grabQueue = [];
+var confirmQueued = false;
+var hotspots = [];
+var reduceMotion = false;
+var keyAimUntil = 0;
+var pointerAim = false;
+
+var players = [
+  { id: 0, name: "P1", color: "#ff3358", keys: { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", grab: " " }, x: 420, y: 560, hats: 3, tips: 0, out: false, shake: 0, padPrev: false },
+  { id: 1, name: "P2", color: "#3aa0ff", keys: { up: "w", down: "s", left: "a", right: "d", grab: "f" }, x: 640, y: 560, hats: 3, tips: 0, out: false, shake: 0, padPrev: false },
+  { id: 2, name: "P3", color: "#ffd23a", keys: { up: "i", down: "k", left: "j", right: "l", grab: "h" }, x: 860, y: 560, hats: 3, tips: 0, out: false, shake: 0, padPrev: false }
+];
+
+var phase = "title";
+var problemIndex = 0;
+var order = null;
+var stepIndex = 0;
+var belt = [];
+var scroll = 0;
+var patience = 40;
+var patienceMax = 40;
+var revenue = 0;
+var revenueShown = 0;
+var time = 0;
+var stepT = 0;
+var hint = "";
+var hintT = 0;
+var miss = null;
+var particles = [];
+var floats = [];
+var ghosts = [];
+var shake = 0;
+var serveT = 0;
+var tierT = 0;
+var failReason = "";
+var auditError = "";
+var layout = null;
+var coarse = false;
+var celebrateOnce = false;
+
+var BELT = { x0: 236, travel: 980, y: 626, speed: 86 };
+
+function resetPlayersSoft() {
+  for (var i = 0; i < players.length; i++) {
+    players[i].hats = 3;
+    players[i].out = false;
+    players[i].shake = 0;
+  }
+}
+
+function startRun(index) {
+  revenue = 0;
+  revenueShown = 0;
+  for (var i = 0; i < players.length; i++) players[i].tips = 0;
+  startProblem(index);
+}
+
+function startProblem(index) {
+  problemIndex = index;
+  var spec = MENU[index];
+  order = buildOrder(spec.a, spec.b);
+  stepIndex = 0;
+  var n = order.steps.length;
+  patienceMax = Math.max(42, 20 + n * 8);
+  patience = patienceMax;
+  resetPlayersSoft();
+  hint = "";
+  hintT = 0;
+  miss = null;
+  ghosts = [];
+  serveT = 0;
+  celebrateOnce = false;
+  phase = "play";
+  beginStep();
+}
+
+function currentStep() {
+  if (!order) return null;
+  return order.steps[stepIndex] || null;
+}
+
+function beginStep() {
+  var step = currentStep();
+  if (!step) {
+    completeOrder();
+    return;
+  }
+  belt = makeChoices(step).map(function (c, i) {
+    return { slot: i, value: c.value, correct: c.correct, kind: c.kind, rim: RIMS[i % RIMS.length] };
+  });
+  stepT = 0;
+  if ((step.type === "add-digit" || step.type === "add-carry") && !order.addBannerShown) {
+    order.addBannerShown = true;
+    spawnFloat(640, 430, "MASTER PACKAGING", "#ffd56a", 1.3);
+  }
+  if (live) live.textContent = promptFor(step);
+}
+
+function makeBurst(x, y, color, n, speed, kind) {
+  for (var i = 0; i < n; i++) {
+    var a = Math.random() * Math.PI * 2;
+    var s = speed * (0.35 + Math.random() * 0.75);
+    particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - (kind === "confetti" ? 80 : 20),
+      age: 0,
+      life: 0.35 + Math.random() * 0.45,
+      color: color,
+      size: kind === "shard" ? 4 + Math.random() * 5 : 2 + Math.random() * 3,
+      rot: Math.random() * 6,
+      vr: (Math.random() - 0.5) * 10,
+      kind: kind || "spark",
+      g: kind === "confetti" ? 280 : 620
+    });
+  }
+}
+
+function spawnFloat(x, y, text, color, life) {
+  floats.push({ x: x, y: y, text: text, color: color, age: 0, life: life || 0.9, vy: -28 });
+}
+
+function platePosition(slot) {
+  var x = BELT.x0 + ((slot * (BELT.travel / 4) + scroll) % BELT.travel);
+  var y = BELT.y + Math.sin(time * 2.2 + slot * 1.3) * (reduceMotion ? 0 : 2.5);
+  return { x: x, y: y };
+}
+
+function plateFade(x) {
+  var edge = 78;
+  var end = BELT.x0 + BELT.travel;
+  return Math.max(0, Math.min(1, (x - BELT.x0) / edge, (end - x) / edge));
+}
+
+function shownRowCount() {
+  if (!order) return 0;
+  if (phase === "serve" || phase === "victory") return order.rows.length;
+  var step = currentStep();
+  if (!step) return order.rows.length;
+  if (step.type === "add-digit" || step.type === "add-carry") return order.rows.length;
+  return step.row + 1;
+}
+
+function showSumLine() {
+  if (!order || order.rows.length < 2) return false;
+  if (phase === "serve" || phase === "victory" || phase === "fail") {
+    var step = currentStep();
+    if (phase === "fail") return !!(step && (step.type === "add-digit" || step.type === "add-carry" || order.addBannerShown));
+    return phase === "serve" || phase === "victory" || order.addBannerShown;
+  }
+  var stepNow = currentStep();
+  return !!(stepNow && (stepNow.type === "add-digit" || stepNow.type === "add-carry"));
+}
+
+function computeLayout() {
+  if (!order) { layout = null; return; }
+  var paper = { x: 214, y: 68, w: 730, h: 372 };
+  var cols = neededCols(order);
+  var colW = 52;
+  var blockW = cols * colW;
+  var left = paper.x + (paper.w - blockW) / 2;
+  function colX(place) { return left + (cols - 1 - place) * colW + colW / 2; }
+  var rowsN = shownRowCount();
+  var sumOn = showSumLine();
+  var y = paper.y + 22;
+  var headerY = y;
+  y += 18;
+  var aY = y + 14;
+  y += 34;
+  var bY = y + 14;
+  y += 30;
+  var line1 = y;
+  y += 12;
+  var rowYs = [];
+  for (var i = 0; i < rowsN; i++) {
+    rowYs.push(y + 16);
+    y += 36;
+  }
+  var line2 = null;
+  var sumY = null;
+  if (sumOn) {
+    line2 = y + 2;
+    y += 12;
+    sumY = y + 16;
+  }
+  layout = {
+    paper: paper,
+    cols: cols,
+    colW: colW,
+    left: left,
+    blockW: blockW,
+    colX: colX,
+    headerY: headerY,
+    aY: aY,
+    bY: bY,
+    line1: line1,
+    rowYs: rowYs,
+    line2: line2,
+    sumY: sumY
+  };
+}
+
+function activeColumns(step) {
+  if (!step) return [];
+  if (step.type === "soy") return [step.slot];
+  if (step.type === "digit") return [step.displayCol];
+  if (step.type === "carry") return [step.displayCol];
+  if (step.type === "add-digit" || step.type === "add-carry") return [step.col];
+  return [];
+}
+
+function flyTarget(step) {
+  computeLayout();
+  if (!layout || !step) return { x: 640, y: 240 };
+  var cols = activeColumns(step);
+  var col = cols.length ? cols[Math.floor((cols.length - 1) / 2)] : 0;
+  var x = layout.colX(col);
+  var y = layout.aY;
+  if (step.type === "soy" || step.type === "digit" || step.type === "carry") {
+    y = layout.rowYs[step.row] || layout.aY;
+    if (step.type === "carry" && !step.writesDigit) y -= 16;
+  } else if (layout.sumY) {
+    y = layout.sumY;
+    if (step.type === "add-carry" && !step.writesDigit) y -= 16;
+  }
+  return { x: x, y: y };
+}
+
+function soyCenter() {
+  return { x: 104, y: 300 };
+}
+
+function nearestTarget(px, py, step) {
+  var best = null;
+  var bestD = coarse ? 64 : 50;
+  for (var i = 0; i < belt.length; i++) {
+    var pos = platePosition(belt[i].slot);
+    if (plateFade(pos.x) < 0.55) continue;
+    var d = Math.hypot(pos.x - px, pos.y - py);
+    if (d < bestD) {
+      bestD = d;
+      best = { item: belt[i], x: pos.x, y: pos.y, source: "belt" };
+    }
+  }
+  if (step && step.type === "soy" && px >= 16 && px <= 200 && py >= 68 && py <= 448) {
+    var s = soyCenter();
+    best = {
+      item: { value: 0, correct: true, kind: "soy", slot: -1, rim: "#c9a06a" },
+      x: s.x,
+      y: s.y,
+      source: "soy"
+    };
+  }
+  return best;
+}
+
+function awardTip(player, step) {
+  var tip = 20;
+  if (stepT < 1.7) tip += 15;
+  else if (stepT < 3.4) tip += 8;
+  player.tips += tip;
+  revenue += tip;
+  var pos = { x: player.x, y: player.y - 28 };
+  spawnFloat(pos.x, pos.y, "+" + tip + (stepT < 1.7 ? " FAST" : ""), player.color, 0.85);
+  return tip;
+}
+
+function applyWrong(player, target, step) {
+  if (player.out || player.hats <= 0) return;
+  player.hats -= 1;
+  if (player.hats <= 0) {
+    player.hats = 0;
+    player.out = true;
+  }
+  patience = Math.max(0, patience - 5);
+  player.shake = 0.35;
+  shake = Math.max(shake, 0.85);
+  hint = wrongHint(step, target.item.value);
+  hintT = 2.6;
+  miss = { slot: target.item.slot, until: time + 0.35 };
+  sfxShatter();
+  sfxBuzz();
+  makeBurst(target.x, target.y, "#f4f0e8", 14, 220, "shard");
+  makeBurst(target.x, target.y, player.color, 8, 160, "spark");
+  spawnFloat(target.x, target.y - 20, "-5s", "#ff8b8b", 0.9);
+  if (player.out) spawnFloat(player.x, player.y - 48, player.name + " dropped a hat", player.color, 1.1);
+}
+
+function applyCorrect(correctHits, step) {
+  for (var i = 0; i < correctHits.length; i++) awardTip(players[correctHits[i].pid], step);
+  var src = correctHits[0].target;
+  if (step.type === "carry" || step.type === "add-carry") sfxSquish();
+  else {
+    sfxSlide();
+    sfxClink();
+  }
+  var dest = flyTarget(step);
+  ghosts.push({
+    x: src.x, y: src.y, x0: src.x, y0: src.y, tx: dest.x, ty: dest.y,
+    t: 0, kind: src.item.kind, label: src.item.kind === "wasabi" ? "+" + src.item.value : String(src.item.value),
+    rim: src.item.rim || "#fff"
+  });
+  makeBurst(src.x, src.y, "#ffe9a8", 8, 120, "spark");
+  commitStep(order, step);
+  stepIndex++;
+  if (!currentStep()) completeOrder();
+  else beginStep();
+}
+
+function completeOrder() {
+  phase = "serve";
+  serveT = 0;
+  celebrateOnce = false;
+  revenue += 200;
+  if (live) live.textContent = fmt(order.a * order.b) + " served. Plus 200 revenue.";
+}
+
+function failOrder(reason) {
+  phase = "fail";
+  failReason = reason;
+  if (live) live.textContent = reason;
+}
+
+function afterServe() {
+  var next = problemIndex + 1;
+  if (next >= MENU.length) {
+    phase = "victory";
+    sfxCheer();
+    if (live) live.textContent = "Service complete. Revenue " + fmt(Math.round(revenue)) + ".";
+    return;
+  }
+  if (MENU[next].tier !== MENU[problemIndex].tier) {
+    phase = "tierup";
+    tierT = 0;
+    if (live) live.textContent = "Tier " + MENU[next].tier + ". " + TIER_BLURB[MENU[next].tier];
+    return;
+  }
+  startProblem(next);
+}
+
+function resolveGrabs() {
+  if (phase !== "play" || !order) return;
+  var step = currentStep();
+  if (!step || !grabQueue.length) return;
+  var hits = [];
+  var seen = {};
+  for (var i = 0; i < grabQueue.length; i++) {
+    var pid = grabQueue[i];
+    if (seen[pid]) continue;
+    seen[pid] = 1;
+    var p = players[pid];
+    if (p.out) continue;
+    var target = nearestTarget(p.x, p.y, step);
+    if (!target) continue;
+    hits.push({ pid: pid, target: target });
+  }
+  var wrongs = [];
+  var rights = [];
+  for (var h = 0; h < hits.length; h++) {
+    if (hits[h].target.item.correct) rights.push(hits[h]);
+    else wrongs.push(hits[h]);
+  }
+  for (var w = 0; w < wrongs.length; w++) applyWrong(players[wrongs[w].pid], wrongs[w].target, step);
+  if (rights.length && phase === "play") applyCorrect(rights, step);
+  else if (phase === "play") {
+    if (players.every(function (p) { return p.hats <= 0; })) failOrder("Every chef lost their hats. The kitchen is closed.");
+    else if (patience <= 0) failOrder("The customer left hungry.");
+  }
+}
+
+function padState(index) {
+  var empty = { x: 0, y: 0, grab: false, connected: false };
+  var list;
+  try { list = navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch (e) { return empty; }
+  if (!list) return empty;
+  var gp = list[index];
+  if (!gp) return empty;
+  var x = gp.axes && gp.axes.length ? gp.axes[0] || 0 : 0;
+  var y = gp.axes && gp.axes.length > 1 ? gp.axes[1] || 0 : 0;
+  if (Math.abs(x) < 0.28) x = 0;
+  if (Math.abs(y) < 0.28) y = 0;
+  var b = gp.buttons || [];
+  function down(i) { return b[i] && (b[i].pressed || b[i].value > 0.5); }
+  if (down(14)) x = -1;
+  if (down(15)) x = 1;
+  if (down(12)) y = -1;
+  if (down(13)) y = 1;
+  var mag = Math.hypot(x, y);
+  if (mag > 1) { x /= mag; y /= mag; }
+  return { x: x, y: y, grab: down(0), connected: true };
+}
+
+function keyVec(map) {
+  var x = 0;
+  var y = 0;
+  if (keys[map.left]) x -= 1;
+  if (keys[map.right]) x += 1;
+  if (keys[map.up]) y -= 1;
+  if (keys[map.down]) y += 1;
+  var mag = Math.hypot(x, y);
+  if (mag > 1) { x /= mag; y /= mag; }
+  return { x: x, y: y };
+}
+
+function updatePlay(dt) {
+  stepT += dt;
+  if (!document.hidden) patience -= dt;
+  if (patience < 0) patience = 0;
+  scroll += BELT.speed * (reduceMotion ? 0.35 : 1) * dt;
+  if (scroll > BELT.travel) scroll %= BELT.travel;
+  var speed = 760;
+  for (var i = 0; i < players.length; i++) {
+    var p = players[i];
+    var kv = keyVec(p.keys);
+    var pv = padState(i);
+    if (pv.grab && !p.padPrev) grabQueue.push(i);
+    p.padPrev = pv.grab;
+    var pointerOwnsP1 = i === 0 && pointerAim && performance.now() >= keyAimUntil && kv.x === 0 && kv.y === 0 && pv.x === 0 && pv.y === 0;
+    if (!pointerOwnsP1) {
+      if (kv.x || kv.y) {
+        if (i === 0) keyAimUntil = performance.now() + 250;
+      }
+      var x = kv.x + pv.x;
+      var y = kv.y + pv.y;
+      var mag = Math.hypot(x, y);
+      if (mag > 1) { x /= mag; y /= mag; }
+      p.x += x * speed * dt;
+      p.y += y * speed * dt;
+    }
+    if (p.shake > 0) p.shake -= dt;
+    p.x = Math.max(18, Math.min(W - 18, p.x));
+    p.y = Math.max(18, Math.min(H - 18, p.y));
+  }
+  resolveGrabs();
+  if (phase === "play" && patience <= 0) failOrder("The customer left hungry.");
+  if (hintT > 0) hintT -= dt;
+}
+
+function updateFx(dt) {
+  for (var i = particles.length - 1; i >= 0; i--) {
+    var p = particles[i];
+    p.age += dt;
+    p.vy += p.g * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.rot += p.vr * dt;
+    if (p.age >= p.life) particles.splice(i, 1);
+  }
+  for (var f = floats.length - 1; f >= 0; f--) {
+    floats[f].age += dt;
+    floats[f].y += floats[f].vy * dt;
+    if (floats[f].age >= floats[f].life) floats.splice(f, 1);
+  }
+  for (var g = ghosts.length - 1; g >= 0; g--) {
+    ghosts[g].t += dt / 0.28;
+    var k = Math.min(1, ghosts[g].t);
+    var e = 1 - Math.pow(1 - k, 3);
+    ghosts[g].x = ghosts[g].x0 + (ghosts[g].tx - ghosts[g].x0) * e;
+    ghosts[g].y = ghosts[g].y0 + (ghosts[g].ty - ghosts[g].y0) * e;
+    if (k >= 1) ghosts.splice(g, 1);
+  }
+  if (shake > 0) shake = Math.max(0, shake - dt * 1.8);
+  revenueShown += (revenue - revenueShown) * Math.min(1, dt * 7);
+}
+
+function update(dt) {
+  time += dt;
+  updateFx(dt);
+  musicTick();
+  if (phase === "play") updatePlay(dt);
+  else if (phase === "serve") {
+    serveT += dt;
+    scroll += BELT.speed * 1.6 * dt;
+    if (!celebrateOnce && serveT > 0.05) {
+      celebrateOnce = true;
+      sfxBell();
+      sfxCheer();
+      makeBurst(1110, 120, "#ffd56a", 28, 260, "confetti");
+      makeBurst(1110, 120, "#ff5d8f", 14, 220, "confetti");
+      spawnFloat(1110, 150, "+200", "#ffd56a", 1.3);
+    }
+    if (serveT > 3.3 || (confirmQueued && serveT > 0.45)) afterServe();
+  } else if (phase === "tierup") {
+    tierT += dt;
+    if (confirmQueued) {
+      var next = problemIndex + 1;
+      if (next < MENU.length) startProblem(next);
+      else phase = "victory";
+    }
+  } else if (phase === "fail") {
+    if (confirmQueued) startProblem(problemIndex);
+  } else if (phase === "victory") {
+    if (confirmQueued) phase = "title";
+  } else if (phase === "title") {
+    for (var i = 0; i < players.length; i++) {
+      var pv = padState(i);
+      if (pv.grab && !players[i].padPrev) confirmQueued = true;
+      players[i].padPrev = pv.grab;
+    }
+    if (confirmQueued) startRun(0);
+    scroll += 40 * dt;
+  }
+  grabQueue.length = 0;
+  confirmQueued = false;
+}
+
+/* --------------------------------- render -------------------------------- */
+
+function worldOf(clientX, clientY) {
+  var r = canvas.getBoundingClientRect();
+  var x = (clientX - r.left) * (canvas.width / r.width);
+  var y = (clientY - r.top) * (canvas.height / r.height);
+  return { x: (x - view.ox) / view.s, y: (y - view.oy) / view.s };
+}
+
+function resize() {
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+  var s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  view.s = s * dpr;
+  view.ox = (canvas.width - W * view.s) / 2;
+  view.oy = (canvas.height - H * view.s) / 2;
+}
+
+function round(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+  else {
+    var rad = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+}
+
+function fillText(str, x, y, font, color, align, base) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || "center";
+  ctx.textBaseline = base || "middle";
+  ctx.fillText(str, x, y);
+}
+
+function drawAmbience() {
+  var g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#2a1038");
+  g.addColorStop(0.45, "#1a0c22");
+  g.addColorStop(1, "#120a10");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  /* noren stripes */
+  for (var i = 0; i < 8; i++) {
+    ctx.fillStyle = i % 2 === 0 ? "rgba(120,20,48,0.35)" : "rgba(70,10,30,0.28)";
+    ctx.fillRect(160 + i * 120, 0, 120, 78);
+    ctx.fillStyle = "rgba(255,210,120,0.15)";
+    ctx.fillRect(160 + i * 120 + 54, 10, 8, 58);
+  }
+
+  drawLantern(78, 168, "#ff5a7a");
+  drawLantern(1204, 150, "#49f0e0");
+
+  /* neon sign */
+  ctx.save();
+  ctx.shadowColor = "#ff2d78";
+  ctx.shadowBlur = 18;
+  fillText("SUSHI", 640, 34, "800 28px Trebuchet MS, Avenir Next, sans-serif", "#ffd0e2");
+  ctx.restore();
+
+  /* floor */
+  ctx.fillStyle = "#24140e";
+  ctx.fillRect(0, 500, W, 220);
+  for (var plank = 0; plank < 14; plank++) {
+    ctx.fillStyle = plank % 2 ? "rgba(255,220,180,0.035)" : "rgba(0,0,0,0.12)";
+    ctx.fillRect(0, 512 + plank * 15, W, 15);
+  }
+}
+
+function drawLantern(x, y, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = "rgba(255,220,160,0.4)";
+  ctx.beginPath();
+  ctx.moveTo(0, -34);
+  ctx.lineTo(0, -18);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 16, 22, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 0.25;
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.ellipse(-4, -4, 6, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawHatIcon(x, y, scale, color, alive) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = alive ? color : "#6a6270";
+  ctx.beginPath();
+  ctx.moveTo(-8, 4);
+  ctx.quadraticCurveTo(-6, -12, 0, -14);
+  ctx.quadraticCurveTo(6, -12, 8, 4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillRect(-12, 4, 24, 5);
+  ctx.fillStyle = alive ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.08)";
+  ctx.fillRect(-4, -8, 3, 8);
+  ctx.restore();
+}
+
+function drawHUD() {
+  round(8, 6, W - 16, 48, 12);
+  ctx.fillStyle = "#140a18";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,210,120,0.35)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  fillText("SUSHI EXPRESS", 118, 30, "800 16px Trebuchet MS, Avenir Next, sans-serif", "#ffd56a", "left", "middle");
+  if (order) {
+    var spec = MENU[problemIndex];
+    fillText("T" + spec.tier + "  " + (problemIndex + 1) + "/" + MENU.length, 268, 30, "700 13px Trebuchet MS, sans-serif", "#d7c8ea", "left", "middle");
+  }
+
+  /* patience */
+  var px = 360;
+  var pw = 300;
+  fillText("PATIENCE  " + Math.ceil(Math.max(0, patience)) + "s", px, 18, "700 10px Trebuchet MS, sans-serif", "#cdb9de", "left", "middle");
+  round(px, 26, pw, 14, 7);
+  ctx.fillStyle = "#2a2030";
+  ctx.fill();
+  var ratio = patienceMax > 0 ? Math.max(0, patience / patienceMax) : 0;
+  var barColor = ratio > 0.5 ? "#3ddc84" : ratio > 0.25 ? "#ffd056" : "#ff4d6a";
+  if (ratio > 0) {
+    round(px, 26, Math.max(8, pw * ratio), 14, 7);
+    ctx.fillStyle = barColor;
+    ctx.fill();
+  }
+  if (ratio < 0.22 && Math.sin(time * 8) > 0) {
+    ctx.strokeStyle = "#ffd0d8";
+    ctx.lineWidth = 2;
+    round(px, 26, pw, 14, 7);
+    ctx.stroke();
+  }
+
+  /* revenue */
+  fillText("REV  " + fmt(Math.round(revenueShown)), 700, 30, "800 16px Trebuchet MS, sans-serif", "#ffd56a", "left", "middle");
+
+  for (var i = 0; i < players.length; i++) {
+    var p = players[i];
+    var x = 860 + i * 110;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(x, 30, 4, 0, Math.PI * 2);
+    ctx.fill();
+    fillText(p.name, x + 14, 16, "800 11px Trebuchet MS, sans-serif", p.color, "left", "middle");
+    for (var h = 0; h < 3; h++) drawHatIcon(x + 16 + h * 16, 34, 0.62, p.color, h < p.hats);
+    fillText(String(p.tips), x + 68, 36, "700 11px Trebuchet MS, sans-serif", "#fff6e4", "left", "middle");
+  }
+
+  /* mute */
+  hotspots.push({ id: "mute", x: 1212, y: 12, w: 52, h: 36 });
+  round(1212, 12, 52, 36, 8);
+  ctx.fillStyle = audio.muted ? "#5a2438" : "#203228";
+  ctx.fill();
+  ctx.strokeStyle = "#ffd56a";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  fillText(audio.muted ? "OFF" : "SND", 1238, 30, "800 12px Trebuchet MS, sans-serif", "#ffd56a");
+}
+
+function digitColorFor(kind) {
+  if (kind === "sum") return "#b4233a";
+  if (kind === "soy") return "#1d4e89";
+  return "#24160f";
+}
+
+function drawTicket() {
+  if (!order || !layout) return;
+  var paper = layout.paper;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.35)";
+  ctx.shadowBlur = 16;
+  ctx.shadowOffsetY = 6;
+  round(paper.x, paper.y, paper.w, paper.h, 12);
+  ctx.fillStyle = "#fff6e6";
+  ctx.fill();
+  ctx.restore();
+  round(paper.x, paper.y, paper.w, paper.h, 12);
+  ctx.strokeStyle = "#e4b15a";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  /* column bands */
+  var step = currentStep();
+  var active = {};
+  var colsA = activeColumns(step);
+  for (var c = 0; c < colsA.length; c++) active[colsA[c]] = 1;
+  for (var col = 0; col < layout.cols; col++) {
+    var x = layout.colX(col) - layout.colW / 2 + 4;
+    ctx.fillStyle = active[col] ? "rgba(255, 196, 40, 0.38)" : (col % 2 ? "rgba(80,40,20,0.04)" : "rgba(80,40,20,0.015)");
+    ctx.fillRect(x, layout.headerY - 8, layout.colW - 8, (layout.sumY || layout.rowYs[layout.rowYs.length - 1] || layout.bY) - layout.headerY + 28);
+    fillText(PLACE_SHORT[col] || "", layout.colX(col), layout.headerY, "700 11px Trebuchet MS, sans-serif", active[col] ? "#9a5b00" : "#b0977a");
+  }
+
+  /* multiplicand */
+  for (var ai = 0; ai < order.aDigits.length; ai++) {
+    var ring = step && step.type === "digit" && step.aCol === ai;
+    if (ring) {
+      ctx.strokeStyle = "#e23b4a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(layout.colX(ai), layout.aY, 16, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    fillText(String(order.aDigits[ai]), layout.colX(ai), layout.aY, "700 28px ui-monospace, Courier New, monospace", "#24160f");
+  }
+  for (var bi = 0; bi < order.bDigits.length; bi++) {
+    var bring = step && (step.bCol === bi || (step.type === "soy" && step.shift === bi));
+    var zeroDigit = order.bDigits[bi] === 0;
+    if (bring) {
+      ctx.strokeStyle = "#1d4e89";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(layout.colX(bi), layout.bY, 16, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    fillText(String(order.bDigits[bi]), layout.colX(bi), layout.bY, "700 28px ui-monospace, Courier New, monospace", zeroDigit ? "#1d4e89" : "#24160f");
+  }
+  fillText("×", layout.left - 28, layout.bY, "700 28px Trebuchet MS, sans-serif", "#24160f");
+
+  ctx.strokeStyle = "#24160f";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(layout.left - 36, layout.line1);
+  ctx.lineTo(layout.left + layout.blockW + 10, layout.line1);
+  ctx.stroke();
+
+  var rowsN = shownRowCount();
+  var activeRow = step && (step.type === "soy" || step.type === "digit" || step.type === "carry") ? step.row : -1;
+  for (var r = 0; r < rowsN; r++) {
+    var row = order.rows[r];
+    var y = layout.rowYs[r];
+    var places = row.shift + row.prodDigits.length;
+    for (var place = 0; place < places; place++) {
+      var cx = layout.colX(place);
+      var isSoy = place < row.shift;
+      var shown = isSoy ? place < row.soyPlaced : row.shown[place - row.shift];
+      var value = isSoy ? 0 : row.prodDigits[place - row.shift];
+      var isTarget = active[place] && r === activeRow && !shown;
+      if (isTarget) {
+        var pulse = 0.45 + 0.55 * Math.abs(Math.sin(time * 6));
+        ctx.globalAlpha = pulse;
+        ctx.strokeStyle = isSoy ? "#1d4e89" : "#c47b00";
+        ctx.lineWidth = 2;
+        round(cx - 16, y - 16, 32, 32, 6);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if (shown) {
+        fillText(String(value), cx, y, "700 26px ui-monospace, Courier New, monospace", isSoy ? "#1d4e89" : "#24160f");
+      } else if (r === activeRow) {
+        fillText("·", cx, y, "700 26px ui-monospace, Courier New, monospace", "#d9c3a4");
+      }
+    }
+    if (r === activeRow) {
+      for (var ck in row.carries) {
+        if (!Object.prototype.hasOwnProperty.call(row.carries, ck)) continue;
+        fillText("+" + row.carries[ck], layout.colX(Number(ck)), y - 18, "700 12px ui-monospace, Courier New, monospace", "#1f8a4c");
+      }
+    }
+    var label = "×" + fmt(row.m * Math.pow(10, row.shift));
+    fillText(label, layout.left + layout.blockW + 46, y, "700 13px Trebuchet MS, sans-serif", r === activeRow ? "#9a4a12" : "#b0977a");
+  }
+
+  if (layout.sumY) {
+    ctx.strokeStyle = "#24160f";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(layout.left - 36, layout.line2);
+    ctx.lineTo(layout.left + layout.blockW + 10, layout.line2);
+    ctx.stroke();
+    var sumPlaces = toDigits(order.a * order.b).length;
+    for (var sc = 0; sc < sumPlaces; sc++) {
+      if (order.sumShown[sc] === undefined) {
+        if (phase === "play") fillText("·", layout.colX(sc), layout.sumY, "700 26px ui-monospace, Courier New, monospace", "#e0b8b0");
+      } else {
+        fillText(String(order.sumShown[sc]), layout.colX(sc), layout.sumY, "700 26px ui-monospace, Courier New, monospace", "#b4233a");
+      }
+    }
+    for (var sk in order.sumCarries) {
+      if (!Object.prototype.hasOwnProperty.call(order.sumCarries, sk)) continue;
+      var written = order.sumShown[sk] !== undefined;
+      ctx.globalAlpha = written ? 0.35 : 1;
+      fillText("+" + order.sumCarries[sk], layout.colX(Number(sk)), layout.sumY - 18, "700 12px ui-monospace, Courier New, monospace", "#1f8a4c");
+      ctx.globalAlpha = 1;
+    }
+    fillText("SUM", layout.left + layout.blockW + 46, layout.sumY, "800 13px Trebuchet MS, sans-serif", "#b4233a");
+  }
+
+  /* stamp */
+  ctx.save();
+  ctx.translate(paper.x + 58, paper.y + 54);
+  ctx.rotate(-0.3);
+  ctx.strokeStyle = "rgba(180,35,58,0.8)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, Math.PI * 2);
+  ctx.stroke();
+  fillText("RUSH", 0, 0, "800 12px Trebuchet MS, sans-serif", "rgba(180,35,58,0.85)");
+  ctx.restore();
+}
+
+function drawSoyStation() {
+  var step = currentStep();
+  var hot = phase === "play" && step && step.type === "soy";
+  round(16, 68, 184, 372, 16);
+  var wood = ctx.createLinearGradient(16, 68, 200, 440);
+  wood.addColorStop(0, "#a8683c");
+  wood.addColorStop(1, "#6b3a22");
+  ctx.fillStyle = wood;
+  ctx.fill();
+  ctx.strokeStyle = hot ? "#ffd56a" : "#3a2014";
+  ctx.lineWidth = hot ? 4 : 3;
+  ctx.stroke();
+
+  fillText("SOY STATION", 108, 92, "800 13px Trebuchet MS, sans-serif", "#fff1d6");
+  fillText(hot ? "GRAB A 0" : "stand by", 108, 112, "700 12px Trebuchet MS, sans-serif", hot ? "#ffd56a" : "#e7c8a4");
+
+  /* bottle */
+  ctx.save();
+  ctx.translate(108, 200);
+  if (hot) {
+    ctx.shadowColor = "#ffd56a";
+    ctx.shadowBlur = 16;
+  }
+  round(-22, -70, 44, 18, 6);
+  ctx.fillStyle = "#b4233a";
+  ctx.fill();
+  round(-16, -54, 32, 78, 8);
+  ctx.fillStyle = "#1a120e";
+  ctx.fill();
+  round(-12, -30, 24, 36, 4);
+  ctx.fillStyle = "#f3e2b8";
+  ctx.fill();
+  fillText("SOY", 0, -12, "800 10px Trebuchet MS, sans-serif", "#1a120e");
+  ctx.restore();
+
+  /* stack of dishes */
+  for (var i = 0; i < 4; i++) {
+    var y = 300 + i * 12;
+    ctx.beginPath();
+    ctx.ellipse(108, y, 36, 12, 0, 0, Math.PI * 2);
+    ctx.fillStyle = i === 0 && hot ? "#2a2118" : "#1a140f";
+    ctx.fill();
+    ctx.strokeStyle = hot && i === 0 ? "#ffd56a" : "#8a7048";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  if (hot) {
+    var pulse = 0.55 + 0.45 * Math.sin(time * 7);
+    ctx.globalAlpha = pulse;
+    fillText("0", 108, 292, "800 22px ui-monospace, Courier New, monospace", "#fff6e4");
+    ctx.globalAlpha = 1;
+    fillText("locks the place", 108, 368, "700 12px Trebuchet MS, sans-serif", "#fff1d6");
+  } else {
+    fillText("0", 108, 300, "800 18px ui-monospace, Courier New, monospace", "#8d7b66");
+    fillText("placeholder dishes", 108, 400, "700 11px Trebuchet MS, sans-serif", "#f0d7b4");
+  }
+}
+
+function trayLabel(row) {
+  if (!rowComplete(row)) {
+    var total = row.shift + row.prodDigits.length;
+    var s = "";
+    for (var col = total - 1; col >= 0; col--) {
+      if (col < row.shift) s += col < row.soyPlaced ? "0" : "·";
+      else s += row.shown[col - row.shift] ? String(row.prodDigits[col - row.shift]) : "·";
+    }
+    return s;
+  }
+  return fmt(rowValue(row));
+}
+
+function drawNigiri(x, y, topping) {
+  ctx.fillStyle = "#f7f1e6";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 5, 12, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = topping;
+  round(x - 10, y - 8, 20, 10, 4);
+  ctx.fill();
+}
+
+function drawBento() {
+  if (!order) return;
+  var panel = { x: 960, y: 68, w: 304, h: 372 };
+  round(panel.x, panel.y, panel.w, panel.h, 16);
+  var g = ctx.createLinearGradient(panel.x, panel.y, panel.x, panel.y + panel.h);
+  g.addColorStop(0, "#4a2a38");
+  g.addColorStop(1, "#2a1520");
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.strokeStyle = "#ffd56a";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  var mood = phase === "serve" ? "joy" : phase === "fail" ? "mad" : patience / patienceMax;
+  drawCustomer(1112, 118, mood);
+  fillText(fmt(order.a) + " × " + fmt(order.b), 1112, 168, "800 16px Trebuchet MS, sans-serif", "#fff6e4");
+
+  var n = order.rows.length;
+  var top = 196;
+  var avail = 230;
+  var th = Math.min(78, Math.floor(avail / n) - 6);
+  var slide = 0;
+  if (phase === "serve") slide = Math.max(0, serveT - 1.15) * 460;
+  ctx.save();
+  ctx.translate(slide, 0);
+  for (var i = 0; i < n; i++) {
+    var y = top + i * (th + 6);
+    var row = order.rows[i];
+    var done = rowComplete(row);
+    var step = currentStep();
+    var active = step && step.row === i && (step.type === "soy" || step.type === "digit" || step.type === "carry");
+    round(978, y, 268, th, 8);
+    ctx.fillStyle = done ? "#6b3a22" : active ? "#8a4e2c" : "rgba(80,40,24,0.45)";
+    ctx.fill();
+    ctx.strokeStyle = active ? "#ffd56a" : "#3a2014";
+    ctx.lineWidth = active ? 3 : 2;
+    ctx.stroke();
+    var toppings = ["#ff8b5a", "#e23b4a", "#f0c14a", "#3aa86a"];
+    if (done || active) {
+      for (var k = 0; k < Math.min(4, 2 + i); k++) drawNigiri(998 + k * 28, y + th * 0.48, toppings[(i + k) % toppings.length]);
+    }
+    fillText("×" + fmt(row.m * Math.pow(10, row.shift)), 1110, y + 14, "700 11px Trebuchet MS, sans-serif", "#ffd7a8", "left", "middle");
+    fillText(trayLabel(row), 1110, y + th * 0.62, "700 16px ui-monospace, Courier New, monospace", "#fff6e4", "left", "middle");
+  }
+
+  if (phase === "serve") {
+    var lidT = Math.min(1, serveT / 0.28);
+    var lidY = top - 36 + (1 - lidT) * -50;
+    if (serveT > 0.28 && serveT < 0.42) lidY += Math.sin((serveT - 0.28) * 40) * 3;
+    round(978, lidY, 268, 28, 8);
+    ctx.fillStyle = "#3a2016";
+    ctx.fill();
+    ctx.strokeStyle = "#e4b15a";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    fillText("LID", 1112, lidY + 14, "800 12px Trebuchet MS, sans-serif", "#ffd56a");
+    /* bell */
+    var bellX = 1210;
+    var bellY = top - 8;
+    ctx.fillStyle = "#ffd56a";
+    ctx.beginPath();
+    ctx.arc(bellX, bellY, 12, Math.PI, 0);
+    ctx.lineTo(bellX + 12, bellY + 6);
+    ctx.lineTo(bellX - 12, bellY + 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(bellX, bellY + 8, 3, 0, Math.PI * 2);
+    ctx.fill();
+    if (serveT < 1.4) {
+      ctx.strokeStyle = "rgba(255,213,106," + (1 - serveT / 1.4) + ")";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(bellX, bellY, 16 + serveT * 46, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawCustomer(x, y, mood) {
+  ctx.save();
+  ctx.translate(x, y);
+  /* body */
+  ctx.fillStyle = "#ff5d8f";
+  round(-22, 8, 44, 28, 10);
+  ctx.fill();
+  ctx.fillStyle = "#ffe0c2";
+  ctx.beginPath();
+  ctx.arc(0, 0, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#2a1a16";
+  ctx.beginPath();
+  ctx.arc(-6, -1, 2, 0, Math.PI * 2);
+  ctx.arc(6, -1, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#2a1a16";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (mood === "joy" || (typeof mood === "number" && mood > 0.55)) {
+    ctx.arc(0, 2, 8, 0.12 * Math.PI, 0.88 * Math.PI);
+  } else if (mood === "mad" || (typeof mood === "number" && mood < 0.28)) {
+    ctx.arc(0, 12, 7, 1.15 * Math.PI, 1.85 * Math.PI);
+  } else {
+    ctx.moveTo(-6, 8);
+    ctx.lineTo(6, 8);
+  }
+  ctx.stroke();
+  if (mood === "joy") {
+    ctx.strokeStyle = "#ffe0c2";
+    ctx.beginPath();
+    ctx.moveTo(-22, 16);
+    ctx.lineTo(-34, 4);
+    ctx.moveTo(22, 16);
+    ctx.lineTo(34, 4);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPrompt() {
+  var step = currentStep();
+  var text = hintT > 0 ? hint : promptFor(step);
+  if (phase === "serve" && order) text = fmt(order.a * order.b) + " served!   +200 revenue. The platter slides out to the guest.";
+  round(210, 452, 1054, 56, 12);
+  ctx.fillStyle = hintT > 0 ? "#5a1828" : "#140c18";
+  ctx.fill();
+  ctx.strokeStyle = hintT > 0 ? "#ff8b8b" : "#ffd56a";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  var font = "700 16px Trebuchet MS, Avenir Next, sans-serif";
+  var lines = wrapLines(text, 1000, font);
+  if (lines.length > 2) {
+    font = "700 14px Trebuchet MS, Avenir Next, sans-serif";
+    lines = wrapLines(text, 1000, font);
+  }
+  var top = 480 - (lines.length - 1) * 10;
+  for (var i = 0; i < lines.length && i < 3; i++) {
+    fillText(lines[i], 737, top + i * 20, font, "#fff8ee");
+  }
+}
+
+function wrapLines(text, maxW, font) {
+  ctx.font = font;
+  var words = String(text).split(" ");
+  var lines = [];
+  var cur = "";
+  for (var i = 0; i < words.length; i++) {
+    var trial = cur ? cur + " " + words[i] : words[i];
+    if (ctx.measureText(trial).width > maxW && cur) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = trial;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function drawBelt() {
+  var x = 168;
+  var y = 528;
+  var w = 1090;
+  var h = 176;
+  round(x, y, w, h, 80);
+  ctx.fillStyle = "#3a291f";
+  ctx.fill();
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = "#d5dbe6";
+  ctx.stroke();
+  round(x + 26, y + 24, w - 52, h - 48, 60);
+  ctx.fillStyle = "#140c12";
+  ctx.fill();
+
+  /* moving slats on the front lip */
+  ctx.save();
+  ctx.beginPath();
+  round(x, y, w, h, 80);
+  ctx.clip();
+  var offset = scroll % 36;
+  ctx.fillStyle = "rgba(255,220,180,0.06)";
+  for (var i = -1; i < 40; i++) {
+    ctx.fillRect(x + i * 36 - offset, y + h - 52, 18, 40);
+  }
+  ctx.restore();
+
+  /* decorative return lane */
+  for (var d = 0; d < 5; d++) {
+    var dx = 240 + ((d * 210 - scroll * 0.6) % 1000 + 1000) % 1000;
+    ctx.globalAlpha = 0.35;
+    ctx.beginPath();
+    ctx.ellipse(dx, 560, 18, 8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "#f4efe6";
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  fillText("P1  Arrows + Space      P2  W A S D + F      P3  I J K L + H      Pad A grabs      M mute      Esc title", 640, 694, "700 11px Trebuchet MS, sans-serif", "rgba(255,236,210,0.7)");
+}
+
+function drawDish(x, y, item, alpha, selected) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 18, 28, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (item.kind === "wasabi") {
+    ctx.fillStyle = "#7ed957";
+    ctx.beginPath();
+    ctx.ellipse(x, y + 2, 26, 20, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#b6f58a";
+    ctx.beginPath();
+    ctx.ellipse(x - 6, y - 4, 8, 6, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+    fillText("+" + item.value, x, y + 2, "800 18px ui-monospace, Courier New, monospace", "#14320c");
+  } else if (item.kind === "soy") {
+    ctx.fillStyle = "#1a120e";
+    ctx.beginPath();
+    ctx.ellipse(x, y + 2, 30, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#e4b15a";
+    ctx.stroke();
+    fillText("0", x, y - 2, "800 20px ui-monospace, Courier New, monospace", "#fff6e4");
+    fillText("SOY", x, y + 14, "800 9px Trebuchet MS, sans-serif", "#e4b15a");
+  } else {
+    ctx.beginPath();
+    ctx.ellipse(x, y, 34, 28, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "#f7f3ec";
+    ctx.fill();
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = item.rim || "#e23b4a";
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(x, y, 20, 15, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    var label = String(item.value);
+    var size = label.length >= 3 ? 16 : 22;
+    fillText(label, x, y + 1, "800 " + size + "px ui-monospace, Courier New, monospace", "#24160f");
+  }
+  if (miss && miss.slot === item.slot && time < miss.until) {
+    ctx.fillStyle = "rgba(255,60,70,0.45)";
+    ctx.beginPath();
+    ctx.ellipse(x, y, 34, 28, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (selected && selected.length) {
+    for (var s = 0; s < selected.length; s++) {
+      ctx.strokeStyle = selected[s];
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 40 + s * 2, 34, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawPlates() {
+  if (phase === "title" || !belt.length) {
+    for (var d = 0; d < 4; d++) {
+      var pos = platePosition(d);
+      drawDish(pos.x, pos.y, { kind: "plate", value: [12, 7, 0, 45][d], rim: RIMS[d], slot: -2 }, plateFade(pos.x), []);
+    }
+    return;
+  }
+  var dim = phase === "play" ? 1 : 0.45;
+  var selections = belt.map(function () { return []; });
+  var step = currentStep();
+  for (var i = 0; i < players.length; i++) {
+    if (players[i].out) continue;
+    var t = nearestTarget(players[i].x, players[i].y, step);
+    if (t && t.source === "belt") {
+      var idx = belt.indexOf(t.item);
+      if (idx >= 0) selections[idx].push(players[i].color);
+    }
+  }
+  for (var p = 0; p < belt.length; p++) {
+    var bp = platePosition(belt[p].slot);
+    drawDish(bp.x, bp.y, belt[p], plateFade(bp.x) * dim, phase === "play" ? selections[p] : []);
+  }
+}
+
+function drawGhosts() {
+  for (var i = 0; i < ghosts.length; i++) {
+    var g = ghosts[i];
+    var fake = { kind: g.kind, value: g.kind === "wasabi" ? g.label : g.label, rim: g.rim, slot: -3 };
+    if (g.kind === "wasabi") fake.value = Number(String(g.label).replace("+", ""));
+    else fake.value = Number(g.label);
+    drawDish(g.x, g.y, fake, 1 - g.t * 0.2, []);
+  }
+}
+
+function drawReticle(p) {
+  ctx.save();
+  var ox = 0;
+  if (p.shake > 0) ox = Math.sin(time * 48) * 4 * (p.shake / 0.35);
+  ctx.translate(p.x + ox, p.y);
+  ctx.globalAlpha = p.out ? 0.35 : 0.95;
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 16, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-24, 0); ctx.lineTo(-8, 0);
+  ctx.moveTo(8, 0); ctx.lineTo(24, 0);
+  ctx.moveTo(0, -24); ctx.lineTo(0, -8);
+  ctx.moveTo(0, 8); ctx.lineTo(0, 24);
+  ctx.stroke();
+  drawHatIcon(0, -30, 0.85, p.color, !p.out);
+  fillText(p.name, 0, 30, "800 11px Trebuchet MS, sans-serif", p.color);
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.color;
+    if (p.kind === "shard") ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+    else ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawFloats() {
+  for (var i = 0; i < floats.length; i++) {
+    var f = floats[i];
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    fillText(f.text, f.x, f.y, "800 16px Trebuchet MS, sans-serif", f.color);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawOverlay(title, sub, foot) {
+  ctx.fillStyle = "rgba(8,4,12,0.62)";
+  ctx.fillRect(0, 0, W, H);
+  round(240, 200, 800, 300, 20);
+  ctx.fillStyle = "#1b1024";
+  ctx.fill();
+  ctx.strokeStyle = "#ffd56a";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  fillText(title, 640, 280, "800 32px Trebuchet MS, Avenir Next, sans-serif", "#ffd56a");
+  var lines = wrapLines(sub, 700, "700 18px Trebuchet MS, sans-serif");
+  for (var i = 0; i < lines.length; i++) fillText(lines[i], 640, 340 + i * 26, "700 18px Trebuchet MS, sans-serif", "#fff6e4");
+  var blink = 0.45 + 0.55 * Math.abs(Math.sin(time * 4));
+  ctx.globalAlpha = blink;
+  fillText(foot, 640, 450, "700 16px Trebuchet MS, sans-serif", "#9be7ff");
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  fillText("CONVEYOR MULTIPLICATION RUSH", 640, 96, "700 14px Trebuchet MS, sans-serif", "#f0c9dd");
+  ctx.save();
+  ctx.shadowColor = "#ff2d78";
+  ctx.shadowBlur = 16;
+  fillText("SUSHI EXPRESS", 640, 142, "800 52px Trebuchet MS, Avenir Next, sans-serif", "#fff6e4");
+  ctx.restore();
+  fillText("Plate each digit. Carry wasabi. Lock places with soy sauce 0.", 640, 186, "700 16px Trebuchet MS, sans-serif", "#ffe7c2");
+
+  hotspots.push({ id: "start", x: 390, y: 214, w: 500, h: 64 });
+  var pulse = 1 + Math.sin(time * 3) * 0.012;
+  ctx.save();
+  ctx.translate(640, 246);
+  ctx.scale(pulse, pulse);
+  round(-250, -32, 500, 64, 16);
+  var bg = ctx.createLinearGradient(-250, 0, 250, 0);
+  bg.addColorStop(0, "#ff3366");
+  bg.addColorStop(1, "#ff8a3d");
+  ctx.fillStyle = bg;
+  ctx.fill();
+  fillText("OPEN THE RESTAURANT", 0, 0, "800 22px Trebuchet MS, sans-serif", "#fff");
+  ctx.restore();
+
+  var tiers = [
+    { id: "tier1", label: "EASY", sub: "1-digit ×", x: 250 },
+    { id: "tier2", label: "MEDIUM", sub: "2-digit ×", x: 530 },
+    { id: "tier3", label: "HARD", sub: "3–4 digit ×", x: 810 }
+  ];
+  for (var i = 0; i < tiers.length; i++) {
+    hotspots.push({ id: tiers[i].id, x: tiers[i].x, y: 300, w: 220, h: 58 });
+    round(tiers[i].x, 300, 220, 58, 12);
+    ctx.fillStyle = "#24182e";
+    ctx.fill();
+    ctx.strokeStyle = "#ffd56a";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    fillText(tiers[i].label, tiers[i].x + 110, 320, "800 16px Trebuchet MS, sans-serif", "#ffd56a");
+    fillText(tiers[i].sub, tiers[i].x + 110, 342, "700 13px Trebuchet MS, sans-serif", "#fff6e4");
+  }
+
+  var cards = [
+    { name: "P1 RED", how: "Arrows + Space", pad: "Pad 1 · A", color: "#ff3358", x: 180 },
+    { name: "P2 BLUE", how: "W A S D + F", pad: "Pad 2 · A", color: "#3aa0ff", x: 500 },
+    { name: "P3 GOLD", how: "I J K L + H", pad: "Pad 3 · A", color: "#ffd23a", x: 820 }
+  ];
+  for (var c = 0; c < cards.length; c++) {
+    round(cards[c].x, 376, 280, 96, 12);
+    ctx.fillStyle = "rgba(10,6,16,0.72)";
+    ctx.fill();
+    ctx.strokeStyle = cards[c].color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    fillText(cards[c].name, cards[c].x + 140, 400, "800 16px Trebuchet MS, sans-serif", cards[c].color);
+    fillText(cards[c].how, cards[c].x + 140, 426, "700 15px Trebuchet MS, sans-serif", "#fff6e4");
+    fillText(cards[c].pad, cards[c].x + 140, 450, "700 13px Trebuchet MS, sans-serif", "#d8c6ea");
+  }
+
+  fillText("Shared plates  ·  personal tips  ·  3 hats  ·  wrong dish costs 5 seconds and 1 hat", 640, 496, "700 13px Trebuchet MS, sans-serif", "#f0d7b4");
+
+  hotspots.push({ id: "mute", x: 1212, y: 12, w: 52, h: 36 });
+  round(1212, 12, 52, 36, 8);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.fill();
+  ctx.strokeStyle = "#ffd56a";
+  ctx.stroke();
+  fillText(audio.muted ? "OFF" : "SND", 1238, 30, "800 12px Trebuchet MS, sans-serif", "#ffd56a");
+
+  if (auditError) {
+    fillText("Math check failed: " + auditError, 640, 660, "700 14px Trebuchet MS, sans-serif", "#ff8b8b");
+  }
+}
+
+function draw() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#10060f";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+
+  var sx = 0;
+  var sy = 0;
+  if (shake > 0) {
+    sx = (Math.random() - 0.5) * 8 * shake;
+    sy = (Math.random() - 0.5) * 8 * shake;
+    ctx.translate(sx, sy);
+  }
+
+  hotspots = [];
+  drawAmbience();
+
+  if (phase === "title") {
+    drawBelt();
+    drawPlates();
+    drawTitle();
+  } else {
+    computeLayout();
+    drawSoyStation();
+    drawTicket();
+    drawBento();
+    drawPrompt();
+    drawBelt();
+    drawPlates();
+    drawGhosts();
+    for (var i = 0; i < players.length; i++) drawReticle(players[i]);
+    drawHUD();
+    if (phase === "fail") {
+      drawOverlay("Order cancelled", failReason, "Space, click, or A  ·  retry this order");
+      hotspots.push({ id: "confirm", x: 240, y: 200, w: 800, h: 300 });
+    } else if (phase === "tierup") {
+      var nextTier = MENU[Math.min(MENU.length - 1, problemIndex + 1)].tier;
+      drawOverlay("Tier " + nextTier + " opens", TIER_BLURB[nextTier], "Space, click, or A  ·  next seating");
+      hotspots.push({ id: "confirm", x: 240, y: 200, w: 800, h: 300 });
+    } else if (phase === "victory") {
+      var mvp = players[0];
+      for (var pi = 1; pi < players.length; pi++) if (players[pi].tips > mvp.tips) mvp = players[pi];
+      var mvpLine = mvp.tips > 0 ? mvp.name + " earned the most tips (" + mvp.tips + ")." : "The brigade plated every banquet.";
+      drawOverlay("Service complete", "Restaurant revenue " + fmt(Math.round(revenue)) + ". " + mvpLine, "Space, click, or A  ·  back to the door");
+      hotspots.push({ id: "confirm", x: 240, y: 200, w: 800, h: 300 });
+    }
+  }
+
+  drawParticles();
+  drawFloats();
+  if (shake > 0) ctx.translate(-sx, -sy);
+}
+
+function frame(t) {
+  if (!frame.last) frame.last = t;
+  var dt = Math.min(0.033, (t - frame.last) / 1000);
+  frame.last = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function hotspotAt(p) {
+  for (var i = hotspots.length - 1; i >= 0; i--) {
+    var h = hotspots[i];
+    if (p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
+function onConfirm() {
+  confirmQueued = true;
+}
+
+function boot() {
+  canvas = document.getElementById("game");
+  ctx = canvas.getContext("2d");
+  live = document.getElementById("live");
+  loadMute();
+  try { reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { reduceMotion = false; }
+  auditError = auditCurriculum();
+  resize();
+  window.addEventListener("resize", resize);
+  canvas.addEventListener("pointerdown", function (e) {
+    audioUnlock();
+    canvas.focus();
+    var p = worldOf(e.clientX, e.clientY);
+    coarse = e.pointerType === "touch";
+    var spot = hotspotAt(p);
+    if (spot) {
+      if (spot.id === "mute") toggleMute();
+      else if (spot.id === "start") startRun(0);
+      else if (spot.id === "tier1") startRun(0);
+      else if (spot.id === "tier2") startRun(3);
+      else if (spot.id === "tier3") startRun(6);
+      else if (spot.id === "confirm") onConfirm();
+      e.preventDefault();
+      return;
+    }
+    if (phase === "play") {
+      pointerAim = true;
+      players[0].x = Math.max(18, Math.min(W - 18, p.x));
+      players[0].y = Math.max(18, Math.min(H - 18, p.y));
+      if (!players[0].out) grabQueue.push(0);
+    } else if (phase !== "title") onConfirm();
+    e.preventDefault();
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (phase !== "play") return;
+    if (performance.now() < keyAimUntil) return;
+    var p = worldOf(e.clientX, e.clientY);
+    pointerAim = true;
+    players[0].x = Math.max(18, Math.min(W - 18, p.x));
+    players[0].y = Math.max(18, Math.min(H - 18, p.y));
+  });
+  window.addEventListener("keydown", function (e) {
+    if (e.repeat) return;
+    audioUnlock();
+    var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys[k] = true;
+    var swallow = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "f", "h", "w", "a", "s", "d", "i", "j", "k", "l"];
+    if (swallow.indexOf(k) !== -1 || swallow.indexOf(e.key) !== -1) e.preventDefault();
+    if (k === "m") { toggleMute(); return; }
+    if (k === "Escape") { phase = "title"; return; }
+    if (k === " " || k === "Enter") {
+      if (phase === "title") startRun(0);
+      else if (phase === "play") grabQueue.push(0);
+      else onConfirm();
+    } else if (phase === "play") {
+      if (k === "f") grabQueue.push(1);
+      if (k === "h") grabQueue.push(2);
+    } else if (phase === "title") {
+      if (k === "1") startRun(0);
+      if (k === "2") startRun(3);
+      if (k === "3") startRun(6);
+    }
+  });
+  window.addEventListener("keyup", function (e) {
+    var k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys[k] = false;
+  });
+  window.addEventListener("gamepadconnected", function (e) {
+    spawnFloat(640, 80, "Controller " + (e.gamepad.index + 1) + " ready", "#9be7ff", 1.4);
+  });
+  canvas.focus();
+  requestAnimationFrame(frame);
+}
+
+boot();
+</script>
+</body>
+</html>
