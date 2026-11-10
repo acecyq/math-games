@@ -115,6 +115,8 @@
     fatal: "",
     time: 0,
     wave: 0,
+    runSeed: 0,
+    usedSpecs: [],
     round: null,
     qIndex: 0,
     timer: 0,
@@ -260,6 +262,14 @@
     return Math.ceil((top - 0.001) / 5) * 5;
   }
 
+  function newRunSeed() {
+    return (Date.now() ^ Math.floor(Math.random() * 0x7fffffff) ^ ((Math.random() * 0x7fffffff) | 0)) >>> 0 || 1;
+  }
+
+  function specKey(spec) {
+    return [spec.mA, spec.cA, spec.mB, spec.cB, spec.targetX, spec.diffMass].join("|");
+  }
+
   function generateSpec(seed) {
     const rng = mulberry32(seed);
     const pick = (arr) => arr[Math.floor(rng() * arr.length)];
@@ -300,9 +310,18 @@
   }
 
   function specForWave(wave) {
-    if (wave <= 0) return Object.assign({}, CANON);
-    if (wave - 1 < CURATED.length) return Object.assign({}, CURATED[wave - 1]);
-    return generateSpec(9000 + wave * 131) || Object.assign({}, CURATED[wave % CURATED.length]);
+    const runSeed = game.runSeed || 1;
+    const used = game.usedSpecs || [];
+    for (let n = 0; n < 48; n++) {
+      const seed = (runSeed + wave * 10007 + n * 7919) >>> 0;
+      const spec = generateSpec(seed);
+      if (!spec) continue;
+      if (used.indexOf(specKey(spec)) !== -1) continue;
+      return spec;
+    }
+    return generateSpec((runSeed + wave * 10007) >>> 0)
+      || Object.assign({}, CURATED[wave % CURATED.length])
+      || Object.assign({}, CANON);
   }
 
   function numChoices(values, correct, unit, rng) {
@@ -327,8 +346,6 @@
   function gradientChoices(which, round, rng) {
     const m = which === "A" ? round.mA : round.mB;
     const other = which === "A" ? round.mB : round.mA;
-    if (round.wave === 0 && which === "A") return mChoices([0.15, 0.25, 1.5, 0.4], 0.15, rng);
-    if (round.wave === 0 && which === "B") return mChoices([0.25, 0.15, 2.5, 0.5], 0.25, rng);
     const vals = takeDistinct(m, [other, m * 10, m * 2, m + 0.1, Math.abs(m - 0.1), 0.4, 0.5, 0.3, 1.5], cleanM, 0.05);
     return mChoices(vals, m, rng);
   }
@@ -336,17 +353,10 @@
     const c = which === "A" ? round.cA : round.cB;
     const other = which === "A" ? round.cB : round.cA;
     const m = which === "A" ? round.mA : round.mB;
-    if (round.wave === 0 && which === "A") return numChoices([5, 4, 8, 0], 5, "cm", rng);
-    if (round.wave === 0 && which === "B") return numChoices([4, 5, 9, 0], 4, "cm", rng);
     const vals = takeDistinct(c, [other, 0, len(m, c, 20), c + 1, c - 1, c + 2, c + 3], cleanLen, 1);
     return numChoices(vals, c, "cm", rng);
   }
   function intersectChoices(round, rng) {
-    if (round.wave === 0) {
-      return coordChoices([
-        { x: 10, L: 6.5 }, { x: 20, L: 8.5 }, { x: 15, L: 7 }, { x: 5, L: 5.5 },
-      ], { x: 10, L: 6.5 }, rng);
-    }
     const list = [{ x: round.xInt, L: round.lInt }];
     const add = (x, L) => {
       const xx = cleanLen(x);
@@ -371,7 +381,6 @@
     return coordChoices(list.slice(0, 4), { x: round.xInt, L: round.lInt }, rng);
   }
   function massChoices(round, rng) {
-    if (round.wave === 0) return numChoices([180, 108, 18, 27], 180, "g", rng);
     const L = round.targetL;
     const raw = [
       (L - round.cA) / round.mB,
@@ -386,7 +395,6 @@
     return numChoices(takeDistinct(round.targetX, raw, cleanMass, 10), round.targetX, "g", rng);
   }
   function diffChoices(round, rng) {
-    if (round.wave === 0) return numChoices([6, 7, 15.5, 21.5], 6, "cm", rng);
     const lA = len(round.mA, round.cA, round.diffMass);
     const lB = len(round.mB, round.cB, round.diffMass);
     const raw = [lA, lB, lA + lB, Math.abs(round.cA - round.cB), (round.mB - round.mA) * round.diffMass, round.diff + 1, Math.abs(round.diff - 1)];
@@ -449,7 +457,8 @@
 
   function buildRound(wave) {
     const spec = specForWave(wave);
-    const rng = mulberry32(4000 + wave * 97);
+    if (game.usedSpecs) game.usedSpecs.push(specKey(spec));
+    const rng = mulberry32(((game.runSeed || 1) ^ (wave * 97) ^ 4000) >>> 0);
     const round = Object.assign({}, spec, {
       wave,
       yMax: yMaxFor(spec),
@@ -543,42 +552,35 @@
   }
 
   function selfTest() {
-    const r0 = buildRound(0);
-    if (r0.mA !== 0.15 || r0.cA !== 5 || r0.mB !== 0.25 || r0.cB !== 4) throw new Error("canon coefficients");
-    if (r0.xInt !== 10 || r0.lInt !== 6.5 || r0.targetX !== 180 || r0.targetL !== 32 || r0.diff !== 6) throw new Error("canon targets");
+    if (CANON.mA !== 0.15 || CANON.cA !== 5 || CANON.mB !== 0.25 || CANON.cB !== 4) throw new Error("canon coefficients");
+    if (CANON.xInt !== 10 || CANON.lInt !== 6.5 || CANON.targetX !== 180 || CANON.targetL !== 32 || CANON.diff !== 6) throw new Error("canon targets");
     const expectA = [5, 8, 12.5, 17, 20];
     const expectB = [4, 9, 16.5, 24, 29];
     for (let i = 0; i < 5; i++) {
-      if (Math.abs(r0.tableA[i] - expectA[i]) > 0.001) throw new Error("table A");
-      if (Math.abs(r0.tableB[i] - expectB[i]) > 0.001) throw new Error("table B");
+      if (Math.abs(len(CANON.mA, CANON.cA, MASSES[i]) - expectA[i]) > 0.001) throw new Error("table A");
+      if (Math.abs(len(CANON.mB, CANON.cB, MASSES[i]) - expectB[i]) > 0.001) throw new Error("table B");
     }
-    const exact = (q, line) => q.choices.some((c) => c.lines.indexOf(line) !== -1);
-    const gA = r0.questions[2];
-    const gB = r0.questions[3];
-    for (const line of ["0.15 cm/g", "0.25 cm/g", "1.50 cm/g", "0.40 cm/g"]) {
-      if (!exact(gA, line)) throw new Error("gradient A bank " + line);
-    }
-    for (const line of ["0.25 cm/g", "0.15 cm/g", "2.50 cm/g", "0.50 cm/g"]) {
-      if (!exact(gB, line)) throw new Error("gradient B bank " + line);
-    }
-    const inter = r0.questions[4];
-    const good = inter.choices.find((c) => c.correct);
-    if (!good || good.lines.indexOf("x = 10 g") === -1 || good.lines.indexOf("L = 6.5 cm") === -1) throw new Error("intersect answer");
-    for (const line of ["L = 8.5 cm", "L = 7 cm", "L = 5.5 cm"]) {
-      if (!exact(inter, line)) throw new Error("intersect trap " + line);
-    }
-    for (const line of ["180 g", "108 g", "18 g", "27 g"]) {
-      if (!exact(r0.questions[5], line)) throw new Error("mass bank " + line);
-    }
-    for (const line of ["6 cm", "7 cm", "15.5 cm", "21.5 cm"]) {
-      if (!exact(r0.questions[6], line)) throw new Error("diff bank " + line);
-    }
+
+    game.runSeed = 424242;
+    game.usedSpecs = [];
+    const a = buildRound(0);
+    game.runSeed = 919191;
+    game.usedSpecs = [];
+    const b = buildRound(0);
+    if (specKey(a) === specKey(b)) throw new Error("run seed should change experiments");
+
+    game.runSeed = 777001;
+    game.usedSpecs = [];
+    const seen = new Set();
     for (let w = 0; w < 16; w++) {
       const r = buildRound(w);
+      const key = specKey(r);
+      if (seen.has(key)) throw new Error("repeat within run " + w);
+      seen.add(key);
       if (r.questions.length !== 7) throw new Error("count " + w);
-      const a = len(r.mA, r.cA, r.xInt);
-      const b = len(r.mB, r.cB, r.xInt);
-      if (Math.abs(a - r.lInt) > 0.02 || Math.abs(b - r.lInt) > 0.02) throw new Error("intersect " + w);
+      const lA = len(r.mA, r.cA, r.xInt);
+      const lB = len(r.mB, r.cB, r.xInt);
+      if (Math.abs(lA - r.lInt) > 0.02 || Math.abs(lB - r.lInt) > 0.02) throw new Error("intersect " + w);
       const d = len(r.mB, r.cB, r.diffMass) - len(r.mA, r.cA, r.diffMass);
       if (Math.abs(d - r.diff) > 0.02) throw new Error("diff " + w);
       if (Math.abs((r.targetL - r.cA) / r.mA - r.targetX) > 0.05) throw new Error("mass " + w);
@@ -589,6 +591,8 @@
         if (new Set(texts).size !== 4) throw new Error("dup " + w + " " + q.kind);
       }
     }
+    game.runSeed = 0;
+    game.usedSpecs = [];
   }
 
   function currentQ() {
@@ -948,6 +952,8 @@
     game.prestige = 0;
     game.prestigeShown = 0;
     game.wave = 0;
+    game.runSeed = newRunSeed();
+    game.usedSpecs = [];
     game.fatal = "";
     players.forEach((p, i) => {
       p.hearts = 3;

@@ -1,0 +1,3395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Laser Mat Cutter: Frame &amp; Garden Studio</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #12100e;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+  }
+  #mute {
+    position: fixed;
+    right: 12px;
+    bottom: 10px;
+    z-index: 3;
+    border: 2px solid #d7b15a;
+    background: #241c14;
+    color: #ffe7ad;
+    font: 700 13px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif;
+    border-radius: 999px;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  #mute:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  noscript p {
+    color: #ffe7ad;
+    font-family: "Trebuchet MS", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" role="application" aria-label="Laser Mat Cutter, Frame and Garden Studio. Find the area of a border by subtracting the inner rectangle from the outer rectangle. Up to three players. Player 1 uses arrow keys and space. Player 2 uses W A S D and F. Player 3 uses I J K L and H. Gamepads use the stick or D-pad and the A button."></canvas>
+<button id="mute" type="button" aria-pressed="false">Sound on</button>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript><p>This workshop runs in JavaScript. Enable JavaScript to cut mats and find border areas.</p></noscript>
+<script>
+'use strict';
+
+/**
+ * Laser Mat Cutter — Frame & Garden Studio
+ * Primary 4/5 border area.
+ * Frame: outer length = inner + border + border (both sides).
+ *        Border area = outer rectangle − inner rectangle.
+ * Garden: total = flower area + uncovered area, side × side = total,
+ *         edging = outer perimeter + inner perimeter.
+ * Traps: border × border, and adding the border on only one side.
+ */
+
+var STORE = 'laser-mat-cutter-v1';
+var STOP_MSG = 'Stop! You cannot multiply border widths directly. Calculate the Big Rectangle, then subtract the Small Rectangle!';
+
+var CREW = [
+  { name: 'Red Artisan', short: 'P1', color: '#ff4d4d', ink: '#3a1010', help: 'Arrows + Space' },
+  { name: 'Blue Artisan', short: 'P2', color: '#3c8dff', ink: '#0d2244', help: 'W A S D + F' },
+  { name: 'Yellow Artisan', short: 'P3', color: '#ffd23f', ink: '#332800', help: 'I J K L + H' }
+];
+
+var MOVE = [
+  ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'],
+  ['a', 'd', 'w', 's'],
+  ['j', 'l', 'i', 'k']
+];
+var FIRE = ['Space', 'f', 'h'];
+
+var canvas, ctx, muteBtn, sr;
+var view = { w: 1280, h: 800 };
+var keys = new Set();
+var prevKeys = new Set();
+var justDown = new Set();
+var padState = [
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false }
+];
+var padEdge = [
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false }
+];
+var players = [0, 1, 2].map(function (id) {
+  return {
+    id: id,
+    joined: false,
+    x: 180 + id * 90,
+    y: 220,
+    batteries: 3,
+    stars: 0,
+    card: -1,
+    beam: null
+  };
+});
+var pointer = { x: 0, y: 0, moved: false, inside: false };
+var geom = null;
+var G = {
+  mode: 'title',
+  phase: 'choose',
+  orders: [],
+  orderIndex: 0,
+  stepIndex: 0,
+  revenue: 0,
+  best: 0,
+  solved: 0,
+  result: '',
+  anim: null,
+  popup: null,
+  particles: [],
+  floaters: [],
+  shake: 0,
+  formulaPulse: 0,
+  stepTime: 0,
+  needsPlace: false,
+  visuals: { cut: 0, lift: 0, march: 0, fuse: 0 },
+  t: 0,
+  live: '',
+  paused: false,
+  note: '',
+  noteT: 0,
+  sparkAcc: 0,
+  revenuePop: 0,
+  error: '',
+  fatal: ''
+};
+
+var audio = {
+  ac: null,
+  master: null,
+  music: null,
+  sfx: null,
+  noise: null,
+  muted: false,
+  next: 0,
+  step: 0,
+  timer: null
+};
+
+var MELODY = [74, 71, 69, 71, 66, 69, 62, 66, 74, 71, 74, 78, 74, 71, 69, 66];
+var BASS = [38, 38, 45, 38, 43, 43, 38, 45];
+
+function midi(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+function font(px, weight) {
+  return (weight || 700) + ' ' + Math.round(px) + 'px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif';
+}
+
+function fmt(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function loadStore() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    var raw = localStorage.getItem(STORE);
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (data && typeof data.best === 'number') G.best = data.best;
+    if (data && data.mute) audio.muted = true;
+  } catch (err) { /* private mode */ }
+}
+
+function saveStore() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(STORE, JSON.stringify({ best: G.best, mute: audio.muted }));
+  } catch (err) { /* private mode */ }
+}
+
+function shuffle(list) {
+  for (var i = list.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
+}
+
+function mulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeBlooms(seed) {
+  var rnd = mulberry32(seed);
+  var colors = ['#ff5d8f', '#ffd23f', '#c084fc', '#fff6fb', '#ff8a3d', '#7af0c6'];
+  var blooms = [];
+  for (var i = 0; i < 7; i++) {
+    blooms.push({
+      nx: 0.16 + rnd() * 0.68,
+      ny: 0.16 + rnd() * 0.55,
+      s: 0.15 + rnd() * 0.07,
+      color: colors[i % colors.length]
+    });
+  }
+  return blooms;
+}
+
+function choice(line1, line2, correct, feedback, trap) {
+  return { line1: line1, line2: line2, correct: !!correct, feedback: feedback || '', trap: trap || '', dead: false };
+}
+
+function assertStep(step, label) {
+  var faces = step.options.map(function (o) { return o.line1 + '|' + o.line2; });
+  if (new Set(faces).size !== faces.length) {
+    throw new Error('Duplicate card in ' + label + ': ' + faces.join(' / '));
+  }
+  var correct = step.options.filter(function (o) { return o.correct; });
+  if (correct.length !== 1) throw new Error('Need one correct card in ' + label);
+}
+
+function frameOrder(spec) {
+  var L = spec.L;
+  var B = spec.B;
+  var w = spec.w;
+  var oL = L + 2 * w;
+  var oB = B + 2 * w;
+  var onceL = L + w;
+  var onceB = B + w;
+  var inner = L * B;
+  var outer = oL * oB;
+  var once = onceL * onceB;
+  var border = outer - inner;
+  var forgot = 2 * w * (L + B);
+  var ww = w * w;
+  var peri = 2 * (L + B);
+  var single = once - inner;
+  var both = L + ' + ' + w + ' + ' + w + ' = ' + oL;
+  var bothB = B + ' + ' + w + ' + ' + w + ' = ' + oB;
+
+  var step0 = {
+    prompt: 'What is the OUTER area of the whole frame?',
+    hint: spec.hint0 || 'Add the border twice: left and right, top and bottom.',
+    pending: 'Outer area',
+    reveal: both + ' cm,  ' + bothB + ' cm.  Outer area ' + fmt(outer) + ' cm².',
+    options: [
+      choice(oL + ' × ' + oB, fmt(outer) + ' cm²', true),
+      choice(onceL + ' × ' + onceB, fmt(once) + ' cm²', false,
+        'The border sits on both sides. ' + L + ' + ' + w + ' is only one side. Add ' + w + ' again: ' + both + '.'),
+      choice(L + ' × ' + B, fmt(inner) + ' cm²', false,
+        'That is the picture, ' + L + ' cm by ' + B + ' cm. The outside of the frame is bigger.'),
+      choice(w + ' × ' + w, fmt(ww) + ' cm²', false, STOP_MSG, 'width')
+    ]
+  };
+  var step1 = {
+    prompt: 'What is the area of the INNER picture?',
+    hint: spec.hint1 || 'Use only the inside length and breadth. Length × breadth.',
+    pending: 'Inner area',
+    reveal: 'Inner area ' + L + ' × ' + B + ' = ' + fmt(inner) + ' cm².',
+    options: [
+      choice(L + ' × ' + B, fmt(inner) + ' cm²', true),
+      choice(oL + ' × ' + oB, fmt(outer) + ' cm²', false,
+        'That is the whole frame, border included. The picture is only ' + L + ' × ' + B + '.'),
+      choice(onceL + ' × ' + onceB, fmt(once) + ' cm²', false,
+        'Those sides still include a border. The picture measures ' + L + ' cm by ' + B + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is the distance around the picture. Area is length × breadth, and the unit is cm².')
+    ]
+  };
+  var step2 = {
+    prompt: 'Border area = outer area − inner area. What is it?',
+    hint: spec.hint2 || 'Big rectangle minus small rectangle. Do not multiply the border by itself.',
+    pending: 'Border area',
+    reveal: 'Border ' + fmt(outer) + ' − ' + fmt(inner) + ' = ' + fmt(border) + ' cm².',
+    options: [
+      choice(fmt(outer) + ' − ' + fmt(inner), fmt(border) + ' cm²', true),
+      choice('2 × ' + w + ' × (' + L + ' + ' + B + ')', fmt(forgot) + ' cm²', false,
+        'That misses the four corner squares. Do not build the border from strips. Subtract the inner area from the outer area.'),
+      choice(fmt(once) + ' − ' + fmt(inner), fmt(single) + ' cm²', false,
+        'That starts from the rectangle where the border was added only once. The real outer area is ' + fmt(outer) + ' cm².'),
+      choice(w + ' × ' + w, fmt(ww) + ' cm²', false, STOP_MSG, 'width')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'frame',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Picture ' + L + ' cm by ' + B + ' cm. Border ' + w + ' cm on every side.',
+    L: L,
+    B: B,
+    w: w,
+    oL: oL,
+    oB: oB,
+    innerArea: inner,
+    outerArea: outer,
+    borderArea: border,
+    blooms: null,
+    lift: true,
+    art: 'photo',
+    stamp: 'DELIVERED',
+    bay: 'CUT-OUT BAY',
+    bayDone: 'INNER CUT',
+    pieceLabel: L + ' × ' + B,
+    rail: ['Caliper', 'Inner area', 'Subtract'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function gardenOrder(spec) {
+  var s = spec.flower;
+  var U = spec.uncovered;
+  var inner = s * s;
+  var total = inner + U;
+  var S = Math.round(Math.sqrt(total));
+  if (S * S !== total) throw new Error(spec.id + ' total is not a square');
+  if ((S - s) % 2 !== 0 || S <= s) throw new Error(spec.id + ' needs an even border');
+  var peri = 4 * (S + s);
+  var outerP = 4 * S;
+  var innerP = 4 * s;
+  var diff = U - inner;
+  var prod = inner * U;
+  var lo = S - 1;
+  var hi = S + 1;
+
+  var step0 = {
+    prompt: 'What is the TOTAL area of square garden PQRS?',
+    hint: spec.hint0 || 'Add the flower-bed area and the uncovered path.',
+    pending: 'Total area',
+    reveal: 'Total area ' + inner + ' + ' + U + ' = ' + total + ' cm².',
+    options: [
+      choice(inner + ' + ' + U, total + ' cm²', true),
+      choice(U + ' − ' + inner, diff + ' cm²', false,
+        'The uncovered path is only part of the garden. Add the flower bed: ' + inner + ' + ' + U + '.'),
+      choice(inner + ' × ' + U, fmt(prod) + ' cm²', false,
+        'Stop! Do not multiply the two areas. Add them: flower bed + uncovered path.', 'multiply'),
+      choice(U + ' only', U + ' cm²', false,
+        U + ' cm² is only the path. The whole square also includes the ' + inner + ' cm² flower bed.')
+    ]
+  };
+  var step1 = {
+    prompt: 'PQRS is a square. What is the length of one side?',
+    hint: spec.hint1 || 'Find the number that multiplies by itself to make ' + total + '.',
+    pending: 'Side of PQRS',
+    reveal: 'Side ' + S + ' cm, because ' + S + ' × ' + S + ' = ' + total + '.',
+    options: [
+      choice(S + ' × ' + S + ' = ' + total, S + ' cm', true),
+      choice(lo + ' × ' + lo + ' = ' + (lo * lo), lo + ' cm', false,
+        lo + ' × ' + lo + ' = ' + (lo * lo) + ', not ' + total + '. Which number × itself equals ' + total + '?'),
+      choice(hi + ' × ' + hi + ' = ' + (hi * hi), hi + ' cm', false,
+        hi + ' × ' + hi + ' = ' + (hi * hi) + ', not ' + total + '. Which number × itself equals ' + total + '?'),
+      choice(total + ' cm²', 'an area, not a side', false,
+        total + ' is the area in cm². The side is the number that multiplies by itself to make ' + total + '.')
+    ]
+  };
+  var periHint = peri === U
+    ? 'Careful: the path area is also ' + U + ' cm². Edging is a length. Add the outside and inside perimeters.'
+    : 'Add the outside perimeter and the flower-bed perimeter.';
+  var step2 = {
+    prompt: 'How long is the edging around the outside AND the flower bed?',
+    hint: spec.hint2 || periHint,
+    pending: 'Edging length',
+    reveal: 'Edging 4 × ' + S + ' + 4 × ' + s + ' = ' + peri + ' cm.' + (peri === U ? ' Same number as the path area, different unit.' : ''),
+    options: [
+      choice('4 × ' + S + ' + 4 × ' + s, peri + ' cm', true),
+      choice('4 × ' + S, outerP + ' cm', false,
+        'The flower bed needs edging too. Add the inner perimeter: 4 × ' + S + ' + 4 × ' + s + '.'),
+      choice('4 × ' + s, innerP + ' cm', false,
+        'The outside of PQRS needs edging too. Add both perimeters.'),
+      choice(S + ' × ' + S, total + ' cm²', false,
+        total + ' cm² is an area. Edging is a length in cm, around the outside and around the flower bed.')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'garden',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Flower bed ' + s + ' cm × ' + s + ' cm = ' + inner + ' cm². Uncovered path ' + U + ' cm².',
+    flower: s,
+    uncovered: U,
+    flowerArea: inner,
+    total: total,
+    S: S,
+    peri: peri,
+    blooms: makeBlooms(spec.seed || (s * 50 + U)),
+    lift: false,
+    art: 'flowers',
+    stamp: 'EDGED',
+    rail: ['Add areas', 'Find side', 'Edging'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function offsetOrder(spec) {
+  var L = spec.L;
+  var B = spec.B;
+  var cL = spec.cutL;
+  var cB = spec.cutB;
+  var gapL = spec.gapL;
+  var gapT = spec.gapT;
+  var gapR = L - gapL - cL;
+  var gapB = B - gapT - cB;
+  if (gapR <= 0 || gapB <= 0) throw new Error(spec.id + ' window does not fit');
+  if (gapL === gapR && gapT === gapB) throw new Error(spec.id + ' window is centred');
+  var whole = L * B;
+  var win = cL * cB;
+  var near = gapL * gapT;
+  var wrong = (gapL + cL) * (gapT + cB);
+  var left = whole - win;
+  var step0 = {
+    prompt: 'The window is not in the middle. What is the area of the WHOLE mat?',
+    hint: spec.hint0 || 'Use the outside length and breadth. Where the window sits does not change the mat.',
+    pending: 'Whole mat',
+    reveal: 'Whole mat ' + L + ' × ' + B + ' = ' + whole + ' cm².',
+    options: [
+      choice(L + ' × ' + B, whole + ' cm²', true),
+      choice(cL + ' × ' + cB, win + ' cm²', false,
+        win + ' cm² is the window. The whole mat is ' + L + ' cm by ' + B + ' cm.'),
+      choice(gapL + ' × ' + gapT, near + ' cm²', false,
+        gapL + ' cm and ' + gapT + ' cm are gaps beside the window, not the sides of the mat.'),
+      choice('(' + gapL + ' + ' + cL + ') × (' + gapT + ' + ' + cB + ')', wrong + ' cm²', false,
+        'That rectangle only reaches across the window from the near corner. The mat is the full ' + L + ' cm by ' + B + ' cm.')
+    ]
+  };
+  var step1 = {
+    prompt: 'What is the area of the window itself?',
+    hint: spec.hint1 || 'The window is ' + cL + ' cm by ' + cB + ' cm. The gaps are not its sides.',
+    pending: 'Window area',
+    reveal: 'Window ' + cL + ' × ' + cB + ' = ' + win + ' cm².',
+    options: [
+      choice(cL + ' × ' + cB, win + ' cm²', true),
+      choice(L + ' × ' + B, whole + ' cm²', false,
+        'That is the whole mat. The window itself is ' + cL + ' cm by ' + cB + ' cm.'),
+      choice(gapL + ' × ' + gapT, near + ' cm²', false,
+        'Those are the gaps. The window measures ' + cL + ' cm by ' + cB + ' cm.'),
+      choice('(' + gapL + ' + ' + cL + ') × (' + gapT + ' + ' + cB + ')', wrong + ' cm²', false,
+        'Do not build the window from the gaps. It is already ' + cL + ' cm by ' + cB + ' cm.')
+    ]
+  };
+  var step2 = {
+    prompt: 'Area of mat left behind = whole mat − window. What is it?',
+    hint: spec.hint2 || 'Being off-centre does not change the subtraction. Whole mat minus window.',
+    pending: 'Mat left',
+    reveal: 'Mat left ' + whole + ' − ' + win + ' = ' + left + ' cm².',
+    options: [
+      choice(whole + ' − ' + win, left + ' cm²', true),
+      choice(whole + ' − ' + near, (whole - near) + ' cm²', false,
+        near + ' cm² is not the window. Subtract the window area, ' + win + ' cm².'),
+      choice(whole + ' − ' + wrong, (whole - wrong) + ' cm²', false,
+        wrong + ' cm² was the wrong rectangle. The window is ' + win + ' cm².'),
+      choice(whole + ' + ' + win, (whole + win) + ' cm²', false,
+        'The window is cut out, so subtract it. Do not add it.')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'offset',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Mat ' + L + ' cm by ' + B + ' cm. Window ' + cL + ' cm by ' + cB + ' cm, ' + gapL + ' cm from the left and ' + gapT + ' cm from the top.',
+    oL: L,
+    oB: B,
+    cutW: cL,
+    cutH: cB,
+    gapL: gapL,
+    gapT: gapT,
+    gapR: gapR,
+    gapB: gapB,
+    anchor: 'inset',
+    lift: true,
+    art: 'photo',
+    stamp: 'DELIVERED',
+    bay: 'WINDOW',
+    bayDone: 'WINDOW OUT',
+    pieceLabel: cL + ' × ' + cB,
+    note: 'Off-centre. Area still uses the full outside.',
+    formulas: [
+      { k: 'WHOLE MAT', v: 'Length  ×  Breadth' },
+      { k: 'WINDOW', v: 'Window length  ×  breadth' },
+      { k: 'MAT LEFT', v: 'Whole mat  −  Window' }
+    ],
+    rail: ['Whole mat', 'Window', 'Subtract'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function elbowOrder(spec) {
+  var L = spec.L;
+  var B = spec.B;
+  var w = spec.w;
+  var oL = L + w;
+  var oB = B + w;
+  var twiceL = L + 2 * w;
+  var twiceB = B + 2 * w;
+  var garden = L * B;
+  var outer = oL * oB;
+  var twice = twiceL * twiceB;
+  var path = outer - garden;
+  var forgot = w * (L + B);
+  var ww = w * w;
+  var peri = 2 * (L + B);
+  var step0 = {
+    prompt: 'The path is only on TWO sides. What is the outer area?',
+    hint: spec.hint0 || 'Add ' + w + ' cm once to the length and once to the breadth. This is not a border all the way around.',
+    pending: 'Outer area',
+    reveal: 'Outer area (' + L + ' + ' + w + ') × (' + B + ' + ' + w + ') = ' + outer + ' cm².',
+    options: [
+      choice('(' + L + ' + ' + w + ') × (' + B + ' + ' + w + ')', outer + ' cm²', true),
+      choice('(' + L + ' + ' + (2 * w) + ') × (' + B + ' + ' + (2 * w) + ')', twice + ' cm²', false,
+        'The path is only on two sides. Add ' + w + ' cm once, not twice. ' + L + ' + ' + w + ' and ' + B + ' + ' + w + '.'),
+      choice(L + ' × ' + B, garden + ' cm²', false,
+        'That is the garden bed alone. The outside includes the path: ' + oL + ' cm by ' + oB + ' cm.'),
+      choice(w + ' × ' + w, ww + ' cm²', false,
+        'Stop! The path is an L, not a ' + w + ' cm square. Find the outer rectangle, then subtract the garden.', 'width')
+    ]
+  };
+  var step1 = {
+    prompt: 'What is the area of the garden bed?',
+    hint: spec.hint1 || 'The bed itself is ' + L + ' cm by ' + B + ' cm. The path is outside it.',
+    pending: 'Garden area',
+    reveal: 'Garden ' + L + ' × ' + B + ' = ' + garden + ' cm².',
+    options: [
+      choice(L + ' × ' + B, garden + ' cm²', true),
+      choice(oL + ' × ' + oB, outer + ' cm²', false,
+        'That includes the path. The garden bed is ' + L + ' cm by ' + B + ' cm.'),
+      choice(twiceL + ' × ' + twiceB, twice + ' cm²', false,
+        twiceL + ' by ' + twiceB + ' would be a border all the way around. The garden is ' + L + ' cm by ' + B + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is the distance around the garden. Area is length × breadth, in cm².')
+    ]
+  };
+  var step2 = {
+    prompt: 'Path area = outer area − garden area. What is it?',
+    hint: spec.hint2 || 'The path is an L along two sides. Subtract. Do not use the all-around frame.',
+    pending: 'Path area',
+    reveal: 'Path ' + outer + ' − ' + garden + ' = ' + path + ' cm².',
+    options: [
+      choice(outer + ' − ' + garden, path + ' cm²', true),
+      choice(w + ' × (' + L + ' + ' + B + ')', forgot + ' cm²', false,
+        'That L misses the corner square where the two strips meet. Subtract: ' + outer + ' − ' + garden + '.'),
+      choice(twice + ' − ' + garden, (twice - garden) + ' cm²', false,
+        twice + ' cm² added the path twice, as if it went all the way around. The outer area is ' + outer + ' cm².'),
+      choice(w + ' × ' + w, ww + ' cm²', false,
+        'Stop! A ' + w + ' cm square is only the corner of the path. Outer area minus garden area.', 'width')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'elbow',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Garden bed ' + L + ' cm by ' + B + ' cm. Path ' + w + ' cm wide on the left and the bottom only.',
+    L: L,
+    B: B,
+    w: w,
+    oL: oL,
+    oB: oB,
+    cutW: L,
+    cutH: B,
+    anchor: 'tr',
+    lift: true,
+    art: 'flowers',
+    stamp: 'DELIVERED',
+    bay: 'GARDEN BED',
+    bayDone: 'BED LIFTED',
+    pieceLabel: L + ' × ' + B,
+    blooms: makeBlooms(spec.seed || (L * 17 + B)),
+    note: L + ' + ' + w + ' = ' + oL + ' cm    ·    ' + B + ' + ' + w + ' = ' + oB + ' cm',
+    formulas: [
+      { k: 'OUTER AREA', v: 'Add the path once, on two sides' },
+      { k: 'GARDEN BED', v: 'Length  ×  Breadth' },
+      { k: 'PATH AREA', v: 'Outer area  −  Garden area' }
+    ],
+    rail: ['Add once', 'Garden', 'Subtract'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function cornerOrder(spec) {
+  var L = spec.L;
+  var B = spec.B;
+  var cL = spec.cutL;
+  var cB = spec.cutB;
+  var whole = L * B;
+  var piece = cL * cB;
+  var left = whole - piece;
+  var shrink = (L - cL) * (B - cB);
+  var peri = 2 * (L + B);
+  var added = peri + 2 * (cL + cB);
+  var lost = peri - 2 * (cL + cB);
+  var askPeri = !!spec.perimeter;
+  var step0 = askPeri ? {
+    prompt: 'A rectangle is cut from the corner. What is the area of that piece?',
+    hint: 'The piece is ' + cL + ' cm by ' + cB + ' cm. It does not run the full length of the board.',
+    pending: 'Corner piece',
+    reveal: 'Corner piece ' + cL + ' × ' + cB + ' = ' + piece + ' cm².',
+    options: [
+      choice(cL + ' × ' + cB, piece + ' cm²', true),
+      choice(L + ' × ' + B, whole + ' cm²', false,
+        'That is the whole board. The corner piece is ' + cL + ' cm by ' + cB + ' cm.'),
+      choice('(' + L + ' − ' + cL + ') × (' + B + ' − ' + cB + ')', shrink + ' cm²', false,
+        'Do not shrink both sides. The piece is simply ' + cL + ' cm by ' + cB + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is the perimeter of the board. The piece area is ' + cL + ' × ' + cB + '.')
+    ]
+  } : {
+    prompt: 'A rectangle is cut from the corner. What is the area of the WHOLE board?',
+    hint: 'The corner cut does not change the outside of the board. Length × breadth.',
+    pending: 'Whole board',
+    reveal: 'Whole board ' + L + ' × ' + B + ' = ' + whole + ' cm².',
+    options: [
+      choice(L + ' × ' + B, whole + ' cm²', true),
+      choice(cL + ' × ' + cB, piece + ' cm²', false,
+        piece + ' cm² is the corner piece. The whole board is ' + L + ' cm by ' + B + ' cm.'),
+      choice('(' + L + ' − ' + cL + ') × (' + B + ' − ' + cB + ')', shrink + ' cm²', false,
+        'The corner cut does not shrink both full sides. The board is still ' + L + ' cm by ' + B + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is a perimeter. The area of the board is length × breadth.')
+    ]
+  };
+  var step1 = askPeri ? {
+    prompt: 'What area of the board is left after the corner is cut away?',
+    hint: 'Whole board minus the corner piece. A corner is still a subtraction.',
+    pending: 'Board left',
+    reveal: 'Board left ' + whole + ' − ' + piece + ' = ' + left + ' cm².',
+    options: [
+      choice(whole + ' − ' + piece, left + ' cm²', true),
+      choice('(' + L + ' − ' + cL + ') × (' + B + ' − ' + cB + ')', shrink + ' cm²', false,
+        'That pretends the cut runs the full length and the full breadth. Subtract the piece: ' + whole + ' − ' + piece + '.'),
+      choice(whole + ' + ' + piece, (whole + piece) + ' cm²', false,
+        'The piece is cut away. Subtract it from the board.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is a perimeter. The area left is ' + whole + ' − ' + piece + ' cm².')
+    ]
+  } : {
+    prompt: 'What is the area of the corner piece?',
+    hint: 'The piece is ' + cL + ' cm by ' + cB + ' cm. It does not run the full length of the board.',
+    pending: 'Corner piece',
+    reveal: 'Corner piece ' + cL + ' × ' + cB + ' = ' + piece + ' cm².',
+    options: [
+      choice(cL + ' × ' + cB, piece + ' cm²', true),
+      choice(L + ' × ' + cB, (L * cB) + ' cm²', false,
+        'The piece does not run the full ' + L + ' cm. It is ' + cL + ' cm by ' + cB + ' cm.'),
+      choice(cL + ' × ' + B, (cL * B) + ' cm²', false,
+        'The piece does not run the full ' + B + ' cm. It is ' + cL + ' cm by ' + cB + ' cm.'),
+      choice(L + ' × ' + B, whole + ' cm²', false,
+        'That is the whole board. The corner piece is ' + cL + ' cm by ' + cB + ' cm.')
+    ]
+  };
+  var step2 = askPeri ? {
+    prompt: 'The corner piece is gone. How long is the edge around what is LEFT?',
+    hint: 'Look at the two edges you removed and the two new edges. What happened to the length of the walk?',
+    pending: 'L perimeter',
+    reveal: 'The new edges replace the cut edges. Perimeter stays 2 × (' + L + ' + ' + B + ') = ' + peri + ' cm.',
+    options: [
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', true),
+      choice('2 × (' + L + ' + ' + B + ') + 2 × (' + cL + ' + ' + cB + ')', added + ' cm', false,
+        'The new edges replace the edges that were cut away. Do not add them on top. The perimeter stays ' + peri + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ') − 2 × (' + cL + ' + ' + cB + ')', lost + ' cm', false,
+        'Those edges are replaced, not lost. The walk around the L is still ' + peri + ' cm.'),
+      choice(left + ' cm²', 'the area left', false,
+        left + ' cm² is the area. This question asks for the length of the edge, in cm.')
+    ]
+  } : {
+    prompt: 'Area left = whole board − corner piece. What is it?',
+    hint: 'Corner or middle, the area left is the same move: whole board minus piece.',
+    pending: 'Board left',
+    reveal: 'Board left ' + whole + ' − ' + piece + ' = ' + left + ' cm².',
+    options: [
+      choice(whole + ' − ' + piece, left + ' cm²', true),
+      choice('(' + L + ' − ' + cL + ') × (' + B + ' − ' + cB + ')', shrink + ' cm²', false,
+        'A corner cut is not a strip off both sides. Whole board minus the piece: ' + whole + ' − ' + piece + '.'),
+      choice(whole + ' + ' + piece, (whole + piece) + ' cm²', false,
+        'The piece is removed, so subtract it.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is a length around the board. This question asks for the area left, in cm².')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'corner',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Board ' + L + ' cm by ' + B + ' cm. A ' + cL + ' cm by ' + cB + ' cm rectangle is cut from one corner.',
+    oL: L,
+    oB: B,
+    cutW: cL,
+    cutH: cB,
+    anchor: spec.anchor || 'tr',
+    periSame: askPeri,
+    peri: peri,
+    lift: true,
+    art: 'scrap',
+    stamp: 'CUT',
+    bay: 'SCRAP',
+    bayDone: 'CORNER OUT',
+    pieceLabel: cL + ' × ' + cB,
+    note: askPeri ? 'New edges replace the cut edges.' : 'Corner or middle: whole board − piece.',
+    formulas: askPeri ? [
+      { k: 'CORNER PIECE', v: 'Piece length  ×  Piece breadth' },
+      { k: 'BOARD LEFT', v: 'Whole board  −  Corner piece' },
+      { k: 'L PERIMETER', v: 'Same as the original perimeter' }
+    ] : [
+      { k: 'WHOLE BOARD', v: 'Length  ×  Breadth' },
+      { k: 'CORNER PIECE', v: 'Piece length  ×  Piece breadth' },
+      { k: 'BOARD LEFT', v: 'Whole board  −  Corner piece' }
+    ],
+    rail: askPeri ? ['Piece', 'Subtract', 'Perimeter'] : ['Whole board', 'Piece', 'Subtract'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function notchOrder(spec) {
+  var L = spec.L;
+  var B = spec.B;
+  var cL = spec.cutL;
+  var depth = spec.depth;
+  var whole = L * B;
+  var bite = cL * depth;
+  var left = whole - bite;
+  var strip = L * (B - depth);
+  var mouth = whole - cL;
+  var peri = 2 * (L + B);
+  var grown = peri + 2 * depth;
+  var walked = peri + 2 * (cL + depth);
+  var step0 = {
+    prompt: 'A notch is cut into one side. What is the area of the WHOLE board?',
+    hint: 'The notch does not change the outside length and breadth.',
+    pending: 'Whole board',
+    reveal: 'Whole board ' + L + ' × ' + B + ' = ' + whole + ' cm².',
+    options: [
+      choice(L + ' × ' + B, whole + ' cm²', true),
+      choice(cL + ' × ' + depth, bite + ' cm²', false,
+        bite + ' cm² is only the notch. The whole board is ' + L + ' cm by ' + B + ' cm.'),
+      choice(L + ' × ' + depth, (L * depth) + ' cm²', false,
+        depth + ' cm is the depth of the notch, not the breadth of the board. The board is ' + L + ' cm by ' + B + ' cm.'),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        peri + ' cm is the perimeter. The area is length × breadth.')
+    ]
+  };
+  var step1 = {
+    prompt: 'What area is left after the notch is cut out?',
+    hint: 'The notch is a ' + cL + ' cm by ' + depth + ' cm rectangle. Subtract only that.',
+    pending: 'Board left',
+    reveal: 'Notch ' + cL + ' × ' + depth + ' = ' + bite + ' cm². Board left ' + whole + ' − ' + bite + ' = ' + left + ' cm².',
+    options: [
+      choice(whole + ' − ' + bite, left + ' cm²', true),
+      choice(whole + ' − ' + cL, mouth + ' cm²', false,
+        cL + ' cm is the width of the mouth, not the area removed. The notch is ' + cL + ' × ' + depth + ' = ' + bite + ' cm².'),
+      choice(L + ' × (' + B + ' − ' + depth + ')', strip + ' cm²', false,
+        'The notch is not a strip across the whole board. Subtract only ' + cL + ' × ' + depth + '.'),
+      choice(whole + ' + ' + bite, (whole + bite) + ' cm²', false,
+        'The notch is cut out. Subtract ' + bite + ' cm².')
+    ]
+  };
+  var step2 = {
+    prompt: 'The bite is in one side, not a hole in the middle. How long is the edge around the remaining board?',
+    hint: 'The full board perimeter is 2 × (' + L + ' + ' + B + '). The notch adds the two depths only.',
+    pending: 'New perimeter',
+    reveal: 'Perimeter ' + peri + ' + 2 × ' + depth + ' = ' + grown + ' cm.',
+    options: [
+      choice(peri + ' + 2 × ' + depth, grown + ' cm', true),
+      choice('2 × (' + L + ' + ' + B + ')', peri + ' cm', false,
+        'That was the edge before the notch. The bite adds ' + depth + ' cm down and ' + depth + ' cm back up.'),
+      choice(peri + ' + 2 × (' + cL + ' + ' + depth + ')', walked + ' cm', false,
+        'The ' + cL + ' cm mouth replaces an outside edge. It is not extra. The perimeter grows by 2 × ' + depth + ' cm.'),
+      choice(left + ' cm²', 'the area left', false,
+        left + ' cm² is the area. Perimeter is a length in cm.')
+    ]
+  };
+  [step0, step1, step2].forEach(function (step, i) {
+    assertStep(step, spec.id + ' step ' + (i + 1));
+  });
+  return {
+    id: spec.id,
+    kind: 'notch',
+    client: spec.client,
+    title: spec.title,
+    coach: !!spec.coach,
+    given: 'Board ' + L + ' cm by ' + B + ' cm. A notch ' + cL + ' cm wide and ' + depth + ' cm deep is cut from the middle of one side.',
+    oL: L,
+    oB: B,
+    cutW: cL,
+    cutH: depth,
+    depth: depth,
+    anchor: 'top',
+    peri: peri,
+    lift: true,
+    art: 'scrap',
+    stamp: 'CUT',
+    bay: 'SCRAP',
+    bayDone: 'NOTCH OUT',
+    pieceLabel: cL + ' × ' + depth,
+    note: 'Perimeter grows by 2 × depth.',
+    formulas: [
+      { k: 'WHOLE BOARD', v: 'Length  ×  Breadth' },
+      { k: 'BOARD LEFT', v: 'Whole board  −  Notch' },
+      { k: 'NEW PERIMETER', v: 'Old perimeter  +  2 × Depth' }
+    ],
+    rail: ['Whole board', 'Subtract', 'Perimeter'],
+    steps: [step0, step1, step2]
+  };
+}
+
+function buildOrders() {
+  return [
+    frameOrder({
+      id: 'F1', client: "Mira's Gallery", title: 'Picture frame', coach: true,
+      L: 30, B: 16, w: 4,
+      hint0: '30 + 4 + 4 and 16 + 4 + 4. A 4 cm border sits on both sides.',
+      hint1: 'The picture itself is 30 cm by 16 cm. Multiply those two.',
+      hint2: 'Both areas are on the job ticket. Border area = outer area − inner area.'
+    }),
+    frameOrder({
+      id: 'F2', client: 'School Portrait Day', title: 'Photo frame',
+      L: 20, B: 12, w: 3
+    }),
+    offsetOrder({
+      id: 'O1', client: 'Side Window Studio', title: 'Off-centre window', coach: true,
+      L: 20, B: 16, cutL: 8, cutB: 5, gapL: 2, gapT: 3,
+      hint0: 'The mat is 20 cm by 16 cm. The 2 cm and 3 cm only say where the window sits.',
+      hint2: 'Off-centre or centred, the mat left is still the big rectangle minus the small one.'
+    }),
+    elbowOrder({
+      id: 'E1', client: 'L-Path Nursery', title: 'Two-sided path', coach: true,
+      L: 20, B: 14, w: 3, seed: 23,
+      hint0: 'The path is only on two sides. Add 3 cm once to the length and once to the breadth.'
+    }),
+    gardenOrder({
+      id: 'G1', client: 'Botanic Corner', title: 'Garden mat PQRS', coach: true,
+      flower: 5, uncovered: 56, seed: 56,
+      hint0: 'Flower bed 25 cm² plus uncovered path 56 cm². Add them.',
+      hint1: 'Which number × itself equals 81?'
+    }),
+    cornerOrder({
+      id: 'C1', client: 'Corner Workshop', title: 'Corner cut',
+      L: 16, B: 11, cutL: 6, cutB: 4, anchor: 'tr'
+    }),
+    cornerOrder({
+      id: 'C2', client: 'Sign Shop', title: 'L-shaped sign',
+      L: 18, B: 12, cutL: 7, cutB: 5, anchor: 'br', perimeter: true
+    }),
+    notchOrder({
+      id: 'N1', client: 'Shelf Works', title: 'Side notch',
+      L: 18, B: 10, cutL: 6, depth: 4
+    }),
+    gardenOrder({
+      id: 'G2', client: 'Courtyard Crew', title: 'Courtyard mat',
+      flower: 4, uncovered: 84, seed: 84
+    }),
+    frameOrder({
+      id: 'F5', client: 'Hall Window', title: 'Window mat',
+      L: 36, B: 20, w: 2,
+      hint2: 'The border is only 2 cm, but it still goes on both sides. Outer area minus inner area.'
+    })
+  ];
+}
+
+function current() {
+  return G.orders[G.orderIndex];
+}
+
+function teamAlive() {
+  return players.some(function (p) { return p.joined && p.batteries > 0; });
+}
+
+function makeNoise(ac) {
+  var len = ac.sampleRate;
+  var buf = ac.createBuffer(1, len, ac.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return buf;
+}
+
+function tone(time, freq, dur, type, vol) {
+  if (!audio.ac) return;
+  var o = audio.ac.createOscillator();
+  var g = audio.ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(1, freq), time);
+  g.gain.setValueAtTime(Math.max(0.0001, vol), time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.03, dur));
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(time);
+  o.stop(time + dur + 0.03);
+}
+
+function noiseBurst(time, dur, vol, type, freq) {
+  if (!audio.ac || !audio.noise) return;
+  var src = audio.ac.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ac.createBiquadFilter();
+  filter.type = type;
+  filter.frequency.setValueAtTime(Math.max(40, freq), time);
+  var g = audio.ac.createGain();
+  g.gain.setValueAtTime(Math.max(0.0001, vol), time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.03, dur));
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(time);
+  src.stop(time + dur + 0.03);
+}
+
+function scheduleMusic(step, time) {
+  if (!audio.ac) return;
+  var lead = audio.ac.createOscillator();
+  var lg = audio.ac.createGain();
+  lead.type = 'square';
+  lead.frequency.setValueAtTime(midi(MELODY[step]), time);
+  lg.gain.setValueAtTime(0.0001, time);
+  lg.gain.exponentialRampToValueAtTime(0.045, time + 0.02);
+  lg.gain.exponentialRampToValueAtTime(0.0001, time + 0.2);
+  lead.connect(lg);
+  lg.connect(audio.music);
+  lead.start(time);
+  lead.stop(time + 0.22);
+  if (step % 2 === 0) {
+    var bass = audio.ac.createOscillator();
+    var bg = audio.ac.createGain();
+    bass.type = 'triangle';
+    bass.frequency.setValueAtTime(midi(BASS[(step / 2) % BASS.length]), time);
+    bg.gain.setValueAtTime(0.0001, time);
+    bg.gain.exponentialRampToValueAtTime(0.09, time + 0.02);
+    bg.gain.exponentialRampToValueAtTime(0.0001, time + 0.28);
+    bass.connect(bg);
+    bg.connect(audio.music);
+    bass.start(time);
+    bass.stop(time + 0.3);
+  }
+  noiseBurst(time, 0.03, step % 4 === 0 ? 0.03 : 0.012, 'highpass', 5000);
+}
+
+audio.ensure = function () {
+  if (audio.ac) {
+    if (audio.ac.state === 'suspended') audio.ac.resume();
+    return;
+  }
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  var ac = new AC();
+  audio.ac = ac;
+  audio.master = ac.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.85;
+  audio.master.connect(ac.destination);
+  audio.music = ac.createGain();
+  audio.music.gain.value = 0.9;
+  audio.sfx = ac.createGain();
+  audio.sfx.gain.value = 0.95;
+  var filter = ac.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 2400;
+  audio.music.connect(filter);
+  filter.connect(audio.master);
+  audio.sfx.connect(audio.master);
+  audio.noise = makeNoise(ac);
+  audio.next = ac.currentTime + 0.06;
+  audio.step = 0;
+  var tick = function () {
+    if (!audio.ac) return;
+    if (audio.next < ac.currentTime) audio.next = ac.currentTime + 0.05;
+    while (audio.next < ac.currentTime + 0.28) {
+      scheduleMusic(audio.step, audio.next);
+      audio.step = (audio.step + 1) % MELODY.length;
+      audio.next += 0.268;
+    }
+    audio.timer = setTimeout(tick, 60);
+  };
+  tick();
+  if (ac.state === 'suspended') ac.resume();
+};
+
+function setMuteLabel() {
+  if (!muteBtn) return;
+  muteBtn.textContent = audio.muted ? 'Sound off' : 'Sound on';
+  muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+}
+
+function toggleMute() {
+  audio.muted = !audio.muted;
+  if (audio.ac && audio.master) {
+    var t = audio.ac.currentTime;
+    audio.master.gain.cancelScheduledValues(t);
+    audio.master.gain.setTargetAtTime(audio.muted ? 0 : 0.85, t, 0.03);
+  }
+  setMuteLabel();
+  saveStore();
+  announce();
+}
+
+audio.tick = function () {
+  if (!audio.ac) return;
+  tone(audio.ac.currentTime, 1480, 0.03, 'square', 0.018);
+};
+
+audio.lock = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  noiseBurst(t, 0.04, 0.12, 'bandpass', 900);
+  tone(t, 620, 0.07, 'sine', 0.06);
+  tone(t + 0.07, 980, 0.09, 'sine', 0.05);
+};
+
+audio.zap = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  noiseBurst(t, 0.09, 0.08, 'highpass', 1800);
+  tone(t, 420, 0.06, 'sawtooth', 0.02);
+};
+
+audio.laser = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  var src = audio.ac.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ac.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 4;
+  filter.frequency.setValueAtTime(420, t);
+  filter.frequency.exponentialRampToValueAtTime(2800, t + 0.45);
+  filter.frequency.exponentialRampToValueAtTime(700, t + 0.9);
+  var g = audio.ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.18, t + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(t);
+  src.stop(t + 1);
+  tone(t, 1800, 0.4, 'sawtooth', 0.02);
+};
+
+audio.hydraulic = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  var o = audio.ac.createOscillator();
+  var g = audio.ac.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(160, t);
+  o.frequency.exponentialRampToValueAtTime(48, t + 0.32);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.06, t + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.36);
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(t);
+  o.stop(t + 0.4);
+  noiseBurst(t + 0.28, 0.12, 0.22, 'lowpass', 240);
+  tone(t + 0.3, 90, 0.16, 'sine', 0.08);
+  tone(t + 0.42, 640, 0.07, 'sine', 0.04);
+};
+
+audio.cash = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  tone(t, 988, 0.12, 'square', 0.04);
+  tone(t + 0.09, 1318, 0.18, 'square', 0.045);
+  tone(t, 494, 0.14, 'triangle', 0.05);
+  tone(t + 0.09, 659, 0.2, 'triangle', 0.05);
+  noiseBurst(t, 0.04, 0.08, 'highpass', 3000);
+};
+
+audio.stamp = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  noiseBurst(t, 0.1, 0.28, 'lowpass', 280);
+  tone(t, 140, 0.12, 'triangle', 0.08);
+};
+
+audio.buzz = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  tone(t, 98, 0.26, 'square', 0.04);
+  tone(t, 73, 0.28, 'sawtooth', 0.025);
+};
+
+audio.clonk = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  noiseBurst(t, 0.09, 0.2, 'lowpass', 360);
+  tone(t, 130, 0.08, 'triangle', 0.06);
+};
+
+function rumble(index, ms, mag) {
+  var pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (err) { pads = []; }
+  var gp = pads && pads[index];
+  if (!gp) return;
+  var actuator = gp.vibrationActuator || (gp.hapticActuators && gp.hapticActuators[0]);
+  if (!actuator) return;
+  try {
+    if (actuator.playEffect) {
+      actuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: mag, weakMagnitude: mag * 0.6 });
+    } else if (actuator.pulse) actuator.pulse(mag, ms);
+  } catch (err) { /* some pads refuse haptics */ }
+}
+
+function readPad(index) {
+  var list = [];
+  try { list = navigator.getGamepads ? navigator.getGamepads() : []; } catch (err) { return null; }
+  var gp = list && list[index];
+  if (!gp || !gp.connected) return null;
+  var ax = gp.axes || [];
+  var x = ax.length ? ax[0] || 0 : 0;
+  var y = ax.length > 1 ? ax[1] || 0 : 0;
+  if (Math.abs(x) < 0.22) x = 0;
+  if (Math.abs(y) < 0.22) y = 0;
+  function btn(i) {
+    var b = gp.buttons && gp.buttons[i];
+    return !!(b && (b.pressed || b.value > 0.5));
+  }
+  if (btn(14)) x = -1;
+  if (btn(15)) x = 1;
+  if (btn(12)) y = -1;
+  if (btn(13)) y = 1;
+  return { x: x, y: y, a: btn(0), start: btn(9) };
+}
+
+function pollPads() {
+  for (var i = 0; i < 3; i++) {
+    var pad = readPad(i);
+    var prev = padState[i];
+    var next = pad || { x: 0, y: 0, a: false, start: false };
+    padEdge[i] = {
+      x: next.x,
+      y: next.y,
+      a: next.a && !prev.a,
+      start: next.start && !prev.start
+    };
+    padState[i] = next;
+  }
+}
+
+function keyFresh(id) {
+  return justDown.has(id);
+}
+
+function fired(i) {
+  return keyFresh(FIRE[i]) || padEdge[i].a;
+}
+
+function anyFire() {
+  for (var i = 0; i < 3; i++) if (players[i].joined && fired(i)) return true;
+  return false;
+}
+
+function startEdge() {
+  for (var i = 0; i < 3; i++) if (padEdge[i].start) return true;
+  return false;
+}
+
+function syncKeys() {
+  justDown.clear();
+  prevKeys.clear();
+  keys.forEach(function (k) { prevKeys.add(k); });
+}
+
+function wish(i) {
+  var map = MOVE[i];
+  var x = 0;
+  var y = 0;
+  if (keys.has(map[0])) x -= 1;
+  if (keys.has(map[1])) x += 1;
+  if (keys.has(map[2])) y -= 1;
+  if (keys.has(map[3])) y += 1;
+  x += padEdge[i].x;
+  y += padEdge[i].y;
+  var m = Math.hypot(x, y);
+  if (m > 1) {
+    x /= m;
+    y /= m;
+  }
+  return { x: x, y: y };
+}
+
+function liveText() {
+  if (G.fatal) return 'The workshop hit a problem. ' + G.fatal;
+  if (G.mode === 'title') {
+    return 'Laser Mat Cutter, Frame and Garden Studio. Border area equals the big rectangle minus the small rectangle. Press a player button to clock in, then press it again or Enter to open the workshop.' + (audio.muted ? ' Sound is off.' : '');
+  }
+  if (G.mode === 'results') {
+    var end = G.result === 'clear'
+      ? 'Shift complete. Mats shipped ' + G.solved + '.'
+      : 'Batteries empty. Mats shipped ' + G.solved + '.';
+    return end + ' Workshop revenue $' + G.revenue + '. Best $' + G.best + '. Press Enter to run another shift.';
+  }
+  if (!G.orders.length) return '';
+  var order = current();
+  var step = order.steps[G.stepIndex];
+  var cards = step.options.map(function (o, i) {
+    return (i + 1) + '. ' + o.line1 + ', ' + o.line2 + (o.dead ? ', already tried' : '');
+  }).join(' ');
+  var text = 'Order ' + (G.orderIndex + 1) + ' of ' + G.orders.length + '. ' + order.client + '. ' + order.given + ' Step ' + (G.stepIndex + 1) + '. ' + step.prompt + ' ' + step.hint + ' Choices: ' + cards + '.';
+  if (G.popup) text += ' ' + G.popup.title + ' ' + G.popup.body;
+  if (G.paused) text += ' Paused.';
+  if (audio.muted) text += ' Sound is off.';
+  return text;
+}
+
+function announce() {
+  var text = liveText();
+  if (text === G.live) return;
+  G.live = text;
+  if (sr) sr.textContent = text;
+}
+
+function burst(x, y, n, color, speed) {
+  for (var i = 0; i < n; i++) {
+    var a = Math.random() * Math.PI * 2;
+    var s = speed * (0.35 + Math.random() * 0.75);
+    G.particles.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: 0.28 + Math.random() * 0.4,
+      age: 0,
+      color: color,
+      size: 1.4 + Math.random() * 2.2
+    });
+  }
+  if (G.particles.length > 180) G.particles.splice(0, G.particles.length - 180);
+}
+
+function floater(x, y, text, color) {
+  G.floaters.push({ x: x, y: y, text: text, color: color || '#ffe7ad', age: 0, life: 1.15 });
+}
+
+function beginOrder() {
+  var order = current();
+  order.steps.forEach(function (step) {
+    step.solved = false;
+    step.by = -1;
+    step.options.forEach(function (o) { o.dead = false; });
+    shuffle(step.options);
+  });
+  G.stepIndex = 0;
+  G.stepTime = 0;
+  G.phase = 'choose';
+  G.anim = null;
+  G.popup = null;
+  G.visuals = { cut: 0, lift: 0, march: 0, fuse: 0 };
+  G.needsPlace = true;
+  G.formulaPulse = 0;
+  G.sparkAcc = 0;
+  announce();
+}
+
+function startShift() {
+  if (G.fatal) return;
+  if (!players.some(function (p) { return p.joined; })) players[0].joined = true;
+  try {
+    G.orders = buildOrders();
+  } catch (err) {
+    G.fatal = err.message || String(err);
+    announce();
+    return;
+  }
+  G.orderIndex = 0;
+  G.revenue = 0;
+  G.solved = 0;
+  G.result = '';
+  G.paused = false;
+  G.particles = [];
+  G.floaters = [];
+  G.shake = 0;
+  players.forEach(function (p) {
+    p.stars = 0;
+    p.batteries = 3;
+    p.card = -1;
+    p.beam = null;
+  });
+  G.mode = 'play';
+  beginOrder();
+}
+
+function endShift(result) {
+  G.mode = 'results';
+  G.result = result;
+  G.phase = 'choose';
+  G.paused = false;
+  G.popup = null;
+  G.anim = null;
+  if (G.revenue > G.best) {
+    G.best = G.revenue;
+    saveStore();
+  }
+  announce();
+}
+
+function advanceStep() {
+  G.stepIndex += 1;
+  G.stepTime = 0;
+  G.phase = 'choose';
+  G.anim = null;
+  var order = current();
+  if (order.lift && G.stepIndex >= 2) {
+    G.visuals.cut = 1;
+    G.visuals.lift = 1;
+    G.formulaPulse = 1;
+  }
+  if (order.kind === 'garden' && G.stepIndex >= 1) G.visuals.fuse = 1;
+  announce();
+}
+
+function finishAnim() {
+  var kind = G.anim ? G.anim.kind : '';
+  if (kind === 'finish') {
+    players.forEach(function (p) {
+      if (p.joined && p.batteries > 0 && p.batteries < 3) {
+        p.batteries += 1;
+        floater(80 + p.id * 40, 70, '+1 battery', '#9dffb0');
+      }
+    });
+    if (G.orderIndex + 1 >= G.orders.length) endShift('clear');
+    else {
+      G.orderIndex += 1;
+      beginOrder();
+    }
+    return;
+  }
+  advanceStep();
+}
+
+function onCorrect(pid) {
+  var p = players[pid];
+  var order = current();
+  var step = order.steps[G.stepIndex];
+  var last = G.stepIndex >= 2;
+  p.stars += 1;
+  var pay = G.stepTime < 8 ? 160 : 120;
+  G.revenue += pay;
+  G.revenuePop = 1;
+  step.solved = true;
+  step.by = pid;
+  floater(p.x, p.y - 18, '+1 ★', CREW[pid].color);
+  floater(view.w * 0.5, 36, '+$' + pay, '#ffe7ad');
+  audio.lock();
+  rumble(pid, 70, 0.25);
+  if (last) {
+    G.revenue += 300;
+    G.revenuePop = 1;
+    G.solved += 1;
+    floater(view.w * 0.5, 58, 'Mat shipped +$300', '#ffe7ad');
+    G.anim = { kind: 'finish', t: 0, dur: 1.55, sfx: false };
+    if (order.lift) {
+      G.visuals.cut = 1;
+      G.visuals.lift = 1;
+    }
+  } else if (order.lift && G.stepIndex === 1) {
+    G.anim = { kind: 'cutlift', t: 0, dur: 1.9, sfxLaser: false, sfxLift: false };
+    G.formulaPulse = 1;
+  } else if (order.kind === 'garden' && G.stepIndex === 0) {
+    G.anim = { kind: 'fuse', t: 0, dur: 0.85 };
+  } else {
+    G.anim = { kind: 'lock', t: 0, dur: 0.58 };
+  }
+  G.phase = 'anim';
+  announce();
+}
+
+function onWrong(pid, opt) {
+  var p = players[pid];
+  opt.dead = true;
+  p.batteries -= 1;
+  G.shake = 8;
+  audio.buzz();
+  audio.clonk();
+  rumble(pid, 160, 0.55);
+  floater(p.x, p.y - 16, p.batteries > 0 ? '−1 battery' : 'Power down', '#ff8d7a');
+  G.popup = {
+    t: 0,
+    dur: opt.trap ? 3.5 : 2.65,
+    title: opt.trap ? 'Stop!' : 'Look again',
+    body: opt.feedback,
+    trap: !!opt.trap,
+    pid: pid
+  };
+  G.phase = 'popup';
+  announce();
+}
+
+function closePopup() {
+  G.popup = null;
+  if (!teamAlive()) {
+    endShift('power');
+    return;
+  }
+  G.phase = 'choose';
+  announce();
+}
+
+function trySelect(pid, index) {
+  if (G.mode !== 'play' || G.phase !== 'choose') return;
+  var p = players[pid];
+  if (!p.joined || p.batteries <= 0) return;
+  var step = current().steps[G.stepIndex];
+  var opt = step.options[index];
+  if (!opt || opt.dead) return;
+  p.beam = { t: 0, index: index };
+  if (opt.correct) {
+    audio.zap();
+    onCorrect(pid);
+  } else {
+    onWrong(pid, opt);
+  }
+}
+
+function cardAt(x, y) {
+  if (!geom || !geom.cards) return -1;
+  for (var i = 0; i < geom.cards.length; i++) {
+    var c = geom.cards[i];
+    if (x >= c.x && y >= c.y && x <= c.x + c.w && y <= c.y + c.h) return i;
+  }
+  return -1;
+}
+
+function hit(r, x, y) {
+  return !!r && x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+}
+
+function titleInput() {
+  for (var i = 0; i < 3; i++) {
+    if (!fired(i)) continue;
+    if (!players[i].joined) {
+      players[i].joined = true;
+      audio.lock();
+      announce();
+    } else {
+      startShift();
+      return;
+    }
+  }
+  if (keyFresh('Enter') || startEdge()) startShift();
+}
+
+function resultsInput() {
+  if (keyFresh('Enter') || keyFresh('Space') || anyFire() || startEdge()) startShift();
+  if (keyFresh('Escape')) {
+    G.mode = 'title';
+    announce();
+  }
+}
+
+function playInput() {
+  if (G.phase === 'popup' && G.popup && G.popup.t > 0.4 && (anyFire() || keyFresh('Enter'))) {
+    closePopup();
+    return;
+  }
+  if (G.phase === 'anim' && G.anim && G.anim.t > Math.min(0.9, G.anim.dur * 0.58) && anyFire()) {
+    G.anim.t = G.anim.dur;
+    return;
+  }
+  if (G.phase !== 'choose') return;
+  var digits = ['1', '2', '3', '4'];
+  for (var d = 0; d < 4; d++) {
+    if (keyFresh(digits[d])) trySelect(0, d);
+  }
+  if (G.phase !== 'choose') return;
+  for (var i = 0; i < 3; i++) {
+    if (!fired(i)) continue;
+    var p = players[i];
+    if (!p.joined || p.batteries <= 0) continue;
+    if (p.card < 0) continue;
+    trySelect(i, p.card);
+    if (G.phase !== 'choose') break;
+  }
+}
+
+function updatePlayers(dt) {
+  var speed = 700;
+  for (var i = 0; i < 3; i++) {
+    var p = players[i];
+    if (!p.joined || p.batteries <= 0) continue;
+    var w = wish(i);
+    var keyboard = w.x !== 0 || w.y !== 0;
+    if (keyboard) {
+      p.x += w.x * speed * dt;
+      p.y += w.y * speed * dt;
+    } else if (i === 0 && pointer.moved && pointer.inside) {
+      p.x = pointer.x;
+      p.y = pointer.y;
+    }
+    p.x = Math.max(18, Math.min(view.w - 18, p.x));
+    p.y = Math.max(18, Math.min(view.h - 18, p.y));
+    var idx = cardAt(p.x, p.y);
+    if (idx !== p.card) {
+      p.card = idx;
+      if (idx >= 0 && G.phase === 'choose') audio.tick();
+    }
+    if (p.beam) {
+      p.beam.t += dt;
+      if (p.beam.t > 0.22) p.beam = null;
+    }
+  }
+  pointer.moved = false;
+  if (G.needsPlace && geom && geom.cards && geom.cards.length) {
+    players.forEach(function (p) {
+      if (!p.joined) return;
+      var c = geom.cards[p.id % geom.cards.length];
+      p.x = c.x + c.w - 18 - p.id * 6;
+      p.y = c.y + 14;
+      p.card = cardAt(p.x, p.y);
+    });
+    G.needsPlace = false;
+  }
+}
+
+function pointOnRect(rect, p) {
+  var w = rect.w;
+  var h = rect.h;
+  var per = 2 * (w + h) || 1;
+  var d = ((p % 1) + 1) % 1 * per;
+  if (d <= w) return { x: rect.x + d, y: rect.y };
+  d -= w;
+  if (d <= h) return { x: rect.x + w, y: rect.y + d };
+  d -= h;
+  if (d <= w) return { x: rect.x + w - d, y: rect.y + h };
+  d -= w;
+  return { x: rect.x, y: rect.y + h - d };
+}
+
+function syncVisuals(dt) {
+  if (G.mode !== 'play' || !G.orders.length) return;
+  var order = current();
+  G.formulaPulse = Math.max(0, G.formulaPulse - dt * 0.32);
+  if (G.phase === 'popup' && G.popup) {
+    G.popup.t += dt;
+    if (G.popup.t >= G.popup.dur) closePopup();
+    return;
+  }
+  if (G.phase === 'choose') G.stepTime += dt;
+  if (G.phase === 'anim' && G.anim) {
+    var a = G.anim;
+    a.t += dt;
+    var u = Math.min(1, a.t / a.dur);
+    if (a.kind === 'cutlift') {
+      G.visuals.cut = Math.min(1, u / 0.38);
+      G.visuals.lift = u < 0.38 ? 0 : Math.min(1, (u - 0.38) / 0.62);
+      if (!a.sfxLaser) {
+        audio.laser();
+        a.sfxLaser = true;
+      }
+      if (!a.sfxLift && u >= 0.38) {
+        audio.hydraulic();
+        a.sfxLift = true;
+      }
+      if (geom && geom.diagram && G.visuals.cut < 1) {
+        G.sparkAcc += dt;
+        if (G.sparkAcc > 0.03) {
+          G.sparkAcc = 0;
+          var head = pointOnRect(geom.diagram.inner, G.visuals.cut);
+          burst(head.x, head.y, 3, '#ffd8b0', 70);
+        }
+      }
+    } else if (a.kind === 'fuse') {
+      G.visuals.fuse = u;
+    } else if (a.kind === 'finish') {
+      if (order.lift) {
+        G.visuals.cut = 1;
+        G.visuals.lift = 1;
+      }
+      G.visuals.march = u;
+      if (!a.sfx) {
+        audio.cash();
+        audio.stamp();
+        a.sfx = true;
+        G.shake = 7;
+        if (geom && geom.diagram) {
+          var o = geom.diagram.outer;
+          burst(o.x + o.w * 0.2, o.y + o.h * 0.2, 10, '#ffd23f', 160);
+          burst(o.x + o.w * 0.8, o.y + o.h * 0.3, 10, '#ff5a4a', 160);
+          burst(o.x + o.w * 0.5, o.y + o.h * 0.7, 8, '#fff', 120);
+        }
+      }
+    }
+    if (a.t >= a.dur) finishAnim();
+    return;
+  }
+  if (order.lift && G.stepIndex >= 2) {
+    G.visuals.cut = 1;
+    G.visuals.lift = 1;
+  }
+  if (order.kind === 'garden' && G.stepIndex >= 1) G.visuals.fuse = 1;
+}
+
+function updateFx(dt) {
+  G.shake = Math.max(0, G.shake - dt * 22);
+  G.revenuePop = Math.max(0, G.revenuePop - dt * 1.6);
+  if (G.noteT > 0) G.noteT -= dt;
+  G.particles.forEach(function (p) {
+    p.age += dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 30 * dt;
+  });
+  G.particles = G.particles.filter(function (p) { return p.age < p.life; });
+  G.floaters.forEach(function (f) {
+    f.age += dt;
+    f.y -= 26 * dt;
+  });
+  G.floaters = G.floaters.filter(function (f) { return f.age < f.life; });
+}
+
+function update(dt) {
+  pollPads();
+  G.t += dt;
+  geom = G.mode === 'play' ? layoutPlay(view.w, view.h) : null;
+  updateFx(dt);
+  if (G.mode === 'title') {
+    titleInput();
+    syncKeys();
+    return;
+  }
+  if (G.mode === 'results') {
+    resultsInput();
+    syncKeys();
+    return;
+  }
+  if (keyFresh('Escape') || startEdge()) {
+    G.paused = !G.paused;
+    announce();
+    syncKeys();
+    return;
+  }
+  if (G.paused) {
+    syncKeys();
+    return;
+  }
+  playInput();
+  syncVisuals(dt);
+  if (G.mode === 'play') updatePlayers(dt);
+  syncKeys();
+}
+
+function fitCanvas() {
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var w = window.innerWidth || 1280;
+  var h = window.innerHeight || 800;
+  view.w = w;
+  view.h = h;
+  var pw = Math.max(1, Math.round(w * dpr));
+  var ph = Math.max(1, Math.round(h * dpr));
+  if (canvas.width !== pw || canvas.height !== ph) {
+    canvas.width = pw;
+    canvas.height = ph;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function pathRound(c, x, y, w, h, r) {
+  var rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  c.beginPath();
+  c.moveTo(x + rr, y);
+  c.arcTo(x + w, y, x + w, y + h, rr);
+  c.arcTo(x + w, y + h, x, y + h, rr);
+  c.arcTo(x, y + h, x, y, rr);
+  c.arcTo(x, y, x + w, y, rr);
+  c.closePath();
+}
+
+function plate(c, x, y, w, h, r, fill, stroke) {
+  pathRound(c, x, y, w, h, r);
+  c.fillStyle = fill;
+  c.fill();
+  if (stroke) {
+    c.lineWidth = 2;
+    c.strokeStyle = stroke;
+    c.stroke();
+  }
+}
+
+function wrapText(c, text, maxW) {
+  var words = String(text).split(' ');
+  var lines = [];
+  var line = '';
+  for (var i = 0; i < words.length; i++) {
+    var test = line ? line + ' ' + words[i] : words[i];
+    if (line && c.measureText(test).width > maxW) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function labelPill(c, text, x, y, bg, fg, size) {
+  c.font = font(size, 800);
+  var w = c.measureText(text).width + 14;
+  var h = size + 8;
+  c.fillStyle = bg;
+  pathRound(c, x - w / 2, y - h / 2, w, h, 6);
+  c.fill();
+  c.fillStyle = fg;
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(text, x, y + 0.5);
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+}
+
+function fitFont(c, text, maxW, size, weight) {
+  var s = size;
+  c.font = font(s, weight);
+  while (s > 11 && c.measureText(text).width > maxW) {
+    s -= 1;
+    c.font = font(s, weight);
+  }
+  return s;
+}
+
+function centerPlate(w, h, maxW, maxH) {
+  var pw = Math.min(maxW, w - 28);
+  var ph = Math.min(maxH, h - 24);
+  return { x: (w - pw) / 2, y: (h - ph) / 2, w: pw, h: ph };
+}
+
+function layoutTitle(w, h) {
+  var compact = h < 620;
+  var bayH = compact ? 76 : 96;
+  var lessonLines = compact ? 2 : 6;
+  var head = compact ? 108 : 124;
+  var lessonH = lessonLines * 20 + 8;
+  var plateW = Math.min(820, w - 28);
+  var plateH = Math.min(h - 16, head + lessonH + bayH + 74);
+  var plateBox = {
+    x: (w - plateW) / 2,
+    y: Math.max(8, (h - plateH) / 2),
+    w: plateW,
+    h: plateH
+  };
+  var bayGap = 10;
+  var bayW = (plateW - 36 - bayGap * 2) / 3;
+  var start = {
+    x: plateBox.x + plateW * 0.18,
+    y: plateBox.y + plateH - 58,
+    w: plateW * 0.64,
+    h: 46
+  };
+  var bayY = start.y - bayH - 12;
+  var bays = [0, 1, 2].map(function (i) {
+    return {
+      id: i,
+      x: plateBox.x + 18 + i * (bayW + bayGap),
+      y: bayY,
+      w: bayW,
+      h: bayH
+    };
+  });
+  return { plate: plateBox, bays: bays, start: start, compact: compact };
+}
+
+function layoutResults(w, h) {
+  var plateBox = centerPlate(w, h, 680, 540);
+  var bw = (plateBox.w - 56) / 2;
+  return {
+    plate: plateBox,
+    again: { x: plateBox.x + 18, y: plateBox.y + plateBox.h - 68, w: bw, h: 46 },
+    crew: { x: plateBox.x + 28 + bw, y: plateBox.y + plateBox.h - 68, w: bw, h: 46 }
+  };
+}
+
+function fitAspect(box, aspect) {
+  var bw = Math.max(8, box.w);
+  var bh = Math.max(8, box.h);
+  var w = bw;
+  var h = w / aspect;
+  if (h > bh) {
+    h = bh;
+    w = h * aspect;
+  }
+  return {
+    x: box.x + (bw - w) / 2,
+    y: box.y + (bh - h) / 2,
+    w: w,
+    h: h
+  };
+}
+
+function placeCut(order, outer, scale) {
+  var w = Math.min(outer.w, Math.max(4, order.cutW * scale));
+  var h = Math.min(outer.h, Math.max(4, order.cutH * scale));
+  var x = outer.x;
+  var y = outer.y;
+  if (order.anchor === 'inset') {
+    x += order.gapL * scale;
+    y += order.gapT * scale;
+  } else if (order.anchor === 'tr') {
+    x = outer.x + outer.w - w;
+  } else if (order.anchor === 'br') {
+    x = outer.x + outer.w - w;
+    y = outer.y + outer.h - h;
+  } else if (order.anchor === 'bl') {
+    y = outer.y + outer.h - h;
+  } else if (order.anchor === 'top') {
+    x = outer.x + (outer.w - w) / 2;
+  }
+  x = Math.max(outer.x, Math.min(x, outer.x + outer.w - w));
+  y = Math.max(outer.y, Math.min(y, outer.y + outer.h - h));
+  return { x: x, y: y, w: w, h: h };
+}
+
+function layoutPlay(w, h) {
+  var margin = 12;
+  var short = h < 560;
+  var chipW = Math.max(118, Math.min(210, (w - 48) * 0.3));
+  var chipH = short ? 46 : (h < 720 ? 52 : 58);
+  var footerH = players[2].joined ? chipH + 8 : (short ? 24 : 32);
+  var topH = chipH + (short ? 8 : 12);
+  var promptH = short ? 58 : (h < 720 ? 66 : 76);
+  var cols = (w >= 720 || (short && w >= 560)) ? 4 : 2;
+  var rows = cols === 2 ? 2 : 1;
+  var cardH = rows === 1
+    ? Math.min(104, Math.max(short ? 52 : 68, h * 0.11))
+    : Math.min(84, Math.max(58, h * 0.095));
+  var gap = 8;
+  var cardsH = rows * cardH + (rows - 1) * gap;
+  var cardsTop = h - footerH - 8 - cardsH;
+  var prompt = {
+    x: margin,
+    y: cardsTop - promptH - 6,
+    w: w - margin * 2,
+    h: promptH
+  };
+  var table = {
+    x: margin,
+    y: topH,
+    w: w - margin * 2,
+    h: Math.max(70, prompt.y - topH - 8)
+  };
+  var cards = [];
+  var cw = (w - margin * 2 - gap * (cols - 1)) / cols;
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      cards.push({
+        x: margin + c * (cw + gap),
+        y: cardsTop + r * (cardH + gap),
+        w: cw,
+        h: cardH
+      });
+    }
+  }
+  var chips = [
+    { x: 10, y: 8, w: chipW, h: chipH },
+    { x: w - 10 - chipW, y: 8, w: chipW, h: chipH },
+    { x: 10, y: h - chipH - 8, w: chipW, h: chipH }
+  ];
+  var wide = table.w >= 900 && table.h >= 260;
+  var formula = {
+    x: table.x + 12,
+    y: table.y + (short ? 4 : 8),
+    w: wide ? table.w * 0.54 : table.w - 24,
+    h: short ? 28 : 34
+  };
+  var zoneTop = formula.y + formula.h + 8;
+  var zoneBottom = table.y + table.h - 8;
+  var zone;
+  var ticket;
+  var slotBox;
+  if (wide) {
+    ticket = {
+      x: table.x + table.w * 0.67,
+      y: table.y + 8,
+      w: table.w * 0.31,
+      h: table.h - 16
+    };
+    zone = {
+      x: table.x + 10,
+      y: zoneTop,
+      w: Math.max(80, ticket.x - table.x - 22),
+      h: Math.max(60, zoneBottom - zoneTop)
+    };
+    slotBox = {
+      x: ticket.x + 14,
+      y: ticket.y + 34,
+      w: ticket.w - 28,
+      h: Math.min(118, Math.max(64, ticket.h * 0.26))
+    };
+  } else {
+    var slotW = short ? 64 : Math.min(132, Math.max(78, table.w * 0.22));
+    var slotH = short ? 44 : Math.min(86, Math.max(52, table.h * 0.18));
+    var ticketReserve = short ? 24 : 40;
+    zone = {
+      x: table.x + 8,
+      y: zoneTop,
+      w: table.w - 16,
+      h: Math.max(50, zoneBottom - zoneTop - ticketReserve)
+    };
+    slotBox = {
+      x: zone.x + zone.w - slotW,
+      y: zone.y,
+      w: slotW,
+      h: slotH
+    };
+    ticket = {
+      x: table.x + 8,
+      y: zone.y + zone.h + 4,
+      w: table.w - 16,
+      h: Math.max(32, zoneBottom - zone.y - zone.h - 6)
+    };
+  }
+  var diagram = null;
+  if (G.orders.length) {
+    var order = current();
+    var oL = order.oL || order.S;
+    var oB = order.oB || order.S;
+    var padB = zone.h < 170 ? 28 : (zone.h < 260 ? 44 : Math.min(104, Math.max(70, zone.h * 0.22)));
+    var padR = Math.min(100, Math.max(54, zone.w * 0.14));
+    var padT = order.kind === 'garden' ? 26 : 4;
+    var boxX = zone.x + 4;
+    var boxY = zone.y + padT;
+    var boxW = Math.max(36, zone.w - 8 - padR);
+    var boxH = Math.max(36, zone.h - padT - padB);
+    if (!wide) boxW = Math.max(36, Math.min(boxW, slotBox.x - boxX - 10));
+    var scale = Math.min(boxW / oL, boxH / oB);
+    var dw = oL * scale;
+    var dh = oB * scale;
+    var outer = {
+      x: boxX + (boxW - dw) / 2,
+      y: boxY + (boxH - dh) / 2,
+      w: dw,
+      h: dh
+    };
+    var inner;
+    if (order.kind === 'frame') {
+      var bpx = order.w * scale;
+      inner = {
+        x: outer.x + bpx,
+        y: outer.y + bpx,
+        w: Math.max(4, outer.w - bpx * 2),
+        h: Math.max(4, outer.h - bpx * 2)
+      };
+    } else if (order.kind === 'garden') {
+      var gpx = ((order.S - order.flower) / 2) * scale;
+      inner = {
+        x: outer.x + gpx,
+        y: outer.y + gpx,
+        w: Math.max(4, outer.w - gpx * 2),
+        h: Math.max(4, outer.h - gpx * 2)
+      };
+    } else {
+      inner = placeCut(order, outer, scale);
+    }
+    var slot = fitAspect(slotBox, inner.w / inner.h);
+    diagram = { outer: outer, inner: inner, slot: slot, scale: scale, showCaliper: padB >= 70 && outer.w >= 150 };
+  }
+  return {
+    chips: chips,
+    chipW: chipW,
+    table: table,
+    formula: formula,
+    zone: zone,
+    ticket: ticket,
+    slotBox: slotBox,
+    prompt: prompt,
+    cards: cards,
+    wide: wide,
+    diagram: diagram,
+    footerH: footerH,
+    topH: topH
+  };
+}
+
+function drawWorkshop(c, w, h) {
+  var g = c.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#2a3138');
+  g.addColorStop(0.42, '#1c2228');
+  g.addColorStop(1, '#121418');
+  c.fillStyle = g;
+  c.fillRect(0, 0, w, h);
+  c.fillStyle = '#3d3422';
+  for (var i = 0; i < 8; i++) {
+    c.fillRect(0, 10 + i * 18, w, 2);
+  }
+  c.fillStyle = '#1a1e22';
+  c.fillRect(0, 150, w, h);
+  var lamps = [w * 0.22, w * 0.5, w * 0.78];
+  lamps.forEach(function (lx, n) {
+    var flicker = 0.85 + Math.sin(G.t * 3 + n) * 0.08;
+    c.strokeStyle = '#5c676e';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(lx, 0);
+    c.lineTo(lx, 46);
+    c.stroke();
+    c.fillStyle = '#2c343a';
+    pathRound(c, lx - 16, 40, 32, 14, 3);
+    c.fill();
+    var glow = c.createRadialGradient(lx, 70, 4, lx, 90, 150);
+    glow.addColorStop(0, 'rgba(255, 214, 140, ' + (0.28 * flicker) + ')');
+    glow.addColorStop(1, 'rgba(255, 214, 140, 0)');
+    c.fillStyle = glow;
+    c.beginPath();
+    c.arc(lx, 78, 150, 0, Math.PI * 2);
+    c.fill();
+  });
+  var vig = c.createRadialGradient(w / 2, h * 0.4, h * 0.2, w / 2, h * 0.45, h * 0.78);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.38)');
+  c.fillStyle = vig;
+  c.fillRect(0, 0, w, h);
+}
+
+function drawBench(c, r) {
+  c.fillStyle = 'rgba(0,0,0,0.35)';
+  pathRound(c, r.x + 6, r.y + 8, r.w, r.h, 16);
+  c.fill();
+  var g = c.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+  g.addColorStop(0, '#d09962');
+  g.addColorStop(0.08, '#b07642');
+  g.addColorStop(1, '#6a4124');
+  pathRound(c, r.x, r.y, r.w, r.h, 16);
+  c.fillStyle = g;
+  c.fill();
+  pathRound(c, r.x + 8, r.y + 8, r.w - 16, r.h - 16, 12);
+  c.fillStyle = '#a56b3a';
+  c.fill();
+  c.save();
+  pathRound(c, r.x + 8, r.y + 8, r.w - 16, r.h - 16, 12);
+  c.clip();
+  c.strokeStyle = 'rgba(70, 36, 14, 0.16)';
+  c.lineWidth = 2;
+  for (var y = r.y; y < r.y + r.h; y += 13) {
+    c.beginPath();
+    c.moveTo(r.x, y);
+    c.bezierCurveTo(r.x + r.w * 0.3, y + 3, r.x + r.w * 0.62, y - 3, r.x + r.w, y);
+    c.stroke();
+  }
+  c.restore();
+  c.fillStyle = '#5a381e';
+  c.fillRect(r.x + 16, r.y + r.h - 12, r.w - 32, 7);
+}
+
+function drawLandscape(c, r) {
+  c.save();
+  c.beginPath();
+  c.rect(r.x, r.y, r.w, r.h);
+  c.clip();
+  var g = c.createLinearGradient(0, r.y, 0, r.y + r.h);
+  g.addColorStop(0, '#8fd4ff');
+  g.addColorStop(0.58, '#d7f1ff');
+  g.addColorStop(0.58, '#8dcc6e');
+  g.addColorStop(1, '#3f8d4a');
+  c.fillStyle = g;
+  c.fillRect(r.x, r.y, r.w, r.h);
+  c.fillStyle = '#ffe38a';
+  c.beginPath();
+  c.arc(r.x + r.w * 0.78, r.y + r.h * 0.28, Math.max(6, Math.min(r.w, r.h) * 0.12), 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.85)';
+  c.beginPath();
+  c.ellipse(r.x + r.w * 0.28, r.y + r.h * 0.3, r.w * 0.12, r.h * 0.08, 0, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = '#2f7a46';
+  c.beginPath();
+  c.moveTo(r.x, r.y + r.h * 0.78);
+  c.quadraticCurveTo(r.x + r.w * 0.28, r.y + r.h * 0.5, r.x + r.w * 0.55, r.y + r.h * 0.74);
+  c.quadraticCurveTo(r.x + r.w * 0.78, r.y + r.h * 0.95, r.x + r.w, r.y + r.h * 0.6);
+  c.lineTo(r.x + r.w, r.y + r.h);
+  c.lineTo(r.x, r.y + r.h);
+  c.fill();
+  c.restore();
+}
+
+function drawFlowers(c, r, blooms) {
+  c.save();
+  c.beginPath();
+  c.rect(r.x, r.y, r.w, r.h);
+  c.clip();
+  c.fillStyle = '#6a4124';
+  c.fillRect(r.x, r.y, r.w, r.h);
+  (blooms || []).forEach(function (b) {
+    var x = r.x + b.nx * r.w;
+    var y = r.y + b.ny * r.h;
+    var s = Math.min(r.w, r.h) * b.s;
+    c.strokeStyle = '#2f7d32';
+    c.lineWidth = Math.max(1, s * 0.08);
+    c.beginPath();
+    c.moveTo(x, y);
+    c.lineTo(x, y + s);
+    c.stroke();
+    c.fillStyle = b.color;
+    for (var i = 0; i < 5; i++) {
+      var a = -Math.PI / 2 + i * (Math.PI * 2 / 5);
+      c.beginPath();
+      c.ellipse(x + Math.cos(a) * s * 0.28, y + Math.sin(a) * s * 0.28, s * 0.22, s * 0.13, a, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.fillStyle = '#ffe08a';
+    c.beginPath();
+    c.arc(x, y, Math.max(1.5, s * 0.12), 0, Math.PI * 2);
+    c.fill();
+  });
+  c.restore();
+}
+
+function drawHole(c, inner) {
+  c.save();
+  c.beginPath();
+  c.rect(inner.x, inner.y, inner.w, inner.h);
+  c.clip();
+  c.fillStyle = '#5b3b24';
+  c.fillRect(inner.x, inner.y, inner.w, inner.h);
+  c.strokeStyle = 'rgba(40, 22, 10, 0.28)';
+  c.lineWidth = 1;
+  for (var y = inner.y; y < inner.y + inner.h; y += 9) {
+    c.beginPath();
+    c.moveTo(inner.x, y);
+    c.lineTo(inner.x + inner.w, y);
+    c.stroke();
+  }
+  c.fillStyle = 'rgba(0,0,0,0.28)';
+  c.fillRect(inner.x, inner.y, inner.w, 8);
+  c.fillRect(inner.x, inner.y, 7, inner.h);
+  c.restore();
+}
+
+function drawMetal(c, outer, inner) {
+  var g = c.createLinearGradient(outer.x, outer.y, outer.x + outer.w, outer.y + outer.h);
+  g.addColorStop(0, '#f4f7f8');
+  g.addColorStop(0.45, '#c5d0d8');
+  g.addColorStop(1, '#7f8c96');
+  c.fillStyle = g;
+  c.fillRect(outer.x, outer.y, outer.w, outer.h);
+  c.save();
+  c.beginPath();
+  c.rect(outer.x, outer.y, outer.w, outer.h);
+  c.clip();
+  c.strokeStyle = 'rgba(255,255,255,0.28)';
+  c.lineWidth = 1;
+  var step = outer.w > 420 ? 5 : 7;
+  for (var x = outer.x; x < outer.x + outer.w; x += step) {
+    c.beginPath();
+    c.moveTo(x, outer.y);
+    c.lineTo(x, outer.y + outer.h);
+    c.stroke();
+  }
+  c.restore();
+  c.beginPath();
+  c.rect(outer.x, outer.y, outer.w, outer.h);
+  c.rect(inner.x, inner.y, inner.w, inner.h);
+  c.fillStyle = 'rgba(255, 198, 54, 0.42)';
+  c.fill('evenodd');
+  c.strokeStyle = '#5c6973';
+  c.lineWidth = 3;
+  c.strokeRect(outer.x + 1.5, outer.y + 1.5, outer.w - 3, outer.h - 3);
+  c.strokeStyle = 'rgba(255,255,255,0.75)';
+  c.lineWidth = 1.5;
+  c.strokeRect(outer.x + 5, outer.y + 5, outer.w - 10, outer.h - 10);
+}
+
+function drawGardenBed(c, outer, inner) {
+  var g = c.createLinearGradient(outer.x, outer.y, outer.x, outer.y + outer.h);
+  g.addColorStop(0, '#e0b07a');
+  g.addColorStop(1, '#8a5a32');
+  c.fillStyle = g;
+  c.fillRect(outer.x, outer.y, outer.w, outer.h);
+  c.save();
+  c.beginPath();
+  c.rect(outer.x, outer.y, outer.w, outer.h);
+  c.rect(inner.x, inner.y, inner.w, inner.h);
+  c.clip('evenodd');
+  var grass = c.createLinearGradient(0, outer.y, 0, outer.y + outer.h);
+  grass.addColorStop(0, '#c6ee96');
+  grass.addColorStop(1, '#5ea33a');
+  c.fillStyle = grass;
+  c.fillRect(outer.x, outer.y, outer.w, outer.h);
+  c.fillStyle = 'rgba(255,255,255,0.1)';
+  for (var y = outer.y; y < outer.y + outer.h; y += 8) c.fillRect(outer.x, y, outer.w, 3);
+  c.restore();
+  c.strokeStyle = '#6b4224';
+  c.lineWidth = 4;
+  c.strokeRect(outer.x + 2, outer.y + 2, outer.w - 4, outer.h - 4);
+}
+
+function arrowHead(c, x, y, ang) {
+  c.beginPath();
+  c.moveTo(x, y);
+  c.lineTo(x - Math.cos(ang) * 8 + Math.cos(ang + Math.PI / 2) * 3.2, y - Math.sin(ang) * 8 + Math.sin(ang + Math.PI / 2) * 3.2);
+  c.lineTo(x - Math.cos(ang) * 8 + Math.cos(ang - Math.PI / 2) * 3.2, y - Math.sin(ang) * 8 + Math.sin(ang - Math.PI / 2) * 3.2);
+  c.closePath();
+  c.fill();
+}
+
+function dimLine(c, x1, y1, x2, y2, text, color, size) {
+  var dx = x2 - x1;
+  var dy = y2 - y1;
+  var len = Math.hypot(dx, dy);
+  if (len < 8) return;
+  var ang = Math.atan2(dy, dx);
+  var ux = dx / len;
+  var uy = dy / len;
+  c.font = font(size, 800);
+  var horizontal = Math.abs(dx) >= Math.abs(dy);
+  var tw = text ? Math.min(c.measureText(text).width + 8, len * 0.72) : 0;
+  var gap = text && horizontal && len > 36 ? tw : 0;
+  var mx = (x1 + x2) / 2;
+  var my = (y1 + y2) / 2;
+  c.strokeStyle = color;
+  c.fillStyle = color;
+  c.lineWidth = 1.6;
+  c.beginPath();
+  if (gap > 12) {
+    c.moveTo(x1, y1);
+    c.lineTo(mx - ux * gap / 2, my - uy * gap / 2);
+    c.moveTo(mx + ux * gap / 2, my + uy * gap / 2);
+    c.lineTo(x2, y2);
+  } else {
+    c.moveTo(x1, y1);
+    c.lineTo(x2, y2);
+  }
+  c.stroke();
+  arrowHead(c, x1, y1, ang + Math.PI);
+  arrowHead(c, x2, y2, ang);
+  if (text && len > 36) {
+    var tw = c.measureText(text).width;
+    var ox = Math.abs(dx) >= Math.abs(dy) ? 0 : Math.min(18, 28);
+    c.fillStyle = 'rgba(255, 248, 236, 0.92)';
+    pathRound(c, mx + ox - tw / 2 - 4, my - size / 2 - 3, tw + 8, size + 6, 4);
+    c.fill();
+    c.fillStyle = '#1a120c';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText(text, mx + ox, my);
+    c.textAlign = 'left';
+    c.textBaseline = 'alphabetic';
+  }
+}
+
+function extension(c, x1, y1, x2, y2) {
+  c.strokeStyle = 'rgba(255,255,255,0.55)';
+  c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(x1, y1);
+  c.lineTo(x2, y2);
+  c.stroke();
+}
+
+function drawBorderPulse(c, outer, inner, phase) {
+  c.fillStyle = 'rgba(255, 214, 70, 0.48)';
+  if (phase === 0) c.fillRect(outer.x, inner.y, Math.max(0, inner.x - outer.x), inner.h);
+  if (phase === 1) c.fillRect(inner.x + inner.w, inner.y, Math.max(0, outer.x + outer.w - inner.x - inner.w), inner.h);
+  if (phase === 2) c.fillRect(inner.x, outer.y, inner.w, Math.max(0, inner.y - outer.y));
+  if (phase === 3) c.fillRect(inner.x, inner.y + inner.h, inner.w, Math.max(0, outer.y + outer.h - inner.y - inner.h));
+}
+
+function drawFrameDims(c, order, diagram) {
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  var showL = Math.floor(G.t / 2.4) % 2 === 0;
+  var half = Math.floor(G.t / 1.2) % 2;
+  var phase = showL ? half : 2 + half;
+  if (G.stepIndex === 0 && G.phase === 'choose') drawBorderPulse(c, outer, inner, phase);
+  var strip = inner.x - outer.x;
+  if (strip >= 20) {
+    var tag = '+' + order.w;
+    var tags = [
+      { x: (outer.x + inner.x) / 2, y: inner.y + inner.h / 2, on: phase === 0 },
+      { x: inner.x + inner.w + strip / 2, y: inner.y + inner.h / 2, on: phase === 1 },
+      { x: inner.x + inner.w / 2, y: (outer.y + inner.y) / 2, on: phase === 2 },
+      { x: inner.x + inner.w / 2, y: inner.y + inner.h + strip / 2, on: phase === 3 }
+    ];
+    tags.forEach(function (t) {
+      if (t.y < outer.y + 8 || t.y > outer.y + outer.h - 8) return;
+      labelPill(c, tag, t.x, t.y, t.on ? '#ffd23f' : 'rgba(28, 20, 8, 0.72)', t.on ? '#2a2108' : '#fff4cc', strip > 34 ? 13 : 11);
+    });
+  }
+  var y1 = outer.y + outer.h + 16;
+  var y2 = y1 + 28;
+  extension(c, outer.x, outer.y + outer.h, outer.x, y2 + 4);
+  extension(c, outer.x + outer.w, outer.y + outer.h, outer.x + outer.w, y2 + 4);
+  if (outer.w >= 190) {
+    extension(c, inner.x, outer.y + outer.h, inner.x, y1 + 6);
+    extension(c, inner.x + inner.w, outer.y + outer.h, inner.x + inner.w, y1 + 6);
+    dimLine(c, outer.x, y1, inner.x, y1, '+' + order.w, phase === 0 ? '#ffd23f' : '#f4f7fb', 12);
+    dimLine(c, inner.x, y1, inner.x + inner.w, y1, String(order.L), '#d7e6f5', 12);
+    dimLine(c, inner.x + inner.w, y1, outer.x + outer.w, y1, '+' + order.w, phase === 1 ? '#ffd23f' : '#f4f7fb', 12);
+  }
+  dimLine(c, outer.x, outer.w >= 190 ? y2 : y1, outer.x + outer.w, outer.w >= 190 ? y2 : y1, order.oL + ' cm', '#ffffff', 14);
+  var xDim = outer.x + outer.w + 18;
+  extension(c, outer.x + outer.w, outer.y, xDim + 4, outer.y);
+  extension(c, outer.x + outer.w, outer.y + outer.h, xDim + 4, outer.y + outer.h);
+  dimLine(c, xDim, outer.y, xDim, outer.y + outer.h, order.oB + ' cm', '#ffffff', 14);
+  if (diagram.showCaliper) {
+    var lengthSum = order.L + ' + ' + order.w + ' + ' + order.w + ' = ' + order.oL + ' cm';
+    var breadthSum = order.B + ' + ' + order.w + ' + ' + order.w + ' = ' + order.oB + ' cm';
+    var text = outer.w >= 280 ? lengthSum + '    ·    ' + breadthSum : (showL ? lengthSum : breadthSum);
+    drawCaliper(c, outer.x, (outer.w >= 190 ? y2 : y1) + 14, outer.w, text);
+  }
+}
+
+function drawCaliper(c, x, y, w, text) {
+  pathRound(c, x, y, w, 24, 4);
+  c.fillStyle = '#22282c';
+  c.fill();
+  c.strokeStyle = '#9aa6ae';
+  c.lineWidth = 1.5;
+  c.stroke();
+  pathRound(c, x + 6, y + 4, w - 12, 16, 2);
+  c.fillStyle = '#10241c';
+  c.fill();
+  fitFont(c, text, w - 20, 12, 800);
+  c.fillStyle = '#b6ffc9';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(text, x + w / 2, y + 12);
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+}
+
+function drawGardenDims(c, order, diagram) {
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  var knowSide = G.stepIndex >= 2 || (G.phase === 'anim' && G.anim && G.anim.kind === 'finish' && order.steps[1].solved);
+  var sideText = knowSide ? order.S + ' cm' : '? cm';
+  var y = outer.y + outer.h + 18;
+  extension(c, outer.x, outer.y + outer.h, outer.x, y + 6);
+  extension(c, outer.x + outer.w, outer.y + outer.h, outer.x + outer.w, y + 6);
+  dimLine(c, outer.x, y, outer.x + outer.w, y, sideText, '#ffffff', 14);
+  var xDim = outer.x + outer.w + 16;
+  extension(c, outer.x + outer.w, outer.y, xDim + 4, outer.y);
+  extension(c, outer.x + outer.w, outer.y + outer.h, xDim + 4, outer.y + outer.h);
+  dimLine(c, xDim, outer.y, xDim, outer.y + outer.h, sideText, '#ffffff', 14);
+  if (inner.w > 46) {
+    dimLine(c, inner.x, inner.y + inner.h - 14, inner.x + inner.w, inner.y + inner.h - 14, order.flower + ' cm', '#fff4cc', 12);
+  }
+  var letters = [
+    ['P', outer.x - 4, outer.y - 4],
+    ['Q', outer.x + outer.w + 4, outer.y - 4],
+    ['R', outer.x + outer.w + 4, outer.y + outer.h + 4],
+    ['S', outer.x - 4, outer.y + outer.h + 4]
+  ];
+  c.font = font(13, 800);
+  c.fillStyle = '#fff8e8';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  letters.forEach(function (L) { c.fillText(L[0], L[1], L[2]); });
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+  labelPill(c, 'path ' + order.uncovered + ' cm²', outer.x - 8, outer.y + outer.h * 0.5, 'rgba(20, 40, 16, 0.88)', '#e7ffc4', 12);
+  if (G.visuals.fuse > 0.02) {
+    var a = G.visuals.fuse;
+    c.save();
+    c.globalAlpha = Math.max(0.2, Math.min(1, a));
+    var s = 0.85 + 0.15 * Math.min(1, a);
+    c.translate(outer.x + outer.w / 2, outer.y - 14);
+    c.scale(s, s);
+    labelPill(c, 'Total ' + order.total + ' cm²', 0, 0, '#17324a', '#d7f1ff', 13);
+    c.restore();
+  }
+  if (G.stepIndex >= 2 || (G.visuals.march && order.kind === 'garden' && G.stepIndex >= 2)) {
+    c.save();
+    c.setLineDash([7, 7]);
+    c.lineDashOffset = -G.t * 36;
+    c.strokeStyle = '#fff6d2';
+    c.lineWidth = 2;
+    c.strokeRect(outer.x + 3, outer.y + 3, outer.w - 6, outer.h - 6);
+    c.strokeRect(inner.x - 2, inner.y - 2, inner.w + 4, inner.h + 4);
+    c.restore();
+  }
+}
+
+function drawLaser(c, rect, p) {
+  if (p <= 0) return;
+  c.save();
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.strokeStyle = 'rgba(255, 236, 210, 0.95)';
+  c.lineWidth = 3;
+  c.shadowColor = '#ff5a2a';
+  c.shadowBlur = 10;
+  c.beginPath();
+  var steps = Math.max(2, Math.floor(p * 40));
+  for (var i = 0; i <= steps; i++) {
+    var pt = pointOnRect(rect, (i / steps) * p);
+    if (i === 0) c.moveTo(pt.x, pt.y);
+    else c.lineTo(pt.x, pt.y);
+  }
+  c.stroke();
+  if (p < 0.995) {
+    var head = pointOnRect(rect, p);
+    c.fillStyle = '#fff';
+    c.beginPath();
+    c.arc(head.x, head.y, 3.5, 0, Math.PI * 2);
+    c.fill();
+  }
+  c.restore();
+}
+
+function drawArm(c, piece, railY, x1, x2) {
+  var cx = piece.x + piece.w / 2;
+  var top = piece.y;
+  var g = c.createLinearGradient(0, railY - 8, 0, railY + 8);
+  g.addColorStop(0, '#d5dee6');
+  g.addColorStop(0.5, '#8b98a3');
+  g.addColorStop(1, '#5c6870');
+  pathRound(c, x1, railY - 6, Math.max(12, x2 - x1), 12, 4);
+  c.fillStyle = g;
+  c.fill();
+  pathRound(c, cx - 16, railY - 11, 32, 22, 4);
+  c.fillStyle = '#3c474e';
+  c.fill();
+  var shaft = Math.max(0, top - (railY + 10));
+  c.fillStyle = '#dfe6ec';
+  c.fillRect(cx - 4, railY + 10, 8, shaft);
+  c.fillStyle = '#22282c';
+  c.beginPath();
+  c.ellipse(cx, top + 1, Math.max(10, piece.w * 0.16), 7, 0, 0, Math.PI * 2);
+  c.fill();
+}
+
+function lerpRect(a, b, t) {
+  var e = t * t * (3 - 2 * t);
+  return {
+    x: a.x + (b.x - a.x) * e,
+    y: a.y + (b.y - a.y) * e,
+    w: a.w + (b.w - a.w) * e,
+    h: a.h + (b.h - a.h) * e
+  };
+}
+
+function drawStamp(c, outer, word) {
+  if (!G.anim || G.anim.kind !== 'finish') return;
+  var u = Math.min(1, G.anim.t / 0.26);
+  var s = 1 + Math.pow(1 - u, 3) * 0.75;
+  c.save();
+  c.translate(outer.x + outer.w * 0.66, outer.y + outer.h * 0.36);
+  c.rotate(-0.34);
+  c.scale(s, s);
+  c.globalAlpha = 0.92;
+  c.strokeStyle = '#e23b3b';
+  c.lineWidth = 4;
+  pathRound(c, -78, -20, 156, 40, 5);
+  c.stroke();
+  c.fillStyle = '#e23b3b';
+  c.font = font(16, 800);
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(word, 0, 1);
+  c.restore();
+}
+
+function drawBoard(c, outer) {
+  var g = c.createLinearGradient(outer.x, outer.y, outer.x, outer.y + outer.h);
+  g.addColorStop(0, '#e7c49a');
+  g.addColorStop(1, '#a56b3c');
+  c.fillStyle = g;
+  c.fillRect(outer.x, outer.y, outer.w, outer.h);
+  c.strokeStyle = '#6b4224';
+  c.lineWidth = 3;
+  c.strokeRect(outer.x + 1.5, outer.y + 1.5, outer.w - 3, outer.h - 3);
+}
+
+function drawScrap(c, r) {
+  c.save();
+  c.beginPath();
+  c.rect(r.x, r.y, r.w, r.h);
+  c.clip();
+  var g = c.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+  g.addColorStop(0, '#f0d2a4');
+  g.addColorStop(1, '#b07a4a');
+  c.fillStyle = g;
+  c.fillRect(r.x, r.y, r.w, r.h);
+  c.strokeStyle = 'rgba(90, 50, 20, 0.35)';
+  c.lineWidth = 1;
+  var y;
+  for (y = r.y + 6; y < r.y + r.h; y += 7) {
+    c.beginPath();
+    c.moveTo(r.x, y);
+    c.lineTo(r.x + r.w, y);
+    c.stroke();
+  }
+  c.restore();
+  c.strokeStyle = '#6b4224';
+  c.lineWidth = 2;
+  c.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+}
+
+function outerDims(c, outer, across, down) {
+  var y1 = outer.y + outer.h + 16;
+  extension(c, outer.x, outer.y + outer.h, outer.x, y1 + 6);
+  extension(c, outer.x + outer.w, outer.y + outer.h, outer.x + outer.w, y1 + 6);
+  dimLine(c, outer.x, y1, outer.x + outer.w, y1, across, '#ffffff', 14);
+  var xDim = outer.x + outer.w + 18;
+  extension(c, outer.x + outer.w, outer.y, xDim + 4, outer.y);
+  extension(c, outer.x + outer.w, outer.y + outer.h, xDim + 4, outer.y + outer.h);
+  dimLine(c, xDim, outer.y, xDim, outer.y + outer.h, down, '#ffffff', 14);
+  return y1;
+}
+
+function drawOffsetDims(c, order, diagram) {
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  if (G.stepIndex === 2 && G.phase === 'choose') {
+    c.save();
+    c.globalAlpha = 0.22 + 0.1 * Math.sin(G.t * 6);
+    c.beginPath();
+    c.rect(outer.x, outer.y, outer.w, outer.h);
+    c.rect(inner.x, inner.y, inner.w, inner.h);
+    c.fillStyle = '#ffd23f';
+    c.fill('evenodd');
+    c.restore();
+  }
+  var right = outer.x + outer.w - inner.x - inner.w;
+  var bottom = outer.y + outer.h - inner.y - inner.h;
+  var gaps = [
+    { text: order.gapL + ' cm', x: (outer.x + inner.x) / 2, y: inner.y + inner.h / 2, room: inner.x - outer.x },
+    { text: order.gapR + ' cm', x: inner.x + inner.w + right / 2, y: inner.y + inner.h / 2, room: right },
+    { text: order.gapT + ' cm', x: inner.x + inner.w / 2, y: (outer.y + inner.y) / 2, room: inner.y - outer.y },
+    { text: order.gapB + ' cm', x: inner.x + inner.w / 2, y: inner.y + inner.h + bottom / 2, room: bottom }
+  ];
+  gaps.forEach(function (g) {
+    if (g.room < 16) return;
+    labelPill(c, g.text, g.x, g.y, 'rgba(28, 20, 8, 0.78)', '#fff4cc', g.room > 36 ? 12 : 10);
+  });
+  var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
+  if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
+}
+
+function drawElbowDims(c, order, diagram) {
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  var left = Math.max(0, inner.x - outer.x);
+  var bottom = Math.max(0, outer.y + outer.h - inner.y - inner.h);
+  if (G.stepIndex === 0 && G.phase === 'choose') {
+    c.fillStyle = 'rgba(255, 214, 70, 0.42)';
+    c.fillRect(outer.x, outer.y, left, outer.h);
+    c.fillRect(inner.x, inner.y + inner.h, inner.w, bottom);
+  }
+  if (left >= 16) {
+    labelPill(c, '+' + order.w, outer.x + left / 2, outer.y + outer.h * 0.35, '#17324a', '#d7f1ff', left > 28 ? 13 : 11);
+  }
+  if (bottom >= 16) {
+    labelPill(c, '+' + order.w, inner.x + inner.w * 0.45, inner.y + inner.h + bottom / 2, '#17324a', '#d7f1ff', 13);
+  }
+  if (inner.w > 70 && G.visuals.lift < 0.35) {
+    labelPill(c, order.pieceLabel, inner.x + inner.w / 2, inner.y + inner.h / 2, 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
+  }
+  var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
+  if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
+}
+
+function drawCutDims(c, order, diagram) {
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  if (order.kind === 'notch' && G.stepIndex === 2 && G.phase === 'choose') {
+    c.strokeStyle = '#ffd23f';
+    c.lineWidth = 3;
+    c.beginPath();
+    c.moveTo(inner.x, inner.y);
+    c.lineTo(inner.x, inner.y + inner.h);
+    c.lineTo(inner.x + inner.w, inner.y + inner.h);
+    c.lineTo(inner.x + inner.w, inner.y);
+    c.stroke();
+  }
+  if (order.periSame && G.stepIndex === 2 && G.phase === 'choose') {
+    c.save();
+    c.setLineDash([6, 5]);
+    c.lineDashOffset = -G.t * 28;
+    c.strokeStyle = '#fff6d2';
+    c.lineWidth = 2;
+    c.strokeRect(outer.x + 3, outer.y + 3, outer.w - 6, outer.h - 6);
+    c.strokeRect(inner.x, inner.y, inner.w, inner.h);
+    c.restore();
+  }
+  if (G.visuals.lift < 0.35 && inner.w > 28) {
+    labelPill(c, order.pieceLabel, inner.x + inner.w / 2, inner.y + Math.min(inner.h / 2, 16), 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
+  }
+  var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
+  if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
+}
+
+function drawMat(c) {
+  var diagram = geom.diagram;
+  var order = current();
+  if (!diagram) return;
+  var outer = diagram.outer;
+  var inner = diagram.inner;
+  if (order.kind === 'frame' || order.kind === 'offset') {
+    drawMetal(c, outer, inner);
+    drawHole(c, inner);
+    if (order.kind === 'frame') drawFrameDims(c, order, diagram);
+    else drawOffsetDims(c, order, diagram);
+  } else if (order.kind === 'garden') {
+    drawGardenBed(c, outer, inner);
+    drawFlowers(c, inner, order.blooms);
+    if (inner.h > 36) {
+      labelPill(c, order.flower + ' × ' + order.flower + ' = ' + order.flowerArea + ' cm²', inner.x + inner.w / 2, inner.y + inner.h - 16, 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
+    }
+    drawGardenDims(c, order, diagram);
+  } else if (order.kind === 'elbow') {
+    drawGardenBed(c, outer, inner);
+    drawElbowDims(c, order, diagram);
+  } else {
+    drawBoard(c, outer);
+    drawHole(c, inner);
+    drawCutDims(c, order, diagram);
+  }
+  c.strokeStyle = 'rgba(20, 12, 6, 0.55)';
+  c.lineWidth = 3;
+  c.strokeRect(inner.x + 1, inner.y + 1, inner.w - 2, inner.h - 2);
+}
+
+function drawPieceAndArm(c) {
+  var order = current();
+  var diagram = geom.diagram;
+  if (!diagram || !order.lift) return;
+  var lift = G.visuals.lift;
+  var piece = lerpRect(diagram.inner, diagram.slot, lift);
+  if (lift > 0.04 && lift < 0.98) {
+    c.fillStyle = 'rgba(0,0,0,0.22)';
+    c.fillRect(piece.x + 7, piece.y + 9, piece.w, piece.h);
+  }
+  if (order.art === 'flowers') {
+    drawFlowers(c, piece, order.blooms);
+  } else if (order.art === 'scrap') {
+    drawScrap(c, piece);
+  } else {
+    drawLandscape(c, piece);
+    c.strokeStyle = 'rgba(255,255,255,0.8)';
+    c.lineWidth = 2;
+    c.strokeRect(piece.x + 1, piece.y + 1, piece.w - 2, piece.h - 2);
+  }
+  if (piece.h > 28 && order.pieceLabel) {
+    labelPill(c, order.pieceLabel, piece.x + piece.w / 2, piece.y + piece.h - 12, 'rgba(10, 24, 36, 0.72)', '#e7f6ff', 11);
+  }
+  if (lift > 0.02 && lift < 0.985) {
+    var railEnd = Math.max(geom.zone.x + geom.zone.w, piece.x + piece.w + 8);
+    drawArm(c, piece, geom.table.y + 4, geom.zone.x, Math.min(railEnd, geom.table.x + geom.table.w - 8));
+  }
+  if (G.visuals.cut > 0) {
+    c.save();
+    c.globalAlpha = lift > 0.2 ? 0.35 : 1;
+    drawLaser(c, diagram.inner, G.visuals.cut);
+    c.restore();
+  }
+  drawStamp(c, diagram.outer, order.stamp || 'DELIVERED');
+}
+
+function drawTicket(c) {
+  var order = current();
+  var t = geom.ticket;
+  var wide = geom.wide;
+  plate(c, t.x, t.y, t.w, t.h, 10, '#f3e2c4', '#8a6236');
+  if (t.h > 48) {
+    c.fillStyle = '#6b4224';
+    c.fillRect(t.x + t.w / 2 - 18, t.y - 4, 36, 10);
+  }
+  c.fillStyle = '#3a2616';
+  c.font = font(wide ? 13 : 11, 800);
+  c.textAlign = 'left';
+  c.textBaseline = 'top';
+  var cursorY = t.y + 8;
+  if (wide) {
+    c.fillText('JOB TICKET', t.x + 12, cursorY);
+    cursorY += 18;
+    if (order.lift) {
+      var box = geom.slotBox;
+      c.strokeStyle = '#b08960';
+      c.setLineDash([4, 3]);
+      c.strokeRect(box.x, box.y, box.w, box.h);
+      c.setLineDash([]);
+      c.font = font(11, 700);
+      c.fillStyle = '#8a5a32';
+      c.textAlign = 'center';
+      c.fillText(G.visuals.lift > 0.9 ? (order.bayDone || 'CUT OUT') : (order.bay || 'CUT-OUT BAY'), box.x + box.w / 2, box.y - 6);
+      c.textAlign = 'left';
+      cursorY = box.y + box.h + 8;
+    }
+    c.fillStyle = '#3a2616';
+    c.font = font(13, 800);
+    c.fillText(order.client, t.x + 12, cursorY);
+    cursorY += 16;
+    c.font = font(12, 700);
+    wrapText(c, order.given, t.w - 24).forEach(function (line) {
+      c.fillText(line, t.x + 12, cursorY);
+      cursorY += 15;
+    });
+    cursorY += 6;
+  }
+  order.steps.forEach(function (step, i) {
+    var mark = step.solved ? '✓' : (i === G.stepIndex ? '▸' : '·');
+    var color = step.solved ? '#1f7a43' : (i === G.stepIndex ? '#8a4b12' : '#7a6550');
+    c.fillStyle = color;
+    c.font = font(wide ? 12 : 11, 700);
+    var label = mark + ' ' + (step.solved ? step.reveal : step.pending);
+    if (!wide) {
+      c.fillText(label.length > 42 ? label.slice(0, 40) + '…' : label, t.x + 8, t.y + 6 + i * 14);
+      return;
+    }
+    wrapText(c, label, t.w - 24).slice(0, 2).forEach(function (line) {
+      if (cursorY < t.y + t.h - 8) c.fillText(line, t.x + 12, cursorY);
+      cursorY += 14;
+    });
+  });
+  if (!wide && order.lift) {
+    var nb = geom.slotBox;
+    c.strokeStyle = '#8a6236';
+    c.setLineDash([3, 3]);
+    c.strokeRect(nb.x, nb.y, nb.w, nb.h);
+    c.setLineDash([]);
+  }
+}
+
+function formulaCopy(order) {
+  if (order.formulas) return order.formulas[Math.min(order.formulas.length - 1, G.stepIndex)];
+  if (order.kind === 'frame') return { k: 'BORDER AREA', v: 'Outer area  −  Inner area' };
+  var rows = [
+    { k: 'TOTAL AREA', v: 'Flower bed  +  Uncovered path' },
+    { k: 'SQUARE SIDE', v: 'Side × Side  =  Total area' },
+    { k: 'EDGING', v: 'Outer perimeter  +  Inner perimeter' }
+  ];
+  return rows[Math.min(2, G.stepIndex)];
+}
+
+function drawFormula(c) {
+  var order = current();
+  var f = geom.formula;
+  var copy = formulaCopy(order);
+  var amp = 0.012 + G.formulaPulse * 0.045;
+  var s = 1 + Math.sin(G.t * 7) * amp;
+  c.save();
+  c.translate(f.x + f.w / 2, f.y + f.h / 2);
+  c.scale(s, s);
+  plate(c, -f.w / 2, -f.h / 2, f.w, f.h, 8, 'rgba(16, 22, 28, 0.88)', G.formulaPulse > 0.15 ? '#ffd23f' : '#8aa0b0');
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.font = font(11, 800);
+  c.fillStyle = '#ffd23f';
+  c.fillText(copy.k, 0, -6);
+  fitFont(c, copy.v, f.w - 16, 13, 700);
+  c.fillStyle = '#f4f7fb';
+  c.fillText(copy.v, 0, 9);
+  c.restore();
+}
+
+function drawPrompt(c) {
+  var order = current();
+  var step = order.steps[G.stepIndex];
+  var p = geom.prompt;
+  plate(c, p.x, p.y, p.w, p.h, 10, 'rgba(18, 16, 14, 0.9)', '#d7b15a');
+  var rail = order.rail;
+  var x = p.x + 10;
+  c.font = font(11, 800);
+  c.textBaseline = 'middle';
+  rail.forEach(function (name, i) {
+    var on = i === G.stepIndex;
+    var done = order.steps[i].solved;
+    var label = (i + 1) + ' ' + name;
+    var w = c.measureText(label).width + 16;
+    c.fillStyle = done ? '#1f7a43' : (on ? '#ffd23f' : 'rgba(255,255,255,0.08)');
+    var railH = p.h < 66 ? 15 : 18;
+    pathRound(c, x, p.y + 5, w, railH, 8);
+    c.fill();
+    c.fillStyle = done || on ? '#1a120c' : '#d9d0c4';
+    if (done) c.fillStyle = '#f4fff6';
+    if (on) c.fillStyle = '#2a2108';
+    c.textAlign = 'left';
+    c.fillText(label, x + 8, p.y + 5 + railH / 2);
+    x += w + 6;
+  });
+  var showing = step.solved && G.phase === 'anim' ? step.reveal : step.prompt;
+  c.fillStyle = '#fff8ec';
+  fitFont(c, showing, p.w - 20, p.h < 66 ? 13 : 16, 800);
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+  c.fillText(showing, p.x + 10, p.y + (p.h < 66 ? 36 : 46));
+  var hint = step.hint;
+  if (step.solved && step.by >= 0 && G.phase === 'anim') hint = CREW[step.by].name + ' locked this cut.';
+  c.fillStyle = '#e7c888';
+  fitFont(c, hint, p.w - 20, 12, 700);
+  c.fillText(hint, p.x + 10, p.y + p.h - 8);
+}
+
+function drawCards(c) {
+  var step = current().steps[G.stepIndex];
+  geom.cards.forEach(function (rect, i) {
+    var opt = step.options[i];
+    if (!opt) return;
+    var hovers = players.filter(function (p) {
+      return p.joined && p.batteries > 0 && p.card === i;
+    });
+    plate(c, rect.x, rect.y, rect.w, rect.h, 10, opt.dead ? '#3a3330' : '#f7f1e6', opt.dead ? '#6a5c56' : '#c4b49a');
+    if (opt.correct && step.solved) {
+      c.strokeStyle = '#1f9d57';
+      c.lineWidth = 3;
+      pathRound(c, rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, 8);
+      c.stroke();
+    }
+    hovers.forEach(function (p, n) {
+      c.strokeStyle = CREW[p.id].color;
+      c.lineWidth = 3;
+      pathRound(c, rect.x + 3 + n, rect.y + 3 + n, rect.w - 6 - n * 2, rect.h - 6 - n * 2, 8);
+      c.stroke();
+    });
+    c.fillStyle = '#8a7560';
+    c.font = font(11, 800);
+    c.textAlign = 'left';
+    c.textBaseline = 'top';
+    c.fillText(String(i + 1), rect.x + 8, rect.y + 6);
+    var maxW = rect.w - 20;
+    c.fillStyle = opt.dead ? '#b3a69c' : '#2a2118';
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    fitFont(c, opt.line1, maxW, rect.h > 80 ? 16 : 14, 800);
+    c.fillText(opt.line1, rect.x + rect.w / 2, rect.y + rect.h * 0.42);
+    c.fillStyle = opt.correct && step.solved ? '#1f7a43' : (opt.dead ? '#8d8076' : '#8a3d12');
+    fitFont(c, opt.line2, maxW, rect.h > 80 ? 20 : 16, 800);
+    c.fillText(opt.line2, rect.x + rect.w / 2, rect.y + rect.h * 0.68);
+    if (opt.dead) {
+      c.strokeStyle = '#c4493a';
+      c.lineWidth = 3;
+      c.beginPath();
+      c.moveTo(rect.x + 12, rect.y + 12);
+      c.lineTo(rect.x + rect.w - 12, rect.y + rect.h - 12);
+      c.moveTo(rect.x + rect.w - 12, rect.y + 12);
+      c.lineTo(rect.x + 12, rect.y + rect.h - 12);
+      c.stroke();
+    }
+  });
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+}
+
+function drawChip(c, rect, p) {
+  var meta = CREW[p.id];
+  plate(c, rect.x, rect.y, rect.w, rect.h, 10, 'rgba(14, 12, 10, 0.88)', p.batteries > 0 ? meta.color : '#6a6258');
+  c.textAlign = 'left';
+  c.textBaseline = 'middle';
+  c.font = font(12, 800);
+  c.fillStyle = p.batteries > 0 ? meta.color : '#b7aea4';
+  var name = rect.w < 150 ? meta.short : meta.short + ' ' + meta.name;
+  c.fillText(name, rect.x + 8, rect.y + 16);
+  c.fillStyle = '#ffe7ad';
+  c.font = font(12, 700);
+  c.fillText('★ ' + p.stars, rect.x + 8, rect.y + rect.h - 16);
+  var bx = rect.x + rect.w - 70;
+  for (var i = 0; i < 3; i++) {
+    var filled = i < p.batteries;
+    var col = filled ? (p.batteries === 1 ? '#ff5d4a' : '#8dffb8') : 'rgba(255,255,255,0.08)';
+    pathRound(c, bx + i * 22, rect.y + rect.h - 22, 16, 10, 2);
+    c.fillStyle = col;
+    c.fill();
+    c.strokeStyle = 'rgba(255,255,255,0.35)';
+    c.lineWidth = 1;
+    c.stroke();
+  }
+  if (p.batteries <= 0) {
+    c.fillStyle = '#ffb0a4';
+    c.font = font(10, 800);
+    c.fillText('DOWN', rect.x + rect.w - 36, rect.y + 16);
+  }
+}
+
+function drawHeader(c) {
+  var order = current();
+  var left = players[0].joined ? geom.chips[0].w + 24 : 16;
+  var right = players[1].joined ? geom.chips[1].w + 24 : 16;
+  var midX = left + (view.w - left - right) / 2;
+  var band = geom.chips[0];
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillStyle = '#ffe7ad';
+  c.font = font(band.h < 52 ? 11 : 12, 800);
+  c.fillText('ORDER ' + (G.orderIndex + 1) + ' / ' + G.orders.length + '   ·   CUT ' + (G.stepIndex + 1) + ' / 3', midX, band.y + 12);
+  c.fillStyle = '#fff8ee';
+  fitFont(c, order.client + ' · ' + order.title, Math.max(80, view.w - left - right - 8), band.h < 52 ? 13 : 16, 800);
+  c.fillText(order.client + ' · ' + order.title, midX, band.y + band.h * 0.5);
+  var pop = 1 + G.revenuePop * 0.12;
+  c.save();
+  c.translate(midX, band.y + band.h - 11);
+  c.scale(pop, pop);
+  c.fillStyle = '#ffd23f';
+  c.font = font(band.h < 52 ? 11 : 13, 800);
+  c.fillText('REVENUE $' + G.revenue, 0, 0);
+  c.restore();
+  c.textAlign = 'left';
+}
+
+function drawFooter(c) {
+  var y = view.h - (players[2].joined ? 22 : 16);
+  var left = players[2].joined ? geom.chips[2].w + 20 : 12;
+  c.fillStyle = 'rgba(255, 236, 205, 0.78)';
+  c.font = font(11, 700);
+  c.textAlign = 'left';
+  c.textBaseline = 'middle';
+  var hint = view.w < 760
+    ? 'Arrows+Space · WASD+F · IJKL+H · Pad A'
+    : 'P1 arrows+space · P2 WASD+F · P3 IJKL+H · Pad stick+A · keys 1–4 · Esc pause';
+  fitFont(c, hint, Math.max(40, view.w - left - 120), 11, 700);
+  c.fillText(hint, left, y);
+}
+
+function drawBeam(c, p) {
+  if (!p.beam || !geom || !geom.cards[p.beam.index]) return;
+  var card = geom.cards[p.beam.index];
+  var tx = card.x + card.w / 2;
+  var ty = card.y + card.h / 2;
+  c.save();
+  c.strokeStyle = CREW[p.id].color;
+  c.globalAlpha = 1 - p.beam.t / 0.22;
+  c.lineWidth = 3;
+  c.shadowColor = CREW[p.id].color;
+  c.shadowBlur = 8;
+  c.beginPath();
+  c.moveTo(p.x, p.y);
+  c.lineTo(tx, ty);
+  c.stroke();
+  c.restore();
+}
+
+function drawReticle(c, p) {
+  var meta = CREW[p.id];
+  var down = p.batteries <= 0;
+  c.save();
+  c.translate(p.x, p.y);
+  c.strokeStyle = '#140e0a';
+  c.lineWidth = 4;
+  c.beginPath();
+  c.arc(0, 0, 15, 0, Math.PI * 2);
+  c.moveTo(-22, 0); c.lineTo(-8, 0);
+  c.moveTo(8, 0); c.lineTo(22, 0);
+  c.moveTo(0, -22); c.lineTo(0, -8);
+  c.moveTo(0, 8); c.lineTo(0, 22);
+  c.stroke();
+  c.strokeStyle = down ? '#8a8178' : meta.color;
+  c.lineWidth = 2;
+  c.stroke();
+  c.save();
+  c.rotate(G.t * 0.9);
+  c.beginPath();
+  for (var i = 0; i < 4; i++) {
+    var a = i * Math.PI / 2;
+    c.moveTo(Math.cos(a) * 18, Math.sin(a) * 18);
+    c.lineTo(Math.cos(a) * 24, Math.sin(a) * 24);
+  }
+  c.stroke();
+  c.restore();
+  c.fillStyle = down ? '#8a8178' : meta.color;
+  c.beginPath();
+  c.arc(0, 0, 2.4, 0, Math.PI * 2);
+  c.fill();
+  c.font = font(11, 800);
+  c.textAlign = 'left';
+  c.textBaseline = 'middle';
+  c.fillText(meta.short, 16, -16);
+  c.restore();
+}
+
+function drawParticles(c) {
+  G.particles.forEach(function (p) {
+    var k = 1 - p.age / p.life;
+    c.globalAlpha = Math.max(0, k);
+    c.fillStyle = p.color;
+    c.fillRect(p.x, p.y, p.size, p.size);
+  });
+  c.globalAlpha = 1;
+}
+
+function drawFloaters(c) {
+  G.floaters.forEach(function (f) {
+    c.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    c.font = font(14, 800);
+    c.textAlign = 'center';
+    c.fillStyle = '#1a120c';
+    c.fillText(f.text, f.x + 1, f.y + 1);
+    c.fillStyle = f.color;
+    c.fillText(f.text, f.x, f.y);
+  });
+  c.globalAlpha = 1;
+  c.textAlign = 'left';
+}
+
+function drawPopup(c) {
+  if (!G.popup) return;
+  var boxW = Math.min(520, view.w - 36);
+  var who = CREW[G.popup.pid];
+  c.font = font(16, 700);
+  var lines = wrapText(c, G.popup.body, boxW - 36);
+  var boxH = 78 + lines.length * 22;
+  var x = (view.w - boxW) / 2;
+  var y = Math.max(80, view.h * 0.28);
+  c.fillStyle = 'rgba(8, 6, 5, 0.45)';
+  c.fillRect(0, 0, view.w, view.h);
+  plate(c, x, y, boxW, boxH, 12, '#fff8ee', G.popup.trap ? '#e23b3b' : '#e0a23a');
+  c.fillStyle = G.popup.trap ? '#e23b3b' : '#a35b12';
+  c.font = font(20, 800);
+  c.textAlign = 'left';
+  c.textBaseline = 'top';
+  c.fillText(G.popup.title, x + 16, y + 12);
+  c.font = font(12, 800);
+  c.fillStyle = who.color;
+  c.fillText(who.name, x + 16, y + 38);
+  c.font = font(16, 700);
+  c.fillStyle = '#2a2118';
+  lines.forEach(function (line, i) {
+    c.fillText(line, x + 16, y + 62 + i * 22);
+  });
+}
+
+function drawPause(c) {
+  c.fillStyle = 'rgba(8, 6, 5, 0.45)';
+  c.fillRect(0, 0, view.w, view.h);
+  c.fillStyle = '#fff8ee';
+  c.font = font(28, 800);
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText('PAUSED', view.w / 2, view.h / 2 - 10);
+  c.font = font(14, 700);
+  c.fillStyle = '#ffe7ad';
+  c.fillText('Esc or Start resumes the bench', view.w / 2, view.h / 2 + 22);
+  c.textAlign = 'left';
+}
+
+function drawNote(c) {
+  if (G.noteT <= 0 || !G.note) return;
+  c.globalAlpha = Math.min(1, G.noteT);
+  labelPill(c, G.note, view.w / 2, view.h * 0.2, 'rgba(16,16,16,0.85)', '#ffe7ad', 14);
+  c.globalAlpha = 1;
+}
+
+function drawPlay() {
+  drawWorkshop(ctx, view.w, view.h);
+  if (!geom) return;
+  ctx.save();
+  if (G.shake > 0) ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+  drawBench(ctx, geom.table);
+  drawFormula(ctx);
+  drawMat(ctx);
+  drawTicket(ctx);
+  if (!current().lift && G.phase === 'anim' && G.anim && G.anim.kind === 'finish' && geom.diagram) {
+    drawStamp(ctx, geom.diagram.outer, current().stamp || 'EDGED');
+  }
+  drawPieceAndArm(ctx);
+  drawPrompt(ctx);
+  drawCards(ctx);
+  players.forEach(function (p, i) {
+    if (p.joined) drawChip(ctx, geom.chips[i], p);
+  });
+  drawHeader(ctx);
+  drawFooter(ctx);
+  players.forEach(function (p) { if (p.joined) drawBeam(ctx, p); });
+  drawParticles(ctx);
+  for (var i = 2; i >= 0; i--) if (players[i].joined) drawReticle(ctx, players[i]);
+  ctx.restore();
+  if (G.popup && G.mode === 'play') drawPopup(ctx);
+  if (G.paused) drawPause(ctx);
+  drawFloaters(ctx);
+  drawNote(ctx);
+}
+
+function drawTitle() {
+  var lay = layoutTitle(view.w, view.h);
+  var plateBox = lay.plate;
+  drawWorkshop(ctx, view.w, view.h);
+  plate(ctx, plateBox.x, plateBox.y, plateBox.w, plateBox.h, 16, 'rgba(22, 18, 14, 0.92)', '#d7b15a');
+  ctx.fillStyle = '#ffd23f';
+  for (var i = 0; i < 8; i++) ctx.fillRect(plateBox.x, plateBox.y + 8 + i * 6, plateBox.w, 3);
+  ctx.fillStyle = '#1a120c';
+  ctx.fillRect(plateBox.x, plateBox.y + 52, plateBox.w, plateBox.h - 52);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#1a120c';
+  fitFont(ctx, 'LASER MAT CUTTER', plateBox.w - 24, plateBox.w < 520 ? 26 : 34, 800);
+  ctx.fillText('LASER MAT CUTTER', plateBox.x + plateBox.w / 2, plateBox.y + 28);
+  var bodyTop = plateBox.y + 64;
+  ctx.fillStyle = '#fff8ee';
+  ctx.font = font(16, 800);
+  ctx.fillText('Frame & Garden Studio', plateBox.x + plateBox.w / 2, bodyTop + 8);
+  ctx.fillStyle = '#ffd23f';
+  ctx.font = font(13, 700);
+  ctx.fillText('Primary 4–5  ·  Borders, corners, and cut-outs', plateBox.x + plateBox.w / 2, bodyTop + 30);
+  var lesson = lay.compact
+    ? [
+      'Border area = big rectangle − small rectangle.',
+      'The cut can be off-centre, in a corner, or along two sides.'
+    ]
+    : [
+      'Frame: add the border twice, then outer area − inner area.',
+      'A 4 cm border on a 30 cm side makes 30 + 4 + 4, not 30 + 4.',
+      'Off-centre, corner, or one side: still big rectangle − small rectangle.',
+      'A path on only two sides: add the width once, not twice.',
+      'First correct lock earns a star. Revenue is shared.',
+      'Three wrong cuts drain a battery. Shipping a mat restores one.'
+    ];
+  ctx.fillStyle = '#f0e2cc';
+  ctx.font = font(13, 700);
+  ctx.textAlign = 'left';
+  lesson.forEach(function (line, n) {
+    var ly = bodyTop + 52 + n * 18;
+    if (ly < lay.bays[0].y - 8) ctx.fillText(line, plateBox.x + 22, ly);
+  });
+  lay.bays.forEach(function (bay) {
+    var meta = CREW[bay.id];
+    var on = players[bay.id].joined;
+    plate(ctx, bay.x, bay.y, bay.w, bay.h, 10, on ? meta.ink : '#241c16', meta.color);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = meta.color;
+    ctx.font = font(bay.w < 120 ? 12 : 14, 800);
+    ctx.fillText(meta.short + (on ? ' ON' : ''), bay.x + bay.w / 2, bay.y + bay.h * 0.32);
+    ctx.fillStyle = '#fff4dd';
+    ctx.font = font(11, 700);
+    ctx.fillText(meta.help, bay.x + bay.w / 2, bay.y + bay.h * 0.58);
+    ctx.fillStyle = on ? '#9dffb0' : '#cbbba6';
+    ctx.fillText(on ? 'Clocked in' : 'Press to join', bay.x + bay.w / 2, bay.y + bay.h * 0.8);
+  });
+  plate(ctx, lay.start.x, lay.start.y, lay.start.w, lay.start.h, 10, '#ffd23f', '#fff4cc');
+  ctx.fillStyle = '#2a2108';
+  ctx.font = font(16, 800);
+  ctx.textAlign = 'center';
+  ctx.fillText('OPEN THE WORKSHOP', lay.start.x + lay.start.w / 2, lay.start.y + lay.start.h / 2);
+  if (G.best > 0) {
+    ctx.fillStyle = '#e7c888';
+    ctx.font = font(12, 700);
+    ctx.fillText('Best revenue $' + G.best, plateBox.x + plateBox.w / 2, plateBox.y + plateBox.h - 10);
+  }
+  ctx.textAlign = 'left';
+  if (G.fatal) {
+    ctx.fillStyle = '#ffb0a4';
+    ctx.font = font(13, 700);
+    ctx.fillText(G.fatal, plateBox.x + 16, plateBox.y + plateBox.h - 8);
+  }
+}
+
+function drawResults() {
+  var lay = layoutResults(view.w, view.h);
+  var plateBox = lay.plate;
+  drawWorkshop(ctx, view.w, view.h);
+  plate(ctx, plateBox.x, plateBox.y, plateBox.w, plateBox.h, 16, 'rgba(22, 18, 14, 0.94)', '#d7b15a');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = G.result === 'clear' ? '#9dffb0' : '#ffb0a4';
+  ctx.font = font(28, 800);
+  ctx.fillText(G.result === 'clear' ? 'Shift complete' : 'Batteries empty', plateBox.x + plateBox.w / 2, plateBox.y + 42);
+  ctx.fillStyle = '#ffd23f';
+  ctx.font = font(18, 800);
+  ctx.fillText('Workshop revenue $' + G.revenue, plateBox.x + plateBox.w / 2, plateBox.y + 78);
+  ctx.fillStyle = '#f0e2cc';
+  ctx.font = font(14, 700);
+  ctx.fillText('Mats shipped ' + G.solved + ' / ' + (G.orders.length || 8) + '    Best $' + G.best, plateBox.x + plateBox.w / 2, plateBox.y + 104);
+  var joined = players.filter(function (p) { return p.joined; });
+  joined.forEach(function (p, i) {
+    var y = plateBox.y + 140 + i * 28;
+    ctx.fillStyle = CREW[p.id].color;
+    ctx.font = font(16, 800);
+    ctx.fillText(CREW[p.id].name + '    ★ ' + p.stars, plateBox.x + plateBox.w / 2, y);
+  });
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff8ee';
+  ctx.font = font(13, 700);
+  var lesson = [
+    'All-around border: add the width twice, then subtract.',
+    '30 + 4 + 4 = 38.  38 × 24 − 30 × 16 = 432 cm².',
+    'Off-centre or in a corner: still big rectangle minus small.',
+    'Two-sided path: add the width once. A notch adds 2 × depth.',
+    'Garden edging = outside perimeter + flower perimeter.'
+  ];
+  var top = plateBox.y + 150 + joined.length * 28;
+  lesson.forEach(function (line, i) {
+    if (top + i * 18 < lay.again.y - 8) ctx.fillText(line, plateBox.x + 28, top + i * 18);
+  });
+  plate(ctx, lay.again.x, lay.again.y, lay.again.w, lay.again.h, 10, '#ffd23f', '#fff4cc');
+  plate(ctx, lay.crew.x, lay.crew.y, lay.crew.w, lay.crew.h, 10, '#2a241c', '#d7b15a');
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#2a2108';
+  ctx.font = font(14, 800);
+  ctx.fillText('Run another shift', lay.again.x + lay.again.w / 2, lay.again.y + lay.again.h / 2);
+  ctx.fillStyle = '#ffe7ad';
+  ctx.fillText('Change crew', lay.crew.x + lay.crew.w / 2, lay.crew.y + lay.crew.h / 2);
+  ctx.textAlign = 'left';
+}
+
+function drawError(err) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#1a120c';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#ffb0a4';
+  ctx.font = font(16, 700);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  var msg = (err && (err.stack || err.message)) || G.fatal || 'Unknown workshop fault';
+  wrapText(ctx, msg, view.w - 32).slice(0, 12).forEach(function (line, i) {
+    ctx.fillText(line, 16, 16 + i * 20);
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, view.w, view.h);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  if (G.fatal && G.mode === 'title') {
+    drawTitle();
+    return;
+  }
+  if (G.mode === 'title') drawTitle();
+  else if (G.mode === 'results') drawResults();
+  else drawPlay();
+}
+
+function pointFromEvent(e) {
+  var rec = canvas.getBoundingClientRect();
+  return { x: e.clientX - rec.left, y: e.clientY - rec.top };
+}
+
+function onPointerDown(e) {
+  audio.ensure();
+  var pt = pointFromEvent(e);
+  pointer.x = pt.x;
+  pointer.y = pt.y;
+  pointer.inside = true;
+  canvas.focus();
+  if (G.mode === 'title') {
+    var title = layoutTitle(view.w, view.h);
+    for (var i = 0; i < title.bays.length; i++) {
+      if (hit(title.bays[i], pt.x, pt.y)) {
+        players[title.bays[i].id].joined = !players[title.bays[i].id].joined;
+        audio.tick();
+        announce();
+        return;
+      }
+    }
+    if (hit(title.start, pt.x, pt.y)) startShift();
+    return;
+  }
+  if (G.mode === 'results') {
+    var res = layoutResults(view.w, view.h);
+    if (hit(res.again, pt.x, pt.y)) startShift();
+    else if (hit(res.crew, pt.x, pt.y)) {
+      G.mode = 'title';
+      announce();
+    }
+    return;
+  }
+  if (G.paused) {
+    G.paused = false;
+    announce();
+    return;
+  }
+  if (G.phase === 'popup' && G.popup && G.popup.t > 0.35) {
+    closePopup();
+    return;
+  }
+  if (G.phase === 'anim' && G.anim && G.anim.t > Math.min(0.9, G.anim.dur * 0.58)) {
+    G.anim.t = G.anim.dur;
+    return;
+  }
+  if (G.phase === 'choose') {
+    var idx = cardAt(pt.x, pt.y);
+    if (idx >= 0) {
+      if (!players[0].joined) {
+        players[0].joined = true;
+        players[0].batteries = 3;
+      }
+      players[0].x = pt.x;
+      players[0].y = pt.y;
+      trySelect(0, idx);
+    }
+  }
+}
+
+function onPointerMove(e) {
+  var pt = pointFromEvent(e);
+  pointer.x = pt.x;
+  pointer.y = pt.y;
+  pointer.inside = true;
+  pointer.moved = true;
+}
+
+function keyId(e) {
+  if (e.code === 'Space') return 'Space';
+  if (e.code === 'Enter') return 'Enter';
+  if (e.code === 'Escape') return 'Escape';
+  if (e.key && e.key.indexOf('Arrow') === 0) return e.key;
+  if (e.key && e.key.length === 1) return e.key.toLowerCase();
+  return '';
+}
+
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d');
+  muteBtn = document.getElementById('mute');
+  sr = document.getElementById('sr');
+  loadStore();
+  setMuteLabel();
+  try {
+    var sample = buildOrders();
+    if (!sample || sample.length !== 10) throw new Error('Expected 10 workshop orders');
+  } catch (err) {
+    G.fatal = err.message || String(err);
+  }
+  fitCanvas();
+  muteBtn.addEventListener('click', function () {
+    audio.ensure();
+    toggleMute();
+  });
+  window.addEventListener('resize', fitCanvas);
+  window.addEventListener('keydown', function (e) {
+    var id = keyId(e);
+    if (!id) return;
+    if (e.target && e.target.id === 'mute' && (id === 'Space' || id === 'Enter')) return;
+    if (id === 'Space' || id.indexOf('Arrow') === 0) e.preventDefault();
+    if (!e.repeat) justDown.add(id);
+    keys.add(id);
+    if (id === 'm' && !e.repeat) {
+      audio.ensure();
+      toggleMute();
+    }
+    audio.ensure();
+  });
+  window.addEventListener('keyup', function (e) {
+    keys.delete(keyId(e));
+  });
+  window.addEventListener('blur', function () { keys.clear(); });
+  window.addEventListener('gamepadconnected', function (e) {
+    audio.ensure();
+    var n = e.gamepad.index + 1;
+    G.note = n <= 3 ? 'Gamepad ' + n + ' connected' : 'Only 3 lasers fit on this bench';
+    G.noteT = 2.4;
+    announce();
+  });
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerleave', function () { pointer.inside = false; });
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  canvas.focus();
+  announce();
+  var last = 0;
+  function frame(now) {
+    var dt = Math.min(0.034, last ? (now - last) / 1000 : 0.016);
+    last = now;
+    try {
+      fitCanvas();
+      update(dt);
+      draw();
+    } catch (err) {
+      console.error(err);
+      drawError(err);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+if (typeof document !== 'undefined') boot();
+</script>
+</body>
+</html>
