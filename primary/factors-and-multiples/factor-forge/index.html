@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Factor Forge: The Gear Mesh Engine</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      margin: 0;
+      padding: 0;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #120c08;
+      font-family: 'Courier New', Courier, monospace, sans-serif;
+      color: #e5c158;
+    }
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(circle at center, #2b1a10 0%, #100804 100%);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    #ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 12px 18px;
+    }
+    .hud-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      text-shadow: 0 2px 4px #000;
+      font-weight: bold;
+    }
+    .hud-card {
+      background: rgba(35, 20, 12, 0.85);
+      border: 2px solid #b8860b;
+      border-radius: 8px;
+      padding: 6px 14px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.7), inset 0 0 8px rgba(184, 134, 11, 0.4);
+      pointer-events: auto;
+    }
+    .btn {
+      background: linear-gradient(180deg, #d4a340 0%, #875412 100%);
+      color: #fff8e7;
+      border: 2px solid #f3e5ab;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 3px 6px rgba(0,0,0,0.6);
+      text-transform: uppercase;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    .btn:hover {
+      filter: brightness(1.2);
+    }
+    .btn:active {
+      transform: translateY(2px);
+    }
+    /* Move Player Badges to the top-right / top header instead of overlapping the left list */
+    .hud-p1-badge {
+        position: absolute;
+        top: 14px;
+        right: 220px; /* leaves room for P2 badge and mute button */
+        z-index: 10;
+    }
+
+    .hud-p2-badge {
+        position: absolute;
+        top: 14px;
+        right: 60px;
+        z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-overlay">
+      <div class="hud-bar">
+        <div class="hud-card" id="hud-mode">MODE: CO-OP</div>
+        <div class="hud-card" id="hud-tier">TIER 1: FACTOR PAIRS</div>
+        <div class="hud-card" style="display: flex; gap: 8px; align-items: center;">
+          <button id="btn-audio" class="btn">AUDIO: ON</button>
+          <button id="btn-mode-toggle" class="btn">SWITCH MODE</button>
+        </div>
+      </div>
+      <div class="hud-bar" style="margin-top: auto;">
+        <div class="hud-card" id="hud-p1">P1 [RED]: 3 🔧 | 0 ⭐</div>
+        <div class="hud-card" id="hud-score">TEAM POWER: 0 kW</div>
+        <div class="hud-card" id="hud-p2">P2 [BLUE]: 3 🔧 | 0 ⭐</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ==========================================================================
+       FACTOR FORGE: THE GEAR MESH ENGINE
+       Single-File Educational 2-Player HTML5 Canvas Arcade
+       Singapore Primary 4/5 Curriculum (Factors & HCF)
+       ========================================================================== */
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- AUDIO SYSTEM (Web Audio API) ---
+    class SoundEngine {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+        this.bgmTimer = null;
+        this.step = 0;
+        this.tempo = 128; // BPM
+      }
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioContext();
+          this.startBGM();
+        } else if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+      }
+      toggleMute() {
+        this.muted = !this.muted;
+        document.getElementById('btn-audio').innerText = `AUDIO: ${this.muted ? 'OFF' : 'ON'}`;
+      }
+      playTone(freq, duration, type = 'square', gainVal = 0.08) {
+        if (this.muted || !this.ctx) return;
+        try {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+          gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start();
+          osc.stop(this.ctx.currentTime + duration);
+        } catch(e) {}
+      }
+      playNoise(duration = 0.15, gainVal = 0.08) {
+        if (this.muted || !this.ctx) return;
+        try {
+          const bufferSize = this.ctx.sampleRate * duration;
+          const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+          }
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = buffer;
+          const gain = this.ctx.createGain();
+          gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+          noise.connect(gain);
+          gain.connect(this.ctx.destination);
+          noise.start();
+        } catch(e) {}
+      }
+      sfxSpin() {
+        this.playTone(280, 0.08, 'triangle', 0.05);
+      }
+      sfxClick() {
+        this.playTone(600, 0.03, 'sine', 0.06);
+      }
+      sfxSteam() {
+        this.playNoise(0.4, 0.12);
+      }
+      sfxSuccess() {
+        if (this.muted || !this.ctx) return;
+        const notes = [440, 554.37, 659.25, 880];
+        notes.forEach((freq, idx) => {
+          setTimeout(() => this.playTone(freq, 0.22, 'triangle', 0.1), idx * 80);
+        });
+      }
+      sfxOverdrive() {
+        if (this.muted || !this.ctx) return;
+        const notes = [330, 440, 554, 660, 880, 1108];
+        notes.forEach((freq, idx) => {
+          setTimeout(() => this.playTone(freq, 0.3, 'sawtooth', 0.1), idx * 60);
+        });
+        setTimeout(() => this.sfxSteam(), 300);
+      }
+      sfxError() {
+        if (this.muted || !this.ctx) return;
+        this.playTone(160, 0.35, 'sawtooth', 0.18);
+        this.playNoise(0.3, 0.15);
+      }
+      startBGM() {
+        if (this.bgmTimer) return;
+        // 8-bit Steampunk Bass + Arpeggiator Loop
+        const bassLine = [110, 110, 130.81, 146.83, 110, 110, 164.81, 146.83];
+        const lead = [440, 523.25, 587.33, 659.25, 587.33, 523.25, 493.88, 440];
+        const stepTime = (60 / this.tempo) * 1000 / 2; // 8th notes
+
+        this.bgmTimer = setInterval(() => {
+          if (!this.muted && this.ctx && this.ctx.state === 'running') {
+            const bFreq = bassLine[this.step % bassLine.length];
+            const lFreq = lead[(this.step * 3) % lead.length];
+            this.playTone(bFreq, 0.12, 'triangle', 0.04);
+            if (this.step % 2 === 0) {
+              this.playTone(lFreq, 0.08, 'square', 0.015);
+            }
+            if (this.step % 4 === 2) {
+              this.playNoise(0.04, 0.02); // Hi-hat / clock tick
+            }
+          }
+          this.step = (this.step + 1) % 64;
+        }, stepTime);
+      }
+    }
+    const audio = new SoundEngine();
+
+    // --- GAME ENGINE & STATE ---
+    let width = 1200;
+    let height = 750;
+
+    function resize() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Mode: 'coop' or 'versus'
+    let gameMode = 'coop'; 
+    let currentTier = 1; // 1, 2, or 3
+    let scoreTeam = 0;
+    let sparks = [];
+    let steams = [];
+    let popup = null; // { text, subtext, color, timer, maxTimer }
+
+    // Diagnostic Notification Helper
+    function showPopup(text, subtext = '', color = '#ffd700', duration = 180) {
+      popup = { text, subtext, color, timer: duration, maxTimer: duration };
+    }
+
+    // --- PLAYERS (8BitDo & Keyboard) ---
+    const players = [
+      {
+        id: 0,
+        name: 'P1 [RED]',
+        color: '#ff4444',
+        glow: 'rgba(255, 68, 68, 0.6)',
+        x: width * 0.35,
+        y: height * 0.5,
+        targetX: width * 0.35,
+        targetY: height * 0.5,
+        wrenches: 3,
+        stars: 0,
+        holdingGear: null,
+        gamepadIndex: 0,
+        keys: { up: false, down: false, left: false, right: false, action: false, lastAction: false }
+      },
+      {
+        id: 1,
+        name: 'P2 [BLUE]',
+        color: '#44aaff',
+        glow: 'rgba(68, 170, 255, 0.6)',
+        x: width * 0.65,
+        y: height * 0.5,
+        targetX: width * 0.65,
+        targetY: height * 0.5,
+        wrenches: 3,
+        stars: 0,
+        holdingGear: null,
+        gamepadIndex: 1,
+        keys: { up: false, down: false, left: false, right: false, action: false, lastAction: false }
+      }
+    ];
+
+    // Keyboard Listeners
+    window.addEventListener('keydown', (e) => {
+      audio.init();
+      const code = e.code;
+      // Player 1: WASD + F
+      if (code === 'KeyW') players[0].keys.up = true;
+      if (code === 'KeyS') players[0].keys.down = true;
+      if (code === 'KeyA') players[0].keys.left = true;
+      if (code === 'KeyD') players[0].keys.right = true;
+      if (code === 'KeyF' || code === 'Space') players[0].keys.action = true;
+
+      // Player 2: Arrows + Enter
+      if (code === 'ArrowUp') players[1].keys.up = true;
+      if (code === 'ArrowDown') players[1].keys.down = true;
+      if (code === 'ArrowLeft') players[1].keys.left = true;
+      if (code === 'ArrowRight') players[1].keys.right = true;
+      if (code === 'Enter' || code === 'Numpad0') players[1].keys.action = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const code = e.code;
+      if (code === 'KeyW') players[0].keys.up = false;
+      if (code === 'KeyS') players[0].keys.down = false;
+      if (code === 'KeyA') players[0].keys.left = false;
+      if (code === 'KeyD') players[0].keys.right = false;
+      if (code === 'KeyF' || code === 'Space') players[0].keys.action = false;
+
+      if (code === 'ArrowUp') players[1].keys.up = false;
+      if (code === 'ArrowDown') players[1].keys.down = false;
+      if (code === 'ArrowLeft') players[1].keys.left = false;
+      if (code === 'ArrowRight') players[1].keys.right = false;
+      if (code === 'Enter' || code === 'Numpad0') players[1].keys.action = false;
+    });
+
+    // Touch / Click Support for Quick Testing
+    canvas.addEventListener('pointerdown', (e) => {
+      audio.init();
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      // Direct Player 1 to click
+      players[0].x = px;
+      players[0].y = py;
+      handlePlayerAction(players[0]);
+    });
+
+    // --- CURRICULUM MATHEMATICAL DATASETS ---
+    const TIER1_TARGETS = [12, 16, 20, 24, 30, 36, 40, 48];
+    const TIER2_TARGETS = [
+      { numbers: [18, 24], hcf: 6, options: [6, 3, 8, 12] },
+      { numbers: [24, 36], hcf: 12, options: [12, 6, 8, 18] },
+      { numbers: [15, 45], hcf: 15, options: [15, 5, 9, 30] }
+    ];
+    const TIER3_TARGETS = [
+      { numbers: [12, 18, 24], hcf: 6, options: [6, 3, 9, 12] },
+      { numbers: [24, 36, 48], hcf: 12, options: [12, 6, 8, 24] },
+      { numbers: [16, 24, 32, 40], hcf: 8, options: [8, 4, 12, 16] },
+      { numbers: [20, 30, 40, 60], hcf: 10, options: [10, 5, 15, 20] },
+      { numbers: [24, 36, 60, 72], hcf: 12, options: [12, 6, 9, 18] }
+    ];
+
+    // Compute factor pairs for any integer N
+    function getFactorPairs(n) {
+      const pairs = [];
+      for (let i = 1; i * i <= n; i++) {
+        if (n % i === 0) {
+          pairs.push({ a: i, b: n / i, found: false });
+        }
+      }
+      return pairs;
+    }
+
+    // --- ROUND MANAGER ---
+    let currentRoundData = null;
+    let flywheels = [];
+    let conveyorGears = [];
+    let sockets = []; // Sockets for Tier 1 factor pairing or Tier 2/3 center HCF socket
+    let roundTransition = 0;
+
+    function initRound() {
+      conveyorGears = [];
+      sockets = [];
+      flywheels = [];
+      sparks = [];
+      steams = [];
+
+      if (currentTier === 1) {
+        // Single Number Factor Pairs
+        const targetNumber = TIER1_TARGETS[Math.floor(Math.random() * TIER1_TARGETS.length)];
+        const pairs = getFactorPairs(targetNumber);
+
+        currentRoundData = {
+          tier: 1,
+          targetNumber,
+          pairs,
+          remainingPairs: pairs.length
+        };
+
+        // Main Central Flywheel
+        flywheels.push({
+          x: width * 0.5,
+          y: height * 0.52,
+          radius: 95,
+          value: targetNumber,
+          teeth: 28,
+          angle: 0,
+          speed: 0.015,
+          color: '#d4af37'
+        });
+
+        // Two gear sockets (Left & Right of central flywheel)
+        sockets.push({
+          id: 'socket-a',
+          x: width * 0.5 - 130,
+          y: height * 0.52,
+          radius: 45,
+          placedGear: null
+        });
+        sockets.push({
+          id: 'socket-b',
+          x: width * 0.5 + 130,
+          y: height * 0.52,
+          radius: 45,
+          placedGear: null
+        });
+
+        // Generate conveyor gears: All true factors + common traps (multiples or remainder non-factors)
+        const factorSet = new Set();
+        pairs.forEach(p => { factorSet.add(p.a); factorSet.add(p.b); });
+        
+        // Add remainder trap and multiple trap
+        const traps = [5, 7, targetNumber * 2, 9, 11].filter(x => !factorSet.has(x) && x > 0);
+        const allCandidates = [...Array.from(factorSet), traps[0] || 5, traps[1] || targetNumber * 2];
+        allCandidates.sort((a,b) => a - b);
+
+        spawnConveyor(allCandidates);
+        showPopup(`TIER 1: FORGE NUMBER ${targetNumber}!`, 'Find all factor pairs that multiply to give this target.', '#ffd700', 160);
+
+      } else if (currentTier === 2) {
+        // HCF of 2 Numbers
+        const data = TIER2_TARGETS[Math.floor(Math.random() * TIER2_TARGETS.length)];
+        currentRoundData = {
+          tier: 2,
+          numbers: data.numbers,
+          hcf: data.hcf,
+          cleared: false
+        };
+
+        // Two flywheels connected horizontally
+        flywheels.push({
+          x: width * 0.38,
+          y: height * 0.52,
+          radius: 80,
+          value: data.numbers[0],
+          teeth: 24,
+          angle: 0,
+          speed: 0.01,
+          color: '#cd7f32'
+        });
+        flywheels.push({
+          x: width * 0.62,
+          y: height * 0.52,
+          radius: 80,
+          value: data.numbers[1],
+          teeth: 24,
+          angle: 0,
+          speed: -0.01,
+          color: '#cd7f32'
+        });
+
+        // Center driveshaft socket for the master HCF gear
+        sockets.push({
+          id: 'socket-hcf',
+          x: width * 0.5,
+          y: height * 0.52,
+          radius: 55,
+          placedGear: null
+        });
+
+        spawnConveyor(data.options);
+        showPopup(`TIER 2: SYNCHRONIZE [${data.numbers.join(' & ')}]!`, 'Slot the HIGHEST Common Factor gear into the center shaft!', '#44aaff', 160);
+
+      } else {
+        // Tier 3: HCF of 3 or 4 Numbers
+        const data = TIER3_TARGETS[Math.floor(Math.random() * TIER3_TARGETS.length)];
+        currentRoundData = {
+          tier: 3,
+          numbers: data.numbers,
+          hcf: data.hcf,
+          cleared: false
+        };
+
+        const count = data.numbers.length;
+        const ringRadius = 150;
+        const centerX = width * 0.5;
+        const centerY = height * 0.52;
+
+        for (let i = 0; i < count; i++) {
+          const theta = (i * 2 * Math.PI) / count - Math.PI / 2;
+          flywheels.push({
+            x: centerX + Math.cos(theta) * ringRadius,
+            y: centerY + Math.sin(theta) * ringRadius,
+            radius: 60,
+            value: data.numbers[i],
+            teeth: 20,
+            angle: 0,
+            speed: (i % 2 === 0 ? 0.012 : -0.012),
+            color: '#b87333'
+          });
+        }
+
+        // Central Master Overdrive socket
+        sockets.push({
+          id: 'socket-hcf',
+          x: centerX,
+          y: centerY,
+          radius: 65,
+          placedGear: null
+        });
+
+        spawnConveyor(data.options);
+        showPopup(`TIER 3: OVERDRIVE SYNC [${data.numbers.join(', ')}]!`, 'Beware! Common factors must divide EVERY single flywheel!', '#ff55aa', 180);
+      }
+
+      updateHUD();
+    }
+
+    function spawnConveyor(candidateValues) {
+      const count = candidateValues.length;
+      const spacing = Math.min(130, (width - 160) / count);
+      const startX = (width - (count - 1) * spacing) / 2;
+      const gantryY = 120;
+
+      conveyorGears = candidateValues.map((val, idx) => ({
+        id: 'gear-' + idx,
+        value: val,
+        x: startX + idx * spacing,
+        y: gantryY,
+        baseX: startX + idx * spacing,
+        baseY: gantryY,
+        radius: 36,
+        teeth: 14,
+        angle: 0,
+        inSocket: null,
+        carriedBy: null
+      }));
+    }
+
+    // --- GAMEPAD & KEYBOARD POLLING ---
+    function updateControls() {
+      // 1. Gamepad API
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      
+      players.forEach(p => {
+        let dx = 0;
+        let dy = 0;
+        let actionPressed = false;
+
+        // Gamepad inputs
+        if (p.gamepadIndex !== null && gamepads[p.gamepadIndex]) {
+          const gp = gamepads[p.gamepadIndex];
+          // Left Stick / D-Pad
+          const stickX = gp.axes[0] || 0;
+          const stickY = gp.axes[1] || 0;
+          if (Math.abs(stickX) > 0.2) dx += stickX;
+          if (Math.abs(stickY) > 0.2) dy += stickY;
+
+          // D-Pad buttons (Standard layout indices 12: Up, 13: Down, 14: Left, 15: Right)
+          if (gp.buttons[12] && gp.buttons[12].pressed) dy -= 1;
+          if (gp.buttons[13] && gp.buttons[13].pressed) dy += 1;
+          if (gp.buttons[14] && gp.buttons[14].pressed) dx -= 1;
+          if (gp.buttons[15] && gp.buttons[15].pressed) dx += 1;
+
+          // Button A (Index 0)
+          if (gp.buttons[0] && gp.buttons[0].pressed) {
+            actionPressed = true;
+          }
+        }
+
+        // Keyboard inputs
+        if (p.keys.up) dy -= 1;
+        if (p.keys.down) dy += 1;
+        if (p.keys.left) dx -= 1;
+        if (p.keys.right) dx += 1;
+        if (p.keys.action) actionPressed = true;
+
+        // Apply movement
+        const speed = 7.5;
+        p.x += dx * speed;
+        p.y += dy * speed;
+
+        // Canvas clamping
+        p.x = Math.max(40, Math.min(width - 40, p.x));
+        p.y = Math.max(90, Math.min(height - 60, p.y));
+
+        // Action trigger (Rising edge)
+        if (actionPressed && !p.keys.lastAction) {
+          handlePlayerAction(p);
+        }
+        p.keys.lastAction = actionPressed;
+
+        // Update carried gear position
+        if (p.holdingGear) {
+          p.holdingGear.x = p.x;
+          p.holdingGear.y = p.y + 10;
+        }
+      });
+    }
+
+    // --- INTERACTION LOGIC ---
+    function handlePlayerAction(player) {
+      audio.init();
+
+      // If already holding a gear -> Check if hovering over an empty socket to drop
+      if (player.holdingGear) {
+        let placed = false;
+        for (const sock of sockets) {
+          const dist = Math.hypot(player.x - sock.x, player.y - sock.y);
+          if (dist < sock.radius + 30 && !sock.placedGear) {
+            // Drop gear into socket
+            sock.placedGear = player.holdingGear;
+            player.holdingGear.inSocket = sock;
+            player.holdingGear.x = sock.x;
+            player.holdingGear.y = sock.y;
+            player.holdingGear.carriedBy = null;
+            const droppedGear = player.holdingGear;
+            player.holdingGear = null;
+            placed = true;
+            audio.sfxClick();
+
+            evaluateSocketPlacement(sock, droppedGear, player);
+            break;
+          }
+        }
+
+        // If dropped in open air, return gear to conveyor
+        if (!placed) {
+          player.holdingGear.x = player.holdingGear.baseX;
+          player.holdingGear.y = player.holdingGear.baseY;
+          player.holdingGear.carriedBy = null;
+          player.holdingGear = null;
+          audio.sfxClick();
+        }
+        return;
+      }
+
+      // If hands are empty -> Check if picking up from conveyor
+      for (const gear of conveyorGears) {
+        if (!gear.carriedBy && !gear.inSocket) {
+          const dist = Math.hypot(player.x - gear.x, player.y - gear.y);
+          if (dist < gear.radius + 25) {
+            player.holdingGear = gear;
+            gear.carriedBy = player;
+            audio.sfxSpin();
+            return;
+          }
+        }
+      }
+
+      // Or picking up a gear already inside a socket
+      for (const sock of sockets) {
+        if (sock.placedGear) {
+          const dist = Math.hypot(player.x - sock.x, player.y - sock.y);
+          if (dist < sock.radius + 25) {
+            player.holdingGear = sock.placedGear;
+            player.holdingGear.carriedBy = player;
+            player.holdingGear.inSocket = null;
+            sock.placedGear = null;
+            audio.sfxSpin();
+            return;
+          }
+        }
+      }
+    }
+
+    // --- EVALUATION & PEDAGOGICAL CHECKS ---
+    function evaluateSocketPlacement(socket, gear, player) {
+      if (currentRoundData.tier === 1) {
+        // Check if both sockets are filled
+        const sockA = sockets[0].placedGear;
+        const sockB = sockets[1].placedGear;
+
+        // Immediate Remainder / Multiple Diagnostic on Single Gear
+        const target = currentRoundData.targetNumber;
+        const val = gear.value;
+
+        if (val > target) {
+          triggerPenalty(player, `${val} is a MULTIPLE of ${target}, NOT a factor! Factors must divide ${target} evenly.`);
+          returnGear(gear, socket);
+          return;
+        }
+        if (target % val !== 0) {
+          const q = Math.floor(target / val);
+          const r = target % val;
+          triggerPenalty(player, `${target} ÷ ${val} = ${q} R ${r}! Has a remainder, so ${val} is NOT a factor!`);
+          returnGear(gear, socket);
+          return;
+        }
+
+        // If both sockets are placed, test the pair
+        if (sockA && sockB) {
+          const product = sockA.value * sockB.value;
+          if (product === target) {
+            // Correct Pair Found!
+            const matchedPair = currentRoundData.pairs.find(p => 
+              (!p.found) && ((p.a === sockA.value && p.b === sockB.value) || (p.a === sockB.value && p.b === sockA.value))
+            );
+
+            if (matchedPair) {
+              matchedPair.found = true;
+              currentRoundData.remainingPairs--;
+              awardSuccess(player, 100);
+              showPopup(`FACTOR PAIR CONFIRMED!`, `${sockA.value} × ${sockB.value} = ${target}`, '#44ff88', 120);
+              createSparks(socket.x, socket.y, 40, '#ffd700');
+              createSteam(width * 0.5, height * 0.45, 30);
+              audio.sfxSuccess();
+
+              // Clear sockets for next pair
+              setTimeout(() => {
+                if (sockets[0].placedGear) returnGear(sockets[0].placedGear, sockets[0]);
+                if (sockets[1].placedGear) returnGear(sockets[1].placedGear, sockets[1]);
+
+                // If all pairs discovered -> advance round
+                if (currentRoundData.remainingPairs <= 0) {
+                  showPopup(`GENERATOR PRESSURE 100%!`, `All factor pairs of ${target} forged!`, '#ffaa00', 160);
+                  audio.sfxOverdrive();
+                  advanceNextRound();
+                }
+              }, 900);
+
+            } else {
+              showPopup(`PAIR ALREADY FORGED!`, `Try discovering the other factor pairs!`, '#ffaa44', 90);
+              returnGear(sockA, sockets[0]);
+              returnGear(sockB, sockets[1]);
+            }
+
+          } else {
+            triggerPenalty(player, `${sockA.value} × ${sockB.value} = ${product} ≠ ${target}! Not a valid pair for ${target}!`);
+            returnGear(sockA, sockets[0]);
+            returnGear(sockB, sockets[1]);
+          }
+        }
+
+      } else {
+        // Tiers 2 & 3: Master HCF Evaluation
+        const testHCF = gear.value;
+        const numbers = currentRoundData.numbers;
+        const trueHCF = currentRoundData.hcf;
+
+        // Check 1: Does it divide all numbers?
+        const failingNumber = numbers.find(n => n % testHCF !== 0);
+        if (failingNumber) {
+          const q = Math.floor(failingNumber / testHCF);
+          const r = failingNumber % testHCF;
+          triggerPenalty(player, `${failingNumber} ÷ ${testHCF} = ${q} R ${r}! ${testHCF} divides some, but NOT ALL flywheels! A common factor must divide EVERY number!`);
+          returnGear(gear, socket);
+          return;
+        }
+
+        // Check 2: Is it a common factor, but lower than true HCF?
+        if (testHCF < trueHCF) {
+          audio.sfxSpin();
+          showPopup(`${testHCF} IS A COMMON FACTOR!`, `...but can we forge a BIGGER gear to maximize Overdrive RPM? Try a higher common factor!`, '#ffcc00', 160);
+          // Gently return gear so they can try the higher one
+          setTimeout(() => returnGear(gear, socket), 1400);
+          return;
+        }
+
+        // Check 3: True HCF!
+        if (testHCF === trueHCF) {
+          currentRoundData.cleared = true;
+          awardSuccess(player, 250);
+          showPopup(`OVERDRIVE SYNCHRONIZED!`, `HCF of [${numbers.join(', ')}] = ${trueHCF}! Master RPM Achieved!`, '#00ffcc', 200);
+          createSparks(socket.x, socket.y, 70, '#00ffff');
+          createSteam(width * 0.5, height * 0.5, 60);
+          audio.sfxOverdrive();
+
+          // Rev flywheels up
+          flywheels.forEach(f => f.speed *= 5);
+
+          setTimeout(() => {
+            advanceNextRound();
+          }, 2400);
+        }
+      }
+    }
+
+    function returnGear(gear, socket) {
+      if (socket) socket.placedGear = null;
+      gear.inSocket = null;
+      gear.carriedBy = null;
+      gear.x = gear.baseX;
+      gear.y = gear.baseY;
+    }
+
+    function triggerPenalty(player, reason) {
+      audio.sfxError();
+      createSparks(player.x, player.y, 35, '#ff2222');
+      showPopup(`GEAR JAMMED!`, reason, '#ff4444', 180);
+
+      player.wrenches = Math.max(0, player.wrenches - 1);
+      updateHUD();
+
+      if (player.wrenches === 0) {
+        showPopup(`WRENCH DEPLETED!`, `${player.name} is resting! Repairing tools in 3 seconds...`, '#ff7777', 150);
+        setTimeout(() => {
+          player.wrenches = 3;
+          updateHUD();
+        }, 3000);
+      }
+    }
+
+    function awardSuccess(player, points) {
+      scoreTeam += points;
+      player.stars++;
+      updateHUD();
+    }
+
+    function advanceNextRound() {
+      setTimeout(() => {
+        if (currentTier === 1) {
+          currentTier = 2;
+        } else if (currentTier === 2) {
+          currentTier = 3;
+        } else {
+          currentTier = 1; // Cycle back with new random sets
+        }
+        initRound();
+      }, 1200);
+    }
+
+    function updateHUD() {
+      document.getElementById('hud-mode').innerText = `MODE: ${gameMode.toUpperCase()}`;
+      document.getElementById('hud-tier').innerText = currentTier === 1 
+        ? `TIER 1: FACTOR PAIRS (${currentRoundData ? currentRoundData.targetNumber : ''})`
+        : (currentTier === 2 ? `TIER 2: HCF (2 FLYWHEELS)` : `TIER 3: HCF (${currentRoundData ? currentRoundData.numbers.length : 3} FLYWHEELS)`);
+      
+      document.getElementById('hud-p1').innerText = `P1 [RED]: ${'🔧'.repeat(players[0].wrenches)} | ${players[0].stars} ⭐`;
+      document.getElementById('hud-p2').innerText = `P2 [BLUE]: ${'🔧'.repeat(players[1].wrenches)} | ${players[1].stars} ⭐`;
+      document.getElementById('hud-score').innerText = gameMode === 'coop'
+        ? `TEAM POWER: ${scoreTeam} kW`
+        : `VERSUS: P1 (${players[0].stars}) vs P2 (${players[1].stars})`;
+    }
+
+    // Toggle Modes (Co-op vs Versus)
+    document.getElementById('btn-mode-toggle').addEventListener('click', () => {
+      audio.init();
+      gameMode = gameMode === 'coop' ? 'versus' : 'coop';
+      showPopup(`SWITCHED TO ${gameMode.toUpperCase()} MODE!`, gameMode === 'coop' ? 'Work together to build power!' : 'Race to slot the HCF gear first for individual stars!', '#ffd700', 120);
+      updateHUD();
+    });
+
+    document.getElementById('btn-audio').addEventListener('click', () => {
+      audio.init();
+      audio.toggleMute();
+    });
+
+    // --- PARTICLES (Sparks & Steam) ---
+    function createSparks(x, y, count = 20, color = '#ffbb00') {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 2 + Math.random() * 6;
+        sparks.push({
+          x, y,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd,
+          life: 20 + Math.random() * 25,
+          maxLife: 45,
+          color
+        });
+      }
+    }
+
+    function createSteam(x, y, count = 25) {
+      for (let i = 0; i < count; i++) {
+        steams.push({
+          x: x + (Math.random() * 40 - 20),
+          y: y + (Math.random() * 20 - 10),
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: -1.5 - Math.random() * 3,
+          radius: 12 + Math.random() * 18,
+          alpha: 0.6,
+          life: 40 + Math.random() * 30
+        });
+      }
+    }
+
+    // --- GRAPHICS RENDERING (Canvas 60 FPS) ---
+    function drawGear(cx, cy, radius, teeth, angle, color, label = '', isFlywheel = false) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+
+      // Outer toothed circle
+      ctx.beginPath();
+      const toothHeight = radius * 0.22;
+      const innerRadius = radius - toothHeight;
+      const step = (Math.PI * 2) / teeth;
+
+      for (let i = 0; i < teeth; i++) {
+        const theta = i * step;
+        ctx.lineTo(Math.cos(theta) * innerRadius, Math.sin(theta) * innerRadius);
+        ctx.lineTo(Math.cos(theta + step * 0.2) * (radius + toothHeight * 0.4), Math.sin(theta + step * 0.2) * (radius + toothHeight * 0.4));
+        ctx.lineTo(Math.cos(theta + step * 0.6) * (radius + toothHeight * 0.4), Math.sin(theta + step * 0.6) * (radius + toothHeight * 0.4));
+        ctx.lineTo(Math.cos(theta + step * 0.8) * innerRadius, Math.sin(theta + step * 0.8) * innerRadius);
+      }
+      ctx.closePath();
+
+      // Gear body gradient
+      const grad = ctx.createRadialGradient(0, 0, innerRadius * 0.2, 0, 0, radius);
+      grad.addColorStop(0, '#ffe082');
+      grad.addColorStop(0.6, color);
+      grad.addColorStop(1, '#3e2723');
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#27170a';
+      ctx.stroke();
+
+      // Inner Cutouts / Spokes
+      const spokeCount = isFlywheel ? 6 : 4;
+      ctx.fillStyle = '#1a0f08';
+      for (let s = 0; s < spokeCount; s++) {
+        const stheta = (s * Math.PI * 2) / spokeCount;
+        ctx.beginPath();
+        ctx.arc(Math.cos(stheta) * (radius * 0.55), Math.sin(stheta) * (radius * 0.55), radius * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // Center Hub
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * 0.38, 0, Math.PI * 2);
+      ctx.fillStyle = '#4e342e';
+      ctx.fill();
+      ctx.strokeStyle = '#d7ccc8';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+
+      // Label (Upright)
+      if (label !== '') {
+        ctx.save();
+        ctx.font = `bold ${Math.round(radius * 0.42)}px 'Courier New', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(label, cx, cy);
+        ctx.restore();
+      }
+    }
+
+    function drawSteampunkBackground() {
+      // Background Pipes
+      ctx.lineWidth = 14;
+      ctx.strokeStyle = '#22150d';
+      ctx.beginPath();
+      ctx.moveTo(0, height * 0.35);
+      ctx.lineTo(width, height * 0.35);
+      ctx.moveTo(0, height * 0.7);
+      ctx.lineTo(width, height * 0.7);
+      ctx.moveTo(width * 0.2, 0);
+      ctx.lineTo(width * 0.2, height);
+      ctx.moveTo(width * 0.8, 0);
+      ctx.lineTo(width * 0.8, height);
+      ctx.stroke();
+
+      // Brass Rivets on Pipes
+      ctx.fillStyle = '#b8860b';
+      for (let rx = 50; rx < width; rx += 140) {
+        ctx.beginPath();
+        ctx.arc(rx, height * 0.35, 4, 0, Math.PI * 2);
+        ctx.arc(rx, height * 0.7, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Top Gantry Rail for Conveyor
+      ctx.fillStyle = '#3a2312';
+      ctx.fillRect(40, 112, width - 80, 16);
+      ctx.strokeStyle = '#d4af37';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(40, 112, width - 80, 16);
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, width, height);
+
+      // 1. Environment & Factory Floor
+      drawSteampunkBackground();
+
+      // 2. Sockets (Driveshaft receptacles)
+      sockets.forEach(sock => {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sock.x, sock.y, sock.radius + 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(20, 10, 5, 0.85)';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 6]);
+        ctx.strokeStyle = '#ffd700';
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Central axis bolt
+        ctx.beginPath();
+        ctx.arc(sock.x, sock.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#b8860b';
+        ctx.fill();
+        ctx.stroke();
+
+        // Prompt text above sockets
+        ctx.font = "bold 13px 'Courier New', monospace";
+        ctx.fillStyle = '#e6c280';
+        ctx.textAlign = 'center';
+        if (sock.id === 'socket-hcf') {
+          ctx.fillText('MASTER DRIVESHAFT [HCF]', sock.x, sock.y - sock.radius - 12);
+        } else {
+          ctx.fillText('FACTOR SOCKET', sock.x, sock.y - sock.radius - 12);
+        }
+        ctx.restore();
+      });
+
+      // 3. Rotating Flywheels (Target numbers)
+      flywheels.forEach(f => {
+        f.angle += f.speed;
+        drawGear(f.x, f.y, f.radius, f.teeth, f.angle, f.color, f.value.toString(), true);
+      });
+
+      // 4. Candidate Conveyor Gears
+      conveyorGears.forEach(gear => {
+        if (!gear.carriedBy) {
+          gear.angle += 0.005;
+          drawGear(gear.x, gear.y, gear.radius, gear.teeth, gear.angle, '#c59b27', gear.value.toString());
+        }
+      });
+
+      // 5. Tier 1 Factor Pair Checklist Overlay
+      if (currentRoundData && currentRoundData.tier === 1) {
+        ctx.save();
+        ctx.font = "bold 15px 'Courier New', monospace";
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#f5deb3';
+        ctx.fillText(`FACTOR PAIRS FOR ${currentRoundData.targetNumber}:`, 30, height - 120);
+
+        let colX = 30;
+        let rowY = height - 95;
+        currentRoundData.pairs.forEach((p, idx) => {
+          if (idx === 4) { colX = 260; rowY = height - 95; }
+          const status = p.found ? '✅' : '🔒';
+          const text = p.found ? `${p.a} × ${p.b} = ${currentRoundData.targetNumber}` : `? × ? = ${currentRoundData.targetNumber}`;
+          ctx.fillStyle = p.found ? '#55ff77' : '#aaaaaa';
+          ctx.fillText(`${status} ${text}`, colX, rowY);
+          rowY += 24;
+        });
+        ctx.restore();
+      }
+
+      // 6. Carried Gears (Drawn under reticles)
+      players.forEach(p => {
+        if (p.holdingGear) {
+          p.holdingGear.angle += 0.02;
+          drawGear(p.holdingGear.x, p.holdingGear.y, p.holdingGear.radius, p.holdingGear.teeth, p.holdingGear.angle, '#ffea75', p.holdingGear.value.toString());
+        }
+      });
+
+      // 7. Player Reticles & Steam Cranes
+      players.forEach(p => {
+        ctx.save();
+        // Reticle ring
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 24, 0, Math.PI * 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = p.color;
+        ctx.shadowColor = p.glow;
+        ctx.shadowBlur = 12;
+        ctx.stroke();
+
+        // Crosshairs
+        ctx.beginPath();
+        ctx.moveTo(p.x - 30, p.y);
+        ctx.lineTo(p.x - 14, p.y);
+        ctx.moveTo(p.x + 14, p.y);
+        ctx.lineTo(p.x + 30, p.y);
+        ctx.moveTo(p.x, p.y - 30);
+        ctx.lineTo(p.x, p.y - 14);
+        ctx.moveTo(p.x, p.y + 14);
+        ctx.lineTo(p.x, p.y + 30);
+        ctx.stroke();
+
+        // Operator Tag
+        ctx.font = "bold 12px 'Courier New', monospace";
+        ctx.textAlign = 'center';
+        ctx.fillStyle = p.color;
+        ctx.fillText(p.name, p.x, p.y - 34);
+        ctx.restore();
+      });
+
+      // 8. Particle FX (Sparks)
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i];
+        s.x += s.vx;
+        s.y += s.vy;
+        s.life--;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        if (s.life <= 0) sparks.splice(i, 1);
+      }
+
+      // 9. Particle FX (Steam)
+      for (let i = steams.length - 1; i >= 0; i--) {
+        const st = steams[i];
+        st.x += st.vx;
+        st.y += st.vy;
+        st.radius += 0.4;
+        st.alpha = (st.life / 70) * 0.5;
+        st.life--;
+        ctx.beginPath();
+        ctx.arc(st.x, st.y, st.radius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(230, 230, 230, ${st.alpha})`;
+        ctx.fill();
+        if (st.life <= 0) steams.splice(i, 1);
+      }
+
+      // 10. Center Diagnostic Notification Popup
+      if (popup && popup.timer > 0) {
+        popup.timer--;
+        const alpha = Math.min(1, popup.timer / 20);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const boxWidth = Math.min(840, width - 40);
+        const boxHeight = 84;
+        const boxX = (width - boxWidth) / 2;
+        const boxY = height * 0.78;
+
+        ctx.fillStyle = 'rgba(15, 8, 4, 0.92)';
+        ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = popup.color;
+        ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+        ctx.font = "bold 20px 'Courier New', monospace";
+        ctx.textAlign = 'center';
+        ctx.fillStyle = popup.color;
+        ctx.fillText(popup.text, width * 0.5, boxY + 34);
+
+        if (popup.subtext) {
+          ctx.font = "bold 14px 'Courier New', monospace";
+          ctx.fillStyle = '#fff8e7';
+          ctx.fillText(popup.subtext, width * 0.5, boxY + 62);
+        }
+        ctx.restore();
+      }
+
+      // Controller Polling & Next Frame
+      updateControls();
+      requestAnimationFrame(render);
+    }
+
+    function drawFactorPairList(ctx, currentNumber, factorPairs) {
+        const startX = 24;
+        let startY = 70; // Moved up below the header banner
+        const rowHeight = 28; // Tighter, consistent line spacing
+
+        ctx.save();
+        ctx.font = 'bold 15px monospace';
+        ctx.fillStyle = '#ffdd88';
+        ctx.fillText(`FACTOR PAIRS FOR ${currentNumber}:`, startX, startY);
+
+        startY += 30;
+
+        factorPairs.forEach((pair, index) => {
+            const y = startY + index * rowHeight;
+            
+            // Draw lock or checkmark icon
+            if (pair.unlocked) {
+            ctx.fillStyle = '#66ff66';
+            ctx.fillText(`✔  ${pair.a} × ${pair.b} = ${currentNumber}`, startX, y);
+            } else {
+            ctx.fillStyle = '#888877';
+            ctx.fillText(`🔒  ? × ? = ${currentNumber}`, startX, y);
+            }
+        });
+
+        ctx.restore();
+    }
+
+    // Start Round on Load
+    window.addEventListener('load', () => {
+      initRound();
+      requestAnimationFrame(render);
+    });
+  </script>
+</body>
+</html>
