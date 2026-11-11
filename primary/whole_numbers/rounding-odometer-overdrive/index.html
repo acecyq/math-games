@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Odometer Overdrive: The Speedometer Gauntlet</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@600;700&display=swap');
+
+        * {
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            font-family: 'Rajdhani', sans-serif;
+            background-color: #030308;
+            color: #fff;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+
+        .font-orbitron {
+            font-family: 'Orbitron', sans-serif;
+        }
+
+        .neon-text-cyan {
+            text-shadow: 0 0 10px rgba(6, 182, 212, 0.8), 0 0 20px rgba(6, 182, 212, 0.5);
+        }
+
+        .neon-text-yellow {
+            text-shadow: 0 0 10px rgba(234, 179, 8, 0.8), 0 0 20px rgba(234, 179, 8, 0.5);
+        }
+
+        .neon-text-pink {
+            text-shadow: 0 0 10px rgba(236, 72, 153, 0.8), 0 0 20px rgba(236, 72, 153, 0.5);
+        }
+
+        .neon-box-cyan {
+            box-shadow: 0 0 15px rgba(6, 182, 212, 0.3), inset 0 0 15px rgba(6, 182, 212, 0.15);
+            border: 2px solid rgba(6, 182, 212, 0.8);
+        }
+
+        .neon-box-yellow {
+            box-shadow: 0 0 20px rgba(234, 179, 8, 0.4), inset 0 0 15px rgba(234, 179, 8, 0.2);
+            border: 2px solid rgba(234, 179, 8, 0.9);
+        }
+
+        .scanlines {
+            background: linear-gradient(
+                rgba(18, 16, 16, 0) 50%, 
+                rgba(0, 0, 0, 0.35) 50%
+            );
+            background-size: 100% 4px;
+            pointer-events: none;
+        }
+
+        @keyframes shake {
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            20% { transform: translate(-4px, 0px) rotate(1deg); }
+            40% { transform: translate(4px, 3px) rotate(-1deg); }
+            60% { transform: translate(-3px, 1px) rotate(0deg); }
+            80% { transform: translate(-1px, -1px) rotate(1deg); }
+            100% { transform: translate(0px, 0px) rotate(0deg); }
+        }
+
+        .animate-shake {
+            animation: shake 0.35s ease-in-out;
+        }
+    </style>
+</head>
+<body class="w-screen h-screen flex flex-col justify-between items-center relative overflow-hidden select-none">
+
+    <!-- Scanline Overlay -->
+    <div class="absolute inset-0 scanlines z-30 pointer-events-none"></div>
+
+    <!-- Background Canvas -->
+    <canvas id="gameCanvas" class="absolute inset-0 w-full h-full z-0"></canvas>
+
+    <!-- PROMINENT FIXED TOP HUD (Target Goal & Stats) -->
+    <div id="hud" class="relative z-20 w-full max-w-5xl px-3 pt-3 flex flex-col md:flex-row justify-between items-center pointer-events-none transition-opacity duration-300 opacity-0 gap-2">
+        
+        <!-- Score & Streak Card -->
+        <div class="flex items-center space-x-4 bg-slate-950/90 backdrop-blur border border-cyan-500/50 rounded-2xl px-4 py-2 neon-box-cyan">
+            <div>
+                <div class="text-[10px] text-cyan-400 font-bold uppercase tracking-widest">Score</div>
+                <div id="scoreDisplay" class="text-2xl md:text-3xl font-orbitron font-black text-cyan-300">0</div>
+            </div>
+            <div class="h-8 w-px bg-cyan-500/30"></div>
+            <div>
+                <div class="text-[10px] text-pink-400 font-bold uppercase tracking-widest">Streak</div>
+                <div id="streakDisplay" class="text-2xl md:text-3xl font-orbitron font-black text-pink-400">0x</div>
+            </div>
+        </div>
+
+        <!-- Central Rounding Banner -->
+        <div id="gantryBoard" class="flex flex-col items-center justify-center bg-slate-950/95 neon-box-yellow rounded-2xl px-6 py-2 shadow-2xl pointer-events-auto min-w-[280px]">
+            <span id="targetInstruction" class="text-xs md:text-sm font-bold text-yellow-400 tracking-widest uppercase animate-pulse">
+                ROUND TO THE NEAREST 10!
+            </span>
+            <div id="targetValueDisplay" class="text-3xl md:text-4xl font-orbitron font-black text-white tracking-wider neon-text-yellow">
+                2,746 <span class="text-xs font-normal text-slate-400">KM/H</span>
+            </div>
+        </div>
+
+        <!-- Speed, Nitro & Pause -->
+        <div class="flex items-center space-x-3 bg-slate-950/90 backdrop-blur border border-cyan-500/50 rounded-2xl px-4 py-2 neon-box-cyan pointer-events-auto">
+            <div class="text-right">
+                <div class="text-[10px] text-cyan-400 font-bold uppercase tracking-widest">Cruising Speed</div>
+                <div class="flex items-baseline justify-end space-x-1">
+                    <span id="speedDisplay" class="text-2xl md:text-3xl font-orbitron font-black text-white">120</span>
+                    <span class="text-[10px] text-cyan-400 font-bold">KM/H</span>
+                </div>
+            </div>
+            <!-- Nitro Indicator -->
+            <div class="flex flex-col items-center">
+                <div class="text-[9px] text-yellow-400 font-bold uppercase">NITRO</div>
+                <div class="w-3 h-9 bg-slate-900 border border-yellow-500/50 rounded flex flex-col justify-end p-0.5">
+                    <div id="nitroBar" class="w-full bg-gradient-to-t from-yellow-500 to-pink-500 rounded-sm transition-all duration-300" style="height: 30%;"></div>
+                </div>
+            </div>
+            <!-- Pause Button -->
+            <button id="pauseBtn" class="ml-1 w-9 h-9 bg-slate-800 hover:bg-slate-700 active:scale-95 border border-cyan-400/50 rounded-xl flex items-center justify-center text-cyan-300 transition-all">
+                <i class="fa-solid fa-pause"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Notification Banner for Boost or Crash -->
+    <div id="flashBanner" class="absolute top-36 z-40 text-center pointer-events-none opacity-0 transition-opacity duration-300">
+        <h2 id="flashTitle" class="text-3xl md:text-5xl font-orbitron font-black text-yellow-300 drop-shadow-[0_0_15px_rgba(234,179,8,0.8)] tracking-wider">
+            SUPERSONIC NITRO!
+        </h2>
+        <p id="flashSubtitle" class="text-xs md:text-sm text-white font-bold mt-1 bg-slate-950/90 px-4 py-1.5 rounded-full border border-cyan-400/50 inline-block shadow-lg"></p>
+    </div>
+
+    <!-- Lower Dashboard & Mobile Controls -->
+    <div id="dashboard" class="relative z-20 w-full max-w-4xl px-4 mb-2 flex flex-col items-center pointer-events-none transition-opacity duration-300 opacity-0">
+        
+        <!-- Hoverbike Controls HUD -->
+        <div class="w-full bg-slate-950/95 border-t-2 border-x-2 border-cyan-500/80 rounded-t-3xl p-3 backdrop-blur-md shadow-2xl flex flex-col items-center">
+            
+            <!-- Gate Distance Progress Bar -->
+            <div class="w-full max-w-md bg-slate-900 h-2 rounded-full overflow-hidden mb-2 border border-slate-700">
+                <div id="approachBar" class="h-full bg-gradient-to-r from-cyan-400 via-pink-500 to-yellow-400 w-0 transition-all ease-linear"></div>
+            </div>
+
+            <!-- Lane Status & Key Help -->
+            <div class="flex items-center justify-between w-full px-4 text-slate-400 text-xs font-semibold">
+                <div class="hidden sm:flex items-center space-x-1.5">
+                    <span class="bg-slate-800 text-cyan-300 px-2 py-0.5 rounded border border-cyan-500/30 font-orbitron">A</span>
+                    <span class="bg-slate-800 text-cyan-300 px-2 py-0.5 rounded border border-cyan-500/30 font-orbitron">◄</span>
+                    <span>LEFT GATE</span>
+                </div>
+                <div id="laneStatusText" class="text-yellow-400 font-orbitron font-bold tracking-widest text-xs md:text-sm mx-auto">
+                    CURRENT LANE: CENTER
+                </div>
+                <div class="hidden sm:flex items-center space-x-1.5">
+                    <span>RIGHT GATE</span>
+                    <span class="bg-slate-800 text-cyan-300 px-2 py-0.5 rounded border border-cyan-500/30 font-orbitron">►</span>
+                    <span class="bg-slate-800 text-cyan-300 px-2 py-0.5 rounded border border-cyan-500/30 font-orbitron">D</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Large Touch / Mouse Steering Buttons -->
+        <div class="w-full grid grid-cols-3 gap-2 mt-2 pointer-events-auto">
+            <button id="touchLeftBtn" class="bg-cyan-950/80 active:bg-cyan-600/60 border border-cyan-500/60 py-3 rounded-xl text-cyan-300 text-xl font-bold flex flex-col justify-center items-center shadow-lg active:scale-95 transition-all">
+                <i class="fa-solid fa-chevron-left text-2xl"></i>
+                <span class="text-[10px] font-orbitron mt-0.5">LANE 1</span>
+            </button>
+            <button id="touchCenterBtn" class="bg-slate-900/80 active:bg-purple-600/60 border border-purple-500/60 py-3 rounded-xl text-purple-300 text-sm font-bold flex flex-col justify-center items-center shadow-lg active:scale-95 transition-all">
+                <i class="fa-solid fa-arrows-to-dot text-xl"></i>
+                <span class="text-[10px] font-orbitron mt-0.5">CENTER</span>
+            </button>
+            <button id="touchRightBtn" class="bg-cyan-950/80 active:bg-cyan-600/60 border border-cyan-500/60 py-3 rounded-xl text-cyan-300 text-xl font-bold flex flex-col justify-center items-center shadow-lg active:scale-95 transition-all">
+                <i class="fa-solid fa-chevron-right text-2xl"></i>
+                <span class="text-[10px] font-orbitron mt-0.5">LANE 3</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- START / MENU MODAL -->
+    <div id="startModal" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4">
+        <div class="max-w-xl w-full bg-slate-900/90 border-2 border-cyan-500 rounded-3xl p-6 md:p-8 text-center neon-box-cyan flex flex-col items-center">
+            
+            <div class="inline-block bg-pink-500/20 border border-pink-500 text-pink-300 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-widest mb-3 animate-pulse">
+                Cybernetic Math Gauntlet
+            </div>
+
+            <h1 class="text-3xl md:text-5xl font-orbitron font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-pink-400 to-yellow-300 neon-text-cyan leading-tight mb-1">
+                ODOMETER OVERDRIVE
+            </h1>
+            <p class="text-xs md:text-sm text-cyan-300 font-orbitron tracking-widest uppercase mb-5">The Speedometer Gauntlet</p>
+
+            <div class="w-full bg-slate-950/80 border border-slate-700/80 rounded-2xl p-4 text-left text-xs md:text-sm text-slate-300 space-y-3 mb-6">
+                <div class="flex items-start space-x-3">
+                    <i class="fa-solid fa-gauge-high text-cyan-400 text-base mt-0.5"></i>
+                    <div>
+                        <span class="font-bold text-white">Target Rounding Goals:</span> Check the top dashboard banner and steer your bike into the rounded gate value (to nearest <strong class="text-yellow-400">10</strong>, <strong class="text-yellow-400">100</strong>, or <strong class="text-yellow-400">1,000</strong>).
+                    </div>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <i class="fa-solid fa-bolt text-pink-400 text-base mt-0.5"></i>
+                    <div>
+                        <span class="font-bold text-white">Roll-Over 9 Challenge:</span> Watch out for tricky rollovers like <span class="text-pink-400 font-mono">69,999</span> &rarr; <span class="text-pink-400 font-mono">70,000</span>!
+                    </div>
+                </div>
+                <div class="flex items-start space-x-3">
+                    <i class="fa-solid fa-keyboard text-yellow-400 text-base mt-0.5"></i>
+                    <div>
+                        <span class="font-bold text-white">Simple Controls:</span> Use <strong class="text-cyan-300 font-mono">A / D</strong>, <strong class="text-cyan-300 font-mono">Left / Right Arrows</strong>, or screen buttons to steer.
+                    </div>
+                </div>
+            </div>
+
+            <button id="startGameBtn" class="w-full py-4 bg-gradient-to-r from-cyan-500 via-pink-500 to-yellow-400 hover:brightness-110 active:scale-95 text-slate-950 font-orbitron font-black text-xl rounded-2xl shadow-xl shadow-cyan-500/30 transition-all cursor-pointer uppercase tracking-wider">
+                START GAUNTLET <i class="fa-solid fa-play ml-2"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- PAUSE MODAL -->
+    <div id="pauseModal" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-4 hidden">
+        <div class="max-w-sm w-full bg-slate-900 border-2 border-yellow-400 rounded-3xl p-6 text-center neon-box-yellow flex flex-col items-center">
+            <h2 class="text-3xl font-orbitron font-black text-yellow-400 mb-2">GAME PAUSED</h2>
+            <p class="text-xs text-slate-300 mb-6">Take a moment to prepare for your next rounding maneuver.</p>
+            <button id="resumeGameBtn" class="w-full py-3 bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-orbitron font-black text-lg rounded-xl shadow-lg transition-all uppercase cursor-pointer mb-3">
+                RESUME RUN <i class="fa-solid fa-play ml-1"></i>
+            </button>
+            <button id="quitGameBtn" class="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-orbitron font-bold text-sm rounded-xl transition-all uppercase cursor-pointer">
+                MAIN MENU
+            </button>
+        </div>
+    </div>
+
+    <!-- GAME OVER MODAL -->
+    <div id="gameOverModal" class="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/95 backdrop-blur-md p-4 hidden">
+        <div class="max-w-md w-full bg-slate-900/90 border-2 border-pink-500 rounded-3xl p-6 text-center neon-box-pink flex flex-col items-center">
+            
+            <h2 class="text-3xl md:text-4xl font-orbitron font-black text-pink-500 neon-text-pink mb-1">RUN COMPLETED</h2>
+            <p class="text-xs text-slate-400 uppercase tracking-widest font-orbitron mb-4">Gauntlet Statistics</p>
+
+            <div class="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 my-2 space-y-3">
+                <div class="flex justify-between items-center text-sm">
+                    <span class="text-slate-400">Final Score:</span>
+                    <span id="finalScore" class="text-2xl font-orbitron font-bold text-cyan-300">0</span>
+                </div>
+                <div class="flex justify-between items-center text-sm">
+                    <span class="text-slate-400">Max Streak:</span>
+                    <span id="finalStreak" class="text-xl font-orbitron font-bold text-pink-400">0x</span>
+                </div>
+                <div class="flex justify-between items-center text-sm">
+                    <span class="text-slate-400">Top Speed:</span>
+                    <span id="finalSpeed" class="text-xl font-orbitron font-bold text-yellow-400">0 KM/H</span>
+                </div>
+            </div>
+
+            <button id="restartGameBtn" class="w-full py-4 mt-4 bg-gradient-to-r from-pink-500 to-cyan-500 hover:brightness-110 active:scale-95 text-white font-orbitron font-black text-lg rounded-2xl shadow-lg transition-all cursor-pointer uppercase">
+                PLAY AGAIN <i class="fa-solid fa-rotate-right ml-2"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- GAME ENGINE & LOGIC -->
+    <script>
+        // --- GAME STATES ---
+        const GAME_STATES = { MENU: 0, PLAYING: 1, PAUSED: 2, GAMEOVER: 3 };
+        let gameState = GAME_STATES.MENU;
+
+        let score = 0;
+        let streak = 0;
+        let maxStreak = 0;
+        let baseSpeed = 100;
+        let currentSpeed = 100;
+        let maxSpeedReached = 100;
+        let nitroLevel = 30;
+
+        // Lane tracking: 0 = Left, 1 = Center, 2 = Right
+        let currentLane = 1;
+        let targetLane = 1;
+        let bikeXOffset = 0; // Smooth horizontal transition [-1 .. 1]
+
+        // Gate approach state
+        let gateProgress = 0; // 0.0 ( horizon ) to 1.0 ( collision point )
+        const GATE_SPEED_BASE = 0.0018; // Slow, deliberate approach speed
+        let currentProblem = null;
+        let gateEvaluated = false;
+
+        // --- WEB AUDIO API (Native Sound Generator - zero external file dependencies) ---
+        let audioCtx = null;
+
+        function getAudioContext() {
+            if (!audioCtx) {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (AudioContextClass) {
+                    audioCtx = new AudioContextClass();
+                }
+            }
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            return audioCtx;
+        }
+
+        function playSound(type) {
+            try {
+                const ctx = getAudioContext();
+                if (!ctx) return;
+
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                const now = ctx.currentTime;
+
+                if (type === 'boost') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(220, now);
+                    osc.frequency.exponentialRampToValueAtTime(880, now + 0.3);
+                    gain.gain.setValueAtTime(0.15, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                } else if (type === 'crash') {
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(150, now);
+                    osc.frequency.setValueAtTime(80, now + 0.1);
+                    gain.gain.setValueAtTime(0.2, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                    osc.start(now);
+                    osc.stop(now + 0.3);
+                } else if (type === 'steer') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(440, now);
+                    gain.gain.setValueAtTime(0.05, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+                    osc.start(now);
+                    osc.stop(now + 0.08);
+                }
+            } catch (e) {
+                // Audio failure fallback
+            }
+        }
+
+        // --- PROBLEM GENERATION LOGIC ---
+        function generateProblem() {
+            const units = ['10', '100', '1000'];
+            const roundingType = units[Math.floor(Math.random() * units.length)];
+            const isRollover = Math.random() < 0.45; // 45% chance for roll-over 9s
+            let val = 0;
+
+            if (roundingType === '10') {
+                if (isRollover) {
+                    const base = Math.floor(Math.random() * 80) + 10;
+                    val = base * 100 + 95 + Math.floor(Math.random() * 4); // e.g., 2997, 499
+                } else {
+                    val = Math.floor(Math.random() * 8990) + 105;
+                }
+            } else if (roundingType === '100') {
+                if (isRollover) {
+                    const base = Math.floor(Math.random() * 40) + 1;
+                    val = base * 1000 + 950 + Math.floor(Math.random() * 40); // e.g., 69950
+                } else {
+                    val = Math.floor(Math.random() * 48000) + 1200;
+                }
+            } else if (roundingType === '1000') {
+                if (isRollover) {
+                    const base = Math.floor(Math.random() * 8) + 1;
+                    val = base * 10000 + 9500 + Math.floor(Math.random() * 450); // e.g., 69999
+                } else {
+                    val = Math.floor(Math.random() * 88000) + 2500;
+                }
+            }
+
+            // Correct target value
+            let correctVal = 0;
+            const uNum = parseInt(roundingType);
+            correctVal = Math.round(val / uNum) * uNum;
+
+            // Generate distractors
+            let distractors = new Set();
+            while (distractors.size < 2) {
+                let shift = uNum * (Math.random() < 0.5 ? 1 : -1);
+                if (Math.random() < 0.3) shift *= 2;
+                let candidate = correctVal + shift;
+                if (candidate >= 0 && candidate !== correctVal) {
+                    distractors.add(candidate);
+                }
+            }
+
+            const options = [correctVal, ...Array.from(distractors)];
+            // Shuffle choices into 3 lanes
+            for (let i = options.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [options[i], options[j]] = [options[j], options[i]];
+            }
+
+            return {
+                val: val,
+                targetUnit: roundingType,
+                correctVal: correctVal,
+                options: options,
+                correctLane: options.indexOf(correctVal),
+                isRollover: isRollover
+            };
+        }
+
+        // --- DOM REFERENCES ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const hud = document.getElementById('hud');
+        const dashboard = document.getElementById('dashboard');
+        const startModal = document.getElementById('startModal');
+        const pauseModal = document.getElementById('pauseModal');
+        const gameOverModal = document.getElementById('gameOverModal');
+
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const streakDisplay = document.getElementById('streakDisplay');
+        const speedDisplay = document.getElementById('speedDisplay');
+        const nitroBar = document.getElementById('nitroBar');
+        const targetInstruction = document.getElementById('targetInstruction');
+        const targetValueDisplay = document.getElementById('targetValueDisplay');
+        const laneStatusText = document.getElementById('laneStatusText');
+        const approachBar = document.getElementById('approachBar');
+
+        const flashBanner = document.getElementById('flashBanner');
+        const flashTitle = document.getElementById('flashTitle');
+        const flashSubtitle = document.getElementById('flashSubtitle');
+
+        // --- CANVAS RESIZING ---
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- CONTROLS ---
+        function setLane(index) {
+            if (gameState !== GAME_STATES.PLAYING) return;
+            if (targetLane !== index) {
+                targetLane = index;
+                playSound('steer');
+                updateLaneHUD();
+            }
+        }
+
+        function updateLaneHUD() {
+            const laneLabels = ["CURRENT LANE: LEFT (1)", "CURRENT LANE: CENTER (2)", "CURRENT LANE: RIGHT (3)"];
+            laneStatusText.innerText = laneLabels[targetLane];
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') {
+                togglePause();
+                return;
+            }
+            if (gameState !== GAME_STATES.PLAYING) return;
+
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                if (targetLane > 0) setLane(targetLane - 1);
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                if (targetLane < 2) setLane(targetLane + 1);
+            }
+        });
+
+        // Touch / Click Control Listeners
+        document.getElementById('touchLeftBtn').addEventListener('click', () => setLane(0));
+        document.getElementById('touchCenterBtn').addEventListener('click', () => setLane(1));
+        document.getElementById('touchRightBtn').addEventListener('click', () => setLane(2));
+
+        document.getElementById('pauseBtn').addEventListener('click', togglePause);
+        document.getElementById('resumeGameBtn').addEventListener('click', togglePause);
+        document.getElementById('quitGameBtn').addEventListener('click', () => {
+            pauseModal.classList.add('hidden');
+            showMenu();
+        });
+
+        document.getElementById('startGameBtn').addEventListener('click', startGame);
+        document.getElementById('restartGameBtn').addEventListener('click', startGame);
+
+        // --- GAME LIFECYCLE ---
+        function showMenu() {
+            gameState = GAME_STATES.MENU;
+            startModal.classList.remove('hidden');
+            pauseModal.classList.add('hidden');
+            gameOverModal.classList.add('hidden');
+            hud.classList.add('opacity-0');
+            dashboard.classList.add('opacity-0');
+        }
+
+        function togglePause() {
+            if (gameState === GAME_STATES.PLAYING) {
+                gameState = GAME_STATES.PAUSED;
+                pauseModal.classList.remove('hidden');
+            } else if (gameState === GAME_STATES.PAUSED) {
+                gameState = GAME_STATES.PLAYING;
+                pauseModal.classList.add('hidden');
+            }
+        }
+
+        function startGame() {
+            score = 0;
+            streak = 0;
+            maxStreak = 0;
+            baseSpeed = 100;
+            currentSpeed = 100;
+            maxSpeedReached = 100;
+            nitroLevel = 30;
+
+            targetLane = 1;
+            currentLane = 1;
+            bikeXOffset = 0;
+            gateProgress = 0;
+            gateEvaluated = false;
+
+            startModal.classList.add('hidden');
+            pauseModal.classList.add('hidden');
+            gameOverModal.classList.add('hidden');
+
+            hud.classList.remove('opacity-0');
+            dashboard.classList.remove('opacity-0');
+
+            currentProblem = generateProblem();
+            updateHUDDisplay();
+            gameState = GAME_STATES.PLAYING;
+        }
+
+        function triggerFlashBanner(title, subtitle, isError = false) {
+            flashTitle.innerText = title;
+            flashSubtitle.innerText = subtitle;
+            flashTitle.className = isError 
+                ? "text-3xl md:text-5xl font-orbitron font-black text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.8)] tracking-wider"
+                : "text-3xl md:text-5xl font-orbitron font-black text-yellow-300 drop-shadow-[0_0_15px_rgba(234,179,8,0.8)] tracking-wider";
+
+            flashBanner.classList.remove('opacity-0');
+            setTimeout(() => {
+                flashBanner.classList.add('opacity-0');
+            }, 1200);
+        }
+
+        function updateHUDDisplay() {
+            scoreDisplay.innerText = score.toLocaleString();
+            streakDisplay.innerText = `${streak}x`;
+            speedDisplay.innerText = Math.round(currentSpeed);
+            nitroBar.style.height = `${nitroLevel}%`;
+
+            if (currentProblem) {
+                targetInstruction.innerText = `ROUND TO NEAREST ${currentProblem.targetUnit}!`;
+                targetValueDisplay.innerHTML = `${currentProblem.val.toLocaleString()} <span class="text-xs font-normal text-slate-400">KM/H</span>`;
+            }
+        }
+
+        function evaluateGatePass() {
+            if (gateEvaluated) return;
+            gateEvaluated = true;
+
+            const isCorrect = (targetLane === currentProblem.correctLane);
+
+            if (isCorrect) {
+                streak++;
+                if (streak > maxStreak) maxStreak = streak;
+                const points = 100 + streak * 25;
+                score += points;
+
+                nitroLevel = Math.min(100, nitroLevel + 20);
+                currentSpeed = Math.min(220, baseSpeed + streak * 5);
+                if (currentSpeed > maxSpeedReached) maxSpeedReached = currentSpeed;
+
+                playSound('boost');
+                triggerFlashBanner("NITRO BOOST!", `+${points} PTS | Correct rounded gate passed!`);
+            } else {
+                streak = 0;
+                currentSpeed = Math.max(80, currentSpeed - 30);
+                nitroLevel = Math.max(0, nitroLevel - 15);
+
+                document.body.classList.add('animate-shake');
+                setTimeout(() => document.body.classList.remove('animate-shake'), 400);
+
+                playSound('crash');
+                triggerFlashBanner("GUARDRAIL IMPACT!", `Missed! Correct value was ${currentProblem.correctVal.toLocaleString()}`, true);
+            }
+
+            // Prepare next round smoothly
+            setTimeout(() => {
+                currentProblem = generateProblem();
+                gateProgress = 0;
+                gateEvaluated = false;
+                updateHUDDisplay();
+            }, 400);
+        }
+
+        function gameOver() {
+            gameState = GAME_STATES.GAMEOVER;
+            document.getElementById('finalScore').innerText = score.toLocaleString();
+            document.getElementById('finalStreak').innerText = `${maxStreak}x`;
+            document.getElementById('finalSpeed').innerText = `${Math.round(maxSpeedReached)} KM/H`;
+            gameOverModal.classList.remove('hidden');
+        }
+
+        // --- RENDER LOOP ---
+        function render(timestamp) {
+            const w = canvas.width;
+            const h = canvas.height;
+            const horizonY = h * 0.42;
+
+            // Clear Background (Synthwave Grid Sky)
+            const skyGradient = ctx.createLinearGradient(0, 0, 0, horizonY);
+            skyGradient.addColorStop(0, '#030308');
+            skyGradient.addColorStop(1, '#110b29');
+            ctx.fillStyle = skyGradient;
+            ctx.fillRect(0, 0, w, horizonY);
+
+            // Horizon Sun Glow
+            const sunGradient = ctx.createRadialGradient(w / 2, horizonY, 5, w / 2, horizonY, 140);
+            sunGradient.addColorStop(0, 'rgba(236, 72, 153, 0.8)');
+            sunGradient.addColorStop(0.5, 'rgba(234, 179, 8, 0.3)');
+            sunGradient.addColorStop(1, 'transparent');
+            ctx.fillStyle = sunGradient;
+            ctx.fillRect(0, horizonY - 140, w, 140);
+
+            // Ground Highway Surface
+            const groundGradient = ctx.createLinearGradient(0, horizonY, 0, h);
+            groundGradient.addColorStop(0, '#090814');
+            groundGradient.addColorStop(1, '#020205');
+            ctx.fillStyle = groundGradient;
+            ctx.fillRect(0, horizonY, w, h - horizonY);
+
+            // Perspective Grid Lines
+            const roadTopW = w * 0.15;
+            const roadBotW = w * 0.95;
+            const centerX = w / 2;
+
+            ctx.strokeStyle = 'rgba(6, 182, 212, 0.25)';
+            ctx.lineWidth = 1;
+
+            // Horizontal moving grid lines
+            const lineOffset = (timestamp * (currentSpeed / 500)) % 40;
+            for (let y = horizonY; y < h; y += 40) {
+                const drawY = y + lineOffset;
+                if (drawY > horizonY && drawY < h) {
+                    ctx.beginPath();
+                    ctx.moveTo(0, drawY);
+                    ctx.lineTo(w, drawY);
+                    ctx.stroke();
+                }
+            }
+
+            // Highway Guardrails & Lane Dividers
+            ctx.strokeStyle = '#06b6d4';
+            ctx.lineWidth = 3;
+            ctx.shadowColor = '#06b6d4';
+            ctx.shadowBlur = 10;
+
+            // Outer Borders
+            ctx.beginPath();
+            ctx.moveTo(centerX - roadTopW / 2, horizonY);
+            ctx.lineTo(centerX - roadBotW / 2, h);
+            ctx.moveTo(centerX + roadTopW / 2, horizonY);
+            ctx.lineTo(centerX + roadBotW / 2, h);
+            ctx.stroke();
+
+            // Lane Markings
+            ctx.strokeStyle = 'rgba(236, 72, 153, 0.5)';
+            ctx.setLineDash([15, 15]);
+            ctx.beginPath();
+            ctx.moveTo(centerX - roadTopW / 6, horizonY);
+            ctx.lineTo(centerX - roadBotW / 6, h);
+            ctx.moveTo(centerX + roadTopW / 6, horizonY);
+            ctx.lineTo(centerX + roadBotW / 6, h);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.shadowBlur = 0;
+
+            // DRAW APPROACHING GATES WITH HIGH-CONTRAST BADGES
+            if (gameState === GAME_STATES.PLAYING && currentProblem) {
+                const pScale = Math.pow(gateProgress, 1.4); // Curved perspective scaling
+                const gateY = horizonY + pScale * (h - horizonY - 100);
+                const currentRoadW = roadTopW + pScale * (roadBotW - roadTopW);
+                const laneW = currentRoadW / 3;
+
+                const laneCenters = [
+                    centerX - currentRoadW / 3,
+                    centerX,
+                    centerX + currentRoadW / 3
+                ];
+
+                currentProblem.options.forEach((optVal, idx) => {
+                    const lX = laneCenters[idx];
+                    const boxW = Math.max(90, laneW * 0.9);
+                    const boxH = Math.max(30, 75 * pScale);
+
+                    // Check if this gate corresponds to the player's currently selected lane
+                    const isSelectedLane = (idx === targetLane);
+
+                    // High contrast sign background - Highlight in yellow ONLY if selected by the player
+                    ctx.fillStyle = isSelectedLane ? '#1a1805' : '#050b14';
+                    ctx.strokeStyle = isSelectedLane ? '#facc15' : '#06b6d4';
+                    ctx.lineWidth = Math.max(2, (isSelectedLane ? 5 : 3) * pScale);
+                    ctx.shadowColor = ctx.strokeStyle;
+                    ctx.shadowBlur = (isSelectedLane ? 20 : 10) * pScale;
+
+                    ctx.fillRect(lX - boxW / 2, gateY - boxH, boxW, boxH);
+                    ctx.strokeRect(lX - boxW / 2, gateY - boxH, boxW, boxH);
+
+                    // Crisp Number Badge (Visible from 0% progress)
+                    ctx.shadowBlur = 0;
+                    ctx.fillStyle = isSelectedLane ? '#fef08a' : '#ffffff';
+                    const fontSize = Math.max(14, Math.floor(28 * pScale));
+                    ctx.font = `900 ${fontSize}px Orbitron, sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(optVal.toLocaleString(), lX, gateY - boxH / 2);
+                });
+            }
+
+            // HOVERBIKE PLAYER CHARACTER
+            bikeXOffset += (targetLane - currentLane) * 0.2;
+            if (Math.abs(targetLane - currentLane) < 0.01) currentLane = targetLane;
+
+            const playerY = h - 130;
+            const playerX = centerX + (bikeXOffset - 1) * (roadBotW / 3);
+
+            ctx.save();
+            ctx.translate(playerX, playerY);
+
+            // Thruster Exhaust Flame
+            ctx.fillStyle = '#facc15';
+            ctx.shadowColor = '#ef4444';
+            ctx.shadowBlur = 15;
+            ctx.beginPath();
+            ctx.ellipse(0, 30, 10 + Math.random() * 4, 20 + Math.random() * 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bike Chassis
+            ctx.fillStyle = '#090d16';
+            ctx.strokeStyle = '#06b6d4';
+            ctx.lineWidth = 3;
+            ctx.shadowColor = '#06b6d4';
+            ctx.shadowBlur = 10;
+
+            ctx.beginPath();
+            ctx.moveTo(0, -40);
+            ctx.lineTo(22, 20);
+            ctx.lineTo(12, 30);
+            ctx.lineTo(-12, 30);
+            ctx.lineTo(-22, 20);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Cockpit Shield
+            ctx.fillStyle = '#ec4899';
+            ctx.shadowColor = '#ec4899';
+            ctx.shadowBlur = 8;
+            ctx.beginPath();
+            ctx.ellipse(0, -8, 7, 14, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        // --- MAIN GAME LOOP ---
+        function gameLoop(timestamp) {
+            if (gameState === GAME_STATES.PLAYING) {
+                const speedFactor = (currentSpeed / 100);
+                gateProgress += GATE_SPEED_BASE * speedFactor;
+
+                approachBar.style.width = `${Math.min(100, gateProgress * 100)}%`;
+
+                if (gateProgress >= 0.96) {
+                    evaluateGatePass();
+                }
+            }
+
+            render(timestamp);
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Initial setup
+        showMenu();
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
