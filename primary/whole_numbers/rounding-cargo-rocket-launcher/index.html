@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Cargo Rocket Launcher: Launch Weight Estimator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;800;900&family=Orbitron:wght@600;800&display=swap" rel="stylesheet" />
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #030812;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: pointer;
+    touch-action: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript {
+    color: #e8f7ff;
+    font-family: "Trebuchet MS", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>This lesson needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game" aria-label="Cargo Rocket Launcher, a rounding and estimation game"></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+
+/* Cargo Rocket Launcher: Launch Weight Estimator
+   Singapore Primary estimation: round → multiply → round ÷ divide.
+   Three-step launch loop with thruster charge and takeoff. */
+
+const LW = 1280;
+const LH = 720;
+const FONT = 'Nunito, Trebuchet MS, sans-serif';
+const DISP = 'Orbitron, Nunito, sans-serif';
+const COL = {
+  bg: '#030812',
+  ink: '#eaf6ff',
+  dim: '#7fa8c4',
+  cyan: '#3ef0ff',
+  green: '#5dffb0',
+  lime: '#9dff4a',
+  amber: '#ffc857',
+  bad: '#ff5d6c',
+  panel: 'rgba(4, 14, 32, 0.88)',
+  pad: '#1a2740',
+  thruster: '#39ffc4'
+};
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const live = document.getElementById('live');
+const held = new Set();
+const hotspots = [];
+const fx = [];
+const stars = [];
+const sparks = [];
+const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const view = { cssW: LW, cssH: LH, dpr: 1, scale: 1, ox: 0, oy: 0 };
+const pointer = { x: 640, y: 360, down: false, over: false };
+
+const G = {
+  mode: 'title',
+  t: 0,
+  score: 0,
+  streak: 0,
+  bestStreak: 0,
+  fuel: 100,
+  launches: 0,
+  step: 1,
+  sub: 'A',
+  phase: 'choose',
+  phaseT: 0,
+  problem: null,
+  choices: [],
+  feedback: '',
+  feedbackKind: '',
+  flash: 0,
+  glow: 0,
+  thruster: 0,
+  lockUntil: 0,
+  rocketY: 0,
+  launchT: 0,
+  shake: 0,
+  selected: -1,
+  hover: -1,
+  keypad: 0,
+  tip: '',
+  missionPts: 0
+};
+
+const audio = createAudio();
+
+for (let i = 0; i < 90; i++) {
+  stars.push({
+    x: Math.random() * LW,
+    y: Math.random() * LH * 0.72,
+    r: 0.6 + Math.random() * 1.8,
+    tw: Math.random() * Math.PI * 2,
+    sp: 0.4 + Math.random() * 1.4
+  });
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function pulse(speed, min, max) {
+  const s = (Math.sin(G.t * speed) + 1) / 2;
+  return min + (max - min) * s;
+}
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
+function fmt(n) {
+  const s = String(Math.abs(Math.round(n)));
+  return s.replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009');
+}
+function speak(msg) { live.textContent = msg; }
+function roundNearest(n, place) {
+  return Math.round(n / place) * place;
+}
+
+/* ---------- Problem generator ---------- */
+
+function buildDistractors(correct, place, extras) {
+  const wrong = new Set();
+  const cands = (extras || []).concat([
+    correct + place,
+    correct - place,
+    correct + place * 2,
+    correct - place * 2,
+    Math.floor(correct / (place * 10)) * (place * 10),
+    Math.ceil(correct / place) * place,
+    Math.floor(correct / place) * place,
+    correct + place / 2,
+    correct - place / 2
+  ]);
+  shuffle(cands).forEach((v) => {
+    if (!Number.isFinite(v) || v <= 0) return;
+    const n = Math.round(v);
+    if (n === correct) return;
+    if (place >= 100 && n % (place / 10) !== 0) return;
+    wrong.add(n);
+  });
+  let guard = 0;
+  while (wrong.size < 3 && guard++ < 40) {
+    const n = Math.max(place, correct + place * (wrong.size + 1) * (Math.random() < 0.5 ? 1 : -1));
+    if (n !== correct) wrong.add(n);
+  }
+  // Always keep the correct answer — never let shuffle/slice drop it.
+  return shuffle([correct].concat(shuffle([...wrong]).slice(0, 3)));
+}
+
+function rollMultiplyCargo() {
+  // Multi-digit 1,000–9,000-ish, not already a clean thousand.
+  let kg = 1200 + Math.floor(Math.random() * 7800);
+  if (kg % 1000 === 0) kg += 100 + Math.floor(Math.random() * 800);
+  // Avoid exact midpoint traps less often; still include some
+  if (Math.random() < 0.12) kg = Math.floor(kg / 1000) * 1000 + 500;
+  const thrusters = 2 + Math.floor(Math.random() * 8);
+  const rounded = roundNearest(kg, 1000);
+  const estimate = rounded * thrusters;
+  return { kg, thrusters, rounded, estimate };
+}
+
+function rollDivisionFuel() {
+  const engines = 2 + Math.floor(Math.random() * 8);
+  // Rounded dividend must divide cleanly by engines.
+  const hundreds = 2 + Math.floor(Math.random() * 48); // 200–4900 after *100, then × engines
+  let rounded = hundreds * 100;
+  // Make divisible by engines after rounding to nearest 100
+  rounded = Math.round((Math.round(rounded / engines) * engines) / 100) * 100;
+  if (rounded < 200) rounded = engines * 100;
+  if (rounded > 9900) rounded = Math.floor(9900 / engines) * engines;
+  rounded = Math.round(rounded / 100) * 100;
+  // Ensure clean division
+  while (rounded % engines !== 0) rounded += 100;
+  if (rounded > 9900) {
+    rounded = engines * Math.floor(9900 / (engines * 100)) * 100;
+    while (rounded % engines !== 0) rounded -= 100;
+  }
+  const perEngine = rounded / engines;
+  // Actual fuel slightly off the rounded value (100–9900)
+  let offset = (Math.floor(Math.random() * 9) - 4) * 10; // -40..+40-ish tens
+  if (offset === 0) offset = Math.random() < 0.5 ? 20 : -30;
+  let fuel = rounded + offset;
+  fuel = clamp(fuel, 100, 9900);
+  // Keep nearest-100 rounding equal to our planned rounded value
+  if (roundNearest(fuel, 100) !== rounded) {
+    fuel = rounded + (Math.random() < 0.5 ? -40 : 40);
+    fuel = clamp(fuel, 100, 9900);
+    if (roundNearest(fuel, 100) !== rounded) fuel = rounded - 20;
+  }
+  return { fuel, engines, rounded, perEngine };
+}
+
+function makeMission() {
+  const mul = rollMultiplyCargo();
+  const div = rollDivisionFuel();
+  return {
+    kg: mul.kg,
+    thrusters: mul.thrusters,
+    roundedKg: mul.rounded,
+    estimate: mul.estimate,
+    fuel: div.fuel,
+    engines: div.engines,
+    roundedFuel: div.rounded,
+    perEngine: div.perEngine
+  };
+}
+
+function stepMeta() {
+  const p = G.problem;
+  if (!p) return { title: '', ask: '', unit: '', correct: 0, place: 1000 };
+  if (G.step === 1) {
+    return {
+      title: 'Estimate Cargo Order: ' + fmt(p.kg) + ' kg × ' + p.thrusters + ' thrusters',
+      ask: 'Round ' + fmt(p.kg) + ' kg to the nearest 1,000.',
+      unit: ' kg',
+      correct: p.roundedKg,
+      place: 1000,
+      tip: 'Look at the hundreds digit. 5 or more → round up; less than 5 → round down.'
+    };
+  }
+  if (G.step === 2) {
+    return {
+      title: 'Now estimate total payload: ' + fmt(p.roundedKg) + ' kg × ' + p.thrusters + ' thrusters',
+      ask: 'What is the estimated total payload?',
+      unit: ' kg',
+      correct: p.estimate,
+      place: 1000,
+      tip: 'Multiply the rounded cargo by the thruster count: ' + fmt(p.roundedKg) + ' × ' + p.thrusters + '.'
+    };
+  }
+  if (G.sub === 'A') {
+    return {
+      title: 'Distribute fuel: ' + fmt(p.fuel) + ' L ÷ ' + p.engines + ' engines (Round to nearest 100)',
+      ask: 'Round ' + fmt(p.fuel) + ' L to the nearest 100.',
+      unit: ' L',
+      correct: p.roundedFuel,
+      place: 100,
+      tip: 'Look at the tens digit. 5 or more → round up to the next hundred.'
+    };
+  }
+  return {
+    title: 'Distribute fuel: ' + fmt(p.roundedFuel) + ' L ÷ ' + p.engines + ' engines',
+    ask: 'Estimated rate per engine: ' + fmt(p.roundedFuel) + ' ÷ ' + p.engines + ' = ?',
+    unit: ' L',
+    correct: p.perEngine,
+    place: 100,
+    tip: 'Divide the rounded fuel by the engine count.'
+  };
+}
+
+function loadChoices() {
+  const meta = stepMeta();
+  const p = G.problem;
+  let extras = [];
+  if (G.step === 1) {
+    extras = [
+      Math.floor(p.kg / 100) * 100,
+      Math.round(p.kg / 100) * 100,
+      Math.floor(p.kg / 1000) * 1000,
+      Math.ceil(p.kg / 1000) * 1000
+    ];
+  } else if (G.step === 2) {
+    extras = [
+      p.kg * p.thrusters,
+      p.roundedKg * (p.thrusters + 1),
+      p.roundedKg * (p.thrusters - 1),
+      (p.roundedKg + 1000) * p.thrusters,
+      (p.roundedKg - 1000) * p.thrusters,
+      Math.round(p.kg / 1000) * 1000 * p.thrusters
+    ];
+  } else if (G.sub === 'A') {
+    extras = [
+      Math.floor(p.fuel / 100) * 100,
+      Math.ceil(p.fuel / 100) * 100,
+      Math.round(p.fuel / 10) * 10,
+      Math.round(p.fuel / 1000) * 1000
+    ];
+  } else {
+    extras = [
+      Math.round(p.fuel / p.engines),
+      p.roundedFuel / (p.engines + 1) || 100,
+      p.roundedFuel * p.engines,
+      p.perEngine + 100,
+      p.perEngine - 100,
+      Math.round(p.roundedFuel / 100) * 10
+    ];
+  }
+  G.choices = buildDistractors(meta.correct, meta.place, extras);
+  G.tip = meta.tip;
+  G.selected = -1;
+  G.hover = -1;
+  G.keypad = 0;
+  speak(meta.title + '. ' + meta.ask);
+}
+
+function startMission() {
+  G.problem = makeMission();
+  G.step = 1;
+  G.sub = 'A';
+  G.phase = 'choose';
+  G.phaseT = 0;
+  G.feedback = '';
+  G.feedbackKind = '';
+  G.flash = 0;
+  G.glow = 0;
+  G.thruster = 0;
+  G.rocketY = 0;
+  G.launchT = 0;
+  G.missionPts = 0;
+  G.lockUntil = 0;
+  loadChoices();
+}
+
+function beginPlay() {
+  audio.ensure();
+  G.mode = 'play';
+  G.score = 0;
+  G.streak = 0;
+  G.bestStreak = 0;
+  G.fuel = 100;
+  G.launches = 0;
+  startMission();
+}
+
+/* ---------- Scoring / answers ---------- */
+
+function stepPoints() {
+  const mult = 1 + Math.min(4, Math.floor(G.streak / 2)) * 0.25;
+  return Math.round(100 * mult);
+}
+
+function onWrong() {
+  G.feedbackKind = 'bad';
+  G.feedback = 'Not quite — try again!';
+  G.flash = 0.55;
+  G.shake = 10;
+  G.fuel = clamp(G.fuel - 6, 0, 100);
+  G.score = Math.max(0, G.score - 25);
+  G.streak = 0;
+  G.lockUntil = G.t + 0.35;
+  audio.fail();
+  spawnBurst(LW / 2, 430, COL.bad, 14);
+  speak(G.feedback + ' ' + G.tip);
+}
+
+function advanceAfterCorrect() {
+  const pts = stepPoints();
+  G.score += pts;
+  G.missionPts += pts;
+  G.streak += 1;
+  G.bestStreak = Math.max(G.bestStreak, G.streak);
+  G.fuel = clamp(G.fuel + 8, 0, 100);
+  G.feedbackKind = 'good';
+  G.feedback = '+' + pts + '  ·  thrusters charging';
+  G.flash = 0.7;
+  G.glow = 1;
+  G.lockUntil = G.t + 0.45;
+  audio.win();
+  spawnBurst(LW / 2, 360, COL.green, 18);
+
+  if (G.step === 1) {
+    G.thruster = 0.35;
+    G.step = 2;
+    G.phase = 'choose';
+    G.phaseT = 0;
+    loadChoices();
+    return;
+  }
+  if (G.step === 2) {
+    G.thruster = 0.7;
+    spawnThrusterParticles(28);
+    G.step = 3;
+    G.sub = 'A';
+    G.phase = 'choose';
+    G.phaseT = 0;
+    loadChoices();
+    return;
+  }
+  if (G.sub === 'A') {
+    G.thruster = 0.85;
+    G.sub = 'B';
+    G.phase = 'choose';
+    G.phaseT = 0;
+    loadChoices();
+    return;
+  }
+  // Step 3B done → launch
+  G.thruster = 1;
+  G.phase = 'launch';
+  G.phaseT = 0;
+  G.launchT = 0;
+  G.rocketY = 0;
+  G.feedback = 'LAUNCH SEQUENCE!';
+  G.launches += 1;
+  audio.boost();
+  speak('Launch sequence initiated! Mission score ' + G.missionPts + '.');
+}
+
+function chooseAnswer(idx) {
+  if (G.mode !== 'play' || G.phase !== 'choose') return;
+  if (G.t < G.lockUntil) return;
+  const meta = stepMeta();
+  const val = G.choices[idx];
+  G.selected = idx;
+  audio.click();
+  if (val === meta.correct) {
+    advanceAfterCorrect();
+  } else {
+    onWrong();
+  }
+}
+
+/* ---------- FX ---------- */
+
+function spawnBurst(x, y, color, n) {
+  if (reduceMotion) return;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 40 + Math.random() * 180;
+    fx.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 40,
+      life: 0.4 + Math.random() * 0.5,
+      max: 0.9,
+      r: 2 + Math.random() * 3,
+      color
+    });
+  }
+}
+
+function spawnThrusterParticles(n) {
+  if (reduceMotion) return;
+  for (let i = 0; i < n; i++) {
+    sparks.push({
+      x: LW / 2 + (Math.random() - 0.5) * 36,
+      y: 470 + Math.random() * 20,
+      vx: (Math.random() - 0.5) * 40,
+      vy: 60 + Math.random() * 120,
+      life: 0.35 + Math.random() * 0.55,
+      max: 0.9,
+      r: 2 + Math.random() * 4,
+      color: Math.random() < 0.5 ? COL.cyan : COL.thruster
+    });
+  }
+}
+
+function updateFx(dt) {
+  for (let i = fx.length - 1; i >= 0; i--) {
+    const p = fx[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 120 * dt;
+    if (p.life <= 0) fx.splice(i, 1);
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.life <= 0) sparks.splice(i, 1);
+  }
+}
+
+/* ---------- Audio ---------- */
+
+function createAudio() {
+  let actx = null;
+  let master = null;
+  let sfxBus = null;
+  let noiseBuf = null;
+  let timer = null;
+  let step = 0;
+  let next = 0;
+  let muted = false;
+  try { muted = sessionStorage.getItem('cargo-rocket-mute') === '1'; } catch (err) { muted = false; }
+
+  function ensure() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      master = actx.createGain();
+      master.gain.value = muted ? 0 : 0.22;
+      master.connect(actx.destination);
+      const filter = actx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 2600;
+      const music = actx.createGain();
+      music.gain.value = 0.7;
+      music.connect(filter);
+      filter.connect(master);
+      sfxBus = actx.createGain();
+      sfxBus.gain.value = 0.95;
+      sfxBus.connect(master);
+      const len = actx.sampleRate;
+      noiseBuf = actx.createBuffer(1, len, actx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      actx._music = music;
+      next = actx.currentTime + 0.05;
+      timer = setInterval(schedule, 25);
+    }
+    if (actx.state === 'suspended') actx.resume();
+  }
+
+  function env(bus, time, dur, vol, freq, type, slide) {
+    if (!actx) return;
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(Math.max(36, freq), time);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(36, slide), time + dur);
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.04, dur));
+    o.connect(g);
+    g.connect(bus);
+    o.start(time);
+    o.stop(time + dur + 0.03);
+  }
+
+  function noiseHit(time, dur, vol, freq) {
+    if (!noiseBuf || !actx) return;
+    const src = actx.createBufferSource();
+    src.buffer = noiseBuf;
+    const bp = actx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(freq, time);
+    bp.Q.value = 0.7;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(sfxBus);
+    src.start(time);
+    src.stop(time + dur + 0.02);
+  }
+
+  function hat(time, vol) {
+    if (!noiseBuf) return;
+    const src = actx.createBufferSource();
+    src.buffer = noiseBuf;
+    const hp = actx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 7000;
+    const g = actx.createGain();
+    g.gain.setValueAtTime(vol, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + 0.04);
+    src.connect(hp);
+    hp.connect(g);
+    g.connect(actx._music);
+    src.start(time);
+    src.stop(time + 0.05);
+  }
+
+  function schedule() {
+    if (!actx || G.mode === 'title') return;
+    const beat = 60 / 128 / 4;
+    while (next < actx.currentTime + 0.16) {
+      playStep(step % 32, next);
+      next += beat;
+      step++;
+    }
+  }
+
+  function playStep(i, time) {
+    const bass = [55, 0, 55, 0, 82, 0, 55, 0, 73, 0, 82, 110, 55, 0, 98, 0, 65, 0, 65, 0, 82, 0, 55, 0, 73, 0, 98, 110, 55, 0, 82, 0];
+    if (i % 8 === 0) env(actx._music, time, 0.14, 0.4, 130, 'sine', 40);
+    if (i % 2 === 0) hat(time, i % 8 === 4 ? 0.045 : 0.022);
+    if (bass[i]) env(actx._music, time, 0.12, 0.09, bass[i], 'square');
+  }
+
+  function now() { return actx ? actx.currentTime : 0; }
+
+  return {
+    ensure,
+    get muted() { return muted; },
+    toggle() {
+      ensure();
+      muted = !muted;
+      try { sessionStorage.setItem('cargo-rocket-mute', muted ? '1' : '0'); } catch (err) { /* ignore */ }
+      if (master && actx) master.gain.setTargetAtTime(muted ? 0 : 0.22, actx.currentTime, 0.04);
+      return muted;
+    },
+    click() {
+      if (!actx) return;
+      env(sfxBus, now(), 0.04, 0.04, 1400, 'square', 900);
+    },
+    win() {
+      if (!actx) return;
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        env(sfxBus, now() + i * 0.05, 0.4, 0.05, freq, 'triangle');
+      });
+    },
+    fail() {
+      if (!actx) return;
+      env(sfxBus, now(), 0.18, 0.07, 180, 'sawtooth', 70);
+      noiseHit(now(), 0.22, 0.08, 620);
+    },
+    boost() {
+      if (!actx) return;
+      env(sfxBus, now(), 0.5, 0.08, 90, 'sawtooth', 420);
+      noiseHit(now(), 0.4, 0.1, 400);
+      env(sfxBus, now() + 0.15, 0.45, 0.06, 220, 'triangle', 900);
+    },
+    tick() {
+      if (!actx) return;
+      env(sfxBus, now(), 0.04, 0.035, 980, 'square');
+    }
+  };
+}
+
+/* ---------- Layout helpers ---------- */
+
+function headerRect() { return { x: 40, y: 18, w: LW - 80, h: 78 }; }
+function consoleRect() { return { x: 40, y: 560, w: LW - 80, h: 140 }; }
+function cargoPanelRect() { return { x: 70, y: 120, w: 420, h: 400 }; }
+function stageRocketX() { return 860; }
+function stageRocketBaseY() { return 470; }
+
+function choiceRects() {
+  const c = consoleRect();
+  const gap = 16;
+  const bw = (c.w - gap * 5) / 4;
+  const bh = 64;
+  const y = c.y + 58;
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    out.push({ x: c.x + gap + i * (bw + gap), y, w: bw, h: bh, i });
+  }
+  return out;
+}
+
+/* ---------- Drawing ---------- */
+
+function drawStars() {
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const a = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(G.t * s.sp + s.tw));
+    ctx.fillStyle = 'rgba(200, 240, 255,' + a + ')';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawPlanet() {
+  const g = ctx.createRadialGradient(200, 640, 20, 200, 680, 260);
+  g.addColorStop(0, 'rgba(40, 120, 160, 0.35)');
+  g.addColorStop(1, 'rgba(3, 8, 18, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(160, 720, 220, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function drawPanel(x, y, w, h, accent) {
+  ctx.fillStyle = COL.panel;
+  roundRect(x, y, w, h, 16);
+  ctx.fill();
+  ctx.strokeStyle = accent || 'rgba(62, 240, 255, 0.45)';
+  ctx.lineWidth = 2;
+  roundRect(x, y, w, h, 16);
+  ctx.stroke();
+}
+
+function drawHeader() {
+  const h = headerRect();
+  drawPanel(h.x, h.y, h.w, h.h, 'rgba(62, 240, 255, 0.35)');
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 13px ' + FONT;
+  ctx.textAlign = 'left';
+  ctx.fillText('MISSION SCORE', h.x + 28, h.y + 28);
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '800 34px ' + DISP;
+  ctx.fillText(fmt(G.score), h.x + 28, h.y + 62);
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillText('STREAK', h.x + 280, h.y + 28);
+  ctx.fillStyle = G.streak > 0 ? COL.lime : COL.ink;
+  ctx.font = '800 34px ' + DISP;
+  ctx.fillText(String(G.streak) + '×', h.x + 280, h.y + 62);
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillText('FUEL GAUGE', h.x + 440, h.y + 28);
+  const gx = h.x + 440;
+  const gy = h.y + 42;
+  const gw = 360;
+  const gh = 22;
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  roundRect(gx, gy, gw, gh, 8);
+  ctx.fill();
+  const fill = (G.fuel / 100) * (gw - 4);
+  const fg = ctx.createLinearGradient(gx, gy, gx + gw, gy);
+  fg.addColorStop(0, '#1ad6ff');
+  fg.addColorStop(0.55, '#39ffc4');
+  fg.addColorStop(1, '#9dff4a');
+  ctx.fillStyle = fg;
+  roundRect(gx + 2, gy + 2, Math.max(0, fill), gh - 4, 6);
+  ctx.fill();
+  ctx.fillStyle = COL.ink;
+  ctx.font = '800 14px ' + DISP;
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.round(G.fuel) + '%', gx + gw - 8, gy + 17);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillText('LAUNCHES', h.x + 860, h.y + 28);
+  ctx.fillStyle = COL.amber;
+  ctx.font = '800 34px ' + DISP;
+  ctx.fillText(String(G.launches), h.x + 860, h.y + 62);
+
+  // mute
+  const mx = h.x + h.w - 70;
+  const my = h.y + 18;
+  drawPanel(mx, my, 52, 42, 'rgba(62,240,255,0.3)');
+  ctx.fillStyle = COL.ink;
+  ctx.font = '800 16px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.fillText(audio.muted ? 'MUTE' : 'SFX', mx + 26, my + 27);
+  hotspots.push({ id: 'mute', x: mx, y: my, w: 52, h: 42 });
+  ctx.textAlign = 'left';
+}
+
+function drawRocket(cx, baseY, charge, lift) {
+  const y = baseY - lift;
+  ctx.save();
+  ctx.translate(cx, y);
+
+  // glow / thruster plume
+  if (charge > 0.05) {
+    const plume = ctx.createRadialGradient(0, 58, 4, 0, 90, 40 + charge * 50);
+    plume.addColorStop(0, 'rgba(255, 240, 180,' + (0.55 + charge * 0.4) + ')');
+    plume.addColorStop(0.35, 'rgba(57, 255, 196,' + (0.35 + charge * 0.35) + ')');
+    plume.addColorStop(1, 'rgba(57, 255, 196, 0)');
+    ctx.fillStyle = plume;
+    ctx.beginPath();
+    ctx.moveTo(-18, 50);
+    ctx.quadraticCurveTo(-30 - charge * 20, 90 + charge * 40, 0, 110 + charge * 70);
+    ctx.quadraticCurveTo(30 + charge * 20, 90 + charge * 40, 18, 50);
+    ctx.closePath();
+    ctx.fill();
+
+    if (!reduceMotion && G.phase === 'launch') {
+      spawnThrusterParticles(2);
+    } else if (!reduceMotion && charge > 0.4 && Math.random() < 0.35) {
+      spawnThrusterParticles(1);
+    }
+  }
+
+  // launchpad shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(0, 78, 70, 14, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // body
+  const body = ctx.createLinearGradient(-40, -120, 40, 80);
+  body.addColorStop(0, '#d9e7f7');
+  body.addColorStop(0.45, '#9eb6d4');
+  body.addColorStop(1, '#5d7394');
+  ctx.fillStyle = body;
+  ctx.beginPath();
+  ctx.moveTo(0, -130);
+  ctx.quadraticCurveTo(38, -70, 36, 20);
+  ctx.lineTo(28, 55);
+  ctx.lineTo(-28, 55);
+  ctx.lineTo(-36, 20);
+  ctx.quadraticCurveTo(-38, -70, 0, -130);
+  ctx.closePath();
+  ctx.fill();
+
+  // window
+  ctx.fillStyle = 'rgba(20, 40, 70, 0.9)';
+  ctx.beginPath();
+  ctx.arc(0, -55, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = COL.cyan;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(62, 240, 255, 0.35)';
+  ctx.beginPath();
+  ctx.arc(-4, -58, 6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // stripe
+  ctx.fillStyle = charge > 0.5 ? COL.green : COL.cyan;
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(-22, -10, 44, 10);
+  ctx.globalAlpha = 1;
+
+  // fins
+  ctx.fillStyle = '#3a4f6d';
+  ctx.beginPath();
+  ctx.moveTo(-34, 10);
+  ctx.lineTo(-70, 58);
+  ctx.lineTo(-28, 52);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(34, 10);
+  ctx.lineTo(70, 58);
+  ctx.lineTo(28, 52);
+  ctx.closePath();
+  ctx.fill();
+
+  // nozzles
+  ctx.fillStyle = '#222b3c';
+  ctx.fillRect(-22, 55, 16, 14);
+  ctx.fillRect(6, 55, 16, 14);
+  ctx.fillStyle = charge > 0.2 ? COL.thruster : '#556';
+  ctx.globalAlpha = 0.5 + charge * 0.5;
+  ctx.fillRect(-20, 66, 12, 6);
+  ctx.fillRect(8, 66, 12, 6);
+  ctx.globalAlpha = 1;
+
+  // charge ring
+  if (charge > 0) {
+    ctx.strokeStyle = 'rgba(93, 255, 176,' + (0.3 + charge * 0.6) + ')';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, -20, 55 + Math.sin(G.t * 6) * 3, 0, Math.PI * 2 * charge);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // pad structure
+  ctx.save();
+  ctx.translate(cx, baseY);
+  ctx.fillStyle = COL.pad;
+  roundRect(-110, 70, 220, 28, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.35)';
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(62, 240, 255, 0.15)';
+  for (let i = -2; i <= 2; i++) {
+    ctx.fillRect(i * 36 - 8, 74, 16, 20);
+  }
+  // tower
+  ctx.fillStyle = 'rgba(90, 120, 160, 0.55)';
+  ctx.fillRect(95, -40, 12, 120);
+  ctx.fillRect(95, -40, 40, 8);
+  ctx.fillRect(95, 10, 30, 6);
+  ctx.restore();
+}
+
+function drawCargoPanel() {
+  const r = cargoPanelRect();
+  drawPanel(r.x, r.y, r.w, r.h, G.flash > 0 && G.feedbackKind === 'good'
+    ? 'rgba(93,255,176,0.85)'
+    : G.flash > 0 && G.feedbackKind === 'bad'
+      ? 'rgba(255,93,108,0.75)'
+      : 'rgba(62,240,255,0.4)');
+
+  const meta = stepMeta();
+  const stepLabel = G.step === 1
+    ? 'STEP 1 · ROUNDING CALIPER'
+    : G.step === 2
+      ? 'STEP 2 · MENTAL POWER BOOST'
+      : G.sub === 'A'
+        ? 'STEP 3A · FUEL ROUNDING'
+        : 'STEP 3B · DIVISION RATIO';
+
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '800 14px ' + DISP;
+  ctx.textAlign = 'left';
+  ctx.fillText(stepLabel, r.x + 22, r.y + 32);
+
+  // progress pips: 1 round · 2 multiply · 3A fuel round · 3B divide
+  const pipStage = G.phase === 'launch' ? 4
+    : G.step === 1 ? 0
+      : G.step === 2 ? 1
+        : G.sub === 'A' ? 2 : 3;
+  const pipY = r.y + 48;
+  for (let i = 0; i < 4; i++) {
+    const done = i < pipStage;
+    const active = i === pipStage && G.phase !== 'launch';
+    ctx.fillStyle = done || active || G.phase === 'launch' ? COL.green : 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    ctx.arc(r.x + 30 + i * 28, pipY, active ? 7 : 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = '800 20px ' + FONT;
+  wrapText(meta.title, r.x + 22, r.y + 90, r.w - 44, 26);
+
+  ctx.fillStyle = COL.amber;
+  ctx.font = '800 18px ' + FONT;
+  wrapText(meta.ask, r.x + 22, r.y + 180, r.w - 44, 24);
+
+  if (G.problem) {
+    ctx.fillStyle = 'rgba(62, 240, 255, 0.12)';
+    roundRect(r.x + 22, r.y + 250, r.w - 44, 100, 12);
+    ctx.fill();
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 13px ' + FONT;
+    ctx.fillText('CARGO MANIFEST', r.x + 38, r.y + 274);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '800 16px ' + FONT;
+    ctx.fillText('Mass  ' + fmt(G.problem.kg) + ' kg', r.x + 38, r.y + 302);
+    ctx.fillText('Thrusters  × ' + G.problem.thrusters, r.x + 38, r.y + 326);
+    ctx.fillText('Fuel  ' + fmt(G.problem.fuel) + ' L  ·  Engines  ' + G.problem.engines, r.x + 38, r.y + 350);
+  }
+
+  if (G.feedback) {
+    ctx.fillStyle = G.feedbackKind === 'bad' ? COL.bad : COL.green;
+    ctx.font = '800 16px ' + FONT;
+    ctx.fillText(G.feedback, r.x + 22, r.y + r.h - 28);
+  } else {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 14px ' + FONT;
+    wrapText(G.tip, r.x + 22, r.y + r.h - 48, r.w - 44, 18);
+  }
+}
+
+function wrapText(text, x, y, maxW, lineH) {
+  const words = String(text).split(' ');
+  let line = '';
+  let yy = y;
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, x, yy);
+      line = words[i];
+      yy += lineH;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, x, yy);
+}
+
+function drawConsole() {
+  const c = consoleRect();
+  drawPanel(c.x, c.y, c.w, c.h, 'rgba(57, 255, 196, 0.35)');
+  ctx.fillStyle = COL.dim;
+  ctx.font = '800 13px ' + DISP;
+  ctx.textAlign = 'left';
+  ctx.fillText('CONTROL CONSOLE  ·  SELECT TARGET ESTIMATE', c.x + 22, c.y + 28);
+
+  const meta = stepMeta();
+  const rects = choiceRects();
+  for (let i = 0; i < rects.length; i++) {
+    const b = rects[i];
+    const val = G.choices[i];
+    const hovered = G.hover === i;
+    const selected = G.selected === i;
+    const locked = G.phase !== 'choose' || G.t < G.lockUntil;
+
+    ctx.fillStyle = selected && G.feedbackKind === 'good'
+      ? 'rgba(93,255,176,0.35)'
+      : selected && G.feedbackKind === 'bad'
+        ? 'rgba(255,93,108,0.3)'
+        : hovered
+          ? 'rgba(62,240,255,0.22)'
+          : 'rgba(8, 20, 40, 0.9)';
+    roundRect(b.x, b.y, b.w, b.h, 12);
+    ctx.fill();
+    ctx.strokeStyle = selected
+      ? (G.feedbackKind === 'good' ? COL.green : COL.bad)
+      : hovered ? COL.cyan : 'rgba(62,240,255,0.35)';
+    ctx.lineWidth = hovered || selected ? 3 : 2;
+    roundRect(b.x, b.y, b.w, b.h, 12);
+    ctx.stroke();
+
+    ctx.fillStyle = COL.ink;
+    ctx.font = '800 26px ' + DISP;
+    ctx.textAlign = 'center';
+    ctx.fillText(fmt(val) + meta.unit, b.x + b.w / 2, b.y + 42);
+
+    if (!locked) hotspots.push({ id: 'choice', i, x: b.x, y: b.y, w: b.w, h: b.h });
+  }
+
+  // keypad focus ring
+  if (G.phase === 'choose' && G.keypad >= 0 && G.keypad < 4) {
+    const b = rects[G.keypad];
+    ctx.strokeStyle = 'rgba(255, 200, 87, 0.85)';
+    ctx.lineWidth = 2;
+    roundRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8, 14);
+    ctx.stroke();
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawFx() {
+  for (let i = 0; i < fx.length; i++) {
+    const p = fx[i];
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (let i = 0; i < sparks.length; i++) {
+    const p = sparks[i];
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  hotspots.length = 0;
+  drawStars();
+  drawPlanet();
+
+  // title rocket silhouette
+  drawRocket(LW / 2, 430, pulse(2.2, 0.25, 0.7), Math.sin(G.t * 1.4) * 8);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '800 18px ' + DISP;
+  ctx.fillText('LAUNCH WEIGHT ESTIMATOR', LW / 2, 78);
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = '900 46px ' + DISP;
+  ctx.fillText('CARGO ROCKET', LW / 2, 130);
+  ctx.fillText('LAUNCHER', LW / 2, 178);
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 18px ' + FONT;
+  ctx.fillText('Round · Multiply · Divide — estimate every launch load', LW / 2, 220);
+
+  const bx = LW / 2 - 160;
+  const by = 540;
+  const bw = 320;
+  const bh = 64;
+  const hover = pointer.x >= bx && pointer.x <= bx + bw && pointer.y >= by && pointer.y <= by + bh;
+  ctx.fillStyle = hover ? 'rgba(57,255,196,0.35)' : 'rgba(62,240,255,0.18)';
+  roundRect(bx, by, bw, bh, 14);
+  ctx.fill();
+  ctx.strokeStyle = hover ? COL.green : COL.cyan;
+  ctx.lineWidth = 3;
+  roundRect(bx, by, bw, bh, 14);
+  ctx.stroke();
+  ctx.fillStyle = COL.ink;
+  ctx.font = '800 24px ' + DISP;
+  ctx.fillText('START MISSION', LW / 2, by + 42);
+  hotspots.push({ id: 'start', x: bx, y: by, w: bw, h: bh });
+
+  const mx = LW - 100;
+  const my = 24;
+  drawPanel(mx, my, 52, 42, 'rgba(62,240,255,0.3)');
+  ctx.font = '800 16px ' + FONT;
+  ctx.fillText(audio.muted ? 'MUTE' : 'SFX', mx + 26, my + 27);
+  hotspots.push({ id: 'mute', x: mx, y: my, w: 52, h: 42 });
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 14px ' + FONT;
+  ctx.fillText('Click / tap answers  ·  ← → choose  ·  Space / Enter confirm', LW / 2, 630);
+  ctx.textAlign = 'left';
+}
+
+function drawPlay() {
+  hotspots.length = 0;
+  const shx = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  const shy = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  ctx.save();
+  ctx.translate(shx, shy);
+
+  drawStars();
+  drawPlanet();
+  drawHeader();
+  drawCargoPanel();
+
+  const lift = G.phase === 'launch' ? G.rocketY : Math.sin(G.t * 1.5) * 3 * G.thruster;
+  drawRocket(stageRocketX(), stageRocketBaseY(), G.thruster, lift);
+
+  // trail sparks during launch
+  if (G.phase === 'launch' && !reduceMotion) {
+    for (let i = 0; i < 3; i++) {
+      sparks.push({
+        x: stageRocketX() + (Math.random() - 0.5) * 30,
+        y: stageRocketBaseY() - lift + 70,
+        vx: (Math.random() - 0.5) * 60,
+        vy: 80 + Math.random() * 160,
+        life: 0.4 + Math.random() * 0.4,
+        max: 0.8,
+        r: 2 + Math.random() * 3,
+        color: Math.random() < 0.4 ? COL.amber : COL.thruster
+      });
+    }
+  }
+
+  drawConsole();
+  drawFx();
+
+  if (G.glow > 0) {
+    ctx.fillStyle = 'rgba(93, 255, 176,' + (G.glow * 0.12) + ')';
+    ctx.fillRect(0, 0, LW, LH);
+  }
+  if (G.flash > 0 && G.feedbackKind === 'bad') {
+    ctx.fillStyle = 'rgba(255, 93, 108,' + (G.flash * 0.1) + ')';
+    ctx.fillRect(0, 0, LW, LH);
+  }
+
+  ctx.restore();
+
+  // launch banner
+  if (G.phase === 'launch') {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.green;
+    ctx.font = '900 36px ' + DISP;
+    ctx.fillText('LIFTOFF!', LW / 2, 100);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '800 18px ' + FONT;
+    ctx.fillText('Mission +' + G.missionPts + '  ·  Preparing next cargo…', LW / 2, 132);
+    ctx.textAlign = 'left';
+  }
+}
+
+function draw() {
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, LW, LH);
+
+  // subtle nebula
+  const neb = ctx.createRadialGradient(900, 180, 40, 900, 200, 380);
+  neb.addColorStop(0, 'rgba(20, 80, 140, 0.22)');
+  neb.addColorStop(1, 'rgba(3, 8, 18, 0)');
+  ctx.fillStyle = neb;
+  ctx.fillRect(0, 0, LW, LH);
+
+  if (G.mode === 'title') drawTitle();
+  else drawPlay();
+}
+
+/* ---------- Update ---------- */
+
+function update(dt) {
+  G.t += dt;
+  G.phaseT += dt;
+  if (G.flash > 0) G.flash = Math.max(0, G.flash - dt * 1.6);
+  if (G.glow > 0) G.glow = Math.max(0, G.glow - dt * 1.2);
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 28);
+  updateFx(dt);
+
+  // hover choices
+  G.hover = -1;
+  if (G.mode === 'play' && G.phase === 'choose') {
+    const rects = choiceRects();
+    for (let i = 0; i < rects.length; i++) {
+      const b = rects[i];
+      if (pointer.x >= b.x && pointer.x <= b.x + b.w && pointer.y >= b.y && pointer.y <= b.y + b.h) {
+        G.hover = i;
+      }
+    }
+  }
+
+  if (G.mode === 'play' && G.phase === 'launch') {
+    G.launchT += dt;
+    G.rocketY = easeOutCubic(clamp(G.launchT / 1.6, 0, 1)) * 780;
+    G.thruster = 1;
+    if (G.launchT > 2.1) {
+      startMission();
+    }
+  }
+
+  // gentle fuel drain while waiting
+  if (G.mode === 'play' && G.phase === 'choose') {
+    G.fuel = clamp(G.fuel - dt * 0.8, 12, 100);
+  }
+}
+
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/* ---------- Input ---------- */
+
+function hitHotspot(x, y) {
+  for (let i = hotspots.length - 1; i >= 0; i--) {
+    const h = hotspots[i];
+    if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
+function onActivate(h) {
+  if (!h) return;
+  if (h.id === 'mute') {
+    audio.toggle();
+    audio.click();
+    return;
+  }
+  if (h.id === 'start') {
+    beginPlay();
+    audio.click();
+    return;
+  }
+  if (h.id === 'choice') {
+    chooseAnswer(h.i);
+  }
+}
+
+function toLogical(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = ((clientX - rect.left) / rect.width) * LW;
+  const y = ((clientY - rect.top) / rect.height) * LH;
+  return { x, y };
+}
+
+function onPointerDown(e) {
+  audio.ensure();
+  const p = toLogical(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.down = true;
+  onActivate(hitHotspot(p.x, p.y));
+}
+
+function onPointerMove(e) {
+  const p = toLogical(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+}
+
+function onPointerUp() {
+  pointer.down = false;
+}
+
+function onKeyDown(e) {
+  audio.ensure();
+  if (e.code === 'KeyM') {
+    audio.toggle();
+    e.preventDefault();
+    return;
+  }
+  if (G.mode === 'title') {
+    if (e.code === 'Space' || e.code === 'Enter') {
+      beginPlay();
+      e.preventDefault();
+    }
+    return;
+  }
+  if (G.mode !== 'play' || G.phase !== 'choose') return;
+
+  if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+    G.keypad = (G.keypad + 3) % 4;
+    audio.tick();
+    e.preventDefault();
+  } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+    G.keypad = (G.keypad + 1) % 4;
+    audio.tick();
+    e.preventDefault();
+  } else if (e.code === 'Digit1' || e.code === 'Numpad1') {
+    chooseAnswer(0); e.preventDefault();
+  } else if (e.code === 'Digit2' || e.code === 'Numpad2') {
+    chooseAnswer(1); e.preventDefault();
+  } else if (e.code === 'Digit3' || e.code === 'Numpad3') {
+    chooseAnswer(2); e.preventDefault();
+  } else if (e.code === 'Digit4' || e.code === 'Numpad4') {
+    chooseAnswer(3); e.preventDefault();
+  } else if (e.code === 'Space' || e.code === 'Enter') {
+    chooseAnswer(G.keypad);
+    e.preventDefault();
+  }
+}
+
+canvas.addEventListener('pointerdown', onPointerDown);
+window.addEventListener('pointermove', onPointerMove);
+window.addEventListener('pointerup', onPointerUp);
+window.addEventListener('keydown', onKeyDown);
+
+/* ---------- Resize / loop ---------- */
+
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  view.dpr = dpr;
+  view.cssW = window.innerWidth;
+  view.cssH = window.innerHeight;
+  const scale = Math.min(view.cssW / LW, view.cssH / LH);
+  view.scale = scale;
+  canvas.width = Math.floor(LW * dpr);
+  canvas.height = Math.floor(LH * dpr);
+  canvas.style.width = Math.floor(LW * scale) + 'px';
+  canvas.style.height = Math.floor(LH * scale) + 'px';
+  canvas.style.marginLeft = Math.floor((view.cssW - LW * scale) / 2) + 'px';
+  canvas.style.marginTop = Math.floor((view.cssH - LH * scale) / 2) + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = clamp((now - last) / 1000, 0, 0.05);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(frame);
+speak('Cargo Rocket Launcher. Press Start Mission to begin estimating launch weights.');
+</script>
+</body>
+</html>
