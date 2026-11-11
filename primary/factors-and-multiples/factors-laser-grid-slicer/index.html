@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Laser Grid Slicer: The Tile Fabricator</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      margin: 0;
+      padding: 0;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050811;
+      font-family: 'Courier New', Courier, monospace, sans-serif;
+      color: #00ffcc;
+    }
+    #game-container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: radial-gradient(circle at center, #0c182c 0%, #03060c 100%);
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    #ui-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 10px 18px;
+    }
+    .hud-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+      text-shadow: 0 2px 5px #000;
+      font-weight: bold;
+    }
+    .hud-card {
+      background: rgba(6, 16, 32, 0.9);
+      border: 2px solid #00e5ff;
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-size: 13px;
+      letter-spacing: 1px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.8), inset 0 0 10px rgba(0, 229, 255, 0.25);
+      pointer-events: auto;
+    }
+    .hud-p-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 2px solid;
+    }
+    .p1-badge {
+      color: #ff5555;
+      border-color: #ff4444;
+      background: rgba(50, 10, 10, 0.7);
+    }
+    .p2-badge {
+      color: #44bbff;
+      border-color: #0099ff;
+      background: rgba(10, 30, 60, 0.7);
+    }
+    .btn {
+      background: linear-gradient(180deg, #00b4d8 0%, #0077b6 100%);
+      color: #ffffff;
+      border: 2px solid #90e0ef;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      box-shadow: 0 3px 6px rgba(0,0,0,0.7);
+      text-transform: uppercase;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    .btn:hover {
+      filter: brightness(1.25);
+    }
+    .btn:active {
+      transform: translateY(2px);
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-overlay">
+      <!-- TOP HUD -->
+      <div class="hud-bar">
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <div class="hud-card" id="hud-mode">MODE: CO-OP</div>
+          <div class="hud-card" id="hud-tier">TIER 1: 2 BAYS</div>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <div class="hud-p-badge p1-badge" id="hud-p1">P1 [RED]: 3 🔋 | 0 ⭐</div>
+          <div class="hud-p-badge p2-badge" id="hud-p2">P2 [BLUE]: 3 🔋 | 0 ⭐</div>
+          <button id="btn-audio" class="btn">AUDIO: ON</button>
+          <button id="btn-mode-toggle" class="btn">SWITCH MODE</button>
+        </div>
+      </div>
+      <!-- BOTTOM HUD -->
+      <div class="hud-bar" style="margin-top: auto;">
+        <div class="hud-card" id="hud-score">TREASURY: 0 CREDITS</div>
+        <div class="hud-card" style="font-size: 11px; color: #a0c4e2;">
+          P1: WASD + F / Gamepad 0 | P2: Arrows + Enter / Gamepad 1 | Touch / Click Supported
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ==========================================================================
+       LASER GRID SLICER: THE TILE FABRICATOR
+       2-Player Geometric HCF Space Station Fabrication Game (Singapore P4/P5)
+       ========================================================================== */
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- PROCEDURAL WEB AUDIO SYNTHESIZER ---
+    class SoundEngine {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+        this.bgmTimer = null;
+        this.step = 0;
+        this.tempo = 126;
+      }
+      init() {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          this.ctx = new AudioContext();
+          this.startBGM();
+        } else if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+      }
+      toggleMute() {
+        this.muted = !this.muted;
+        document.getElementById('btn-audio').innerText = `AUDIO: ${this.muted ? 'OFF' : 'ON'}`;
+      }
+      playTone(freq, duration, type = 'square', gainVal = 0.08) {
+        if (this.muted || !this.ctx) return;
+        try {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+          gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start();
+          osc.stop(this.ctx.currentTime + duration);
+        } catch(e) {}
+      }
+      playNoise(duration = 0.15, gainVal = 0.08) {
+        if (this.muted || !this.ctx) return;
+        try {
+          const bufferSize = this.ctx.sampleRate * duration;
+          const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = Math.random() * 2 - 1;
+          }
+          const noise = this.ctx.createBufferSource();
+          noise.buffer = buffer;
+          const gain = this.ctx.createGain();
+          gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + duration);
+          noise.connect(gain);
+          gain.connect(this.ctx.destination);
+          noise.start();
+        } catch(e) {}
+      }
+      sfxSelect() {
+        this.playTone(440, 0.07, 'sine', 0.1);
+        setTimeout(() => this.playTone(660, 0.09, 'triangle', 0.09), 40);
+      }
+      sfxCaliperSweep() {
+        this.playTone(280, 0.15, 'sawtooth', 0.08);
+      }
+      sfxLaserWeld() {
+        this.playNoise(0.5, 0.12);
+        this.playTone(587.33, 0.35, 'square', 0.07);
+        setTimeout(() => this.playTone(880, 0.3, 'sine', 0.09), 120);
+      }
+      sfxTugDeparture() {
+        this.playTone(150, 0.8, 'triangle', 0.18);
+        this.playNoise(0.6, 0.15);
+      }
+      sfxCaution() {
+        this.playTone(330, 0.2, 'sawtooth', 0.12);
+        setTimeout(() => this.playTone(260, 0.2, 'sawtooth', 0.12), 120);
+      }
+      sfxError() {
+        this.playTone(130, 0.3, 'sawtooth', 0.22);
+        this.playNoise(0.3, 0.18);
+      }
+      startBGM() {
+        if (this.bgmTimer) return;
+        const bassLine = [65.41, 65.41, 77.78, 87.31, 65.41, 65.41, 98.00, 87.31];
+        const arps = [261.63, 329.63, 392.00, 523.25, 392.00, 329.63, 293.66, 349.23];
+        const stepTime = (60 / this.tempo) * 1000 / 2;
+
+        this.bgmTimer = setInterval(() => {
+          if (!this.muted && this.ctx && this.ctx.state === 'running') {
+            const b = bassLine[this.step % bassLine.length];
+            const a = arps[(this.step * 2) % arps.length];
+            this.playTone(b, 0.15, 'triangle', 0.035);
+            if (this.step % 2 === 0) {
+              this.playTone(a, 0.08, 'sawtooth', 0.012);
+            }
+            if (this.step % 4 === 2) {
+              this.playNoise(0.04, 0.015);
+            }
+          }
+          this.step = (this.step + 1) % 64;
+        }, stepTime);
+      }
+    }
+    const audio = new SoundEngine();
+
+    // --- CANVAS RESIZING ---
+    let width = 1200;
+    let height = 750;
+    function resize() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- GAME ENGINE STATE ---
+    let gameMode = 'coop'; // 'coop' or 'versus'
+    let currentTier = 1;   // 1 (2 bays), 2 (3 bays), 3 (4 bays)
+    let scoreTeam = 0;
+    let sparks = [];
+    let laserBeams = [];
+    let tugCrane = null;
+    let popup = null;
+
+    function showPopup(text, subtext = '', color = '#00ffff', duration = 180) {
+      popup = { text, subtext, color, timer: duration };
+    }
+
+    // Helper: GCD
+    function gcd2(a, b) {
+      while (b) { let t = b; b = a % b; a = t; }
+      return a;
+    }
+    function gcdArr(arr) {
+      return arr.reduce((acc, val) => gcd2(acc, val), arr[0]);
+    }
+
+    // --- CURRICULUM DATASETS ---
+    const TIER1_ORDERS = [
+      { bays: [18, 24] },
+      { bays: [24, 36] },
+      { bays: [20, 30] },
+      { bays: [16, 28] },
+      { bays: [32, 48] }
+    ];
+    const TIER2_ORDERS = [
+      { bays: [18, 24, 30] },
+      { bays: [24, 36, 48] },
+      { bays: [20, 35, 50] },
+      { bays: [28, 42, 70] },
+      { bays: [16, 24, 40] }
+    ];
+    const TIER3_ORDERS = [
+      { bays: [16, 24, 32, 40] },
+      { bays: [24, 36, 60, 72] },
+      { bays: [20, 30, 40, 60] },
+      { bays: [18, 36, 54, 72] }
+    ];
+
+    // --- PLAYERS (8BitDo & Keyboard) ---
+    const players = [
+      {
+        id: 0,
+        name: 'P1 [RED]',
+        color: '#ff4444',
+        glow: 'rgba(255, 68, 68, 0.7)',
+        x: width * 0.35,
+        y: height * 0.85,
+        shields: 3,
+        stars: 0,
+        gamepadIndex: 0,
+        keys: { up: false, down: false, left: false, right: false, action: false, lastAction: false }
+      },
+      {
+        id: 1,
+        name: 'P2 [BLUE]',
+        color: '#33b5ff',
+        glow: 'rgba(51, 181, 255, 0.7)',
+        x: width * 0.65,
+        y: height * 0.85,
+        shields: 3,
+        stars: 0,
+        gamepadIndex: 1,
+        keys: { up: false, down: false, left: false, right: false, action: false, lastAction: false }
+      }
+    ];
+
+    // Controls listeners
+    window.addEventListener('keydown', (e) => {
+      audio.init();
+      const c = e.code;
+      if (c === 'KeyW') players[0].keys.up = true;
+      if (c === 'KeyS') players[0].keys.down = true;
+      if (c === 'KeyA') players[0].keys.left = true;
+      if (c === 'KeyD') players[0].keys.right = true;
+      if (c === 'KeyF' || c === 'Space') players[0].keys.action = true;
+
+      if (c === 'ArrowUp') players[1].keys.up = true;
+      if (c === 'ArrowDown') players[1].keys.down = true;
+      if (c === 'ArrowLeft') players[1].keys.left = true;
+      if (c === 'ArrowRight') players[1].keys.right = true;
+      if (c === 'Enter' || c === 'Numpad0') players[1].keys.action = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const c = e.code;
+      if (c === 'KeyW') players[0].keys.up = false;
+      if (c === 'KeyS') players[0].keys.down = false;
+      if (c === 'KeyA') players[0].keys.left = false;
+      if (c === 'KeyD') players[0].keys.right = false;
+      if (c === 'KeyF' || c === 'Space') players[0].keys.action = false;
+
+      if (c === 'ArrowUp') players[1].keys.up = false;
+      if (c === 'ArrowDown') players[1].keys.down = false;
+      if (c === 'ArrowLeft') players[1].keys.left = false;
+      if (c === 'ArrowRight') players[1].keys.right = false;
+      if (c === 'Enter' || c === 'Numpad0') players[1].keys.action = false;
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      audio.init();
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      players[0].x = px;
+      players[0].y = py;
+      handleInteract(players[0]);
+    });
+
+    // --- ROUND & FABRICATION BAY STATE ---
+    let currentRound = {
+      tier: 1,
+      bayLengths: [],
+      trueHCF: 1,
+      selectedTile: null, // active test tile size
+      testStatus: null,   // 'invalid', 'common_not_max', 'hcf_perfect'
+      welding: false,
+      completed: false
+    };
+
+    let tileCartridges = [];
+    let weldButton = null;
+
+    function initRound() {
+      sparks = [];
+      laserBeams = [];
+      tugCrane = null;
+
+      let dataset = TIER1_ORDERS;
+      if (currentTier === 2) dataset = TIER2_ORDERS;
+      if (currentTier === 3) dataset = TIER3_ORDERS;
+
+      const order = dataset[Math.floor(Math.random() * dataset.length)];
+      const bayLengths = [...order.bays];
+      const hcf = gcdArr(bayLengths);
+
+      currentRound = {
+        tier: currentTier,
+        bayLengths: [...bayLengths],
+        trueHCF: hcf,
+        selectedTile: null,
+        testStatus: null,
+        welding: false,
+        completed: false
+      };
+
+      generateTileCartridges(bayLengths, hcf);
+      showPopup(
+        `NEW BLUEPRINT: TIER ${currentTier} (${bayLengths.length} BAYS)`,
+        `Fit bays [${bayLengths.map(b => b + 'm').join(', ')}] with the LARGEST square tile!`,
+        '#00ffff',
+        180
+      );
+      updateHUD();
+    }
+
+    function generateTileCartridges(bayLengths, hcf) {
+      const candidates = new Set();
+      // 1. True HCF
+      candidates.add(hcf);
+
+      // 2. Common divisor but smaller
+      for (let d = hcf - 1; d >= 2; d--) {
+        if (hcf % d === 0) {
+          candidates.add(d);
+          break;
+        }
+      }
+      if (!Array.from(candidates).some(v => v < hcf) && hcf > 2) {
+        candidates.add(2);
+      }
+
+      // 3. Partial divisor (divides some bays but not all)
+      for (let d = 2; d <= 12; d++) {
+        const dividesSome = bayLengths.some(l => l % d === 0);
+        const dividesAll = bayLengths.every(l => l % d === 0);
+        if (dividesSome && !dividesAll) {
+          candidates.add(d);
+          break;
+        }
+      }
+
+      // 4. Overhang distractor (divides none or leaves large gaps)
+      const maxLen = Math.max(...bayLengths);
+      const oddPool = [3, 4, 5, 7, 8, 9, 11].filter(d => !bayLengths.every(l => l % d === 0));
+      while (candidates.size < 4 && oddPool.length > 0) {
+        candidates.add(oddPool.pop());
+      }
+
+      const list = Array.from(candidates).slice(0, 4);
+      list.sort((a, b) => a - b);
+
+      const cartW = 110;
+      const cartH = 55;
+      const totalW = list.length * (cartW + 20);
+      const startX = (width - totalW) / 2 - 80;
+      const bayY = height - 105;
+
+      tileCartridges = list.map((size, idx) => ({
+        size: size,
+        x: startX + idx * (cartW + 20),
+        y: bayY,
+        w: cartW,
+        h: cartH
+      }));
+
+      // Laser Weld Button
+      weldButton = {
+        x: startX + list.length * (cartW + 20) + 15,
+        y: bayY,
+        w: 160,
+        h: cartH,
+        title: 'LASER WELD'
+      };
+    }
+
+    // --- GAMEPAD & KEYBOARD POLLING ---
+    function updateControls() {
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+
+      players.forEach(p => {
+        let dx = 0;
+        let dy = 0;
+        let action = false;
+
+        // Gamepad inputs
+        if (p.gamepadIndex !== null && gamepads[p.gamepadIndex]) {
+          const gp = gamepads[p.gamepadIndex];
+          const stickX = gp.axes[0] || 0;
+          const stickY = gp.axes[1] || 0;
+          if (Math.abs(stickX) > 0.2) dx += stickX;
+          if (Math.abs(stickY) > 0.2) dy += stickY;
+
+          if (gp.buttons[12]?.pressed) dy -= 1;
+          if (gp.buttons[13]?.pressed) dy += 1;
+          if (gp.buttons[14]?.pressed) dx -= 1;
+          if (gp.buttons[15]?.pressed) dx += 1;
+
+          if (gp.buttons[0]?.pressed) action = true; // Button A
+        }
+
+        // Keyboard inputs
+        if (p.keys.up) dy -= 1;
+        if (p.keys.down) dy += 1;
+        if (p.keys.left) dx -= 1;
+        if (p.keys.right) dx += 1;
+        if (p.keys.action) action = true;
+
+        p.x += dx * 8.5;
+        p.y += dy * 8.5;
+
+        // Boundaries
+        p.x = Math.max(30, Math.min(width - 30, p.x));
+        p.y = Math.max(60, Math.min(height - 40, p.y));
+
+        // Action Trigger
+        if (action && !p.keys.lastAction) {
+          handleInteract(p);
+        }
+        p.keys.lastAction = action;
+      });
+    }
+
+    // --- INTERACTION & HEURISTICS VALIDATION ---
+    function handleInteract(player) {
+      audio.init();
+      if (currentRound.completed || currentRound.welding) return;
+
+      // 1. Select / Test Tile Cartridge
+      for (const cart of tileCartridges) {
+        if (player.x >= cart.x && player.x <= cart.x + cart.w &&
+            player.y >= cart.y && player.y <= cart.y + cart.h) {
+          selectTestTile(cart.size, player);
+          return;
+        }
+      }
+
+      // 2. Trigger Laser Weld
+      if (weldButton &&
+          player.x >= weldButton.x && player.x <= weldButton.x + weldButton.w &&
+          player.y >= weldButton.y && player.y <= weldButton.y + weldButton.h) {
+        triggerLaserWeld(player);
+        return;
+      }
+    }
+
+    function selectTestTile(tileSize, player) {
+      currentRound.selectedTile = tileSize;
+      audio.sfxSelect();
+      audio.sfxCaliperSweep();
+
+      const bays = currentRound.bayLengths;
+      const trueHcf = currentRound.trueHCF;
+
+      // Check if divides all bays
+      const leavesGap = bays.some(len => len % tileSize !== 0);
+
+      if (leavesGap) {
+        // Invalid tile! Overhang or gap detected
+        currentRound.testStatus = 'invalid';
+        audio.sfxError();
+        createSparks(player.x, player.y, 35, '#ff3333');
+
+        const failedBay = bays.find(len => len % tileSize !== 0);
+        const remainder = failedBay % tileSize;
+        showPopup(
+          `UNPAVED GAP DETECTED! (${tileSize}m × ${tileSize}m)`,
+          `${failedBay}m ÷ ${tileSize} leaves ${remainder}m UNPAVED! A common factor must divide EVERY bay length with 0 remainder!`,
+          '#ff4444',
+          200
+        );
+
+        player.shields = Math.max(0, player.shields - 1);
+        updateHUD();
+      } else if (tileSize < trueHcf) {
+        // Valid common factor, but NOT the highest!
+        currentRound.testStatus = 'common_not_max';
+        audio.sfxCaution();
+        showPopup(
+          `FITS ALL BAYS, BUT NOT THE LARGEST! (${tileSize}m)`,
+          `${tileSize}m divides all bays evenly, but requires too many seams! Can you find a LARGER common square tile?`,
+          '#ffbb00',
+          180
+        );
+      } else {
+        // Perfect HCF tile!
+        currentRound.testStatus = 'hcf_perfect';
+        createSparks(width * 0.5, height * 0.45, 40, '#00ffcc');
+        showPopup(
+          `MAXIMUM EFFICIENCY DETECTED! (${tileSize}m × ${tileSize}m)`,
+          `HIGHEST COMMON FACTOR FOUND! Fits all bays with minimum seams! Pull [LASER WELD] to seal deck!`,
+          '#00ffaa',
+          180
+        );
+      }
+    }
+
+    function triggerLaserWeld(player) {
+      if (!currentRound.selectedTile) {
+        audio.sfxError();
+        showPopup('SELECT A TILE CARTRIDGE FIRST!', 'Test a square tile size from the dispenser below before welding!', '#ffbb00', 120);
+        return;
+      }
+
+      if (currentRound.testStatus === 'invalid') {
+        audio.sfxError();
+        createSparks(player.x, player.y, 40, '#ff3333');
+        showPopup('CANNOT WELD AN UNEVEN DECK!', 'The chosen tile leaves gaps/overhangs! Select a valid common factor tile!', '#ff3333', 150);
+        player.shields = Math.max(0, player.shields - 1);
+        updateHUD();
+        return;
+      }
+
+      if (currentRound.testStatus === 'common_not_max') {
+        audio.sfxCaution();
+        showPopup('SUB-OPTIMAL SEAMS!', 'This tile fits, but is NOT the Highest Common Factor! Find the LARGEST tile for maximum efficiency!', '#ffbb00', 160);
+        return;
+      }
+
+      // TRUE HCF WELD SEQUENCE!
+      currentRound.welding = true;
+      audio.sfxLaserWeld();
+
+      // Launch laser weld beams across bay seams
+      const bays = currentRound.bayLengths;
+      const bayCount = bays.length;
+      const bayW = Math.min(180, (width * 0.7) / bayCount);
+      const startX = (width - bayCount * (bayW + 24)) / 2;
+
+      for (let i = 0; i < bayCount; i++) {
+        laserBeams.push({
+          x1: startX + i * (bayW + 24),
+          y1: 150,
+          x2: startX + i * (bayW + 24) + bayW,
+          y2: 440,
+          life: 50
+        });
+      }
+
+      // Orbital tug crane arrival animation
+      tugCrane = {
+        x: width + 100,
+        y: 290,
+        targetX: width * 0.5,
+        docked: false
+      };
+
+      setTimeout(() => {
+        audio.sfxTugDeparture();
+        scoreTeam += 300;
+        player.stars += 2;
+        updateHUD();
+        showPopup(
+          `DECK SEALED! +300 CREDITS!`,
+          `HCF ${currentRound.trueHCF}m tile deployed! Orbital tug crane hauling finished modular bays to station orbit!`,
+          '#ffd700',
+          220
+        );
+
+        setTimeout(() => {
+          advanceNextRound();
+        }, 3400);
+      }, 1400);
+    }
+
+    function advanceNextRound() {
+      if (currentTier === 1) currentTier = 2;
+      else if (currentTier === 2) currentTier = 3;
+      else currentTier = 1;
+
+      initRound();
+    }
+
+    function updateHUD() {
+      document.getElementById('hud-mode').innerText = `MODE: ${gameMode.toUpperCase()}`;
+      document.getElementById('hud-tier').innerText = `TIER ${currentTier}: ${currentTier + 1} BAYS`;
+      document.getElementById('hud-p1').innerText = `P1 [RED]: ${'🔋'.repeat(players[0].shields)} | ${players[0].stars} ⭐`;
+      document.getElementById('hud-p2').innerText = `P2 [BLUE]: ${'🔋'.repeat(players[1].shields)} | ${players[1].stars} ⭐`;
+      document.getElementById('hud-score').innerText = gameMode === 'coop'
+        ? `TREASURY: ${scoreTeam} CREDITS`
+        : `DUEL: P1 (${players[0].stars}⭐) vs P2 (${players[1].stars}⭐)`;
+    }
+
+    // Toggle Mode
+    document.getElementById('btn-mode-toggle').addEventListener('click', () => {
+      audio.init();
+      gameMode = gameMode === 'coop' ? 'versus' : 'coop';
+      showPopup(
+        `SWITCHED TO ${gameMode.toUpperCase()} MODE!`,
+        gameMode === 'coop' ? 'Collaborate to scan blueprints and weld the optimal HCF tile deck!' : 'Buzzer duel! First architect to lock and weld the HCF tile claims the credits!',
+        '#00ffcc',
+        140
+      );
+      updateHUD();
+    });
+
+    document.getElementById('btn-audio').addEventListener('click', () => {
+      audio.init();
+      audio.toggleMute();
+    });
+
+    // --- PARTICLES (Sparks) ---
+    function createSparks(x, y, count = 25, color = '#00ffcc') {
+      for (let i = 0; i < count; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 2 + Math.random() * 6;
+        sparks.push({
+          x, y,
+          vx: Math.cos(ang) * spd,
+          vy: Math.sin(ang) * spd,
+          life: 25 + Math.random() * 20,
+          color
+        });
+      }
+    }
+
+    // --- DRAWING PIPELINE (Canvas 60 FPS) ---
+    function drawSpaceStationBackdrop() {
+      ctx.fillStyle = '#060a14';
+      ctx.fillRect(0, 0, width, height);
+
+      // Starfield parallax
+      ctx.fillStyle = '#ffffff';
+      for (let i = 0; i < 45; i++) {
+        const sx = (i * 137.5) % width;
+        const sy = (i * 93.3) % height;
+        ctx.fillRect(sx, sy, 1.5, 1.5);
+      }
+
+      // Construction Dock Structural Gantry
+      ctx.strokeStyle = '#12233f';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < width; x += 45) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < height; y += 45) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    }
+
+    function drawFabricationBays() {
+      const bays = currentRound.bayLengths;
+      const bayCount = bays.length;
+      const bayW = Math.min(180, (width * 0.68) / bayCount);
+      const totalW = bayCount * (bayW + 24) - 24;
+      const startX = (width - totalW) / 2;
+      const bayY = 150;
+      const bayH = 290;
+
+      ctx.save();
+
+      // Top Blueprint Header
+      ctx.font = "bold 16px 'Courier New', monospace";
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#90e0ef';
+      ctx.fillText(`SPACE STATION MODULAR DECK BLUEPRINTS (HCF TARGET)`, width * 0.5, 125);
+
+      bays.forEach((len, idx) => {
+        const bx = startX + idx * (bayW + 24);
+
+        // 1. Draw Outer Bay Container
+        ctx.fillStyle = 'rgba(7, 20, 38, 0.9)';
+        ctx.beginPath();
+        ctx.roundRect(bx, bayY, bayW, bayH, [8]);
+        ctx.fill();
+
+        // Border color based on test status
+        let borderColor = '#0077b6';
+        if (currentRound.selectedTile) {
+          if (currentRound.testStatus === 'invalid') borderColor = (len % currentRound.selectedTile !== 0) ? '#ff3333' : '#00e5ff';
+          else if (currentRound.testStatus === 'common_not_max') borderColor = '#ffaa00';
+          else if (currentRound.testStatus === 'hcf_perfect') borderColor = '#00ffaa';
+        }
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // 2. Bay Title & Length Label
+        ctx.font = "bold 15px 'Courier New', monospace";
+        ctx.fillStyle = '#00e5ff';
+        ctx.fillText(`BAY ${String.fromCharCode(65 + idx)}: ${len}m`, bx + bayW / 2, bayY + 24);
+
+        // 3. Tile Grid Projection (if tile selected)
+        if (currentRound.selectedTile) {
+          const tSize = currentRound.selectedTile;
+          const fitCount = Math.floor(len / tSize);
+          const remainder = len % tSize;
+          const pxPerMeter = (bayH - 60) / len;
+
+          let curY = bayY + 40;
+          for (let k = 0; k < fitCount; k++) {
+            const tileH = tSize * pxPerMeter;
+            // Flush tile
+            ctx.fillStyle = (currentRound.testStatus === 'hcf_perfect')
+              ? 'rgba(0, 255, 170, 0.22)'
+              : (currentRound.testStatus === 'common_not_max')
+                ? 'rgba(255, 170, 0, 0.2)'
+                : 'rgba(0, 180, 216, 0.2)';
+            ctx.fillRect(bx + 8, curY, bayW - 16, tileH - 4);
+            ctx.strokeStyle = borderColor;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(bx + 8, curY, bayW - 16, tileH - 4);
+
+            // Tile label
+            ctx.font = "bold 11px 'Courier New', monospace";
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(`${tSize}m × ${tSize}m`, bx + bayW / 2, curY + tileH / 2);
+
+            curY += tileH;
+          }
+
+          // Draw Overhang / Remainder Gap if invalid
+          if (remainder > 0) {
+            const gapH = remainder * pxPerMeter;
+            ctx.fillStyle = 'rgba(255, 50, 50, 0.35)';
+            ctx.fillRect(bx + 8, curY, bayW - 16, gapH);
+            ctx.strokeStyle = '#ff3333';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bx + 8, curY, bayW - 16, gapH);
+
+            // Gap warning label
+            ctx.font = "bold 11px 'Courier New', monospace";
+            ctx.fillStyle = '#ff5555';
+            ctx.fillText(`+${remainder}m GAP`, bx + bayW / 2, curY + gapH / 2 + 3);
+          }
+
+          // Live Division Math Subtext
+          ctx.font = "bold 12px 'Courier New', monospace";
+          ctx.fillStyle = remainder === 0 ? '#00ffaa' : '#ff5555';
+          const statText = remainder === 0 ? `${len} ÷ ${tSize} = ${fitCount} (FLUSH)` : `${len} ÷ ${tSize} = ${fitCount} R ${remainder}`;
+          ctx.fillText(statText, bx + bayW / 2, bayY + bayH + 20);
+        } else {
+          // Placeholder message
+          ctx.font = "bold 12px 'Courier New', monospace";
+          ctx.fillStyle = '#4a6b8c';
+          ctx.fillText('SELECT TILE CARTRIDGE', bx + bayW / 2, bayY + bayH / 2);
+        }
+      });
+
+      ctx.restore();
+    }
+
+    function drawTileDispenser() {
+      // Bottom Command Gantry Plate
+      ctx.fillStyle = 'rgba(6, 16, 32, 0.92)';
+      ctx.fillRect(40, height - 125, width - 80, 85);
+      ctx.strokeStyle = '#0077b6';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(40, height - 125, width - 80, 85);
+
+      ctx.font = "bold 12px 'Courier New', monospace";
+      ctx.fillStyle = '#90e0ef';
+      ctx.textAlign = 'left';
+      ctx.fillText('MODULAR TILE CARTRIDGES:', 55, height - 105);
+
+      // Draw Cartridges
+      tileCartridges.forEach(cart => {
+        ctx.save();
+        const isSelected = currentRound.selectedTile === cart.size;
+        const grad = ctx.createLinearGradient(cart.x, cart.y, cart.x, cart.y + cart.h);
+        grad.addColorStop(0, isSelected ? '#00f5d4' : '#00b4d8');
+        grad.addColorStop(1, isSelected ? '#0077b6' : '#005f73');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(cart.x, cart.y, cart.w, cart.h, [8]);
+        ctx.fill();
+        ctx.lineWidth = isSelected ? 3 : 1.5;
+        ctx.strokeStyle = isSelected ? '#ffffff' : '#caf0f8';
+        ctx.stroke();
+
+        ctx.font = "bold 16px 'Courier New', monospace";
+        ctx.fillStyle = isSelected ? '#031024' : '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`${cart.size}m × ${cart.size}m`, cart.x + cart.w / 2, cart.y + cart.h / 2);
+        ctx.restore();
+      });
+
+      // Draw Laser Weld Button
+      if (weldButton) {
+        ctx.save();
+        const lGrad = ctx.createLinearGradient(weldButton.x, weldButton.y, weldButton.x, weldButton.y + weldButton.h);
+        lGrad.addColorStop(0, currentRound.testStatus === 'hcf_perfect' ? '#00ffaa' : '#ff9e00');
+        lGrad.addColorStop(1, currentRound.testStatus === 'hcf_perfect' ? '#007200' : '#9d0208');
+        ctx.fillStyle = lGrad;
+        ctx.beginPath();
+        ctx.roundRect(weldButton.x, weldButton.y, weldButton.w, weldButton.h, [8]);
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ffd000';
+        ctx.stroke();
+
+        ctx.font = "bold 15px 'Courier New', monospace";
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(weldButton.title, weldButton.x + weldButton.w / 2, weldButton.y + weldButton.h / 2);
+        ctx.restore();
+      }
+    }
+
+    function drawWeldingAndTugAnimation() {
+      // 1. Draw Laser Weld Seams
+      for (let i = laserBeams.length - 1; i >= 0; i--) {
+        const lb = laserBeams[i];
+        ctx.save();
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 4 + Math.random() * 4;
+        ctx.shadowColor = '#00ffff';
+        ctx.shadowBlur = 15;
+        ctx.beginPath();
+        ctx.moveTo(lb.x1, lb.y1);
+        ctx.lineTo(lb.x2, lb.y2);
+        ctx.stroke();
+        ctx.restore();
+        createSparks((lb.x1 + lb.x2) / 2, (lb.y1 + lb.y2) / 2, 2, '#00ffff');
+        lb.life--;
+        if (lb.life <= 0) laserBeams.splice(i, 1);
+      }
+
+      // 2. Orbital Tug Departure
+      if (tugCrane) {
+        ctx.save();
+        if (tugCrane.x > tugCrane.targetX) {
+          tugCrane.x -= 8;
+        } else {
+          tugCrane.y -= 3;
+        }
+
+        // Space Tug Silhouette
+        ctx.fillStyle = '#ffd700';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(tugCrane.x - 40, tugCrane.y - 20, 80, 40, [10]);
+        ctx.fill();
+        ctx.stroke();
+
+        // Thruster exhaust flame
+        ctx.fillStyle = '#00e5ff';
+        ctx.beginPath();
+        ctx.moveTo(tugCrane.x + 40, tugCrane.y - 8);
+        ctx.lineTo(tugCrane.x + 65 + Math.random() * 15, tugCrane.y);
+        ctx.lineTo(tugCrane.x + 40, tugCrane.y + 8);
+        ctx.fill();
+
+        ctx.font = "bold 12px 'Courier New', monospace";
+        ctx.fillStyle = '#021024';
+        ctx.textAlign = 'center';
+        ctx.fillText('ORBIT TUG', tugCrane.x, tugCrane.y + 5);
+        ctx.restore();
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, width, height);
+
+      // 1. Backdrop
+      drawSpaceStationBackdrop();
+
+      // 2. Fabrication Bays
+      drawFabricationBays();
+
+      // 3. Tile Cartridge Dispenser
+      drawTileDispenser();
+
+      // 4. Welding Lasers & Tug
+      drawWeldingAndTugAnimation();
+
+      // 5. Sparks
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i];
+        s.x += s.vx;
+        s.y += s.vy;
+        s.life--;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        if (s.life <= 0) sparks.splice(i, 1);
+      }
+
+      // 6. Player Reticles
+      players.forEach(p => {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 22, 0, Math.PI * 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = p.color;
+        ctx.shadowColor = p.glow;
+        ctx.shadowBlur = 10;
+        ctx.stroke();
+
+        // Crosshairs
+        ctx.beginPath();
+        ctx.moveTo(p.x - 28, p.y);
+        ctx.lineTo(p.x - 12, p.y);
+        ctx.moveTo(p.x + 12, p.y);
+        ctx.lineTo(p.x + 28, p.y);
+        ctx.moveTo(p.x, p.y - 28);
+        ctx.lineTo(p.x, p.y - 12);
+        ctx.moveTo(p.x, p.y + 12);
+        ctx.lineTo(p.x, p.y + 28);
+        ctx.stroke();
+
+        ctx.font = "bold 11px 'Courier New', monospace";
+        ctx.textAlign = 'center';
+        ctx.fillStyle = p.color;
+        ctx.fillText(p.name, p.x, p.y - 32);
+        ctx.restore();
+      });
+
+      // 7. Popups
+      if (popup && popup.timer > 0) {
+        popup.timer--;
+        const alpha = Math.min(1, popup.timer / 20);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const boxW = Math.min(880, width - 40);
+        const boxH = 75;
+        const boxX = (width - boxW) / 2;
+        const boxY = 70;
+
+        ctx.fillStyle = 'rgba(4, 12, 22, 0.94)';
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = popup.color;
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+        ctx.font = "bold 18px 'Courier New', monospace";
+        ctx.textAlign = 'center';
+        ctx.fillStyle = popup.color;
+        ctx.fillText(popup.text, width * 0.5, boxY + 28);
+
+        if (popup.subtext) {
+          ctx.font = "bold 13px 'Courier New', monospace";
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(popup.subtext, width * 0.5, boxY + 54);
+        }
+        ctx.restore();
+      }
+
+      updateControls();
+      requestAnimationFrame(render);
+    }
+
+    // Initialize Game
+    window.addEventListener('load', () => {
+      initRound();
+      requestAnimationFrame(render);
+    });
+  </script>
+</body>
+</html>
