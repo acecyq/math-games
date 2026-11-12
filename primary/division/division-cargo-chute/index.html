@@ -36,7 +36,7 @@
 </head>
 <body>
 <noscript>JavaScript and Canvas are required for Cargo Chute.</noscript>
-<canvas id="game" aria-label="Cargo Chute: The D-M-S-B Refinery. Place-value ×10/÷10 and long division D-M-S-B for Primary 3–4. P1: WASD + F/Space or gamepad 1. P2: Arrows + Enter or gamepad 2."></canvas>
+<canvas id="game" aria-label="Cargo Chute: The D-M-S-B Refinery. Place-value ×10/÷10 and long division D-M-S-B for Primary 3–4. Solo: mouse, WASD + F/Space, or 8BitDo D-pad + A. Co-op P2: arrows + Enter or a second 8BitDo."></canvas>
 <div id="live" class="sr" aria-live="polite"></div>
 <script>
 'use strict';
@@ -44,7 +44,7 @@
 /* ==========================================================================
    CARGO CHUTE: THE D-M-S-B REFINERY
    Singapore Primary 3–4 · ×10/÷10 place-value + single-digit long division
-   Single-file HTML5 Canvas · 2P Co-op / Competitive · Web Audio · Gamepad
+   Single-file HTML5 Canvas · Solo / 2P Co-op / Competitive · Web Audio · Mouse · 8BitDo
    ========================================================================== */
 
 const W = 1280, H = 720;
@@ -72,6 +72,8 @@ const pointer = { x: W / 2, y: H / 2, down: false };
 
 const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
 const AXIS_DEAD = 0.5;
+const hatIdle = {};
+const PLAY_MODES = ['solo', 'coop', 'versus'];
 
 const STEP_LABELS = ['DIVIDE', 'MULTIPLY', 'SUBTRACT', 'BRING DOWN'];
 const STEP_KEYS = ['D', 'M', 'S', 'B'];
@@ -426,7 +428,7 @@ function makePlayer(i) {
 /* ---------- Game state ---------- */
 const G = {
   mode: 'title', // title | calibrate | play | batchDone | gameOver
-  playMode: 'coop', // coop | versus
+  playMode: 'solo', // solo | coop | versus
   t: 0,
   tier: 1,
   batchesDone: 0,
@@ -437,7 +439,7 @@ const G = {
   feedbackT: 0,
   flash: 0,
   shake: 0,
-  titleFocus: 0, // 0 coop, 1 versus
+  titleFocus: 0, // index into PLAY_MODES: solo, coop, versus
   muteHover: false,
   hint: '',
   phaseLabel: '',
@@ -481,10 +483,15 @@ function currentStep(board) {
 }
 
 function activePlayerForStep(step) {
+  if (G.playMode === 'solo') return 0;
   if (G.playMode !== 'coop' || !step) return -1;
   // P1: D + S · P2: M + B
   if (step.type === 'D' || step.type === 'S') return 0;
   return 1;
+}
+
+function focusedPlayMode() {
+  return PLAY_MODES[G.titleFocus] || 'solo';
 }
 
 function startCalibrate() {
@@ -603,7 +610,9 @@ function beginGame(playMode) {
   G.winPlayer = -1;
   G.padNote = playMode === 'coop'
     ? 'Co-op Relay · P1: Divide & Subtract · P2: Multiply & Bring Down'
-    : 'Competitive Sprint · First to seal the shipment wins a Foreman Star';
+    : playMode === 'solo'
+      ? 'Solo shift · You run every station · Mouse, keys, or 8BitDo D-pad + A'
+      : 'Competitive Sprint · First to seal the shipment wins a Foreman Star';
   startCalibrate();
 }
 
@@ -629,9 +638,10 @@ function loseShield(pi) {
 function awardCorrect(pi, pts) {
   const p = players[pi];
   p.combo++;
-  if (G.playMode === 'coop') {
-    G.teamCombo++;
-    const mult = 1 + Math.min(5, Math.floor(G.teamCombo / 2)) * 0.2;
+  if (G.playMode === 'coop' || G.playMode === 'solo') {
+    if (G.playMode === 'coop') G.teamCombo++;
+    const combo = G.playMode === 'solo' ? p.combo : G.teamCombo;
+    const mult = 1 + Math.min(5, Math.floor(combo / 2)) * 0.2;
     const gain = Math.round(pts * mult);
     p.score += gain;
     G.teamScore += gain;
@@ -723,9 +733,10 @@ function completeBatch(winnerPi) {
   } else {
     G.feedback = `Shipment sealed! Quotient ${G.board.prob.expectedQ}` +
       (G.board.remainder ? ` R ${G.board.remainder}` : '') + ' · Rocket away!';
-    if (G.teamCombo >= 4) {
+    const combo = G.playMode === 'solo' ? players[0].combo : G.teamCombo;
+    if (combo >= 4) {
       players[0].stars++;
-      players[1].stars++;
+      if (G.playMode === 'coop') players[1].stars++;
     }
   }
   G.feedbackKind = 'good';
@@ -867,12 +878,16 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (G.mode === 'title') {
-    if (e.code === 'ArrowLeft' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'KeyD') {
-      G.titleFocus = 1 - G.titleFocus;
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+      G.titleFocus = (G.titleFocus + PLAY_MODES.length - 1) % PLAY_MODES.length;
+      audio.select();
+    }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+      G.titleFocus = (G.titleFocus + 1) % PLAY_MODES.length;
       audio.select();
     }
     if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') {
-      beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
+      beginGame(focusedPlayMode());
     }
     return;
   }
@@ -885,6 +900,14 @@ window.addEventListener('keydown', (e) => {
         nextAfterBatch();
       }
     }
+    return;
+  }
+
+  // Solo: P1 also takes the arrow keys, Enter, mouse, and 8BitDo.
+  if (G.playMode === 'solo') {
+    if (e.code === 'KeyA' || e.code === 'KeyW' || e.code === 'ArrowLeft' || e.code === 'ArrowUp') moveReticle(0, -1);
+    if (e.code === 'KeyD' || e.code === 'KeyS' || e.code === 'ArrowRight' || e.code === 'ArrowDown') moveReticle(0, 1);
+    if (e.code === 'KeyF' || e.code === 'Space' || e.code === 'Enter') confirmPlayer(0);
     return;
   }
 
@@ -926,47 +949,94 @@ function confirmPlayer(pi) {
   else if (G.mode === 'play') submitDivision(pi);
 }
 
-function pollGamepads() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  players.forEach((p) => {
-    const gp = pads[p.padIndex];
-    if (!gp) return;
-    const axX = gp.axes[0] || 0;
-    const axY = gp.axes[1] || 0;
-    // 8BitDo hat on axis 9 (macOS D-input)
-    let hatL = false, hatR = false, hatU = false, hatD = false;
-    if (gp.axes.length > 9) {
-      const h = gp.axes[9];
-      if (h >= -1 && h <= 1.1) {
-        // common 8-way hat encoding
-        if (Math.abs(h - (-1)) < 0.1 || Math.abs(h - 1) < 0.15) hatU = Math.abs(h - (-1)) < 0.1;
-        // Simplified: treat negative X stick / dpad buttons
-      }
-    }
-    const left = (gp.buttons[PAD.LEFT] && gp.buttons[PAD.LEFT].pressed) || axX < -AXIS_DEAD || hatL;
-    const right = (gp.buttons[PAD.RIGHT] && gp.buttons[PAD.RIGHT].pressed) || axX > AXIS_DEAD || hatR;
-    const up = (gp.buttons[PAD.UP] && gp.buttons[PAD.UP].pressed) || axY < -AXIS_DEAD;
-    const down = (gp.buttons[PAD.DOWN] && gp.buttons[PAD.DOWN].pressed) || axY > AXIS_DEAD;
-    const a = gp.buttons[PAD.A] && gp.buttons[PAD.A].pressed;
-    const start = (gp.buttons[PAD.START] && gp.buttons[PAD.START].pressed) ||
-      (gp.buttons[PAD.START_ALT] && gp.buttons[PAD.START_ALT].pressed);
+function padPressed(gp, i) {
+  const b = gp.buttons && gp.buttons[i];
+  return !!(b && (b.pressed || b.value > 0.5));
+}
 
-    if (left && !p.gpPrev.left) moveReticle(p.i, -1);
-    if (right && !p.gpPrev.right) moveReticle(p.i, 1);
-    if (up && !p.gpPrev.up) moveReticle(p.i, -1);
-    if (down && !p.gpPrev.down) moveReticle(p.i, 1);
-    if (a && !p.gpPrev.a) {
-      if (G.mode === 'title') beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
-      else if (G.mode === 'batchDone') nextAfterBatch();
+function padDirs(gp) {
+  if (!gp) return { left: false, right: false, up: false, down: false, a: false, start: false };
+  const axes = gp.axes || [];
+  const axX = axes[0] != null ? axes[0] : 0;
+  const axY = axes[1] != null ? axes[1] : 0;
+  // 8BitDo Micro / macOS / D-input: hat switch on axis 9, idle near -1.
+  let hatL = false, hatR = false, hatU = false, hatD = false;
+  if (axes.length > 9) {
+    const hat = axes[9];
+    if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+    if (hat != null && Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+  }
+  return {
+    left: padPressed(gp, PAD.LEFT) || axX < -AXIS_DEAD || hatL,
+    right: padPressed(gp, PAD.RIGHT) || axX > AXIS_DEAD || hatR,
+    up: padPressed(gp, PAD.UP) || axY < -AXIS_DEAD || hatU,
+    down: padPressed(gp, PAD.DOWN) || axY > AXIS_DEAD || hatD,
+    a: padPressed(gp, PAD.A),
+    start: padPressed(gp, PAD.START) || padPressed(gp, PAD.START_ALT)
+  };
+}
+
+function listPads() {
+  try {
+    return navigator.getGamepads ? navigator.getGamepads() : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function livePadIndexes(pads) {
+  const live = [];
+  for (let i = 0; i < pads.length; i++) if (pads[i]) live.push(i);
+  return live;
+}
+
+function pollGamepads() {
+  const pads = listPads();
+  const live = livePadIndexes(pads);
+
+  if (G.mode === 'title') {
+    const gp = live.length ? pads[live[0]] : null;
+    if (!gp) return;
+    const d = padDirs(gp);
+    const prev = players[0].gpPrev;
+    const focusLeft = (d.left || d.up) && !(prev.left || prev.up);
+    const focusRight = (d.right || d.down) && !(prev.right || prev.down);
+    if (focusLeft && !focusRight) {
+      G.titleFocus = (G.titleFocus + PLAY_MODES.length - 1) % PLAY_MODES.length;
+      audio.select();
+    } else if (focusRight && !focusLeft) {
+      G.titleFocus = (G.titleFocus + 1) % PLAY_MODES.length;
+      audio.select();
+    }
+    if ((d.a && !prev.a) || (d.start && !prev.start)) beginGame(focusedPlayMode());
+    players[0].gpPrev = { a: d.a, left: d.left, right: d.right, up: d.up, down: d.down, start: d.start };
+    return;
+  }
+
+  const count = G.playMode === 'solo' ? 1 : Math.min(2, players.length);
+  for (let i = 0; i < count; i++) {
+    const p = players[i];
+    if (live[i] == null) continue;
+    p.padIndex = live[i];
+    const d = padDirs(pads[p.padIndex]);
+    const prevLeft = (d.left && !p.gpPrev.left) || (d.up && !p.gpPrev.up);
+    const prevRight = (d.right && !p.gpPrev.right) || (d.down && !p.gpPrev.down);
+    if (prevLeft && !prevRight) moveReticle(p.i, -1);
+    else if (prevRight && !prevLeft) moveReticle(p.i, 1);
+    if (d.a && !p.gpPrev.a) {
+      if (G.mode === 'batchDone') nextAfterBatch();
       else if (G.mode === 'gameOver') G.mode = 'title';
       else confirmPlayer(p.i);
     }
-    if (start && !p.gpPrev.start) {
-      G.titleFocus = 1 - G.titleFocus;
-      audio.select();
-    }
-    p.gpPrev = { a, left, right, up, down, start };
-  });
+    p.gpPrev = { a: d.a, left: d.left, right: d.right, up: d.up, down: d.down, start: d.start };
+  }
 }
 
 /* ---------- Pointer ---------- */
@@ -976,13 +1046,47 @@ canvas.addEventListener('pointerdown', (e) => {
   pointer.down = true;
   handleClick();
 });
-canvas.addEventListener('pointermove', (e) => syncPointer(e));
+canvas.addEventListener('pointermove', (e) => {
+  syncPointer(e);
+  hoverSoloChoice();
+});
 canvas.addEventListener('pointerup', () => { pointer.down = false; });
+window.addEventListener('gamepadconnected', (e) => {
+  audio.ensure();
+  const msg = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+  if (G.mode === 'title') G.padNote = msg;
+  else {
+    G.feedback = msg;
+    G.feedbackKind = 'good';
+    G.feedbackT = 1.6;
+  }
+  speak(msg);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  const msg = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+  if (G.mode === 'title') G.padNote = msg;
+  else {
+    G.feedback = msg;
+    G.feedbackKind = 'warn';
+    G.feedbackT = 1.6;
+  }
+});
 
 function syncPointer(e) {
   const rect = canvas.getBoundingClientRect();
   pointer.x = (e.clientX - rect.left) * (W / rect.width);
   pointer.y = (e.clientY - rect.top) * (H / rect.height);
+}
+
+function hoverSoloChoice() {
+  if (G.playMode !== 'solo') return;
+  if (G.mode !== 'calibrate' && G.mode !== 'play') return;
+  for (const hs of hotspots) {
+    if (pointer.x >= hs.x && pointer.x <= hs.x + hs.w && pointer.y >= hs.y && pointer.y <= hs.y + hs.h) {
+      players[0].reticle = hs.index;
+      return;
+    }
+  }
 }
 
 function handleClick() {
@@ -995,9 +1099,12 @@ function handleClick() {
     return;
   }
   if (G.mode === 'title') {
-    if (pointer.y > 400 && pointer.y < 480) {
-      G.titleFocus = pointer.x < W / 2 ? 0 : 1;
-      beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
+    for (const card of modeCards()) {
+      if (pointer.x >= card.x && pointer.x <= card.x + card.w && pointer.y >= card.y && pointer.y <= card.y + card.h) {
+        G.titleFocus = card.i;
+        beginGame(card.id);
+        return;
+      }
     }
     return;
   }
@@ -1133,7 +1240,7 @@ function drawHUD() {
     ctx.fillText(`★ ${p.stars}  ·  ${p.score}`, x + 118, y + 36);
   };
   drawBadge(16, 8, players[0]);
-  drawBadge(W - 216, 8, players[1]);
+  if (G.playMode !== 'solo') drawBadge(W - 216, 8, players[1]);
 
   // Center mode card
   rr(W / 2 - 180, 8, 360, 52, 8);
@@ -1145,12 +1252,14 @@ function drawHUD() {
   ctx.fillStyle = COL.amber;
   ctx.font = 'bold 13px Trebuchet MS, sans-serif';
   ctx.textAlign = 'center';
-  const modeStr = G.playMode === 'coop' ? 'CO-OP RELAY' : 'COMPETITIVE SPRINT';
+  const modeStr = G.playMode === 'coop' ? 'CO-OP RELAY' : G.playMode === 'solo' ? 'SOLO SHIFT' : 'COMPETITIVE SPRINT';
   ctx.fillText(modeStr, W / 2, 26);
   ctx.fillStyle = COL.ink;
   ctx.font = '12px Trebuchet MS, sans-serif';
-  ctx.fillText(`Tier ${G.tier} · Batch ${Math.min(G.batchesDone + 1, 6)}/6 · Team ${G.teamScore}` +
-    (G.playMode === 'coop' ? ` · Combo ${G.teamCombo}` : ''), W / 2, 46);
+  const scoreBit = G.playMode === 'solo'
+    ? ` · ${players[0].score} · Combo ${players[0].combo}`
+    : ` · Team ${G.teamScore}` + (G.playMode === 'coop' ? ` · Combo ${G.teamCombo}` : '');
+  ctx.fillText(`Tier ${G.tier} · Batch ${Math.min(G.batchesDone + 1, 6)}/6` + scoreBit, W / 2, 46);
   ctx.textAlign = 'left';
 
   // Mute
@@ -1348,8 +1457,35 @@ function drawLongDivision(board, ox, oy, scale, spotlight) {
     wy += cell * 0.85;
   });
 
-  // Live working number callout
+  // Multiply is already locked, so the product sits on the bracket during Subtract.
   const step = currentStep(board);
+  let pendingY = null;
+  if (step && step.type === 'S' && board.currentProduct != null && !board.done) {
+    const endCol = prob.firstEndIdx + board.workRows.length;
+    const prodStr = String(board.currentProduct);
+    pendingY = wy;
+    ctx.font = midFont;
+    ctx.fillStyle = COL.cyan;
+    ctx.textAlign = 'center';
+    for (let k = 0; k < prodStr.length; k++) {
+      const col = endCol - (prodStr.length - 1 - k);
+      if (col < 0) continue;
+      ctx.fillText(prodStr[k], baseX + col * cell + cell / 2, wy);
+    }
+    ctx.fillText('−', baseX + Math.max(0, endCol - prodStr.length) * cell - 6, wy);
+    wy += cell * 0.55;
+    ctx.strokeStyle = COL.muted;
+    ctx.lineWidth = 2;
+    const lineL = baseX + Math.max(0, endCol - prodStr.length) * cell;
+    const lineR = baseX + (endCol + 1) * cell;
+    ctx.beginPath();
+    ctx.moveTo(lineL, wy);
+    ctx.lineTo(lineR, wy);
+    ctx.stroke();
+    wy += cell * 0.2;
+  }
+
+  // Live working number callout
   if (step && !board.done && (step.type === 'D' || step.type === 'M' || step.type === 'S')) {
     ctx.font = small;
     ctx.fillStyle = COL.amber;
@@ -1375,7 +1511,8 @@ function drawLongDivision(board, ox, oy, scale, spotlight) {
     ctx.globalAlpha = 0.5 + 0.3 * Math.sin(G.t * 7);
     let sy = divY - 28;
     if (step.type === 'D') sy = roofY - 22;
-    if (step.type === 'M' || step.type === 'S') sy = Math.min(wy - 40, workY0 - 10);
+    else if (step.type === 'S' && pendingY != null) sy = pendingY - cell * 0.85;
+    else if (step.type === 'M') sy = Math.min(wy - 40, workY0 - 10);
     rr(bracketLeft - 8, sy, bracketRight - bracketLeft + 20, 48, 8);
     ctx.stroke();
     ctx.globalAlpha = 1;
@@ -1439,6 +1576,19 @@ function drawChoiceCards(choices, y, activePlayers) {
   ctx.textAlign = 'left';
 }
 
+function modeCards() {
+  const items = [
+    { id: 'solo', title: 'SOLO SHIFT', sub: 'Mouse · keys · 8BitDo' },
+    { id: 'coop', title: 'CO-OP RELAY', sub: 'P1: D & S · P2: M & B' },
+    { id: 'versus', title: 'SPRINT RACE', sub: 'First seal wins a Star' }
+  ];
+  const bw = 300, bh = 82, gap = 20;
+  const total = items.length * bw + (items.length - 1) * gap;
+  const x0 = (W - total) / 2;
+  const y = 424;
+  return items.map((m, i) => ({ ...m, i, x: x0 + i * (bw + gap), y, w: bw, h: bh }));
+}
+
 function drawTitle() {
   // Hero brand
   ctx.textAlign = 'center';
@@ -1460,45 +1610,46 @@ function drawTitle() {
   // Decorative bracket preview
   ctx.strokeStyle = 'rgba(154,216,255,0.35)';
   ctx.lineWidth = 2;
-  rr(W / 2 - 220, 280, 440, 100, 12);
+  rr(W / 2 - 220, 268, 440, 100, 12);
   ctx.stroke();
   ctx.fillStyle = COL.crystal;
   ctx.font = '22px "Courier New", monospace';
-  ctx.fillText('    2 0 4', W / 2, 318);
-  ctx.fillText('4 | 8 1 6', W / 2, 350);
+  ctx.fillText('    2 0 4', W / 2, 306);
+  ctx.fillText('4 | 8 1 6', W / 2, 338);
   ctx.fillStyle = COL.dim;
   ctx.font = '13px Trebuchet MS, sans-serif';
-  ctx.fillText('Zero-placeholder mastery · Remainder capsules · Refinery combo chain', W / 2, 372);
+  ctx.fillText('Zero-placeholder mastery · Remainder capsules · Refinery combo chain', W / 2, 356);
 
-  // Mode buttons
-  const modes = [
-    { id: 0, title: 'CO-OP RELAY', sub: 'P1: D & S · P2: M & B · Shared combo' },
-    { id: 1, title: 'COMPETITIVE SPRINT', sub: 'Dual brackets · First seal wins a Star' }
-  ];
-  modes.forEach((m, i) => {
-    const x = W / 2 - 340 + i * 360;
-    const y = 420;
-    const on = G.titleFocus === i;
-    rr(x, y, 320, 88, 12);
+  modeCards().forEach((m) => {
+    const on = G.titleFocus === m.i;
+    rr(m.x, m.y, m.w, m.h, 12);
     ctx.fillStyle = on ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.9)';
     ctx.fill();
     ctx.strokeStyle = on ? COL.amber : COL.steel;
     ctx.lineWidth = on ? 3 : 2;
     ctx.stroke();
     ctx.fillStyle = on ? COL.amber : COL.ink;
-    ctx.font = 'bold 22px Trebuchet MS, sans-serif';
-    ctx.fillText(m.title, x + 160, y + 38);
+    ctx.font = 'bold 20px Trebuchet MS, sans-serif';
+    ctx.fillText(m.title, m.x + m.w / 2, m.y + 34);
     ctx.fillStyle = COL.dim;
     ctx.font = '13px Trebuchet MS, sans-serif';
-    ctx.fillText(m.sub, x + 160, y + 64);
+    ctx.fillText(m.sub, m.x + m.w / 2, m.y + 58);
   });
 
   ctx.fillStyle = COL.ink;
   ctx.font = '14px Trebuchet MS, sans-serif';
-  ctx.fillText('P1: WASD + F / Space · P2: Arrows + Enter · 8BitDo: D-pad + A · M mutes audio', W / 2, 560);
+  ctx.fillText('P1: click a card · WASD + F / Space · 8BitDo D-pad + A', W / 2, 540);
+  ctx.fillStyle = COL.dim;
+  ctx.font = '14px Trebuchet MS, sans-serif';
+  ctx.fillText('P2 co-op / sprint: Arrows + Enter · second 8BitDo · M mutes audio', W / 2, 564);
   ctx.fillStyle = COL.amber;
   ctx.font = 'bold 16px Trebuchet MS, sans-serif';
-  ctx.fillText('Press Space / A to start selected mode', W / 2, 600);
+  ctx.fillText('Click a mode, or press Space / A to start the highlighted one', W / 2, 600);
+  if (G.padNote) {
+    ctx.fillStyle = COL.cyan;
+    ctx.font = '13px Trebuchet MS, sans-serif';
+    ctx.fillText(G.padNote, W / 2, 612);
+  }
   ctx.textAlign = 'left';
 }
 
@@ -1525,7 +1676,7 @@ function drawCalibrate() {
   ctx.font = 'bold 28px Trebuchet MS, sans-serif';
   ctx.fillText(G.place.op === '×10' ? '⟸  ×10  SHIFT LEFT  ·  insert 0 in Ones' : '⟹  ÷10  SHIFT RIGHT  ·  drop Ones 0', W / 2, 360);
 
-  drawChoiceCards(G.placeChoices, 420, [0, 1]);
+  drawChoiceCards(G.placeChoices, 420, G.playMode === 'solo' ? [0] : [0, 1]);
   ctx.textAlign = 'left';
 }
 
@@ -1661,8 +1812,12 @@ function drawGameOver() {
   ctx.fillText('REFINERY SHIFT COMPLETE', W / 2, 200);
   ctx.fillStyle = COL.ink;
   ctx.font = '20px Trebuchet MS, sans-serif';
-  ctx.fillText(`P1 ${players[0].score} pts · ${players[0].stars} ★    P2 ${players[1].score} pts · ${players[1].stars} ★`, W / 2, 260);
-  ctx.fillText(`Team ore credits: ${G.teamScore}`, W / 2, 300);
+  if (G.playMode === 'solo') {
+    ctx.fillText(`Score ${players[0].score} · ${players[0].stars} ★`, W / 2, 260);
+  } else {
+    ctx.fillText(`P1 ${players[0].score} pts · ${players[0].stars} ★    P2 ${players[1].score} pts · ${players[1].stars} ★`, W / 2, 260);
+    ctx.fillText(`Team ore credits: ${G.teamScore}`, W / 2, 300);
+  }
   if (G.playMode === 'versus') {
     const w = players[0].stars === players[1].stars ? 'DRAW' :
       (players[0].stars > players[1].stars ? 'P1 FOREMAN' : 'P2 FOREMAN');
@@ -1768,7 +1923,7 @@ function frame(now) {
     ctx.fillStyle = COL.muted;
     ctx.font = '11px Trebuchet MS, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(G.padNote, W / 2, H - 8);
+    ctx.fillText(G.padNote, W / 2, H - 46);
     ctx.textAlign = 'left';
   }
 
@@ -1781,7 +1936,7 @@ setInterval(() => {
   if (G.mode !== 'title') spawnSteam(rand(40, W - 40), rand(130, 200));
 }, 800);
 
-speak('Cargo Chute Refinery ready. Choose Co-op Relay or Competitive Sprint.');
+speak('Cargo Chute Refinery ready. Solo shift, Co-op Relay, or Sprint Race. Player 1 can use the mouse, keyboard, or an 8BitDo.');
 </script>
 </body>
 </html>
