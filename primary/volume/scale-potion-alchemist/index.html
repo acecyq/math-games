@@ -1,0 +1,1798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Potion Alchemist: The Meniscus Lab</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #0a0614;
+      font-family: 'Exo 2', sans-serif;
+      color: #e8fff4;
+    }
+    #game-container {
+      position: relative; width: 100vw; height: 100vh;
+      display: flex; justify-content: center; align-items: center;
+      background: radial-gradient(ellipse at 50% 18%, #1a3a4a 0%, #0c1a28 42%, #060a12 100%);
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    #ui-overlay {
+      position: absolute; inset: 0; pointer-events: none;
+      display: flex; flex-direction: column; justify-content: space-between;
+      padding: 10px 14px;
+    }
+    .hud-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; flex-wrap: wrap; }
+    .hud-card {
+      background: rgba(8, 22, 36, 0.9);
+      border: 2px solid #3de8b8;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.45), inset 0 0 10px rgba(61,232,184,0.12);
+      text-shadow: 0 1px 2px #000;
+      white-space: nowrap;
+    }
+    .hud-card.p1 { border-color: #ff6b5a; color: #ffcfc8; }
+    .hud-card.p2 { border-color: #5ab0ff; color: #c8e4ff; }
+    .hud-card.score { border-color: #f0c040; color: #ffe9a0; }
+    .btn {
+      pointer-events: auto;
+      background: linear-gradient(180deg, #3de8b8 0%, #1a8a68 100%);
+      color: #042018; border: 2px solid #9dffd8;
+      border-radius: 6px; padding: 6px 12px;
+      font-family: inherit; font-size: 12px; font-weight: 800;
+      letter-spacing: 1px; text-transform: uppercase; cursor: pointer;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.5);
+    }
+    .btn:hover { filter: brightness(1.12); }
+    .btn:active { transform: translateY(1px); }
+    .btn.muted { background: linear-gradient(180deg, #5a6a78 0%, #2a3440 100%); border-color: #8a9aa8; color: #dde4ea; }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-overlay">
+      <div class="hud-bar">
+        <div class="hud-card p1" id="hud-p1">P1 🥽×3 ★0</div>
+        <div class="hud-card" id="hud-mode">MODE: CO-OP</div>
+        <div class="hud-card" id="hud-tier">TIER 1 · SCAN</div>
+        <div class="hud-card score" id="hud-score">COMBO ×1 · 0 PTS</div>
+        <div class="hud-card p2" id="hud-p2">P2 🥽×3 ★0</div>
+        <button id="btn-audio" class="btn">AUDIO: ON</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ============================================================================
+   POTION ALCHEMIST: THE MENISCUS LAB
+   Singapore Primary 3/4 — Reading measuring cylinders (step value, gaps, meniscus)
+   Single-file HTML5 Canvas · 2P Gamepad/Keyboard · Web Audio
+============================================================================ */
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  let W = 1280, H = 720;
+  let shake = 0;
+  let time = 0;
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ---------- AUDIO ---------- */
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.bgmTimer = null;
+      this.step = 0;
+      this.tempo = 118;
+      this.bubbleNode = null;
+    }
+    init() {
+      if (!this.ctx) {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.startBGM();
+      } else if (this.ctx.state === 'suspended') {
+        this.ctx.resume();
+      }
+    }
+    toggleMute() {
+      this.muted = !this.muted;
+      const btn = document.getElementById('btn-audio');
+      btn.textContent = `AUDIO: ${this.muted ? 'OFF' : 'ON'}`;
+      btn.classList.toggle('muted', this.muted);
+    }
+    tone(freq, dur, type = 'square', gain = 0.07, slide = 0) {
+      if (this.muted || !this.ctx) return;
+      try {
+        const t0 = this.ctx.currentTime;
+        const o = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(freq, t0);
+        if (slide) o.frequency.linearRampToValueAtTime(Math.max(20, freq + slide), t0 + dur);
+        g.gain.setValueAtTime(gain, t0);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        o.connect(g); g.connect(this.ctx.destination);
+        o.start(t0); o.stop(t0 + dur);
+      } catch (_) {}
+    }
+    noise(dur = 0.12, gain = 0.06) {
+      if (this.muted || !this.ctx) return;
+      try {
+        const n = Math.floor(this.ctx.sampleRate * dur);
+        const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(gain, this.ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + dur);
+        src.connect(g); g.connect(this.ctx.destination);
+        src.start();
+      } catch (_) {}
+    }
+    sfxBubble(pitch = 220) {
+      this.tone(pitch, 0.08, 'sine', 0.04, 90);
+      this.noise(0.05, 0.02);
+    }
+    sfxChime() {
+      [660, 880, 1100].forEach((f, i) => setTimeout(() => this.tone(f, 0.18, 'triangle', 0.07), i * 55));
+    }
+    sfxCork() {
+      this.noise(0.06, 0.08);
+      this.tone(180, 0.12, 'sawtooth', 0.06, -80);
+      setTimeout(() => this.tone(920, 0.15, 'sine', 0.05), 40);
+    }
+    sfxFanfare() {
+      [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.tone(f, 0.32, 'triangle', 0.08), i * 90));
+    }
+    sfxRainbow() {
+      [392, 494, 587, 698, 880, 1046].forEach((f, i) =>
+        setTimeout(() => this.tone(f, 0.22, 'square', 0.05), i * 70));
+    }
+    sfxError() {
+      this.tone(140, 0.28, 'sawtooth', 0.13);
+      this.noise(0.25, 0.09);
+    }
+    sfxFizzle() {
+      this.noise(0.35, 0.1);
+      this.tone(220, 0.3, 'sawtooth', 0.06, -120);
+    }
+    sfxClick() { this.tone(540, 0.03, 'sine', 0.05); }
+    sfxSelect() { this.tone(400, 0.04, 'triangle', 0.04); }
+    sfxPour(level = 0.5) {
+      const f = 180 + level * 420;
+      this.tone(f, 0.06, 'sine', 0.035, 40);
+      if (Math.random() < 0.4) this.noise(0.04, 0.015);
+    }
+    startBGM() {
+      if (this.bgmTimer) return;
+      const bass = [146.83, 146.83, 164.81, 174.61, 146.83, 130.81, 164.81, 196];
+      const arp = [587.33, 659.25, 698.46, 783.99, 698.46, 659.25, 587.33, 523.25];
+      const stepMs = (60 / this.tempo) * 1000 / 2;
+      this.bgmTimer = setInterval(() => {
+        if (!this.muted && this.ctx && this.ctx.state === 'running') {
+          const b = bass[this.step % bass.length];
+          const a = arp[(this.step * 2) % arp.length];
+          this.tone(b, 0.13, 'triangle', 0.032);
+          if (this.step % 2 === 0) this.tone(a, 0.08, 'square', 0.011);
+          if (this.step % 4 === 0) this.noise(0.025, 0.012);
+          if (this.step % 8 === 3) this.tone(988, 0.035, 'sine', 0.014);
+          if (this.step % 16 === 8) this.tone(440, 0.05, 'sine', 0.018, 120);
+        }
+        this.step = (this.step + 1) % 64;
+      }, stepMs);
+    }
+  }
+  const audio = new SoundEngine();
+  document.getElementById('btn-audio').addEventListener('click', () => {
+    audio.init();
+    audio.toggleMute();
+  });
+
+  /* ---------- HELPERS ---------- */
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+  function randPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function fmtVol(ml, mixed = false) {
+    if (!mixed || ml < 1000) {
+      return ml >= 1000 ? `${(ml / 1000).toLocaleString('en-SG')} ℓ` : `${ml.toLocaleString('en-SG')} mℓ`;
+    }
+    const L = Math.floor(ml / 1000);
+    const rem = ml % 1000;
+    if (rem === 0) return `${L} ℓ`;
+    return `${L} ℓ ${rem.toLocaleString('en-SG')} mℓ`;
+  }
+  function fmtStep(ml) {
+    return `${ml.toLocaleString('en-SG')} mℓ`;
+  }
+
+  /* ---------- MATH ENGINE ---------- */
+  // Templates: { tier, majorGap, spaces, step, majors[], meniscusStepsFromLower? }
+  const TIER_TEMPLATES = {
+    1: [
+      // Example A family: 10 ÷ 5 = 2
+      { majorGap: 10, spaces: 5, majors: [0, 10, 20, 30, 40, 50], stepHints: [2, 5, 1, 10] },
+      { majorGap: 10, spaces: 5, majors: [0, 10, 20, 30], stepHints: [2, 5, 1, 10] },
+      // Example B family: 50 ÷ 5 = 10
+      { majorGap: 50, spaces: 5, majors: [0, 50, 100, 150, 200], stepHints: [10, 12.5, 1, 25] },
+      { majorGap: 50, spaces: 5, majors: [0, 50, 100, 150], stepHints: [10, 25, 1, 5] },
+      // Example C family: 25 ÷ 5 = 5
+      { majorGap: 25, spaces: 5, majors: [0, 25, 50, 75, 100], stepHints: [5, 6.25, 1, 10] },
+      // 20 ÷ 5 = 4 — still basic
+      { majorGap: 50, spaces: 5, majors: [50, 100, 150, 200], stepHints: [10, 25, 1, 5] },
+      { majorGap: 10, spaces: 5, majors: [20, 30, 40, 50], stepHints: [2, 5, 1, 10] },
+      { majorGap: 25, spaces: 5, majors: [25, 50, 75, 100], stepHints: [5, 10, 1, 25] }
+    ],
+    2: [
+      // 100 ÷ 5 = 20
+      { majorGap: 100, spaces: 5, majors: [0, 100, 200, 300, 400, 500], stepHints: [20, 25, 1, 10] },
+      { majorGap: 100, spaces: 5, majors: [200, 300, 400, 500], stepHints: [20, 25, 1, 50] },
+      // 100 ÷ 4 = 25
+      { majorGap: 100, spaces: 4, majors: [0, 100, 200, 300, 400, 500], stepHints: [25, 20, 1, 50] },
+      { majorGap: 100, spaces: 4, majors: [400, 500, 600], stepHints: [25, 20, 1, 33] },
+      // 200 ÷ 4 = 50
+      { majorGap: 200, spaces: 4, majors: [100, 300, 500, 700], stepHints: [50, 40, 1, 100] },
+      { majorGap: 200, spaces: 4, majors: [300, 500, 700], stepHints: [50, 100, 1, 25] },
+      { majorGap: 100, spaces: 5, majors: [100, 200, 300, 400], stepHints: [20, 25, 1, 50] },
+      { majorGap: 100, spaces: 4, majors: [200, 300, 400, 500], stepHints: [25, 20, 1, 50] }
+    ],
+    3: [
+      // 500 ÷ 5 = 100
+      { majorGap: 500, spaces: 5, majors: [0, 500, 1000, 1500], stepHints: [100, 125, 1, 50], mixed: false },
+      { majorGap: 500, spaces: 5, majors: [0, 500, 1000], stepHints: [100, 125, 1, 250], mixed: false },
+      // 1000 ÷ 5 = 200
+      { majorGap: 1000, spaces: 5, majors: [0, 1000, 2000, 3000], stepHints: [200, 250, 1, 100], mixed: true },
+      { majorGap: 1000, spaces: 5, majors: [1000, 2000, 3000], stepHints: [200, 250, 1, 500], mixed: true },
+      // 1000 ÷ 4 = 250
+      { majorGap: 1000, spaces: 4, majors: [0, 1000, 2000], stepHints: [250, 200, 1, 500], mixed: true },
+      { majorGap: 1000, spaces: 4, majors: [1000, 2000, 3000], stepHints: [250, 333, 1, 200], mixed: true },
+      // 500 ÷ 5 = 100 with higher range
+      { majorGap: 500, spaces: 5, majors: [500, 1000, 1500, 2000], stepHints: [100, 125, 1, 250], mixed: true }
+    ]
+  };
+
+  // Filter templates so step is one of the allowed values per tier
+  const TIER_STEPS = {
+    1: new Set([2, 5, 10]),
+    2: new Set([20, 25, 50]),
+    3: new Set([100, 200, 250])
+  };
+
+  function validTemplates(tier) {
+    return TIER_TEMPLATES[tier].filter(t => {
+      const step = t.majorGap / t.spaces;
+      return Number.isInteger(step) && TIER_STEPS[tier].has(step);
+    });
+  }
+
+  function generateChallenge(tier, pourMode = false) {
+    const templates = validTemplates(tier);
+    const tpl = randPick(templates);
+    const step = tpl.majorGap / tpl.spaces;
+    const majors = tpl.majors.slice();
+    const minV = majors[0];
+    const maxV = majors[majors.length - 1];
+
+    // Pick two consecutive majors as the focus window for stage 1
+    let lowerIdx = Math.floor(Math.random() * (majors.length - 1));
+    let lower = majors[lowerIdx];
+    let upper = majors[lowerIdx + 1];
+
+    // Meniscus: not on a major label, between lower and upper (or anywhere on scale for reading)
+    // Prefer unmarked ticks inside a random major interval
+    const intervalIdx = Math.floor(Math.random() * (majors.length - 1));
+    const base = majors[intervalIdx];
+    const top = majors[intervalIdx + 1];
+    const maxSteps = tpl.spaces;
+    // steps from base: 1 .. spaces-1 (unmarked)
+    let stepsUp = 1 + Math.floor(Math.random() * (maxSteps - 1));
+    let meniscus = base + stepsUp * step;
+
+    // For pour challenges, ensure a clear target on an unmarked tick
+    if (pourMode) {
+      lowerIdx = intervalIdx;
+      lower = base;
+      upper = top;
+      stepsUp = 1 + Math.floor(Math.random() * (maxSteps - 1));
+      meniscus = base + stepsUp * step;
+    }
+
+    // Align stage-1 window to enclose meniscus
+    for (let i = 0; i < majors.length - 1; i++) {
+      if (meniscus > majors[i] && meniscus < majors[i + 1]) {
+        lower = majors[i];
+        upper = majors[i + 1];
+        stepsUp = Math.round((meniscus - lower) / step);
+        break;
+      }
+    }
+
+    const spaces = tpl.spaces;
+    const innerTicks = spaces - 1;
+    const mixed = !!tpl.mixed || (tier === 3 && maxV >= 1000);
+
+    // Step-size options with distractors
+    const tickTrap = Math.round((upper - lower) / innerTicks); // off-by-one
+    const assume1 = 1;
+    let stepOpts = new Set([step, tickTrap, assume1]);
+    for (const h of (tpl.stepHints || [])) {
+      if (Number.isInteger(h) && h > 0) stepOpts.add(h);
+    }
+    // Extra plausible traps
+    stepOpts.add(step * 2);
+    stepOpts.add(Math.max(1, Math.round(step / 2)));
+    stepOpts.add(upper - lower);
+    let stepChoices = [step];
+    const traps = shuffle([...stepOpts].filter(x => x !== step && x > 0 && Number.isInteger(x) && Number.isFinite(x)));
+    for (const t of traps) {
+      if (stepChoices.length >= 4) break;
+      if (!stepChoices.includes(t)) stepChoices.push(t);
+    }
+    let n = 2;
+    while (stepChoices.length < 4) {
+      const fake = step + n;
+      if (!stepChoices.includes(fake) && fake > 0) stepChoices.push(fake);
+      n++;
+    }
+    stepChoices = shuffle(stepChoices.slice(0, 4));
+
+    // Volume options
+    const assume1Vol = lower + stepsUp; // blindly +1 per tick
+    const wrongInterval = lower + stepsUp * tickTrap;
+    const oneLow = meniscus - step;
+    const oneHigh = meniscus + step;
+    const halfish = lower + Math.round(stepsUp * step * 0.5);
+    let volOpts = new Set([meniscus, assume1Vol, wrongInterval, oneLow, oneHigh]);
+    volOpts.add(halfish);
+    volOpts.add(lower + (spaces - stepsUp) * step);
+    volOpts.delete(meniscus);
+    let volChoices = [meniscus];
+    for (const t of shuffle([...volOpts].filter(v => v !== meniscus && v > minV && v < maxV && v !== lower && v !== upper))) {
+      if (volChoices.length >= 4) break;
+      if (!volChoices.includes(t)) volChoices.push(t);
+    }
+    let k = 1;
+    while (volChoices.length < 4) {
+      const fake = meniscus + k * step;
+      if (fake > minV && fake < maxV && !volChoices.includes(fake) && !majors.includes(fake)) {
+        volChoices.push(fake);
+      }
+      k = k > 0 ? -k : -k + 1;
+      if (Math.abs(k) > 20) { volChoices.push(meniscus + volChoices.length * 3); break; }
+    }
+    volChoices = shuffle(volChoices.slice(0, 4));
+
+    return {
+      tier,
+      majors,
+      majorGap: upper - lower,
+      spaces,
+      innerTicks,
+      step,
+      lower,
+      upper,
+      meniscus,
+      stepsUp,
+      minV,
+      maxV,
+      mixed,
+      stepChoices,
+      volChoices,
+      pourMode,
+      potionHue: 140 + Math.floor(Math.random() * 80), // teal–cyan–lime range
+      sealed: false,
+      stampedStep: false
+    };
+  }
+
+  function hintForStepMistake(ch, chosen) {
+    const tickTrap = Math.round(ch.majorGap / ch.innerTicks);
+    if (chosen === 1) {
+      return `Each step is NOT 1 mℓ! Count the SPACES between ${fmtVol(ch.lower)} and ${fmtVol(ch.upper)}: (${ch.upper} − ${ch.lower}) ÷ ${ch.spaces} = ${ch.step} mℓ.`;
+    }
+    if (chosen === tickTrap) {
+      return `Count the SPACES, not the lines! Between ${fmtVol(ch.lower)} and ${fmtVol(ch.upper)} there are ${ch.spaces} spaces (${ch.innerTicks} inner ticks): ${ch.majorGap} ÷ ${ch.spaces} = ${ch.step} mℓ per step!`;
+    }
+    return `Step Value = (Upper − Lower) ÷ Spaces. (${ch.upper} − ${ch.lower}) ÷ ${ch.spaces} = ${ch.step} mℓ per step!`;
+  }
+
+  function hintForVolMistake(ch, chosen) {
+    if (chosen === ch.lower + ch.stepsUp) {
+      return `Each step is ${ch.step} mℓ, not 1 mℓ! ${ch.stepsUp} steps past ${fmtVol(ch.lower)} = ${ch.lower} + ${ch.stepsUp * ch.step} = ${fmtVol(ch.meniscus)}!`;
+    }
+    if (chosen === ch.meniscus - ch.step) {
+      return `Almost! Count carefully — ${ch.stepsUp} spaces up from ${fmtVol(ch.lower)}: ${fmtVol(ch.lower)} → … → ${fmtVol(ch.meniscus)}.`;
+    }
+    return `Count up from ${fmtVol(ch.lower)} by ${ch.step} mℓ each space. ${ch.stepsUp} spaces → ${fmtVol(ch.meniscus)}!`;
+  }
+
+  /* ---------- PLAYERS ---------- */
+  const players = [
+    {
+      id: 0, name: 'P1', color: '#ff6b5a', glow: 'rgba(255,107,90,0.55)',
+      x: 0, y: 0, shields: 3, stars: 0, score: 0,
+      keys: { up: 0, down: 0, left: 0, right: 0, action: 0 },
+      stickX: 0, stickY: 0, sel: 0, gpCool: 0, _gpAction: false, _kbAction: false,
+      pourHeld: false
+    },
+    {
+      id: 1, name: 'P2', color: '#5ab0ff', glow: 'rgba(90,176,255,0.55)',
+      x: 0, y: 0, shields: 3, stars: 0, score: 0,
+      keys: { up: 0, down: 0, left: 0, right: 0, action: 0 },
+      stickX: 0, stickY: 0, sel: 1, gpCool: 0, _gpAction: false, _kbAction: false,
+      pourHeld: false
+    }
+  ];
+
+  window.addEventListener('keydown', (e) => {
+    audio.init();
+    const c = e.code;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(c)) e.preventDefault();
+    if (c === 'KeyW') players[0].keys.up = 1;
+    if (c === 'KeyS') players[0].keys.down = 1;
+    if (c === 'KeyA') players[0].keys.left = 1;
+    if (c === 'KeyD') players[0].keys.right = 1;
+    if (c === 'KeyF' || c === 'Space') { players[0].keys.action = 1; players[0]._kbAction = true; }
+    if (c === 'ArrowUp') players[1].keys.up = 1;
+    if (c === 'ArrowDown') players[1].keys.down = 1;
+    if (c === 'ArrowLeft') players[1].keys.left = 1;
+    if (c === 'ArrowRight') players[1].keys.right = 1;
+    if (c === 'Enter' || c === 'NumpadEnter') { players[1].keys.action = 1; players[1]._kbAction = true; }
+  });
+  window.addEventListener('keyup', (e) => {
+    const c = e.code;
+    if (c === 'KeyW') players[0].keys.up = 0;
+    if (c === 'KeyS') players[0].keys.down = 0;
+    if (c === 'KeyA') players[0].keys.left = 0;
+    if (c === 'KeyD') players[0].keys.right = 0;
+    if (c === 'KeyF' || c === 'Space') { players[0].keys.action = 0; players[0]._kbAction = false; }
+    if (c === 'ArrowUp') players[1].keys.up = 0;
+    if (c === 'ArrowDown') players[1].keys.down = 0;
+    if (c === 'ArrowLeft') players[1].keys.left = 0;
+    if (c === 'ArrowRight') players[1].keys.right = 0;
+    if (c === 'Enter' || c === 'NumpadEnter') { players[1].keys.action = 0; players[1]._kbAction = false; }
+  });
+
+  function pollGamepads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < 2; i++) {
+      const p = players[i];
+      const gp = pads[i];
+      if (!gp) {
+        p._gpAction = false;
+        p.stickX = 0;
+        p.stickY = 0;
+        continue;
+      }
+      const axX = Math.abs(gp.axes[0] || 0) > 0.35 ? gp.axes[0] : 0;
+      const axY = Math.abs(gp.axes[1] || 0) > 0.35 ? gp.axes[1] : 0;
+      const dx = (gp.buttons[15]?.pressed ? 1 : 0) - (gp.buttons[14]?.pressed ? 1 : 0) || axX;
+      const dy = (gp.buttons[13]?.pressed ? 1 : 0) - (gp.buttons[12]?.pressed ? 1 : 0) || axY;
+      p.stickX = dx;
+      p.stickY = dy;
+      p._gpAction = !!gp.buttons[0]?.pressed;
+      p.keys.action = (p._gpAction || p._kbAction) ? 1 : 0;
+    }
+  }
+
+  /* ---------- GAME STATE ---------- */
+  const STATE = { TITLE: 'title', PLAY: 'play', WIN: 'win', OVER: 'over' };
+  const STAGE = { SCAN: 'scan', READ: 'read', POUR: 'pour', CELEBRATE: 'celebrate' };
+
+  let state = STATE.TITLE;
+  let gameMode = 'coop'; // coop | versus
+  let tier = 1;
+  let combo = 1;
+  let teamScore = 0;
+  let titleSel = 0;
+  let popup = null;
+  let tipFlash = 0;
+  let round = 0;
+  let stage = STAGE.SCAN;
+  let challenge = null;
+  let choiceCards = []; // {x,y,w,h,value,label,kind}
+  let coopActive = 0; // whose turn in coop
+  let roleFlip = 0; // alternate who scans
+  let countAnim = 0; // animated step counter progress
+  let pourLevel = 0; // current pour ml
+  let pourSnap = false;
+  let pourResult = null; // 'hit' | 'miss' | null
+  let bubbles = [];
+  let sparks = [];
+  let smoke = [];
+  let crystals = [];
+  let labGlow = 0;
+  let gapPulse = 0;
+  let celebrateT = 0;
+  let lockCool = [0, 0];
+  let versusLocked = [false, false];
+  let versusAnswers = [null, null];
+  let pumpNozzle = { x: 0, y: 0, w: 120, h: 56 };
+  let stageBanner = '';
+  let formulaReveal = null; // stamped step value
+  let pendingAdvance = 0; // frames until advanceToRead after correct scan
+
+  function showPopup(text, sub = '', color = '#7dffc8', dur = 150) {
+    popup = { text, sub, color, t: dur, max: dur };
+  }
+
+  function updateHUD() {
+    document.getElementById('hud-p1').textContent =
+      `P1 🥽×${players[0].shields} ★${players[0].stars}`;
+    document.getElementById('hud-p2').textContent =
+      `P2 🥽×${players[1].shields} ★${players[1].stars}`;
+    document.getElementById('hud-mode').textContent =
+      `MODE: ${gameMode === 'coop' ? 'CO-OP RELAY' : 'BREW DUEL'}`;
+    const stageLabel = state === STATE.TITLE ? 'TITLE'
+      : state === STATE.OVER ? 'LAB CLOSED'
+      : state === STATE.WIN ? 'MASTER BREWER'
+      : stage === STAGE.SCAN ? 'SCAN INTERVAL'
+      : stage === STAGE.READ ? 'READ MENISCUS'
+      : stage === STAGE.POUR ? 'PRECISION POUR'
+      : 'SEALED!';
+    document.getElementById('hud-tier').textContent = `TIER ${tier} · ${stageLabel}`;
+    document.getElementById('hud-score').textContent =
+      `COMBO ×${combo} · ${teamScore} PTS`;
+  }
+
+  function spawnLabDecor() {
+    crystals = [];
+    for (let i = 0; i < 8; i++) {
+      crystals.push({
+        x: Math.random(),
+        y: 0.55 + Math.random() * 0.4,
+        s: 8 + Math.random() * 18,
+        hue: 160 + Math.random() * 60,
+        phase: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  function resetPlayers() {
+    players.forEach((p, i) => {
+      p.shields = 3;
+      p.stars = 0;
+      p.score = 0;
+      p.sel = i;
+      p.pourHeld = false;
+    });
+    combo = 1;
+    teamScore = 0;
+    round = 0;
+    tier = 1;
+    roleFlip = 0;
+  }
+
+  function startGame(mode) {
+    gameMode = mode;
+    resetPlayers();
+    spawnLabDecor();
+    state = STATE.PLAY;
+    beginRound();
+  }
+
+  function beginRound() {
+    round++;
+    // Advance tier every 4 successful rounds conceptually tracked by score/round
+    if (round > 8) tier = 3;
+    else if (round > 4) tier = 2;
+    else tier = 1;
+
+    const isPour = (round % 3 === 0);
+    challenge = generateChallenge(tier, isPour);
+    formulaReveal = null;
+    countAnim = 0;
+    pourLevel = challenge.minV;
+    pourSnap = false;
+    pourResult = null;
+    versusLocked = [false, false];
+    versusAnswers = [null, null];
+    lockCool = [0, 0];
+    sparks = [];
+    smoke = [];
+    celebrateT = 0;
+    pendingAdvance = 0;
+
+    if (isPour) {
+      stage = STAGE.POUR;
+      stageBanner = `Brew an Elixir of EXACTLY ${fmtVol(challenge.meniscus, challenge.mixed)}!`;
+      showPopup('PRECISION POUR!', stageBanner, '#f0c040', 160);
+      // Start empty-ish for pour
+      pourLevel = challenge.minV + challenge.step * 0.2;
+    } else {
+      stage = STAGE.SCAN;
+      coopActive = gameMode === 'coop' ? (roleFlip % 2) : 0;
+      stageBanner = 'How many mℓ is EACH space between ticks?';
+      showPopup('SCAN THE INTERVAL', stageBanner, '#7dffc8', 140);
+    }
+    buildChoiceCards();
+    updateHUD();
+  }
+
+  function buildChoiceCards() {
+    choiceCards = [];
+    const panelW = Math.min(420, W * 0.34);
+    const panelX = W - panelW - 24;
+    const cardH = 64;
+    const gap = 12;
+    const startY = H * 0.28;
+
+    if (stage === STAGE.SCAN) {
+      challenge.stepChoices.forEach((v, i) => {
+        choiceCards.push({
+          i, value: v,
+          label: fmtStep(v),
+          kind: 'step',
+          x: panelX, y: startY + i * (cardH + gap),
+          w: panelW - 10, h: cardH
+        });
+      });
+    } else if (stage === STAGE.READ) {
+      challenge.volChoices.forEach((v, i) => {
+        choiceCards.push({
+          i, value: v,
+          label: fmtVol(v, challenge.mixed),
+          kind: 'vol',
+          x: panelX, y: startY + i * (cardH + gap),
+          w: panelW - 10, h: cardH
+        });
+      });
+    } else if (stage === STAGE.POUR) {
+      pumpNozzle = {
+        x: panelX + 20,
+        y: startY + 80,
+        w: panelW - 50,
+        h: 70
+      };
+    }
+
+    // Place reticles on cards
+    players.forEach(p => {
+      p.sel = clamp(p.sel, 0, Math.max(0, choiceCards.length - 1));
+      if (choiceCards.length) {
+        const c = choiceCards[p.sel];
+        p.x = c.x + c.w / 2;
+        p.y = c.y + c.h / 2;
+      } else {
+        p.x = pumpNozzle.x + pumpNozzle.w / 2;
+        p.y = pumpNozzle.y + pumpNozzle.h / 2;
+      }
+    });
+  }
+
+  function advanceToRead() {
+    stage = STAGE.READ;
+    formulaReveal = challenge.step;
+    challenge.stampedStep = true;
+    countAnim = 0;
+    versusLocked = [false, false];
+    versusAnswers = [null, null];
+    if (gameMode === 'coop') {
+      coopActive = 1 - coopActive;
+    }
+    stageBanner = `Count up from ${fmtVol(challenge.lower)}! What is the exact volume?`;
+    showPopup('READ THE MENISCUS', stageBanner, '#f0c040', 140);
+    buildChoiceCards();
+    updateHUD();
+  }
+
+  function sealPotion(scorer) {
+    challenge.sealed = true;
+    stage = STAGE.CELEBRATE;
+    celebrateT = 120;
+    audio.sfxCork();
+    audio.sfxFanfare();
+    const base = 100 + challenge.tier * 50;
+    const pts = Math.round(base * combo);
+    teamScore += pts;
+    if (scorer) {
+      scorer.score += pts;
+      scorer.stars += 1;
+    } else {
+      players[0].stars += gameMode === 'coop' ? 1 : 0;
+      players[1].stars += gameMode === 'coop' ? 1 : 0;
+    }
+    combo = Math.min(8, combo + 1);
+    if (gameMode === 'coop') roleFlip++;
+    showPopup('POTION SEALED!', `+${pts} Alchemy Points · Combo ×${combo}`, '#ffe66d', 150);
+    for (let i = 0; i < 40; i++) {
+      sparks.push({
+        x: W * 0.32, y: H * 0.35,
+        vx: (Math.random() - 0.5) * 10,
+        vy: -Math.random() * 8 - 2,
+        life: 40 + Math.random() * 40,
+        hue: 40 + Math.random() * 40
+      });
+    }
+    updateHUD();
+  }
+
+  function mistake(player, tip) {
+    audio.sfxError();
+    audio.sfxFizzle();
+    shake = 14;
+    tipFlash = 50;
+    showPopup('FIZZLE!', tip, '#ff6b5a', 220);
+    if (player) {
+      player.shields = Math.max(0, player.shields - 1);
+    }
+    combo = 1;
+    for (let i = 0; i < 18; i++) {
+      smoke.push({
+        x: W * 0.32 + (Math.random() - 0.5) * 60,
+        y: H * 0.4,
+        vx: (Math.random() - 0.5) * 2,
+        vy: -1 - Math.random() * 2,
+        life: 50 + Math.random() * 30,
+        r: 10 + Math.random() * 20
+      });
+    }
+    updateHUD();
+    if (players[0].shields <= 0 && players[1].shields <= 0) {
+      state = STATE.OVER;
+      showPopup('LAB CLOSED', 'Both alchemists lost their goggles!', '#ff6b5a', 240);
+    }
+  }
+
+  function tryLock(playerIdx) {
+    if (state !== STATE.PLAY) return;
+    if (lockCool[playerIdx] > 0) return;
+    if (pendingAdvance > 0) return;
+    const p = players[playerIdx];
+
+    if (stage === STAGE.POUR) {
+      // Hold-to-pour handled in update; release locks
+      return;
+    }
+
+    if (stage === STAGE.CELEBRATE) return;
+
+    if (gameMode === 'coop' && playerIdx !== coopActive) {
+      audio.sfxClick();
+      showPopup('RELAY TURN', `Waiting for ${players[coopActive].name}…`, players[coopActive].color, 70);
+      return;
+    }
+
+    if (!choiceCards.length) return;
+    const card = choiceCards[p.sel];
+    if (!card) return;
+
+    lockCool[playerIdx] = 18;
+
+    if (stage === STAGE.SCAN) {
+      if (gameMode === 'versus') {
+        if (versusLocked[playerIdx]) return;
+        versusLocked[playerIdx] = true;
+        versusAnswers[playerIdx] = card.value;
+        audio.sfxSelect();
+        // Both locked or first correct wins race
+        if (card.value === challenge.step) {
+          // Winner of stage 1
+          p.stars += 0; // star on full seal
+          audio.sfxChime();
+          formulaReveal = challenge.step;
+          challenge.stampedStep = true;
+          // Immediately move both to read — first correct unlocks
+          advanceToRead();
+          return;
+        } else {
+          mistake(p, hintForStepMistake(challenge, card.value));
+          versusLocked[playerIdx] = false;
+          versusAnswers[playerIdx] = null;
+          return;
+        }
+      }
+      // Coop
+      if (card.value === challenge.step) {
+        audio.sfxChime();
+        formulaReveal = challenge.step;
+        challenge.stampedStep = true;
+        const pts = 50 * combo;
+        teamScore += pts;
+        p.score += pts;
+        showPopup('INTERVAL LOCKED!', `+${fmtStep(challenge.step)} stamped on each gap!`, '#7dffc8', 100);
+        pendingAdvance = 40;
+        updateHUD();
+      } else {
+        mistake(p, hintForStepMistake(challenge, card.value));
+      }
+    } else if (stage === STAGE.READ) {
+      if (gameMode === 'versus') {
+        if (versusLocked[playerIdx]) return;
+        versusLocked[playerIdx] = true;
+        versusAnswers[playerIdx] = card.value;
+        if (card.value === challenge.meniscus) {
+          sealPotion(p);
+        } else {
+          mistake(p, hintForVolMistake(challenge, card.value));
+          versusLocked[playerIdx] = false;
+        }
+        return;
+      }
+      if (card.value === challenge.meniscus) {
+        sealPotion(p);
+      } else {
+        mistake(p, hintForVolMistake(challenge, card.value));
+      }
+    }
+  }
+
+  function releasePour(playerIdx) {
+    if (stage !== STAGE.POUR || pourResult) return;
+    const p = players[playerIdx];
+    if (gameMode === 'coop' && playerIdx !== (roleFlip % 2)) {
+      // either player can pour in pour rounds for accessibility — allow both
+    }
+    const half = challenge.step / 2;
+    const err = Math.abs(pourLevel - challenge.meniscus);
+    // Snap feedback within half step
+    if (err <= half) {
+      pourLevel = challenge.meniscus;
+      pourSnap = true;
+      pourResult = 'hit';
+      audio.sfxRainbow();
+      audio.sfxFanfare();
+      const bonus = 350;
+      teamScore += bonus;
+      p.score += bonus;
+      p.stars += 1;
+      combo = Math.min(8, combo + 1);
+      stage = STAGE.CELEBRATE;
+      celebrateT = 140;
+      showPopup('RAINBOW ELIXIR!', `+${bonus} Alchemy Bonus · Exact ${fmtVol(challenge.meniscus, challenge.mixed)}!`, '#ffe66d', 180);
+      for (let i = 0; i < 60; i++) {
+        sparks.push({
+          x: W * 0.32, y: meniscusY(),
+          vx: (Math.random() - 0.5) * 14,
+          vy: -Math.random() * 10 - 2,
+          life: 50 + Math.random() * 40,
+          hue: Math.random() * 360
+        });
+      }
+      if (gameMode === 'coop') roleFlip++;
+      updateHUD();
+    } else {
+      pourResult = 'miss';
+      const tip = err > challenge.step * 2
+        ? `Target was ${fmtVol(challenge.meniscus, challenge.mixed)}. Each tick is ${fmtStep(challenge.step)} — count spaces from ${fmtVol(challenge.lower)}!`
+        : `So close! Target ${fmtVol(challenge.meniscus, challenge.mixed)}. You stopped near ${fmtVol(Math.round(pourLevel / challenge.step) * challenge.step)}.`;
+      mistake(p, tip);
+      celebrateT = 90;
+      stage = STAGE.CELEBRATE;
+      // still advance after miss
+    }
+  }
+
+  /* ---------- CYLINDER GEOMETRY ---------- */
+  function cylLayout() {
+    const cx = W * 0.30;
+    const top = H * 0.16;
+    const bot = H * 0.82;
+    const glassW = Math.min(110, W * 0.09);
+    return { cx, top, bot, glassW, left: cx - glassW / 2, right: cx + glassW / 2 };
+  }
+
+  function valueToY(v) {
+    const { top, bot } = cylLayout();
+    const ch = challenge;
+    if (!ch) return bot;
+    const t = (v - ch.minV) / (ch.maxV - ch.minV);
+    return bot - t * (bot - top - 20);
+  }
+
+  function meniscusY() {
+    if (!challenge) return H * 0.5;
+    const v = stage === STAGE.POUR ? pourLevel : challenge.meniscus;
+    return valueToY(v);
+  }
+
+  /* ---------- INPUT UPDATE ---------- */
+  function updateReticles() {
+    for (let i = 0; i < 2; i++) {
+      const p = players[i];
+      if (p.gpCool > 0) p.gpCool--;
+
+      const mx = (p.keys.right - p.keys.left) || (Math.abs(p.stickX) > 0.35 ? Math.sign(p.stickX) : 0);
+      const my = (p.keys.down - p.keys.up) || (Math.abs(p.stickY) > 0.35 ? Math.sign(p.stickY) : 0);
+
+      if (stage === STAGE.POUR) {
+        // Aim at pump
+        const targetX = pumpNozzle.x + pumpNozzle.w / 2;
+        const targetY = pumpNozzle.y + pumpNozzle.h / 2;
+        p.x += (targetX - p.x) * 0.25;
+        p.y += (targetY - p.y) * 0.25;
+
+        const holding = !!p.keys.action;
+        if (holding && !pourResult) {
+          if (!p.pourHeld) p.pourHeld = true;
+          // Fill
+          const rate = challenge.step * 0.045 * (1 + challenge.tier * 0.15);
+          pourLevel = Math.min(challenge.maxV, pourLevel + rate);
+          if (time % 4 < 1) audio.sfxPour((pourLevel - challenge.minV) / (challenge.maxV - challenge.minV));
+        } else if (p.pourHeld && !holding && !pourResult) {
+          p.pourHeld = false;
+          releasePour(i);
+        }
+      } else if (choiceCards.length) {
+        if ((mx || my) && p.gpCool <= 0) {
+          let ns = p.sel;
+          if (my > 0) ns = Math.min(choiceCards.length - 1, p.sel + 1);
+          if (my < 0) ns = Math.max(0, p.sel - 1);
+          // left/right also nudge for 2-col feel
+          if (mx > 0) ns = Math.min(choiceCards.length - 1, p.sel + 1);
+          if (mx < 0) ns = Math.max(0, p.sel - 1);
+          if (ns !== p.sel) {
+            p.sel = ns;
+            p.gpCool = 12;
+            audio.sfxSelect();
+          }
+        }
+        const c = choiceCards[p.sel];
+        if (c) {
+          p.x += (c.x + c.w / 2 - p.x) * 0.35;
+          p.y += (c.y + c.h / 2 - p.y) * 0.35;
+        }
+
+        // Edge-trigger lock
+        const act = !!p.keys.action;
+        if (act && !p._prevAct) tryLock(i);
+        p._prevAct = act;
+      }
+
+      // Clear stick drift when no pad
+      if (!p._gpAction && !p.keys.up && !p.keys.down && !p.keys.left && !p.keys.right) {
+        // stick cleared each poll when no pad
+      }
+    }
+  }
+
+  function updateParticles() {
+    for (const s of sparks) {
+      s.x += s.vx; s.y += s.vy; s.vy += 0.15; s.life--;
+    }
+    sparks = sparks.filter(s => s.life > 0);
+    for (const s of smoke) {
+      s.x += s.vx; s.y += s.vy; s.r += 0.3; s.life--;
+    }
+    smoke = smoke.filter(s => s.life > 0);
+
+    // Liquid bubbles
+    if (challenge && state === STATE.PLAY) {
+      if (Math.random() < 0.35) {
+        const { left, right } = cylLayout();
+        const my = meniscusY();
+        const { bot } = cylLayout();
+        if (my < bot - 10) {
+          bubbles.push({
+            x: left + 12 + Math.random() * (right - left - 24),
+            y: bot - 8,
+            r: 2 + Math.random() * 4,
+            vy: -0.6 - Math.random() * 1.2,
+            life: 80
+          });
+        }
+      }
+    }
+    for (const b of bubbles) {
+      b.y += b.vy;
+      b.x += Math.sin(time * 0.1 + b.y) * 0.3;
+      b.life--;
+      if (b.y < meniscusY() + 4) b.life = 0;
+    }
+    bubbles = bubbles.filter(b => b.life > 0);
+
+    if (stage === STAGE.READ && challenge) {
+      countAnim = Math.min(challenge.stepsUp, countAnim + 0.04);
+    }
+    gapPulse += 0.08;
+    labGlow = 0.5 + 0.5 * Math.sin(time * 0.04);
+  }
+
+  function update() {
+    time++;
+    pollGamepads();
+    // Merge keyboard action flags
+    for (const p of players) {
+      p.keys.action = (p._gpAction || p._kbAction) ? 1 : 0;
+    }
+    if (shake > 0) shake *= 0.85;
+    if (shake < 0.5) shake = 0;
+    if (tipFlash > 0) tipFlash--;
+    if (lockCool[0] > 0) lockCool[0]--;
+    if (lockCool[1] > 0) lockCool[1]--;
+    if (popup) {
+      popup.t--;
+      if (popup.t <= 0) popup = null;
+    }
+
+    if (state === STATE.TITLE) {
+      // Title selection via either player
+      for (let i = 0; i < 2; i++) {
+        const p = players[i];
+        const my = (p.keys.down - p.keys.up) || (Math.abs(p.stickY) > 0.4 ? Math.sign(p.stickY) : 0);
+        if (my && p.gpCool <= 0) {
+          titleSel = clamp(titleSel + Math.sign(my), 0, 1);
+          p.gpCool = 14;
+          audio.sfxSelect();
+        }
+        if (p.gpCool > 0) p.gpCool--;
+        const act = !!p.keys.action;
+        if (act && !p._prevAct) {
+          startGame(titleSel === 0 ? 'coop' : 'versus');
+          audio.sfxChime();
+        }
+        p._prevAct = act;
+      }
+      // Ambient bubbles on title
+      if (Math.random() < 0.2) {
+        bubbles.push({
+          x: W * 0.5 + (Math.random() - 0.5) * 200,
+          y: H * 0.75,
+          r: 3 + Math.random() * 5,
+          vy: -1 - Math.random(),
+          life: 100
+        });
+      }
+      for (const b of bubbles) { b.y += b.vy; b.life--; }
+      bubbles = bubbles.filter(b => b.life > 0);
+      return;
+    }
+
+    if (state === STATE.OVER || state === STATE.WIN) {
+      for (let i = 0; i < 2; i++) {
+        const p = players[i];
+        const act = !!p.keys.action;
+        if (act && !p._prevAct) {
+          state = STATE.TITLE;
+          updateHUD();
+        }
+        p._prevAct = act;
+      }
+      return;
+    }
+
+    if (state === STATE.PLAY) {
+      updateReticles();
+      updateParticles();
+
+      if (pendingAdvance > 0) {
+        pendingAdvance--;
+        if (pendingAdvance <= 0 && stage === STAGE.SCAN) advanceToRead();
+      }
+
+      if (stage === STAGE.CELEBRATE) {
+        celebrateT--;
+        if (celebrateT <= 0) {
+          // Win condition
+          if (teamScore >= 2500 || (players[0].stars + players[1].stars) >= 12) {
+            state = STATE.WIN;
+            showPopup('MASTER ALCHEMIST!', 'The Meniscus Lab is perfectly calibrated!', '#ffe66d', 260);
+            audio.sfxFanfare();
+            updateHUD();
+          } else {
+            beginRound();
+          }
+        }
+      }
+    }
+  }
+
+  /* ---------- DRAW ---------- */
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0c1e2e');
+    g.addColorStop(0.45, '#0a1520');
+    g.addColorStop(1, '#061018');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // Neon grid floor
+    ctx.save();
+    ctx.strokeStyle = 'rgba(61,232,184,0.08)';
+    ctx.lineWidth = 1;
+    const horizon = H * 0.72;
+    for (let i = 0; i < 12; i++) {
+      const y = horizon + i * i * 2.2;
+      if (y > H) break;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+      ctx.stroke();
+    }
+    for (let i = -20; i <= 20; i++) {
+      ctx.beginPath();
+      ctx.moveTo(W / 2 + i * 40, horizon);
+      ctx.lineTo(W / 2 + i * 120, H);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Brass pipes
+    ctx.strokeStyle = '#b08a4a';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(20, H * 0.2);
+    ctx.lineTo(20, H * 0.55);
+    ctx.quadraticCurveTo(20, H * 0.65, 80, H * 0.65);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(W - 30, H * 0.15);
+    ctx.lineTo(W - 30, H * 0.5);
+    ctx.quadraticCurveTo(W - 30, H * 0.6, W - 100, H * 0.6);
+    ctx.stroke();
+    ctx.fillStyle = '#d4a85a';
+    ctx.beginPath(); ctx.arc(20, H * 0.2, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W - 30, H * 0.15, 10, 0, Math.PI * 2); ctx.fill();
+
+    // Cauldron left
+    drawCauldron(90, H * 0.78, 50);
+    drawCauldron(W - 110, H * 0.8, 44);
+
+    // Crystals
+    for (const c of crystals) {
+      const x = c.x * W;
+      const y = c.y * H;
+      const pulse = 0.7 + 0.3 * Math.sin(time * 0.05 + c.phase);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.fillStyle = `hsla(${c.hue}, 80%, 60%, ${0.35 * pulse})`;
+      ctx.strokeStyle = `hsla(${c.hue}, 90%, 70%, ${0.8 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, -c.s);
+      ctx.lineTo(c.s * 0.55, 0);
+      ctx.lineTo(0, c.s * 0.7);
+      ctx.lineTo(-c.s * 0.55, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Calibration panel chrome
+    ctx.fillStyle = 'rgba(10,30,40,0.55)';
+    ctx.strokeStyle = 'rgba(61,232,184,0.35)';
+    ctx.lineWidth = 2;
+    roundRect(W * 0.02, H * 0.1, W * 0.16, 70, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#7dffc8';
+    ctx.font = '700 11px Exo 2, sans-serif';
+    ctx.fillText('CAL PANEL', W * 0.035, H * 0.13);
+    ctx.font = '700 13px JetBrains Mono, monospace';
+    ctx.fillStyle = '#ffe66d';
+    ctx.fillText(challenge ? `Δ ${challenge.majorGap} mℓ` : '—', W * 0.035, H * 0.155);
+    ctx.fillStyle = '#9de8ff';
+    ctx.fillText(challenge ? `${challenge.spaces} spaces` : '—', W * 0.035, H * 0.175);
+  }
+
+  function drawCauldron(x, y, r) {
+    ctx.save();
+    ctx.fillStyle = '#1a2430';
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * 0.7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#3de8b8';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    const brew = ctx.createRadialGradient(x, y - 5, 4, x, y, r * 0.7);
+    brew.addColorStop(0, `hsla(${160 + labGlow * 40}, 90%, 55%, 0.85)`);
+    brew.addColorStop(1, 'hsla(180, 70%, 25%, 0.5)');
+    ctx.fillStyle = brew;
+    ctx.beginPath();
+    ctx.ellipse(x, y - 4, r * 0.7, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Bubbles
+    for (let i = 0; i < 3; i++) {
+      const bx = x + Math.sin(time * 0.08 + i) * r * 0.35;
+      const by = y - 8 - (time * 0.5 + i * 20) % 25;
+      ctx.fillStyle = 'rgba(180,255,230,0.5)';
+      ctx.beginPath();
+      ctx.arc(bx, by, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawCylinder() {
+    if (!challenge) return;
+    const { cx, top, bot, glassW, left, right } = cylLayout();
+    const ch = challenge;
+
+    // Stand
+    ctx.fillStyle = '#2a3540';
+    ctx.fillRect(cx - glassW * 0.7, bot + 2, glassW * 1.4, 14);
+    ctx.fillStyle = '#3a4550';
+    ctx.fillRect(cx - glassW * 0.9, bot + 14, glassW * 1.8, 10);
+
+    // Glass body
+    const glassGrad = ctx.createLinearGradient(left, 0, right, 0);
+    glassGrad.addColorStop(0, 'rgba(180,220,255,0.18)');
+    glassGrad.addColorStop(0.2, 'rgba(220,245,255,0.08)');
+    glassGrad.addColorStop(0.5, 'rgba(200,240,255,0.04)');
+    glassGrad.addColorStop(0.8, 'rgba(220,245,255,0.08)');
+    glassGrad.addColorStop(1, 'rgba(180,220,255,0.2)');
+    ctx.fillStyle = glassGrad;
+    roundRect(left, top, glassW, bot - top, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,240,255,0.65)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Inner highlight
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(left + 8, top + 16);
+    ctx.lineTo(left + 8, bot - 12);
+    ctx.stroke();
+
+    // Liquid
+    const my = meniscusY();
+    const liquidTop = Math.min(bot - 4, Math.max(top + 8, my));
+    if (liquidTop < bot - 2) {
+      const hue = ch.potionHue;
+      const lg = ctx.createLinearGradient(left, liquidTop, left, bot);
+      lg.addColorStop(0, `hsla(${hue}, 90%, 58%, 0.85)`);
+      lg.addColorStop(0.5, `hsla(${hue + 20}, 85%, 42%, 0.9)`);
+      lg.addColorStop(1, `hsla(${hue + 30}, 80%, 28%, 0.95)`);
+      ctx.fillStyle = lg;
+      ctx.beginPath();
+      // Meniscus wave
+      const waveAmp = 2.2;
+      ctx.moveTo(left + 3, bot - 3);
+      ctx.lineTo(left + 3, liquidTop + 4);
+      for (let x = left + 3; x <= right - 3; x += 2) {
+        const wy = liquidTop + Math.sin(x * 0.12 + time * 0.12) * waveAmp
+          + Math.sin(x * 0.05 + time * 0.07) * 1.2;
+        ctx.lineTo(x, wy);
+      }
+      ctx.lineTo(right - 3, bot - 3);
+      ctx.closePath();
+      ctx.fill();
+
+      // Meniscus line
+      ctx.strokeStyle = `hsla(${hue}, 100%, 75%, 0.95)`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      for (let x = left + 4; x <= right - 4; x += 2) {
+        const wy = liquidTop + Math.sin(x * 0.12 + time * 0.12) * waveAmp;
+        if (x === left + 4) ctx.moveTo(x, wy);
+        else ctx.lineTo(x, wy);
+      }
+      ctx.stroke();
+
+      // Glow
+      ctx.shadowColor = `hsla(${hue}, 100%, 60%, 0.6)`;
+      ctx.shadowBlur = 18;
+      ctx.strokeStyle = `hsla(${hue}, 100%, 70%, 0.4)`;
+      ctx.beginPath();
+      ctx.moveTo(left + 4, liquidTop);
+      ctx.lineTo(right - 4, liquidTop);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // Bubbles in liquid
+    for (const b of bubbles) {
+      ctx.fillStyle = 'rgba(220,255,245,0.55)';
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Graduations — right side of cylinder
+    const tickX0 = right - 2;
+    ctx.font = `700 ${Math.max(11, Math.min(15, glassW * 0.16))}px JetBrains Mono, monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    for (let i = 0; i < ch.majors.length; i++) {
+      const v = ch.majors[i];
+      const y = valueToY(v);
+      // Major tick
+      ctx.strokeStyle = '#e8fff8';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(tickX0 - 22, y);
+      ctx.lineTo(tickX0 + 6, y);
+      ctx.stroke();
+      // Label
+      ctx.fillStyle = '#f0fff8';
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.lineWidth = 3;
+      const label = ch.mixed && v >= 1000 && v % 1000 === 0
+        ? `${v / 1000} ℓ`
+        : ch.mixed && v >= 1000
+          ? `${Math.floor(v / 1000)} ℓ ${v % 1000}`
+          : `${v}`;
+      ctx.strokeText(label, tickX0 + 12, y);
+      ctx.fillText(label, tickX0 + 12, y);
+      if (!(ch.mixed && v >= 1000 && v % 1000 === 0)) {
+        ctx.font = `600 ${Math.max(9, Math.min(11, glassW * 0.12))}px Exo 2, sans-serif`;
+        ctx.fillStyle = '#9adfc8';
+        ctx.fillText('mℓ', tickX0 + 12 + ctx.measureText(label).width + 4, y);
+        ctx.font = `700 ${Math.max(11, Math.min(15, glassW * 0.16))}px JetBrains Mono, monospace`;
+      }
+
+      // Minor ticks between this and next major
+      if (i < ch.majors.length - 1) {
+        const next = ch.majors[i + 1];
+        for (let s = 1; s < ch.spaces; s++) {
+          const mv = v + s * ch.step;
+          if (mv >= next) break;
+          const my2 = valueToY(mv);
+          const isMeniscusTick = Math.abs(mv - (stage === STAGE.POUR ? challenge.meniscus : ch.meniscus)) < 0.01
+            && (stage === STAGE.READ || stage === STAGE.POUR || stage === STAGE.CELEBRATE);
+          ctx.strokeStyle = isMeniscusTick ? '#ffe66d' : 'rgba(200,230,220,0.55)';
+          ctx.lineWidth = isMeniscusTick ? 2.5 : 1.5;
+          ctx.beginPath();
+          ctx.moveTo(tickX0 - (isMeniscusTick ? 18 : 12), my2);
+          ctx.lineTo(tickX0 + 4, my2);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Gap Scanner Overlay (Stage SCAN)
+    if (stage === STAGE.SCAN || (stage === STAGE.READ && !ch.sealed)) {
+      const yL = valueToY(ch.lower);
+      const yU = valueToY(ch.upper);
+      const gapH = (yL - yU) / ch.spaces;
+
+      for (let s = 0; s < ch.spaces; s++) {
+        const y1 = yU + s * gapH;
+        const y2 = yU + (s + 1) * gapH;
+        const mid = (y1 + y2) / 2;
+        const pulse = 0.35 + 0.25 * Math.sin(gapPulse + s * 0.7);
+        // Bracket wedge on left of glass
+        ctx.fillStyle = `rgba(61,232,184,${pulse * 0.35})`;
+        ctx.strokeStyle = `rgba(61,232,184,${0.5 + pulse})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(left - 8, y1 + 2);
+        ctx.lineTo(left - 28, mid);
+        ctx.lineTo(left - 8, y2 - 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Space number
+        ctx.fillStyle = '#7dffc8';
+        ctx.font = '800 12px Exo 2, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`[${s + 1}]`, left - 42, mid + 1);
+
+        // Stamped +step
+        if (ch.stampedStep || formulaReveal) {
+          ctx.fillStyle = '#ffe66d';
+          ctx.font = '700 11px JetBrains Mono, monospace';
+          ctx.fillText(`+${ch.step}`, left - 42, mid + 14);
+        }
+      }
+
+      // SPACES label
+      ctx.save();
+      ctx.fillStyle = 'rgba(61,232,184,0.9)';
+      ctx.font = '800 13px Exo 2, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.translate(left - 78, (yL + yU) / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(`${ch.spaces} SPACES`, 0, 0);
+      ctx.restore();
+    }
+
+    // Count-up animation glow (READ)
+    if (stage === STAGE.READ && countAnim > 0) {
+      const steps = Math.floor(countAnim);
+      for (let s = 1; s <= steps; s++) {
+        const v = ch.lower + s * ch.step;
+        const y = valueToY(v);
+        ctx.fillStyle = s === Math.min(steps, ch.stepsUp) ? '#ffe66d' : 'rgba(125,255,200,0.7)';
+        ctx.font = '700 11px JetBrains Mono, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(fmtVol(v), left - 10, y);
+      }
+    }
+
+    // Formula readout
+    const fx = left - 20;
+    const fy = top - 36;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(8,24,36,0.85)';
+    ctx.strokeStyle = 'rgba(61,232,184,0.5)';
+    ctx.lineWidth = 2;
+    roundRect(cx - 160, fy - 8, 320, 36, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#9de8ff';
+    ctx.font = '700 13px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    const stepTxt = formulaReveal != null ? `${formulaReveal} mℓ` : '?';
+    ctx.fillText(`(${ch.upper} − ${ch.lower}) ÷ ${ch.spaces} spaces = ${stepTxt}`, cx, fy + 14);
+
+    // Unit note
+    ctx.fillStyle = 'rgba(180,220,210,0.7)';
+    ctx.font = '600 11px Exo 2, sans-serif';
+    ctx.fillText(ch.mixed ? 'Scale: ℓ / mℓ' : 'Scale: mℓ', cx, bot + 42);
+  }
+
+  function drawChoiceConsole() {
+    const panelW = Math.min(420, W * 0.34);
+    const panelX = W - panelW - 18;
+    const panelY = H * 0.18;
+    const panelH = H * 0.7;
+
+    ctx.fillStyle = 'rgba(6, 20, 32, 0.82)';
+    ctx.strokeStyle = 'rgba(61,232,184,0.4)';
+    ctx.lineWidth = 2;
+    roundRect(panelX - 12, panelY, panelW + 16, panelH, 12);
+    ctx.fill(); ctx.stroke();
+
+    ctx.fillStyle = '#7dffc8';
+    ctx.font = '800 14px Exo 2, sans-serif';
+    ctx.textAlign = 'left';
+    if (stage === STAGE.POUR) {
+      ctx.fillText('POTION PUMP NOZZLE', panelX, panelY + 28);
+      ctx.fillStyle = '#c8e8dc';
+      ctx.font = '600 12px Exo 2, sans-serif';
+      wrapText(`Hold A / Space / Enter to pump. Release at exactly ${fmtVol(challenge.meniscus, challenge.mixed)}!`, panelX, panelY + 52, panelW - 20, 16);
+
+      // Pump button
+      const held = players.some(p => p.pourHeld);
+      const g = ctx.createLinearGradient(pumpNozzle.x, pumpNozzle.y, pumpNozzle.x, pumpNozzle.y + pumpNozzle.h);
+      g.addColorStop(0, held ? '#5dffc0' : '#3de8b8');
+      g.addColorStop(1, held ? '#1a8a60' : '#0e5a42');
+      ctx.fillStyle = g;
+      ctx.strokeStyle = '#9dffd8';
+      ctx.lineWidth = 3;
+      roundRect(pumpNozzle.x, pumpNozzle.y, pumpNozzle.w, pumpNozzle.h, 12);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#042018';
+      ctx.font = '800 18px Exo 2, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(held ? 'PUMPING…' : 'HOLD TO POUR', pumpNozzle.x + pumpNozzle.w / 2, pumpNozzle.y + pumpNozzle.h / 2 + 6);
+
+      // Live readout
+      ctx.fillStyle = '#ffe66d';
+      ctx.font = '700 22px JetBrains Mono, monospace';
+      ctx.fillText(`≈ ${fmtVol(Math.round(pourLevel), challenge.mixed)}`, pumpNozzle.x + pumpNozzle.w / 2, pumpNozzle.y + pumpNozzle.h + 40);
+      ctx.fillStyle = '#9adfc8';
+      ctx.font = '600 12px Exo 2, sans-serif';
+      ctx.fillText(`Target: ${fmtVol(challenge.meniscus, challenge.mixed)} · Step ${fmtStep(challenge.step)}`, pumpNozzle.x + pumpNozzle.w / 2, pumpNozzle.y + pumpNozzle.h + 62);
+    } else if (stage === STAGE.SCAN || stage === STAGE.READ) {
+      ctx.fillText(stage === STAGE.SCAN ? 'STEP SIZE CONSOLE' : 'VOLUME BOTTLES', panelX, panelY + 28);
+      ctx.fillStyle = '#c8e8dc';
+      ctx.font = '600 12px Exo 2, sans-serif';
+      wrapText(stageBanner, panelX, panelY + 50, panelW - 16, 15);
+
+      if (gameMode === 'coop') {
+        const ap = players[coopActive];
+        ctx.fillStyle = ap.color;
+        ctx.font = '700 12px Exo 2, sans-serif';
+        ctx.fillText(`${ap.name} locks this stage`, panelX, panelY + 88);
+      }
+
+      choiceCards.forEach((c, idx) => {
+        const selected = players.some(p => p.sel === idx && (gameMode === 'versus' || p.id === coopActive || stage === STAGE.READ));
+        ctx.fillStyle = selected ? 'rgba(61,232,184,0.22)' : 'rgba(20,40,55,0.9)';
+        ctx.strokeStyle = selected ? '#7dffc8' : 'rgba(100,140,150,0.5)';
+        ctx.lineWidth = selected ? 3 : 2;
+        roundRect(c.x, c.y, c.w, c.h, 10);
+        ctx.fill(); ctx.stroke();
+
+        // Bottle / flask icon
+        ctx.fillStyle = `hsla(${challenge.potionHue}, 80%, 55%, 0.85)`;
+        ctx.beginPath();
+        ctx.moveTo(c.x + 28, c.y + 14);
+        ctx.lineTo(c.x + 40, c.y + 14);
+        ctx.lineTo(c.x + 44, c.y + 50);
+        ctx.lineTo(c.x + 24, c.y + 50);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.stroke();
+
+        ctx.fillStyle = '#e8fff8';
+        ctx.font = '800 20px JetBrains Mono, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(c.label, c.x + 58, c.y + c.h / 2 + 7);
+
+        // Letter
+        ctx.fillStyle = '#ffe66d';
+        ctx.font = '800 14px Exo 2, sans-serif';
+        ctx.fillText(String.fromCharCode(65 + idx), c.x + 10, c.y + 20);
+
+        if (versusLocked[0] && players[0].sel === idx) {
+          ctx.fillStyle = players[0].color;
+          ctx.font = '700 10px Exo 2, sans-serif';
+          ctx.fillText('P1', c.x + c.w - 28, c.y + 16);
+        }
+        if (versusLocked[1] && players[1].sel === idx) {
+          ctx.fillStyle = players[1].color;
+          ctx.font = '700 10px Exo 2, sans-serif';
+          ctx.fillText('P2', c.x + c.w - 28, c.y + 30);
+        }
+      });
+    } else {
+      ctx.fillText('BREW COMPLETE', panelX, panelY + 28);
+      ctx.fillStyle = '#ffe66d';
+      ctx.font = '700 16px Exo 2, sans-serif';
+      wrapText(challenge.sealed || pourResult === 'hit'
+        ? 'Golden cork sealed! Next order incoming…'
+        : 'Recalibrating the lab…', panelX, panelY + 60, panelW - 16, 18);
+    }
+
+    // Controls hint
+    ctx.fillStyle = 'rgba(160,200,190,0.65)';
+    ctx.font = '600 11px Exo 2, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('P1: WASD + F/Space   P2: Arrows + Enter   · 8BitDo A = Lock/Pour', panelX - 4, panelY + panelH - 14);
+  }
+
+  function wrapText(text, x, y, maxW, lineH) {
+    const words = text.split(' ');
+    let line = '';
+    let yy = y;
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW) {
+        ctx.fillText(line, x, yy);
+        line = w;
+        yy += lineH;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, x, yy);
+  }
+
+  function drawReticles() {
+    if (state !== STATE.PLAY) return;
+    for (const p of players) {
+      if (gameMode === 'coop' && stage !== STAGE.POUR && stage !== STAGE.CELEBRATE) {
+        if (p.id !== coopActive) {
+          // Dim inactive
+          ctx.globalAlpha = 0.25;
+        }
+      }
+      ctx.strokeStyle = p.color;
+      ctx.shadowColor = p.glow;
+      ctx.shadowBlur = 12;
+      ctx.lineWidth = 2.5;
+      const r = 18;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x - r - 6, p.y); ctx.lineTo(p.x - r + 4, p.y);
+      ctx.moveTo(p.x + r - 4, p.y); ctx.lineTo(p.x + r + 6, p.y);
+      ctx.moveTo(p.x, p.y - r - 6); ctx.lineTo(p.x, p.y - r + 4);
+      ctx.moveTo(p.x, p.y + r - 4); ctx.lineTo(p.x, p.y + r + 6);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = p.color;
+      ctx.font = '800 11px Exo 2, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.name, p.x, p.y - r - 8);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawParticles() {
+    for (const s of sparks) {
+      ctx.fillStyle = `hsla(${s.hue}, 95%, 65%, ${clamp(s.life / 40, 0, 1)})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    for (const s of smoke) {
+      ctx.fillStyle = `rgba(120,60,160,${clamp(s.life / 80, 0, 0.45)})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawPopup() {
+    if (!popup) return;
+    const alpha = clamp(popup.t / 20, 0, 1) * clamp((popup.max - popup.t) / 8, 0, 1);
+    // Always readable mid fade
+    const a = Math.max(alpha, popup.t > 10 ? 0.85 : alpha);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(4,12,20,0.82)';
+    ctx.strokeStyle = popup.color;
+    ctx.lineWidth = 3;
+    const pw = Math.min(560, W * 0.7);
+    const ph = popup.sub ? 88 : 64;
+    roundRect(W / 2 - pw / 2, H * 0.08, pw, ph, 12);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = popup.color;
+    ctx.font = '800 20px Exo 2, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(popup.text, W / 2, H * 0.08 + 32);
+    if (popup.sub) {
+      ctx.fillStyle = '#d8f0e8';
+      ctx.font = '600 13px Exo 2, sans-serif';
+      wrapText(popup.sub, W / 2 - pw / 2 + 20, H * 0.08 + 56, pw - 40, 15);
+      // Recenter wrap — draw manually centered lines
+    }
+    ctx.restore();
+  }
+
+  function drawTitle() {
+    drawBackground();
+    // Giant brand
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(61,232,184,0.15)';
+    ctx.font = '800 64px Exo 2, sans-serif';
+    ctx.fillText('POTION ALCHEMIST', W / 2 + 3, H * 0.22 + 3);
+    ctx.fillStyle = '#7dffc8';
+    ctx.shadowColor = 'rgba(61,232,184,0.5)';
+    ctx.shadowBlur = 20;
+    ctx.fillText('POTION ALCHEMIST', W / 2, H * 0.22);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffe66d';
+    ctx.font = '700 26px Exo 2, sans-serif';
+    ctx.fillText('The Meniscus Lab', W / 2, H * 0.28);
+
+    ctx.fillStyle = '#b8d8cc';
+    ctx.font = '600 15px Exo 2, sans-serif';
+    ctx.fillText('Read measuring cylinders · Count SPACES · Master the meniscus', W / 2, H * 0.34);
+
+    // Decorative mini cylinder
+    ctx.save();
+    const cx = W / 2, top = H * 0.38, bot = H * 0.62, gw = 56;
+    ctx.strokeStyle = 'rgba(200,240,255,0.6)';
+    ctx.lineWidth = 2;
+    roundRect(cx - gw / 2, top, gw, bot - top, 6);
+    ctx.stroke();
+    const my = top + (bot - top) * 0.45;
+    ctx.fillStyle = 'hsla(160, 85%, 45%, 0.75)';
+    ctx.fillRect(cx - gw / 2 + 3, my, gw - 6, bot - my - 3);
+    ctx.strokeStyle = '#7dffc8';
+    ctx.beginPath(); ctx.moveTo(cx - gw / 2 + 3, my); ctx.lineTo(cx + gw / 2 - 3, my); ctx.stroke();
+    // ticks
+    for (let i = 0; i <= 5; i++) {
+      const y = bot - (i / 5) * (bot - top - 10) - 5;
+      ctx.strokeStyle = i % 5 === 0 ? '#fff' : 'rgba(200,230,220,0.5)';
+      ctx.beginPath();
+      ctx.moveTo(cx + gw / 2 - 14, y);
+      ctx.lineTo(cx + gw / 2 + 2, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Mode cards
+    const modes = [
+      { title: 'CO-OP LAB RELAY', sub: 'P1 scans the interval → P2 reads the meniscus. Alternate each round. Shared combo!' },
+      { title: 'COMPETITIVE BREW DUEL', sub: 'Race the same beaker. First correct lock wins the potion star!' }
+    ];
+    modes.forEach((m, i) => {
+      const y = H * 0.66 + i * 70;
+      const sel = titleSel === i;
+      ctx.fillStyle = sel ? 'rgba(61,232,184,0.2)' : 'rgba(10,24,36,0.85)';
+      ctx.strokeStyle = sel ? '#7dffc8' : 'rgba(100,140,150,0.45)';
+      ctx.lineWidth = sel ? 3 : 2;
+      roundRect(W / 2 - 280, y, 560, 58, 10);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = sel ? '#ffe66d' : '#e8fff8';
+      ctx.font = '800 18px Exo 2, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(m.title, W / 2, y + 24);
+      ctx.fillStyle = '#a8c8bc';
+      ctx.font = '600 12px Exo 2, sans-serif';
+      ctx.fillText(m.sub, W / 2, y + 44);
+    });
+
+    ctx.fillStyle = 'rgba(180,220,210,0.7)';
+    ctx.font = '600 13px Exo 2, sans-serif';
+    ctx.fillText('↑↓ select · A / F / Space / Enter to start', W / 2, H * 0.92);
+
+    for (const b of bubbles) {
+      ctx.fillStyle = 'rgba(160,255,230,0.4)';
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawEnd(title, sub) {
+    drawBackground();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#7dffc8';
+    ctx.font = '800 42px Exo 2, sans-serif';
+    ctx.fillText(title, W / 2, H * 0.36);
+    ctx.fillStyle = '#ffe66d';
+    ctx.font = '700 20px Exo 2, sans-serif';
+    ctx.fillText(sub, W / 2, H * 0.44);
+    ctx.fillStyle = '#c8e8dc';
+    ctx.font = '600 16px Exo 2, sans-serif';
+    ctx.fillText(`Score ${teamScore} · P1 ★${players[0].stars} · P2 ★${players[1].stars}`, W / 2, H * 0.52);
+    ctx.fillText('Press A / F / Enter to return to title', W / 2, H * 0.62);
+  }
+
+  function draw() {
+    ctx.save();
+    if (shake > 0) {
+      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    }
+
+    if (state === STATE.TITLE) {
+      drawTitle();
+    } else if (state === STATE.OVER) {
+      drawEnd('LAB CLOSED', 'Goggles shattered — recalibrate and try again!');
+    } else if (state === STATE.WIN) {
+      drawEnd('MASTER BREWER!', 'Every meniscus read with precision!');
+    } else {
+      drawBackground();
+      drawCylinder();
+      drawChoiceConsole();
+      drawParticles();
+      drawReticles();
+      drawPopup();
+
+      // Prompt ribbon
+      if (challenge && stage !== STAGE.CELEBRATE) {
+        ctx.fillStyle = 'rgba(8,24,36,0.75)';
+        ctx.strokeStyle = tipFlash > 0 ? '#ff6b5a' : 'rgba(240,192,64,0.5)';
+        ctx.lineWidth = 2;
+        roundRect(W * 0.18, H * 0.88, W * 0.44, 40, 8);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#e8fff4';
+        ctx.font = '700 13px Exo 2, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(stageBanner, W * 0.18 + W * 0.22, H * 0.88 + 26);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  /* ---------- LOOP ---------- */
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  spawnLabDecor();
+  updateHUD();
+  // Soft autoplay note: audio starts on first input
+  loop();
+
+  window.addEventListener('gamepadconnected', () => audio.init());
+})();
+</script>
+</body>
+</html>
