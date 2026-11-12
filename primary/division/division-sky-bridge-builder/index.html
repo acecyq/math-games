@@ -17,7 +17,7 @@
       position: relative; width: 100vw; height: 100vh;
       background: radial-gradient(ellipse at 50% 18%, #1a4a7a 0%, #0a2038 45%, #040e1c 100%);
     }
-    canvas { display: block; width: 100%; height: 100%; }
+    canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
     #ui-overlay {
       position: absolute; inset: 0; pointer-events: none;
       display: flex; flex-direction: column; padding: 10px 14px;
@@ -288,25 +288,81 @@
     if (c === 'Enter' || c === 'NumpadEnter') players[1].keys.action = 0;
   });
 
+  // Standard Gamepad mapping + 8BitDo quirks (XInput D-pad buttons, and macOS D-input hat on axis 9).
+  const PAD_BTNS = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+  const hatIdle = {};
+  let livePadCount = 0;
+
+  function padPressed(gp, i) {
+    const b = gp.buttons && gp.buttons[i];
+    return !!(b && (b.pressed || b.value > 0.5));
+  }
+
+  function readPad(gp) {
+    if (!gp) return { x: 0, y: 0, action: 0 };
+    const axes = gp.axes || [];
+    const axX = axes[0] != null ? axes[0] : 0;
+    const axY = axes[1] != null ? axes[1] : 0;
+    let hatL = false, hatR = false, hatU = false, hatD = false;
+    if (axes.length > 9) {
+      const hat = axes[9];
+      if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+      if (hat != null && Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+        if (hat < -0.7 || hat > 0.9) hatU = true;
+        else if (hat < -0.3) { hatU = true; hatR = true; }
+        else if (hat < 0.1) hatR = true;
+        else if (hat < 0.4) { hatR = true; hatD = true; }
+        else if (hat < 0.7) hatD = true;
+        else { hatL = true; hatD = true; }
+      }
+    }
+    const left = padPressed(gp, PAD_BTNS.LEFT) || axX < -0.45 || hatL;
+    const right = padPressed(gp, PAD_BTNS.RIGHT) || axX > 0.45 || hatR;
+    const up = padPressed(gp, PAD_BTNS.UP) || axY < -0.45 || hatU;
+    const down = padPressed(gp, PAD_BTNS.DOWN) || axY > 0.45 || hatD;
+    const action = padPressed(gp, PAD_BTNS.A) || padPressed(gp, PAD_BTNS.B)
+      || padPressed(gp, PAD_BTNS.START) || padPressed(gp, PAD_BTNS.START_ALT);
+    return {
+      x: (right ? 1 : 0) - (left ? 1 : 0),
+      y: (down ? 1 : 0) - (up ? 1 : 0),
+      action: action ? 1 : 0
+    };
+  }
+
   function pollGamepads() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const live = [];
+    for (let i = 0; i < pads.length; i++) if (pads[i]) live.push(pads[i]);
+    livePadCount = live.length;
     for (let i = 0; i < 2; i++) {
-      const p = players[i], gp = pads[i];
-      if (!gp) { p.gpAction = 0; continue; }
-      const ax = Math.abs(gp.axes[0] || 0) > 0.35 ? gp.axes[0] : 0;
-      const ay = Math.abs(gp.axes[1] || 0) > 0.35 ? gp.axes[1] : 0;
-      p.stickX = (gp.buttons[15]?.pressed ? 1 : 0) - (gp.buttons[14]?.pressed ? 1 : 0) || ax;
-      p.stickY = (gp.buttons[13]?.pressed ? 1 : 0) - (gp.buttons[12]?.pressed ? 1 : 0) || ay;
-      p.gpAction = gp.buttons[0]?.pressed ? 1 : 0;
+      const d = readPad(live[i]);
+      players[i].stickX = d.x;
+      players[i].stickY = d.y;
+      players[i].gpAction = d.action;
     }
   }
 
+  window.addEventListener('gamepadconnected', (e) => {
+    audio.init();
+    showPopup('8BITDO LINKED', `Pad ${e.gamepad.index + 1} · D-pad moves · A confirms`, '#7dffb0', 120);
+  });
+
   /* ===================== STATE ===================== */
   const S = { TITLE: 'title', PLAY: 'play', WIN: 'win', OVER: 'over' };
+  const TITLE_MODES = [
+    { id: 'solo', t: 'SOLO ENGINEER', s: 'Every D-M-S-B step. Mouse, keys, or 8BitDo.' },
+    { id: 'coop', t: 'CO-OP CONSTRUCTION', s: 'P1: Divide & Subtract. P2: Multiply & Bring Down.' },
+    { id: 'versus', t: 'SPAN RACE', s: 'Same contract, two bridges. First train wins.' }
+  ];
   let state = S.TITLE;
-  let gameMode = 'coop';
-  let tier = 1, combo = 1, teamScore = 0, titleSel = 0;
+  let gameMode = 'solo';
+  let tier = 1, combo = 1, teamScore = 0, titleSel = 0, titleCool = 0;
   let popup = null, clouds = [], islands = [], sparks = [], trainX = -40;
+  const pointer = { x: 0, y: 0, over: false, moved: false };
+
+  function modeName(m) {
+    return m === 'solo' ? 'SOLO' : m === 'coop' ? 'CO-OP' : 'COMPETE';
+  }
 
   function blankBoard() {
     return {
@@ -324,9 +380,12 @@
   }
 
   function updateHUD() {
+    const shown = state === S.TITLE ? TITLE_MODES[titleSel].id : gameMode;
     document.getElementById('hud-p1').textContent = `P1 ⛑×${players[0].shields} ★${players[0].stars}`;
-    document.getElementById('hud-p2').textContent = `P2 ⛑×${players[1].shields} ★${players[1].stars}`;
-    document.getElementById('hud-mode').textContent = `MODE: ${gameMode === 'coop' ? 'CO-OP' : 'COMPETE'}`;
+    const p2el = document.getElementById('hud-p2');
+    p2el.textContent = `P2 ⛑×${players[1].shields} ★${players[1].stars}`;
+    p2el.style.display = (shown === 'solo' && state !== S.TITLE) ? 'none' : '';
+    document.getElementById('hud-mode').textContent = `MODE: ${modeName(shown)}`;
     const phase = state === S.TITLE ? 'TITLE'
       : state === S.WIN ? 'BRIDGE OPEN'
       : state === S.OVER ? 'GAME OVER'
@@ -423,7 +482,7 @@
   }
 
   function boardFor(p) {
-    return gameMode === 'coop' ? boards[0] : boards[p.id];
+    return gameMode === 'versus' ? boards[p.id] : boards[0];
   }
 
   function mistake(player, tip) {
@@ -433,9 +492,16 @@
     if (player) player.shields = Math.max(0, player.shields - 1);
     combo = 1;
     updateHUD();
-    if (players[0].shields <= 0 && players[1].shields <= 0) {
+    const crewDown = gameMode === 'solo'
+      ? players[0].shields <= 0
+      : players[0].shields <= 0 && players[1].shields <= 0;
+    if (crewDown) {
       state = S.OVER;
-      showPopup('ENGINEERING CREW DOWN', 'Press ACTION to return to title', '#ff6b5a', 9999);
+      showPopup(
+        gameMode === 'solo' ? 'SHIELDS DEPLETED' : 'ENGINEERING CREW DOWN',
+        'Press ACTION or click to return to title',
+        '#ff6b5a', 9999
+      );
     }
   }
 
@@ -593,14 +659,18 @@
   }
 
   function handleAction(p) {
-    const down = p.keys.action || p.gpAction;
+    let down = p.keys.action || p.gpAction;
+    if (p.id === 0 && (state === S.TITLE || state === S.OVER || gameMode === 'solo')) {
+      down = down || players[1].keys.action || players[1].gpAction;
+    }
+    down = down ? 1 : 0;
     const pressed = down && !p.lastAction;
     p.lastAction = down;
     if (!pressed) return;
     audio.init();
 
     if (state === S.TITLE) {
-      gameMode = titleSel === 0 ? 'coop' : 'versus';
+      gameMode = TITLE_MODES[titleSel].id;
       players.forEach(pl => { pl.shields = 3; pl.stars = 0; pl.score = 0; });
       teamScore = 0; combo = 1; tier = 1;
       startRound();
@@ -616,50 +686,89 @@
     if (board) trySelect(p, board);
   }
 
-  function updateInput() {
-    pollGamepads();
-    if (state === S.TITLE) {
-      for (const p of players) {
-        if (p.cool > 0) p.cool--;
-        const left = p.keys.left || p.stickX < -0.5;
-        const right = p.keys.right || p.stickX > 0.5;
-        if ((left || right) && p.cool <= 0) {
-          titleSel = 1 - titleSel;
-          p.cool = 12;
+  function aimPlayer(p) {
+    const board = boardFor(p);
+    if (!board) return;
+    const n = board.options.length || 4;
+    if (p.cool > 0) p.cool--;
+    let left = p.keys.left || p.stickX < -0.5;
+    let right = p.keys.right || p.stickX > 0.5;
+    let up = p.keys.up || p.stickY < -0.5;
+    let down = p.keys.down || p.stickY > 0.5;
+    if (gameMode === 'solo' && p.id === 0) {
+      const q = players[1];
+      left = left || q.keys.left || q.stickX < -0.5;
+      right = right || q.keys.right || q.stickX > 0.5;
+      up = up || q.keys.up || q.stickY < -0.5;
+      down = down || q.keys.down || q.stickY > 0.5;
+    }
+    if ((left || up) && p.cool <= 0) {
+      p.sel = (p.sel - 1 + n) % n;
+      p.cool = 10;
+      audio.select();
+    }
+    if ((right || down) && p.cool <= 0) {
+      p.sel = (p.sel + 1) % n;
+      p.cool = 10;
+      audio.select();
+    }
+    const cards = optionCards(n, gameMode === 'versus' ? p.id : 0);
+    const c = cards[p.sel % n];
+    if (c) {
+      p.x += (c.cx - p.x) * 0.3;
+      p.y += (c.cy - p.y) * 0.3;
+    }
+    handleAction(p);
+  }
+
+  function applyMouseHover() {
+    if (!pointer.moved || !pointer.over || state !== S.PLAY) return;
+    pointer.moved = false;
+    const p = players[0];
+    const board = boardFor(p);
+    if (!board?.options?.length) return;
+    const cards = optionCards(board.options.length, gameMode === 'versus' ? 0 : 0);
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      if (pointer.x >= c.x && pointer.x <= c.x + c.w && pointer.y >= c.y && pointer.y <= c.y + c.h) {
+        if ((p.sel % board.options.length) !== i) {
+          p.sel = i;
           audio.select();
         }
-        handleAction(p);
+        p.x = c.cx;
+        p.y = c.cy;
+        return;
       }
+    }
+  }
+
+  function updateInput() {
+    pollGamepads();
+    if (state === S.TITLE || state === S.OVER) {
+      if (titleCool > 0) titleCool--;
+      if (state === S.TITLE) {
+        let left = false, right = false;
+        for (const p of players) {
+          left = left || !!(p.keys.left || p.keys.up || p.stickX < -0.5 || p.stickY < -0.5);
+          right = right || !!(p.keys.right || p.keys.down || p.stickX > 0.5 || p.stickY > 0.5);
+        }
+        if (titleCool <= 0 && left !== right) {
+          titleSel = (titleSel + (right ? 1 : TITLE_MODES.length - 1)) % TITLE_MODES.length;
+          titleCool = 14;
+          audio.select();
+          updateHUD();
+        }
+      }
+      handleAction(players[0]);
       return;
     }
+    if (state === S.WIN) return;
     for (const p of players) {
+      if (gameMode === 'solo' && p.id !== 0) continue;
       if (gameMode === 'versus' && !boards[p.id]) continue;
-      const board = boardFor(p);
-      if (!board) continue;
-      const n = board.options.length || 4;
-      if (p.cool > 0) p.cool--;
-      const left = p.keys.left || p.stickX < -0.5;
-      const right = p.keys.right || p.stickX > 0.5;
-      const up = p.keys.up || p.stickY < -0.5;
-      const down = p.keys.down || p.stickY > 0.5;
-      if ((left || up) && p.cool <= 0) {
-        p.sel = (p.sel - 1 + n) % n;
-        p.cool = 10;
-        audio.select();
-      }
-      if ((right || down) && p.cool <= 0) {
-        p.sel = (p.sel + 1) % n;
-        p.cool = 10;
-        audio.select();
-      }
-      const cards = optionCards(n, p.id);
-      const c = cards[p.sel % n];
-      if (c) {
-        p.x += (c.cx - p.x) * 0.3;
-        p.y += (c.cy - p.y) * 0.3;
-      }
-      handleAction(p);
+      aimPlayer(p);
     }
+    applyMouseHover();
   }
 
   function optionCards(n, pid) {
@@ -780,14 +889,13 @@
     drawCliff(ox + bw - rightW, chasmTop, rightW - 6, cliffH, false);
 
     const div = board.div;
-    ctx.fillStyle = '#ffe9a0';
-    ctx.font = '700 13px "Exo 2", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(
-      div ? `${div.dividend} m chasm · ${div.divisor} pillars` : 'Calibrate stock…',
-      ox + bw / 2, oy + 34
-    );
-    ctx.textAlign = 'left';
+    if (div) {
+      ctx.fillStyle = '#ffe9a0';
+      ctx.font = '700 13px "Exo 2", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${div.dividend} m chasm · ${div.divisor} pillars`, ox + bw / 2, oy + 34);
+      ctx.textAlign = 'left';
+    }
 
     const deckY = chasmTop + 6;
     const segs = div ? div.steps.length : 3;
@@ -1013,11 +1121,16 @@
       ctx.textAlign = 'left';
     }
 
-    if (gameMode === 'coop' && board.phase === 'div') {
-      const who = coopOwner(board.dmsb);
-      ctx.fillStyle = who === 0 ? '#ff6b5a' : '#5ab0ff';
+    if (board.phase === 'div' && gameMode !== 'versus') {
       ctx.font = '700 12px "Exo 2", sans-serif';
-      ctx.fillText(who === 0 ? '► P1 turn (Divide / Subtract)' : '► P2 turn (Multiply / Bring Down)', ox + 14, oy + 40);
+      if (gameMode === 'solo') {
+        ctx.fillStyle = '#ffb07a';
+        ctx.fillText('► Solo engineer', ox + 14, oy + 40);
+      } else if (gameMode === 'coop') {
+        const who = coopOwner(board.dmsb);
+        ctx.fillStyle = who === 0 ? '#ff6b5a' : '#5ab0ff';
+        ctx.fillText(who === 0 ? '► P1 turn (Divide / Subtract)' : '► P2 turn (Multiply / Bring Down)', ox + 14, oy + 40);
+      }
     }
 
     // Compact answer preview
@@ -1046,7 +1159,8 @@
 
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
-      const selected = players.some(p => boardFor(p) === board && (p.sel % board.options.length) === i);
+      const roster = gameMode === 'solo' ? [players[0]] : players;
+      const selected = roster.some(p => boardFor(p) === board && (p.sel % board.options.length) === i);
       ctx.fillStyle = selected ? 'rgba(240,192,64,0.25)' : 'rgba(10,35,60,0.88)';
       ctx.strokeStyle = selected ? '#f0c040' : '#3db8e8';
       ctx.lineWidth = selected ? 3 : 2;
@@ -1067,6 +1181,7 @@
   function drawReticles() {
     if (state === S.TITLE) return;
     for (const p of players) {
+      if (gameMode === 'solo' && p.id !== 0) continue;
       if (gameMode === 'versus' && !boards[p.id]) continue;
       ctx.strokeStyle = p.color;
       ctx.shadowColor = p.glow; ctx.shadowBlur = 10;
@@ -1086,51 +1201,71 @@
     }
   }
 
+  function titleCards() {
+    const n = TITLE_MODES.length;
+    const gap = 14;
+    const cardW = Math.min(250, Math.floor((W - 36 - gap * (n - 1)) / n));
+    const cardH = Math.max(96, Math.min(118, H * 0.18));
+    const total = n * cardW + (n - 1) * gap;
+    const x0 = (W - total) / 2;
+    const y = H * 0.44;
+    return TITLE_MODES.map((_, i) => ({ x: x0 + i * (cardW + gap), y, w: cardW, h: cardH }));
+  }
+
   function drawTitle() {
     ctx.fillStyle = 'rgba(4,18,36,0.5)';
     ctx.fillRect(0, 0, W, H);
     ctx.textAlign = 'center';
+    const titleY = H * 0.24;
     ctx.fillStyle = '#7fdfff';
     ctx.font = '800 42px "Exo 2", sans-serif';
     ctx.shadowColor = 'rgba(61,184,232,0.55)'; ctx.shadowBlur = 16;
-    ctx.fillText('SKYBRIDGE BUILDER', W / 2, H * 0.26);
+    ctx.fillText('SKYBRIDGE BUILDER', W / 2, titleY);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffe9a0';
     ctx.font = '700 20px "Exo 2", sans-serif';
-    ctx.fillText('Span & Pillar Engineer', W / 2, H * 0.26 + 34);
+    ctx.fillText('Span & Pillar Engineer', W / 2, titleY + 32);
     ctx.fillStyle = '#c8e8ff';
     ctx.font = '600 14px "Exo 2", sans-serif';
-    ctx.fillText('Primary 3–4 · Place-value ×10 / ÷10 · Long Division D-M-S-B', W / 2, H * 0.26 + 60);
+    ctx.fillText('Primary 3–4 · Place-value ×10 / ÷10 · Long Division D-M-S-B', W / 2, titleY + 56);
 
-    const modes = [
-      { t: 'CO-OP CONSTRUCTION', s: 'P1: Divide & Subtract · P2: Multiply & Bring Down · Shared combo' },
-      { t: 'COMPETITIVE SPAN RACE', s: 'Parallel skybridges · Same contract · First hover-train wins' }
-    ];
-    for (let i = 0; i < 2; i++) {
-      const x = W / 2 - 260 + i * 280, y = H * 0.5, on = titleSel === i;
+    const cards = titleCards();
+    for (let i = 0; i < TITLE_MODES.length; i++) {
+      const c = cards[i];
+      const on = titleSel === i;
       ctx.fillStyle = on ? 'rgba(240,192,64,0.2)' : 'rgba(10,35,60,0.85)';
       ctx.strokeStyle = on ? '#f0c040' : '#3db8e8';
       ctx.lineWidth = on ? 3 : 2;
-      roundRect(x, y, 240, 100, 12); ctx.fill(); ctx.stroke();
+      roundRect(c.x, c.y, c.w, c.h, 12); ctx.fill(); ctx.stroke();
       ctx.fillStyle = on ? '#ffe9a0' : '#9de8ff';
       ctx.font = '800 14px "Exo 2", sans-serif';
-      ctx.fillText(modes[i].t, x + 120, y + 36);
+      ctx.fillText(TITLE_MODES[i].t, c.x + c.w / 2, c.y + 34);
       ctx.fillStyle = '#a8c8e0';
-      ctx.font = '600 11px "Exo 2", sans-serif';
-      const words = modes[i].s.split(' ');
-      let line = '', yy = y + 58;
+      ctx.font = '600 12px "Exo 2", sans-serif';
+      const words = TITLE_MODES[i].s.split(' ');
+      let line = '', yy = c.y + 58;
+      const maxW = c.w - 28;
       for (const w of words) {
         const test = line + w + ' ';
-        if (ctx.measureText(test).width > 210) { ctx.fillText(line, x + 120, yy); line = w + ' '; yy += 14; }
+        if (ctx.measureText(test).width > maxW) { ctx.fillText(line, c.x + c.w / 2, yy); line = w + ' '; yy += 16; }
         else line = test;
       }
-      ctx.fillText(line, x + 120, yy);
+      ctx.fillText(line, c.x + c.w / 2, yy);
     }
 
     ctx.fillStyle = '#e8f4ff';
     ctx.font = '600 13px "Exo 2", sans-serif';
-    ctx.fillText('P1: WASD + F/Space  ·  P2: Arrows + Enter  ·  Gamepads: D-Pad + A', W / 2, H * 0.76);
-    ctx.fillText('Press ACTION to start', W / 2, H * 0.76 + 24);
+    ctx.fillText('P1: click a value · WASD + F/Space · Arrows + Enter · 8BitDo D-pad + A', W / 2, H * 0.74);
+    ctx.fillStyle = livePadCount ? '#7dffb0' : '#a8c8e0';
+    ctx.fillText(
+      livePadCount
+        ? `8BitDo linked ×${livePadCount} · D-pad moves · A confirms`
+        : '8BitDo: press any button once so the browser can see the pad',
+      W / 2, H * 0.74 + 22
+    );
+    ctx.fillStyle = '#ffe9a0';
+    ctx.fillText('P2 co-op / race: Arrows + Enter · second 8BitDo', W / 2, H * 0.74 + 44);
+    ctx.fillText('Click a mode, or press ACTION, to start', W / 2, H * 0.74 + 68);
     ctx.textAlign = 'left';
   }
 
@@ -1166,36 +1301,74 @@
     }
   }
 
-  /* pointer */
+  /* pointer — P1 mouse: hover aims, click locks. Works in solo for every D-M-S-B step. */
+  function canvasPoint(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+
+  function pressP1Action() {
+    players[0].keys.action = 1;
+    handleAction(players[0]);
+    players[0].keys.action = 0;
+    players[0].lastAction = 0;
+  }
+
+  canvas.addEventListener('pointermove', e => {
+    const pt = canvasPoint(e);
+    pointer.x = pt.x;
+    pointer.y = pt.y;
+    pointer.over = true;
+    pointer.moved = true;
+    if (state !== S.TITLE) return;
+    const cards = titleCards();
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i];
+      if (pt.x >= c.x && pt.x <= c.x + c.w && pt.y >= c.y && pt.y <= c.y + c.h) {
+        if (titleSel !== i) { titleSel = i; audio.select(); updateHUD(); }
+        return;
+      }
+    }
+  });
+  canvas.addEventListener('pointerleave', () => { pointer.over = false; });
+
   canvas.addEventListener('pointerdown', e => {
     audio.init();
-    const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const py = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const pt = canvasPoint(e);
+    pointer.x = pt.x;
+    pointer.y = pt.y;
+    pointer.over = true;
 
     if (state === S.TITLE) {
-      for (let i = 0; i < 2; i++) {
-        const x = W / 2 - 260 + i * 280, y = H * 0.5;
-        if (px >= x && px <= x + 240 && py >= y && py <= y + 100) {
-          if (titleSel === i) {
-            players[0].keys.action = 1; handleAction(players[0]);
-            players[0].keys.action = 0; players[0].lastAction = 0;
-          } else { titleSel = i; audio.select(); }
+      const cards = titleCards();
+      for (let i = 0; i < cards.length; i++) {
+        const c = cards[i];
+        if (pt.x >= c.x && pt.x <= c.x + c.w && pt.y >= c.y && pt.y <= c.y + c.h) {
+          titleSel = i;
+          updateHUD();
+          pressP1Action();
           return;
         }
       }
-      players[0].keys.action = 1; handleAction(players[0]);
-      players[0].keys.action = 0; players[0].lastAction = 0;
+      pressP1Action();
+      return;
+    }
+
+    if (state === S.OVER) {
+      pressP1Action();
       return;
     }
 
     const p = players[0];
     const board = boardFor(p);
     if (!board || state !== S.PLAY) return;
-    const cards = optionCards(board.options.length, p.id);
+    const cards = optionCards(board.options.length, gameMode === 'versus' ? 0 : 0);
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
-      if (px >= c.x && px <= c.x + c.w && py >= c.y && py <= c.y + c.h) {
+      if (pt.x >= c.x && pt.x <= c.x + c.w && pt.y >= c.y && pt.y <= c.y + c.h) {
         p.sel = i; p.x = c.cx; p.y = c.cy;
         trySelect(p, board);
         return;
@@ -1224,7 +1397,7 @@
     drawSky();
 
     if (state === S.TITLE) {
-      drawBridge(blankBoard(), W * 0.12, H * 0.08, W * 0.76, H * 0.18, '');
+      drawBridge(blankBoard(), W * 0.18, H * 0.015, W * 0.64, H * 0.12, '');
       drawTitle();
     } else if (gameMode === 'versus') {
       for (let i = 0; i < 2; i++) {
@@ -1248,7 +1421,10 @@
         ctx.font = '600 13px "Exo 2", sans-serif';
         ctx.fillText('×10 → digits LEFT + trailing 0     ÷10 → digits RIGHT, drop ones 0', W * 0.04, H * 0.59);
         ctx.fillStyle = '#ffe9a0';
-        ctx.fillText('Co-op: either engineer may lock calibration. Then P1/P2 hand off D-M-S-B.', W * 0.04, H * 0.65);
+        const calHint = gameMode === 'solo'
+          ? 'Solo: lock the metre total, then run every D-M-S-B step yourself.'
+          : 'Co-op: either engineer may lock calibration. Then P1/P2 hand off D-M-S-B.';
+        ctx.fillText(calHint, W * 0.04, H * 0.65);
       } else {
         drawBracket(boards[0], W * 0.54, H * 0.055, W * 0.44, H * 0.66);
       }
@@ -1270,7 +1446,6 @@
   players[0].x = W * 0.35; players[0].y = H * 0.85;
   players[1].x = W * 0.65; players[1].y = H * 0.85;
   updateHUD();
-  showPopup('SKYBRIDGE BUILDER', 'Select mode · Calibrate · Partition the chasm', '#7fdfff', 180);
   requestAnimationFrame(frame);
 })();
 </script>
