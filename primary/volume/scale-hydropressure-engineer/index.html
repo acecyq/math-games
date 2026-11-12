@@ -25,11 +25,11 @@
       position: absolute; inset: 0; pointer-events: none;
       display: flex; flex-direction: column; padding: 10px 14px;
     }
-    .hud-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .hud-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: nowrap; }
     .hud-card {
       background: rgba(4, 28, 40, 0.9);
       border: 2px solid #2ec4b6; border-radius: 8px;
-      padding: 6px 12px; font-size: 12px; font-weight: 700;
+      padding: 8px 12px; font-size: clamp(14px, 1.25vw, 22px); font-weight: 700;
       letter-spacing: 0.4px; text-shadow: 0 1px 2px #000;
       box-shadow: 0 4px 14px rgba(0,0,0,0.5), inset 0 0 12px rgba(46,196,182,0.12);
       white-space: nowrap;
@@ -41,7 +41,7 @@
       pointer-events: auto;
       background: linear-gradient(180deg, #2ec4b6 0%, #167a72 100%);
       color: #fff; border: 2px solid #7ff5ea; border-radius: 6px;
-      padding: 6px 12px; font-family: inherit; font-size: 11px; font-weight: 800;
+      padding: 8px 14px; font-family: inherit; font-size: clamp(13px, 1.1vw, 18px); font-weight: 800;
       letter-spacing: 1px; text-transform: uppercase; cursor: pointer;
       box-shadow: 0 3px 8px rgba(0,0,0,0.5);
     }
@@ -538,34 +538,121 @@
   }
 
   /* ===================== LAYOUT HELPERS ===================== */
+  // Sizes are designed at 1280×720 and grow with the projector so scale values stay readable.
+  function fs(px) {
+    const fit = Math.min(W / 1280, H / 720);
+    const s = Math.min(1.85, Math.max(0.85, fit));
+    return Math.max(1, Math.round(px * s));
+  }
+
+  function instrumentBand() {
+    const gap = fs(12);
+    const top = Math.max(fs(56), Math.round(H * 0.068));
+    const cardH = fs(86);
+    const syncH = fs(54);
+    const roleH = fs(18);
+    const controls = roleH + cardH + syncH + fs(16);
+    const h = Math.max(fs(240), H - top - controls);
+    const w = Math.min(W * 0.475, (W - gap * 3) / 2);
+    return {
+      top, h, w, gap, cardH, syncH, roleH,
+      left: gap,
+      right: W - gap - w,
+      cardsY: top + h + roleH
+    };
+  }
+
   function dialRect() {
-    const top = H * 0.09, h = H * 0.52, w = W * 0.42, x = W * 0.03, y = top;
-    return { x, y, w, h, cx: x + w * 0.5, cy: y + h * 0.52, r: Math.min(w, h) * 0.38 };
+    const b = instrumentBand();
+    const x = b.left, y = b.top, w = b.w, h = b.h;
+    const chromeTop = fs(52);
+    const chromeBot = fs(92);
+    const avail = Math.max(fs(80), h - chromeTop - chromeBot);
+    const r = Math.min(w * 0.46, Math.max(fs(48), avail * 0.5 - fs(8)));
+    return { x, y, w, h, cx: x + w * 0.5, cy: y + chromeTop + avail * 0.5 - fs(4), r };
   }
+
   function cylRect() {
-    const top = H * 0.09, h = H * 0.52, w = W * 0.42, x = W * 0.55, y = top;
-    return { x, y, w, h, cx: x + w * 0.45, top: y + h * 0.12, bot: y + h * 0.88, tw: Math.min(70, w * 0.22) };
+    const b = instrumentBand();
+    const x = b.right, y = b.top, w = b.w, h = b.h;
+    const chromeTop = fs(52);
+    const chromeBot = fs(92);
+    const top = y + chromeTop + fs(22);
+    const bot = y + h - chromeBot - fs(14);
+    const tw = Math.min(fs(68), w * 0.15);
+    const labelCol = fs(120);
+    const group = tw * 2 + fs(24) + labelCol;
+    const start = x + Math.max(fs(72), (w - group) / 2);
+    const cx = start + tw;
+    return { x, y, w, h, cx, top, bot, tw };
   }
+
   function syncBtnRect() {
-    const w = Math.min(220, W * 0.18), h = 56;
-    return { x: W * 0.5 - w / 2, y: H * 0.78, w, h, cx: W * 0.5, cy: H * 0.78 + h / 2 };
+    const b = instrumentBand();
+    const w = Math.min(fs(280), W * 0.26);
+    const h = b.syncH;
+    const y = b.cardsY + b.cardH + fs(8);
+    return { x: W * 0.5 - w / 2, y, w, h, cx: W * 0.5, cy: y + h / 2 };
   }
 
   function cardsFor(side, count) {
-    // side: 'left' | 'right' | 'center'
-    const cardW = Math.min(130, W * 0.11), cardH = 58, gap = 10;
-    const total = count * cardW + (count - 1) * gap;
+    const b = instrumentBand();
+    const gap = fs(8);
+    const margin = b.gap;
+    const y = b.cardsY;
+    const cardH = b.cardH;
+    const inner = W - margin * 2;
+    const centerGap = fs(16);
+    const sideW = (inner - centerGap) / 2;
+    const cardW = Math.max(fs(72), Math.floor((sideW - gap * Math.max(0, count - 1)) / Math.max(1, count)));
+    const total = count * cardW + Math.max(0, count - 1) * gap;
     let x0;
-    if (side === 'left') x0 = W * 0.04;
-    else if (side === 'right') x0 = W * 0.96 - total;
-    else x0 = W * 0.5 - total / 2;
-    const y = H * 0.70;
+    if (side === 'left') x0 = margin;
+    else if (side === 'right') x0 = W - margin - total;
+    else x0 = (W - total) / 2;
     const out = [];
     for (let i = 0; i < count; i++) {
       const x = x0 + i * (cardW + gap);
       out.push({ x, y, w: cardW, h: cardH, cx: x + cardW / 2, cy: y + cardH / 2, i });
     }
     return out;
+  }
+
+  function fitFont(text, maxW, desired, minSize, family) {
+    const face = family || '"Share Tech Mono", monospace';
+    let size = desired;
+    while (size > minSize) {
+      ctx.font = `700 ${size}px ${face}`;
+      if (ctx.measureText(text).width <= maxW) break;
+      size -= 1;
+    }
+    ctx.font = `700 ${size}px ${face}`;
+    return size;
+  }
+
+  function dialLabelSize(inst, R) {
+    const gaps = Math.max(1, Math.round((inst.max - inst.min) / inst.major));
+    const ang = ((Math.PI * 4) / 3) / gaps;
+    const sample = inst.mixed ? '8' : String(Math.round(inst.max));
+    let size = fs(32);
+    const floor = fs(18);
+    while (size > floor) {
+      ctx.font = `700 ${size}px "Share Tech Mono", monospace`;
+      const labR = R - fs(12) - size * 0.65;
+      const chord = 2 * Math.max(24, labR) * Math.sin(ang / 2);
+      if (ctx.measureText(sample).width + fs(8) <= chord * 0.9) break;
+      size -= 1;
+    }
+    return size;
+  }
+
+  function splitValueText(text) {
+    const t = String(text).trim();
+    const mixed = t.match(/^([+]?\d[\d\s]*\s+\S+)\s+(\d[\d\s]*\s+\S+)$/);
+    if (mixed) return { lines: [mixed[1], mixed[2]] };
+    const simple = t.match(/^([+]?\d[\d\s]*)\s+(\S+)$/);
+    if (simple) return { lines: [simple[1]], unit: simple[2] };
+    return { lines: [t] };
   }
 
   function optionsForPlayer(p) {
@@ -830,38 +917,41 @@
       ctx.stroke();
     }
 
-    // Portholes
-    drawPorthole(W * 0.08, H * 0.88, 36);
-    drawPorthole(W * 0.92, H * 0.88, 36);
+    const band = instrumentBand();
+    const plateY = band.top + band.h;
 
-    // Pipes
+    // Portholes sit in the bottom corners, clear of the answer cards
+    drawPorthole(fs(28), H - fs(24), fs(16));
+    drawPorthole(W - fs(28), H - fs(24), fs(16));
+
+    // Pipes along the answer console, below the gauges
     ctx.strokeStyle = '#1a4a58';
-    ctx.lineWidth = 10;
+    ctx.lineWidth = fs(8);
     ctx.beginPath();
-    ctx.moveTo(0, H * 0.62); ctx.lineTo(W * 0.12, H * 0.62); ctx.lineTo(W * 0.12, H * 0.95);
+    ctx.moveTo(0, plateY + fs(28)); ctx.lineTo(fs(26), plateY + fs(28)); ctx.lineTo(fs(26), H);
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(W, H * 0.62); ctx.lineTo(W * 0.88, H * 0.62); ctx.lineTo(W * 0.88, H * 0.95);
+    ctx.moveTo(W, plateY + fs(28)); ctx.lineTo(W - fs(26), plateY + fs(28)); ctx.lineTo(W - fs(26), H);
     ctx.stroke();
     ctx.fillStyle = '#2ec4b6';
-    ctx.beginPath(); ctx.arc(W * 0.12, H * 0.62, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(W * 0.88, H * 0.62, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(fs(26), plateY + fs(28), fs(5), 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W - fs(26), plateY + fs(28), fs(5), 0, Math.PI * 2); ctx.fill();
 
-    // Warning beacons
+    // Warning beacons in the seam between the two gauges
     const blink = 0.5 + 0.5 * Math.sin(time * 0.12);
     ctx.fillStyle = `rgba(255,90,50,${0.35 + blink * 0.45})`;
-    ctx.beginPath(); ctx.arc(W * 0.5, H * 0.06, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W * 0.5, band.top + fs(18), fs(5), 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = `rgba(240,192,64,${0.25 + (1 - blink) * 0.4})`;
-    ctx.beginPath(); ctx.arc(W * 0.47, H * 0.055, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(W * 0.53, H * 0.055, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W * 0.5 - fs(16), band.top + fs(14), fs(3), 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W * 0.5 + fs(16), band.top + fs(14), fs(3), 0, Math.PI * 2); ctx.fill();
 
-    // Floor console plate
+    // Floor console plate under the answer cards
     ctx.fillStyle = 'rgba(6, 30, 40, 0.85)';
-    roundRect(W * 0.02, H * 0.66, W * 0.96, H * 0.30, 14);
+    roundRect(fs(8), plateY, W - fs(16), H - plateY - fs(6), fs(12));
     ctx.fill();
     ctx.strokeStyle = 'rgba(46,196,182,0.35)';
     ctx.lineWidth = 2;
-    roundRect(W * 0.02, H * 0.66, W * 0.96, H * 0.30, 14);
+    roundRect(fs(8), plateY, W - fs(16), H - plateY - fs(6), fs(12));
     ctx.stroke();
   }
 
@@ -889,63 +979,105 @@
     return start + t * span;
   }
 
+  function drawReadout(panel, inst, highlight) {
+    if (!highlight) return;
+    const pad = fs(8);
+    const statusH = fs(32);
+    const statusY = panel.y + panel.h - statusH - pad;
+    const barX = panel.x + pad;
+    const barW = panel.w - pad * 2;
+    const maxW = barW - fs(16);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    let banner = null;
+    let bannerFill = 'rgba(4, 28, 36, 0.94)';
+    let bannerStroke = '#3ee0d0';
+    if (highlight.showSpaces) {
+      banner = `(${fmtNum(inst.upper)} − ${fmtNum(inst.lower)}) ÷ ${inst.spaces} spaces = ?`;
+    } else if (highlight.stamped) {
+      banner = `+${fmtNum(inst.step)} ${inst.stepUnit} each step`;
+      bannerFill = 'rgba(6, 78, 70, 0.95)';
+      bannerStroke = '#7ff5ea';
+    }
+    if (banner) {
+      const fh = fs(38);
+      const fy = statusY - fh - fs(4);
+      ctx.fillStyle = bannerFill;
+      roundRect(barX, fy, barW, fh, 8); ctx.fill();
+      ctx.strokeStyle = bannerStroke;
+      ctx.lineWidth = 2;
+      roundRect(barX, fy, barW, fh, 8); ctx.stroke();
+      fitFont(banner, maxW, fs(26), fs(15));
+      ctx.fillStyle = '#f4fffd';
+      ctx.fillText(banner, panel.x + panel.w / 2, fy + fh / 2);
+    }
+    if (highlight.status) {
+      ctx.fillStyle = highlight.statusOk ? 'rgba(46,196,182,0.30)' : 'rgba(240,192,64,0.24)';
+      roundRect(barX, statusY, barW, statusH, 8); ctx.fill();
+      ctx.fillStyle = highlight.statusOk ? '#f3fffd' : '#fff3c4';
+      fitFont(highlight.status, maxW, fs(18), fs(13), 'Orbitron, sans-serif');
+      ctx.fillText(highlight.status, panel.x + panel.w / 2, statusY + statusH / 2);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function drawDialLabel(inst, v, lx, ly, labSize) {
+    let lab;
+    if (inst.mixed) lab = v === 0 ? '0' : `${v / 1000}`;
+    else lab = String(Math.round(v));
+    const active = Math.abs(v - inst.lower) < 0.001 || Math.abs(v - inst.upper) < 0.001;
+    ctx.font = `700 ${labSize}px "Share Tech Mono", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(lab).width;
+    const bw = tw + fs(8);
+    const bh = labSize * 1.12;
+    ctx.fillStyle = active ? 'rgba(240, 192, 64, 0.97)' : 'rgba(236, 246, 242, 0.95)';
+    roundRect(lx - bw / 2, ly - bh / 2, bw, bh, fs(4));
+    ctx.fill();
+    ctx.fillStyle = active ? '#1a1404' : '#061820';
+    ctx.fillText(lab, lx, ly);
+  }
+
   function drawMassDial(inst, highlight) {
     const d = dialRect();
-    // Panel
     ctx.fillStyle = 'rgba(8, 36, 48, 0.92)';
     roundRect(d.x, d.y, d.w, d.h, 12); ctx.fill();
     ctx.strokeStyle = '#2ec4b6'; ctx.lineWidth = 2;
     roundRect(d.x, d.y, d.w, d.h, 12); ctx.stroke();
 
     ctx.fillStyle = '#7ff5ea';
-    ctx.font = '700 13px Orbitron, sans-serif';
+    ctx.font = `800 ${fs(18)}px Orbitron, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText('MASS HOPPER DIAL', d.cx, d.y + 22);
-    ctx.fillStyle = '#a0c8d0';
-    ctx.font = '600 11px "Share Tech Mono", monospace';
-    ctx.fillText(inst.mixed ? 'kg / g' : 'grams (g)', d.cx, d.y + 38);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('MASS HOPPER DIAL', d.cx, d.y + fs(26));
+    ctx.fillStyle = '#d7f6f8';
+    ctx.font = `700 ${fs(16)}px "Share Tech Mono", monospace`;
+    ctx.fillText(inst.mixed ? 'kilograms (kg)' : 'grams (g)', d.cx, d.y + fs(46));
 
     const cx = d.cx, cy = d.cy, R = d.r;
-    // Dial face
     const face = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R);
     face.addColorStop(0, '#e8f4f0'); face.addColorStop(1, '#b8d0c8');
     ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.fillStyle = face; ctx.fill();
-    ctx.strokeStyle = '#1a4048'; ctx.lineWidth = 6; ctx.stroke();
+    ctx.strokeStyle = '#1a4048'; ctx.lineWidth = Math.max(4, fs(5)); ctx.stroke();
     ctx.strokeStyle = '#2ec4b6'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(cx, cy, R - 4, 0, Math.PI * 2); ctx.stroke();
 
-    // Ticks
-    const start = (Math.PI * 7) / 6;
-    const span = (Math.PI * 4) / 3;
     for (let v = inst.min; v <= inst.max + 0.001; v += inst.step) {
       const isMajor = Math.abs((v - inst.min) % inst.major) < 0.001 || Math.abs(v - inst.max) < 0.001;
       const a = valueToDialAngle(inst, v);
-      const r0 = isMajor ? R - 18 : R - 12;
-      const r1 = R - 6;
+      const r0 = isMajor ? R - fs(16) : R - fs(10);
+      const r1 = R - fs(4);
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
       ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
       ctx.strokeStyle = isMajor ? '#0a2030' : '#4a6870';
-      ctx.lineWidth = isMajor ? 2.5 : 1.2;
+      ctx.lineWidth = isMajor ? fs(3) : Math.max(1.25, fs(1.4));
       ctx.stroke();
-
-      if (isMajor) {
-        const lx = cx + Math.cos(a) * (R - 32);
-        const ly = cy + Math.sin(a) * (R - 32);
-        ctx.fillStyle = '#0a2030';
-        ctx.font = '700 11px "Share Tech Mono", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        let lab;
-        if (inst.mixed) lab = v === 0 ? '0' : `${v / 1000}`;
-        else lab = String(v);
-        ctx.fillText(lab, lx, ly);
-      }
     }
-    ctx.textBaseline = 'alphabetic';
 
-    // Space wedge scanner during interval calibration
     if (highlight && highlight.showSpaces) {
       const a0 = valueToDialAngle(inst, inst.lower);
       const a1 = valueToDialAngle(inst, inst.upper);
@@ -954,39 +1086,29 @@
         const t1 = a0 + (a1 - a0) * ((s + 1) / inst.spaces);
         ctx.beginPath();
         ctx.moveTo(cx, cy);
-        ctx.arc(cx, cy, R - 8, t0, t1);
+        ctx.arc(cx, cy, R - fs(8), t0, t1);
         ctx.closePath();
-        ctx.fillStyle = `rgba(46,196,182,${0.12 + 0.1 * Math.sin(time * 0.15 + s)})`;
+        ctx.fillStyle = `rgba(46,196,182,${0.16 + 0.1 * Math.sin(time * 0.15 + s)})`;
         ctx.fill();
-        const mid = (t0 + t1) / 2;
-        const tx = cx + Math.cos(mid) * (R * 0.55);
-        const ty = cy + Math.sin(mid) * (R * 0.55);
-        ctx.fillStyle = '#067a70';
-        ctx.font = '800 12px Orbitron, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(String(s + 1), tx, ty);
-      }
-      ctx.fillStyle = '#067a70';
-      ctx.font = '700 11px "Share Tech Mono", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`(${fmtNum(inst.upper)} − ${fmtNum(inst.lower)}) ÷ ${inst.spaces} = ?`, cx, cy + R * 0.35);
-    }
-
-    // Stamped step labels
-    if (highlight && highlight.stamped) {
-      for (let v = inst.lower; v < inst.upper; v += inst.step) {
-        if (v === inst.lower) continue;
-        const a = valueToDialAngle(inst, v);
-        const tx = cx + Math.cos(a) * (R * 0.72);
-        const ty = cy + Math.sin(a) * (R * 0.72);
-        ctx.fillStyle = 'rgba(6,120,100,0.9)';
-        ctx.font = '700 9px "Share Tech Mono", monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(`+${fmtNum(inst.step)}`, tx, ty);
+        const slot = Math.abs(t1 - t0) * (R * 0.58);
+        const nSize = Math.min(fs(22), Math.floor(slot * 0.72));
+        if (nSize >= 14) {
+          const mid = (t0 + t1) / 2;
+          const tx = cx + Math.cos(mid) * (R * 0.52);
+          const ty = cy + Math.sin(mid) * (R * 0.52);
+          ctx.beginPath();
+          ctx.arc(tx, ty, nSize * 0.72, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(4, 40, 44, 0.9)';
+          ctx.fill();
+          ctx.fillStyle = '#f3fffd';
+          ctx.font = `800 ${nSize}px Orbitron, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(s + 1), tx, ty);
+        }
       }
     }
 
-    // Step counter arcs during reading
     if (highlight && highlight.countSteps > 0) {
       for (let s = 1; s <= highlight.countSteps; s++) {
         const v0 = inst.lower + (s - 1) * inst.step;
@@ -994,14 +1116,27 @@
         const t0 = valueToDialAngle(inst, v0);
         const t1 = valueToDialAngle(inst, v1);
         ctx.beginPath();
-        ctx.arc(cx, cy, R * 0.48, t0, t1);
-        ctx.strokeStyle = `rgba(240,80,60,${0.5 + 0.3 * (s === highlight.countSteps ? 1 : 0.5)})`;
-        ctx.lineWidth = 5;
+        ctx.arc(cx, cy, R * 0.42, t0, t1);
+        ctx.strokeStyle = `rgba(240,80,60,${0.55 + 0.35 * (s === highlight.countSteps ? 1 : 0.4)})`;
+        ctx.lineWidth = fs(6);
         ctx.stroke();
       }
     }
 
-    // Needle
+    const labSize = dialLabelSize(inst, R);
+    const labR = R - fs(16) - labSize * 0.62;
+    for (let v = inst.min; v <= inst.max + 0.001; v += inst.major) {
+      const a = valueToDialAngle(inst, Math.min(v, inst.max));
+      drawDialLabel(
+        inst,
+        Math.min(v, inst.max),
+        cx + Math.cos(a) * labR,
+        cy + Math.sin(a) * labR,
+        labSize
+      );
+    }
+    ctx.textBaseline = 'alphabetic';
+
     const wobble = Math.sin(time * 0.35) * 0.012;
     const na = valueToDialAngle(inst, inst.exact) + (highlight && highlight.lockNeedle ? 0 : wobble * (highlight && highlight.calm ? 0.3 : 1));
     ctx.save();
@@ -1009,28 +1144,22 @@
     ctx.rotate(na);
     ctx.fillStyle = '#d02020';
     ctx.beginPath();
-    ctx.moveTo(0, -4); ctx.lineTo(R - 22, 0); ctx.lineTo(0, 4); ctx.closePath();
+    ctx.moveTo(0, -fs(4)); ctx.lineTo(R - fs(18), 0); ctx.lineTo(0, fs(4)); ctx.closePath();
     ctx.fill();
     ctx.fillStyle = '#801010';
-    ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, fs(8), 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ff6060';
-    ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, fs(4), 0, Math.PI * 2); ctx.fill();
     ctx.restore();
 
-    // Unit badge
     ctx.fillStyle = '#0a2030';
-    ctx.font = '700 12px Orbitron, sans-serif';
+    ctx.font = `800 ${fs(20)}px Orbitron, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText(inst.mixed ? 'kg' : 'g', cx, cy + R * 0.22);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(inst.mixed ? 'kg' : 'g', cx, cy + fs(28));
+    ctx.textBaseline = 'alphabetic';
 
-    // Status chip
-    if (highlight && highlight.status) {
-      ctx.fillStyle = highlight.statusOk ? 'rgba(46,196,182,0.25)' : 'rgba(240,192,64,0.2)';
-      roundRect(d.x + 12, d.y + d.h - 36, d.w - 24, 24, 6); ctx.fill();
-      ctx.fillStyle = highlight.statusOk ? '#7ff5ea' : '#ffe9a0';
-      ctx.font = '700 11px Orbitron, sans-serif';
-      ctx.fillText(highlight.status, d.cx, d.y + d.h - 20);
-    }
+    drawReadout(d, inst, highlight);
   }
 
   function valueToCylY(inst, value, top, bot) {
@@ -1046,35 +1175,34 @@
     roundRect(c.x, c.y, c.w, c.h, 12); ctx.stroke();
 
     ctx.fillStyle = '#7ff5ea';
-    ctx.font = '700 13px Orbitron, sans-serif';
+    ctx.font = `800 ${fs(18)}px Orbitron, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText('COOLANT VOLUME CYLINDER', c.x + c.w * 0.5, c.y + 22);
-    ctx.fillStyle = '#a0c8d0';
-    ctx.font = '600 11px "Share Tech Mono", monospace';
-    ctx.fillText(inst.mixed ? 'ℓ / mℓ' : 'millilitres (mℓ)', c.x + c.w * 0.5, c.y + 38);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('COOLANT VOLUME CYLINDER', c.x + c.w * 0.5, c.y + fs(26));
+    ctx.fillStyle = '#d7f6f8';
+    ctx.font = `700 ${fs(16)}px "Share Tech Mono", monospace`;
+    ctx.fillText(inst.mixed ? 'litres (ℓ)' : 'millilitres (mℓ)', c.x + c.w * 0.5, c.y + fs(46));
 
     const cx = c.cx, top = c.top, bot = c.bot, tw = c.tw;
     const left = cx - tw, right = cx + tw;
 
-    // Glass tube
     ctx.fillStyle = 'rgba(180, 230, 240, 0.15)';
-    roundRect(left, top - 8, tw * 2, bot - top + 24, 8); ctx.fill();
+    roundRect(left, top - fs(6), tw * 2, (bot - top) + fs(12), fs(8)); ctx.fill();
     ctx.strokeStyle = 'rgba(180, 230, 240, 0.55)';
     ctx.lineWidth = 2;
-    roundRect(left, top - 8, tw * 2, bot - top + 24, 8); ctx.stroke();
+    roundRect(left, top - fs(6), tw * 2, (bot - top) + fs(12), fs(8)); ctx.stroke();
 
-    // Liquid
     const meniscusY = valueToCylY(inst, inst.exact, top, bot);
-    const waveAmp = 2.5 + Math.sin(time * 0.2) * 1.2;
+    const waveAmp = fs(3) + Math.sin(time * 0.2) * fs(1.2);
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(left + 3, bot + 8);
+    ctx.moveTo(left + 3, bot + fs(4));
     ctx.lineTo(left + 3, meniscusY);
     for (let x = left + 3; x <= right - 3; x += 4) {
       const wy = meniscusY + Math.sin(time * 0.18 + x * 0.08) * waveAmp;
       ctx.lineTo(x, wy);
     }
-    ctx.lineTo(right - 3, bot + 8);
+    ctx.lineTo(right - 3, bot + fs(4));
     ctx.closePath();
     const lg = ctx.createLinearGradient(cx, meniscusY, cx, bot);
     lg.addColorStop(0, 'rgba(40, 220, 200, 0.75)');
@@ -1083,34 +1211,29 @@
     ctx.fill();
     ctx.restore();
 
-    // Graduations
+    const gaps = Math.max(1, (inst.max - inst.min) / inst.major);
+    const spacing = (bot - top) / gaps;
+    let labSize = Math.max(fs(18), Math.min(fs(34), Math.floor(spacing * 0.7)));
+    const labelX = right + fs(28);
+    const rightRoom = Math.max(fs(40), c.x + c.w - labelX - fs(10));
+    const sample = inst.mixed ? '8' : String(Math.round(inst.max));
+    while (labSize > fs(16)) {
+      ctx.font = `700 ${labSize}px "Share Tech Mono", monospace`;
+      if (ctx.measureText(sample).width <= rightRoom) break;
+      labSize -= 1;
+    }
+
     for (let v = inst.min; v <= inst.max + 0.001; v += inst.step) {
       const isMajor = Math.abs((v - inst.min) % inst.major) < 0.001 || Math.abs(v - inst.max) < 0.001;
       const y = valueToCylY(inst, v, top, bot);
       ctx.beginPath();
       ctx.moveTo(right - 2, y);
-      ctx.lineTo(right + (isMajor ? 18 : 10), y);
+      ctx.lineTo(right + (isMajor ? fs(20) : fs(11)), y);
       ctx.strokeStyle = isMajor ? '#d8f6ff' : '#5a8890';
-      ctx.lineWidth = isMajor ? 2 : 1;
+      ctx.lineWidth = isMajor ? fs(3) : Math.max(1.2, fs(1.3));
       ctx.stroke();
-      if (isMajor) {
-        ctx.fillStyle = '#d8f6ff';
-        ctx.font = '700 11px "Share Tech Mono", monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        let lab;
-        if (inst.mixed) lab = v === 0 ? '0' : `${v / 1000}`;
-        else lab = String(v);
-        ctx.fillText(lab, right + 22, y);
-      }
     }
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = '#7ff5ea';
-    ctx.font = '700 10px Orbitron, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(inst.mixed ? 'ℓ' : 'mℓ', right + 22, top - 4);
 
-    // Gap brackets during interval
     if (highlight && highlight.showSpaces) {
       const y0 = valueToCylY(inst, inst.lower, top, bot);
       const y1 = valueToCylY(inst, inst.upper, top, bot);
@@ -1118,58 +1241,67 @@
         const ya = y0 + (y1 - y0) * (s / inst.spaces);
         const yb = y0 + (y1 - y0) * ((s + 1) / inst.spaces);
         const mid = (ya + yb) / 2;
-        ctx.strokeStyle = `rgba(46,196,182,${0.55 + 0.25 * Math.sin(time * 0.15 + s)})`;
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = `rgba(127,245,234,${0.7 + 0.25 * Math.sin(time * 0.15 + s)})`;
+        ctx.lineWidth = Math.max(2, fs(2));
         ctx.beginPath();
-        ctx.moveTo(left - 28, ya); ctx.lineTo(left - 14, ya);
-        ctx.lineTo(left - 14, yb); ctx.lineTo(left - 28, yb);
+        ctx.moveTo(left - fs(30), ya); ctx.lineTo(left - fs(14), ya);
+        ctx.lineTo(left - fs(14), yb); ctx.lineTo(left - fs(30), yb);
         ctx.stroke();
-        ctx.fillStyle = '#7ff5ea';
-        ctx.font = '800 11px Orbitron, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(String(s + 1), left - 40, mid + 4);
-      }
-      ctx.fillStyle = '#7ff5ea';
-      ctx.font = '700 10px "Share Tech Mono", monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`(${fmtNum(inst.upper)} − ${fmtNum(inst.lower)}) ÷ ${inst.spaces} = ?`, cx, bot + 28);
-    }
-
-    // Stamped steps
-    if (highlight && highlight.stamped) {
-      for (let s = 1; s < inst.spaces; s++) {
-        const v = inst.lower + s * inst.step;
-        const y = valueToCylY(inst, v, top, bot);
-        ctx.fillStyle = 'rgba(46,196,182,0.95)';
-        ctx.font = '700 9px "Share Tech Mono", monospace';
-        ctx.textAlign = 'right';
-        ctx.fillText(`+${fmtNum(inst.step)}`, left - 6, y + 3);
+        const slot = Math.abs(yb - ya);
+        const nSize = Math.min(fs(22), Math.floor(slot * 0.72));
+        if (nSize >= 14) {
+          ctx.font = `800 ${nSize}px Orbitron, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#f3fffd';
+          ctx.fillText(String(s + 1), Math.max(c.x + fs(16), left - fs(46)), mid);
+        }
       }
     }
 
-    // Step count bars
     if (highlight && highlight.countSteps > 0) {
       for (let s = 1; s <= highlight.countSteps; s++) {
         const v = inst.lower + s * inst.step;
         const y = valueToCylY(inst, v, top, bot);
-        ctx.fillStyle = `rgba(240,192,64,${0.4 + 0.4 * (s === highlight.countSteps)})`;
-        ctx.fillRect(left + 6, y - 2, tw * 2 - 12, 4);
+        ctx.fillStyle = `rgba(240,192,64,${0.45 + 0.45 * (s === highlight.countSteps)})`;
+        ctx.fillRect(left + fs(6), y - fs(2), tw * 2 - fs(12), fs(5));
       }
     }
 
-    // Meniscus marker
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (let v = inst.min; v <= inst.max + 0.001; v += inst.major) {
+      const value = Math.min(v, inst.max);
+      const y = valueToCylY(inst, value, top, bot);
+      let lab;
+      if (inst.mixed) lab = value === 0 ? '0' : `${value / 1000}`;
+      else lab = String(Math.round(value));
+      const active = Math.abs(value - inst.lower) < 0.001 || Math.abs(value - inst.upper) < 0.001;
+      ctx.font = `700 ${labSize}px "Share Tech Mono", monospace`;
+      const twid = ctx.measureText(lab).width;
+      const bw = twid + fs(10);
+      const bh = labSize * 1.08;
+      ctx.fillStyle = active ? 'rgba(240, 192, 64, 0.97)' : 'rgba(3, 22, 32, 0.88)';
+      roundRect(labelX - fs(4), y - bh / 2, bw, bh, fs(4));
+      ctx.fill();
+      ctx.fillStyle = active ? '#1a1404' : '#f4fdff';
+      ctx.fillText(lab, labelX, y);
+    }
+    ctx.textBaseline = 'alphabetic';
+
     ctx.strokeStyle = '#ff6060';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = fs(3);
     ctx.beginPath();
-    ctx.moveTo(left - 6, meniscusY);
-    ctx.lineTo(right + 6, meniscusY);
+    ctx.moveTo(left - fs(8), meniscusY);
+    ctx.lineTo(right + fs(8), meniscusY);
     ctx.stroke();
     ctx.fillStyle = '#ff8080';
     ctx.beginPath();
-    ctx.moveTo(left - 14, meniscusY); ctx.lineTo(left - 4, meniscusY - 5); ctx.lineTo(left - 4, meniscusY + 5);
+    ctx.moveTo(left - fs(20), meniscusY);
+    ctx.lineTo(left - fs(6), meniscusY - fs(8));
+    ctx.lineTo(left - fs(6), meniscusY + fs(8));
     ctx.fill();
 
-    // Bubbles
     if (time % 8 === 0) {
       bubbles.push({
         x: cx + (Math.random() - 0.5) * tw * 1.2,
@@ -1185,14 +1317,41 @@
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.stroke();
     }
 
-    if (highlight && highlight.status) {
-      ctx.fillStyle = highlight.statusOk ? 'rgba(46,196,182,0.25)' : 'rgba(240,192,64,0.2)';
-      roundRect(c.x + 12, c.y + c.h - 36, c.w - 24, 24, 6); ctx.fill();
-      ctx.fillStyle = highlight.statusOk ? '#7ff5ea' : '#ffe9a0';
-      ctx.font = '700 11px Orbitron, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(highlight.status, c.x + c.w * 0.5, c.y + c.h - 20);
+    drawReadout(c, inst, highlight);
+  }
+
+  function drawCardValue(text, c) {
+    const split = splitValueText(text);
+    const capH = fs(18);
+    const top = c.y + fs(6);
+    const height = c.h - capH - fs(8);
+    const maxW = c.w - fs(12);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    if (split.unit) {
+      const numSize = fitFont(split.lines[0], maxW, fs(36), fs(18));
+      const unitSize = Math.min(fs(18), Math.max(fs(14), numSize - fs(12)));
+      const block = numSize + fs(2) + unitSize;
+      let y = top + Math.max(0, (height - block) / 2);
+      ctx.fillStyle = '#f7feff';
+      ctx.font = `700 ${numSize}px "Share Tech Mono", monospace`;
+      ctx.fillText(split.lines[0], c.cx, y);
+      y += numSize + fs(1);
+      ctx.fillStyle = '#b7e7ee';
+      ctx.font = `700 ${unitSize}px "Share Tech Mono", monospace`;
+      ctx.fillText(split.unit, c.cx, y);
+    } else {
+      const sizes = split.lines.map((line) => fitFont(line, maxW, fs(28), fs(16)));
+      const block = sizes.reduce((sum, size) => sum + size, 0) + fs(2) * Math.max(0, sizes.length - 1);
+      let y = top + Math.max(0, (height - block) / 2);
+      split.lines.forEach((line, i) => {
+        ctx.fillStyle = '#f7feff';
+        ctx.font = `700 ${sizes[i]}px "Share Tech Mono", monospace`;
+        ctx.fillText(line, c.cx, y);
+        y += sizes[i] + fs(2);
+      });
     }
+    ctx.textBaseline = 'alphabetic';
   }
 
   function drawCards(p) {
@@ -1206,18 +1365,17 @@
       ctx.strokeStyle = on ? p.color : '#2ec4b6';
       ctx.lineWidth = on ? 3 : 1.5;
       roundRect(c.x, c.y, c.w, c.h, 8); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#d8f6ff';
-      ctx.font = '700 13px "Share Tech Mono", monospace';
+      drawCardValue(formatOption(pack.opts[i], pack), c);
+      ctx.fillStyle = on ? p.color : '#9fd4dc';
+      ctx.font = `700 ${fs(13)}px Orbitron, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText(formatOption(pack.opts[i], pack), c.cx, c.y + 28);
-      ctx.fillStyle = on ? p.color : '#6a9098';
-      ctx.font = '700 9px Orbitron, sans-serif';
-      ctx.fillText(pack.phase === 'interval' ? 'STEP' : 'READ', c.cx, c.y + 46);
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(pack.phase === 'interval' ? 'STEP' : 'READ', c.cx, c.y + c.h - fs(8));
     }
-    // Role label
     ctx.fillStyle = p.color;
-    ctx.font = '700 11px Orbitron, sans-serif';
+    ctx.font = `700 ${fs(15)}px Orbitron, sans-serif`;
     ctx.textAlign = pack.side === 'left' ? 'left' : 'right';
+    ctx.textBaseline = 'alphabetic';
     const lx = pack.side === 'left' ? cards[0].x : cards[cards.length - 1].x + cards[0].w;
     let role = '';
     if (gameMode === 'coop') {
@@ -1225,7 +1383,7 @@
     } else {
       role = `${p.name} · ${String(p.stage).replace(/([A-Z])/g, ' $1').toUpperCase()}`;
     }
-    ctx.fillText(role, lx, cards[0].y - 10);
+    ctx.fillText(role, lx, cards[0].y - fs(6));
   }
 
   function drawSyncButton() {
@@ -1238,16 +1396,18 @@
     ctx.lineWidth = ready ? 3 : 1.5;
     roundRect(s.x, s.y, s.w, s.h, 10); ctx.fill(); ctx.stroke();
     ctx.fillStyle = ready ? '#fff0e0' : '#809098';
-    ctx.font = '800 12px Orbitron, sans-serif';
+    ctx.font = `800 ${fs(15)}px Orbitron, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText('VENT & SYNC', s.cx, s.y + 24);
-    ctx.font = '700 10px Orbitron, sans-serif';
-    ctx.fillText('REACTOR', s.cx, s.y + 42);
+    ctx.textBaseline = 'middle';
+    ctx.fillText('VENT & SYNC', s.cx, s.y + s.h * 0.38);
+    ctx.font = `700 ${fs(12)}px Orbitron, sans-serif`;
+    ctx.fillText('REACTOR', s.cx, s.y + s.h * 0.72);
+    ctx.textBaseline = 'alphabetic';
 
     if (gameMode === 'coop' && waveData) {
-      const tw = 160, th = 8;
-      const tx = W * 0.5 - tw / 2, ty = s.y - 18;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      const tw = Math.min(fs(220), s.w - fs(16)), th = fs(7);
+      const tx = s.cx - tw / 2, ty = s.y + fs(4);
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
       roundRect(tx, ty, tw, th, 4); ctx.fill();
       const pct = Math.max(0, waveData.timer / waveData.timerMax);
       ctx.fillStyle = pct < 0.25 ? '#ff5a5a' : '#2ec4b6';
@@ -1261,22 +1421,31 @@
       return;
     }
     for (const p of players) {
+      let x = p.x, y = p.y;
+      if (p.sel >= 0) {
+        const pack = optionsForPlayer(p);
+        if (pack.opts.length) {
+          const cards = cardsFor(pack.side, pack.opts.length);
+          const c = cards[Math.max(0, Math.min(cards.length - 1, p.sel))];
+          if (c) y = c.y;
+        }
+      }
       ctx.strokeStyle = p.color;
       ctx.shadowColor = p.glow; ctx.shadowBlur = 12;
       ctx.lineWidth = 2.5;
-      const r = 16;
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+      const r = fs(14);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(p.x - r - 5, p.y); ctx.lineTo(p.x - 5, p.y);
-      ctx.moveTo(p.x + 5, p.y); ctx.lineTo(p.x + r + 5, p.y);
-      ctx.moveTo(p.x, p.y - r - 5); ctx.lineTo(p.x, p.y - 5);
-      ctx.moveTo(p.x, p.y + 5); ctx.lineTo(p.x, p.y + r + 5);
+      ctx.moveTo(x - r - fs(5), y); ctx.lineTo(x - fs(5), y);
+      ctx.moveTo(x + fs(5), y); ctx.lineTo(x + r + fs(5), y);
+      ctx.moveTo(x, y - r - fs(5)); ctx.lineTo(x, y - fs(5));
+      ctx.moveTo(x, y + fs(5)); ctx.lineTo(x, y + r + fs(5));
       ctx.stroke();
       ctx.shadowBlur = 0;
       ctx.fillStyle = p.color;
-      ctx.font = '700 11px Orbitron, sans-serif';
+      ctx.font = `700 ${fs(14)}px Orbitron, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText(p.name, p.x, p.y - 22);
+      ctx.fillText(p.name, x, y - r - fs(6));
     }
   }
 
@@ -1335,17 +1504,21 @@
     ctx.save();
     ctx.globalAlpha = Math.max(0, a);
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(4,20,32,0.9)';
-    roundRect(W / 2 - 300, H * 0.11, 600, 64, 10); ctx.fill();
+    const bw = Math.min(W * 0.78, fs(860));
+    const bh = popup.sub ? fs(78) : fs(52);
+    const bx = W / 2 - bw / 2;
+    const by = Math.max(fs(62), H * 0.075);
+    ctx.fillStyle = 'rgba(4,20,32,0.94)';
+    roundRect(bx, by, bw, bh, 10); ctx.fill();
     ctx.strokeStyle = popup.color; ctx.lineWidth = 2;
-    roundRect(W / 2 - 300, H * 0.11, 600, 64, 10); ctx.stroke();
+    roundRect(bx, by, bw, bh, 10); ctx.stroke();
     ctx.fillStyle = popup.color;
-    ctx.font = '800 16px Orbitron, sans-serif';
-    ctx.fillText(popup.text, W / 2, H * 0.11 + 26);
+    ctx.font = `800 ${fs(22)}px Orbitron, sans-serif`;
+    ctx.fillText(popup.text, W / 2, by + (popup.sub ? fs(28) : bh / 2 + fs(6)));
     if (popup.sub) {
-      ctx.fillStyle = '#c8e8f0';
-      ctx.font = '600 12px "Share Tech Mono", monospace';
-      ctx.fillText(popup.sub, W / 2, H * 0.11 + 48);
+      ctx.fillStyle = '#d5eef4';
+      fitFont(popup.sub, bw - fs(24), fs(18), fs(13));
+      ctx.fillText(popup.sub, W / 2, by + fs(56));
     }
     ctx.restore();
   }
@@ -1355,25 +1528,33 @@
     diagnostic.t--;
     ctx.save();
     ctx.globalAlpha = Math.min(1, diagnostic.t / 30);
-    ctx.fillStyle = 'rgba(40,10,10,0.88)';
-    roundRect(W * 0.1, H * 0.58, W * 0.8, 42, 8); ctx.fill();
-    ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 1.5;
-    roundRect(W * 0.1, H * 0.58, W * 0.8, 42, 8); ctx.stroke();
-    ctx.fillStyle = '#ffc8c8';
-    ctx.font = '600 12px "Share Tech Mono", monospace';
-    ctx.textAlign = 'center';
-    // wrap
-    const maxW = W * 0.76;
+    const size = fs(18);
+    ctx.font = `700 ${size}px "Share Tech Mono", monospace`;
+    const maxW = W * 0.86;
     const words = diagnostic.text.split(' ');
-    let line = '', y = H * 0.58 + 18;
     const lines = [];
+    let line = '';
     for (const w of words) {
       const test = line + w + ' ';
       if (ctx.measureText(test).width > maxW) { lines.push(line); line = w + ' '; }
       else line = test;
     }
     lines.push(line);
-    lines.slice(0, 2).forEach((ln, i) => ctx.fillText(ln.trim(), W / 2, y + i * 16));
+    const shown = lines.slice(0, 3);
+    const lh = fs(24);
+    const boxH = fs(16) + shown.length * lh;
+    const boxW = W * 0.9;
+    const boxX = (W - boxW) / 2;
+    const band = instrumentBand();
+    const boxY = Math.max(band.top + fs(8), band.cardsY - boxH - fs(8));
+    ctx.fillStyle = 'rgba(40,10,10,0.92)';
+    roundRect(boxX, boxY, boxW, boxH, 8); ctx.fill();
+    ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 2;
+    roundRect(boxX, boxY, boxW, boxH, 8); ctx.stroke();
+    ctx.fillStyle = '#ffd8d8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    shown.forEach((ln, i) => ctx.fillText(ln.trim(), W / 2, boxY + fs(22) + i * lh));
     ctx.restore();
   }
 
