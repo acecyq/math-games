@@ -44,7 +44,7 @@
 </head>
 <body>
 <noscript>This lesson needs JavaScript and a canvas-capable browser.</noscript>
-<canvas id="game" aria-label="Cargo Rocket Launcher, a rounding and estimation game"></canvas>
+<canvas id="game" aria-label="Cargo Rocket Launcher, a rounding and estimation game. Solo or two-player race. Player 1 uses arrow keys and space or the first 8BitDo. Player 2 uses A D and F or the second 8BitDo."></canvas>
 <div id="live" class="sr" aria-live="polite"></div>
 <script>
 'use strict';
@@ -68,7 +68,9 @@ const COL = {
   bad: '#ff5d6c',
   panel: 'rgba(4, 14, 32, 0.88)',
   pad: '#1a2740',
-  thruster: '#39ffc4'
+  thruster: '#39ffc4',
+  p1: '#ff6b7a',
+  p2: '#3aa0ff'
 };
 
 const canvas = document.getElementById('game');
@@ -84,9 +86,54 @@ const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-mo
 const view = { cssW: LW, cssH: LH, dpr: 1, scale: 1, ox: 0, oy: 0 };
 const pointer = { x: 640, y: 360, down: false, over: false };
 
+// Standard Gamepad mapping + 8BitDo quirks (D-input / macOS hat on axis 9).
+const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+const AXIS_DEAD = 0.55;
+const hatIdle = {};
+
+const PLAYER_META = [
+  {
+    short: 'P1',
+    color: COL.p1,
+    left: ['ArrowLeft'],
+    right: ['ArrowRight'],
+    fire: ['Space', 'Enter'],
+    soloLeft: ['ArrowLeft', 'KeyA'],
+    soloRight: ['ArrowRight', 'KeyD'],
+    help: 'Arrows + Space · 8BitDo 1: D-pad + A'
+  },
+  {
+    short: 'P2',
+    color: COL.p2,
+    left: ['KeyA'],
+    right: ['KeyD'],
+    fire: ['KeyF'],
+    help: 'A/D + F · 8BitDo 2: D-pad + A'
+  }
+];
+
+function makePlayer(i) {
+  const meta = PLAYER_META[i];
+  return {
+    i,
+    short: meta.short,
+    color: meta.color,
+    score: 0,
+    streak: 0,
+    bestStreak: 0,
+    keypad: i % 4,
+    padIndex: i,
+    gpPrev: {},
+    lockUntil: 0
+  };
+}
+
+let players = [makePlayer(0)];
+
 const G = {
   mode: 'title',
   t: 0,
+  playerCount: 1,
   score: 0,
   streak: 0,
   bestStreak: 0,
@@ -111,7 +158,10 @@ const G = {
   hover: -1,
   keypad: 0,
   tip: '',
-  missionPts: 0
+  missionPts: 0,
+  lastWinner: -1,
+  titleFocus: 0,
+  padNote: ''
 };
 
 const audio = createAudio();
@@ -325,6 +375,11 @@ function loadChoices() {
   G.selected = -1;
   G.hover = -1;
   G.keypad = 0;
+  G.lastWinner = -1;
+  players.forEach((p, i) => {
+    p.keypad = i % 4;
+    p.lockUntil = 0;
+  });
   speak(meta.title + '. ' + meta.ask);
 }
 
@@ -346,52 +401,73 @@ function startMission() {
   loadChoices();
 }
 
-function beginPlay() {
+function beginPlay(count) {
   audio.ensure();
+  G.playerCount = count === 2 ? 2 : 1;
+  players = [];
+  for (let i = 0; i < G.playerCount; i++) players.push(makePlayer(i));
   G.mode = 'play';
   G.score = 0;
   G.streak = 0;
   G.bestStreak = 0;
   G.fuel = 100;
   G.launches = 0;
+  G.lastWinner = -1;
+  G.padNote = G.playerCount === 2
+    ? 'Duo race · first correct locks the step'
+    : 'Solo mission · 8BitDo D-pad + A ready';
   startMission();
+  speak(G.playerCount === 2
+    ? 'Duo race. Player 1 arrows and space or gamepad 1. Player 2 A D and F or gamepad 2.'
+    : 'Solo mission. Use arrows and space, or an 8BitDo D-pad and A.');
 }
 
 /* ---------- Scoring / answers ---------- */
 
-function stepPoints() {
-  const mult = 1 + Math.min(4, Math.floor(G.streak / 2)) * 0.25;
+function stepPoints(player) {
+  const streak = player ? player.streak : G.streak;
+  const mult = 1 + Math.min(4, Math.floor(streak / 2)) * 0.25;
   return Math.round(100 * mult);
 }
 
-function onWrong() {
+function syncTeamScore() {
+  G.score = players.reduce((sum, p) => sum + p.score, 0);
+  G.streak = players.reduce((best, p) => Math.max(best, p.streak), 0);
+  G.bestStreak = players.reduce((best, p) => Math.max(best, p.bestStreak), 0);
+}
+
+function onWrong(player) {
   G.feedbackKind = 'bad';
-  G.feedback = 'Not quite — try again!';
+  G.feedback = (G.playerCount > 1 ? player.short + ' · ' : '') + 'Not quite — try again!';
   G.flash = 0.55;
   G.shake = 10;
   G.fuel = clamp(G.fuel - 6, 0, 100);
-  G.score = Math.max(0, G.score - 25);
-  G.streak = 0;
-  G.lockUntil = G.t + 0.35;
+  player.score = Math.max(0, player.score - 25);
+  player.streak = 0;
+  player.lockUntil = G.t + 0.35;
+  syncTeamScore();
   audio.fail();
   spawnBurst(LW / 2, 430, COL.bad, 14);
   speak(G.feedback + ' ' + G.tip);
 }
 
-function advanceAfterCorrect() {
-  const pts = stepPoints();
-  G.score += pts;
+function advanceAfterCorrect(player) {
+  const pts = stepPoints(player);
+  player.score += pts;
+  player.streak += 1;
+  player.bestStreak = Math.max(player.bestStreak, player.streak);
   G.missionPts += pts;
-  G.streak += 1;
-  G.bestStreak = Math.max(G.bestStreak, G.streak);
+  G.lastWinner = player.i;
+  syncTeamScore();
   G.fuel = clamp(G.fuel + 8, 0, 100);
   G.feedbackKind = 'good';
-  G.feedback = '+' + pts + '  ·  thrusters charging';
+  G.feedback = (G.playerCount > 1 ? player.short + ' · ' : '') + '+' + pts + '  ·  thrusters charging';
   G.flash = 0.7;
   G.glow = 1;
   G.lockUntil = G.t + 0.45;
+  players.forEach((p) => { p.lockUntil = G.t + 0.45; });
   audio.win();
-  spawnBurst(LW / 2, 360, COL.green, 18);
+  spawnBurst(LW / 2, 360, player.color || COL.green, 18);
 
   if (G.step === 1) {
     G.thruster = 0.35;
@@ -431,17 +507,20 @@ function advanceAfterCorrect() {
   speak('Launch sequence initiated! Mission score ' + G.missionPts + '.');
 }
 
-function chooseAnswer(idx) {
+function chooseAnswer(player, idx) {
   if (G.mode !== 'play' || G.phase !== 'choose') return;
-  if (G.t < G.lockUntil) return;
+  if (!player || idx < 0 || idx > 3) return;
+  if (G.t < G.lockUntil || G.t < player.lockUntil) return;
   const meta = stepMeta();
   const val = G.choices[idx];
   G.selected = idx;
+  player.keypad = idx;
+  G.keypad = idx;
   audio.click();
   if (val === meta.correct) {
-    advanceAfterCorrect();
+    advanceAfterCorrect(player);
   } else {
-    onWrong();
+    onWrong(player);
   }
 }
 
@@ -716,28 +795,43 @@ function drawHeader() {
   const h = headerRect();
   drawPanel(h.x, h.y, h.w, h.h, 'rgba(62, 240, 255, 0.35)');
 
-  ctx.fillStyle = COL.dim;
-  ctx.font = '700 13px ' + FONT;
   ctx.textAlign = 'left';
-  ctx.fillText('MISSION SCORE', h.x + 28, h.y + 28);
-  ctx.fillStyle = COL.cyan;
-  ctx.font = '800 34px ' + DISP;
-  ctx.fillText(fmt(G.score), h.x + 28, h.y + 62);
+  if (G.playerCount > 1) {
+    players.forEach((p, i) => {
+      const x = h.x + 28 + i * 170;
+      ctx.fillStyle = COL.dim;
+      ctx.font = '700 13px ' + FONT;
+      ctx.fillText(p.short + ' SCORE', x, h.y + 28);
+      ctx.fillStyle = p.color;
+      ctx.font = '800 30px ' + DISP;
+      ctx.fillText(fmt(p.score), x, h.y + 62);
+      ctx.fillStyle = p.streak > 0 ? COL.lime : COL.dim;
+      ctx.font = '800 14px ' + FONT;
+      ctx.fillText(p.streak + '× streak', x + 100, h.y + 58);
+    });
+  } else {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 13px ' + FONT;
+    ctx.fillText('MISSION SCORE', h.x + 28, h.y + 28);
+    ctx.fillStyle = COL.cyan;
+    ctx.font = '800 34px ' + DISP;
+    ctx.fillText(fmt(G.score), h.x + 28, h.y + 62);
 
-  ctx.fillStyle = COL.dim;
-  ctx.font = '700 13px ' + FONT;
-  ctx.fillText('STREAK', h.x + 280, h.y + 28);
-  ctx.fillStyle = G.streak > 0 ? COL.lime : COL.ink;
-  ctx.font = '800 34px ' + DISP;
-  ctx.fillText(String(G.streak) + '×', h.x + 280, h.y + 62);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 13px ' + FONT;
+    ctx.fillText('STREAK', h.x + 250, h.y + 28);
+    ctx.fillStyle = G.streak > 0 ? COL.lime : COL.ink;
+    ctx.font = '800 34px ' + DISP;
+    ctx.fillText(String(G.streak) + '×', h.x + 250, h.y + 62);
+  }
 
-  ctx.fillStyle = COL.dim;
-  ctx.font = '700 13px ' + FONT;
-  ctx.fillText('FUEL GAUGE', h.x + 440, h.y + 28);
-  const gx = h.x + 440;
+  const gx = h.x + (G.playerCount > 1 ? 380 : 420);
   const gy = h.y + 42;
-  const gw = 360;
+  const gw = G.playerCount > 1 ? 320 : 360;
   const gh = 22;
+  ctx.fillStyle = COL.dim;
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillText('FUEL GAUGE', gx, h.y + 28);
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   roundRect(gx, gy, gw, gh, 8);
   ctx.fill();
@@ -757,10 +851,11 @@ function drawHeader() {
   ctx.textAlign = 'left';
   ctx.fillStyle = COL.dim;
   ctx.font = '700 13px ' + FONT;
-  ctx.fillText('LAUNCHES', h.x + 860, h.y + 28);
+  const lx = h.x + (G.playerCount > 1 ? 740 : 840);
+  ctx.fillText('LAUNCHES', lx, h.y + 28);
   ctx.fillStyle = COL.amber;
   ctx.font = '800 34px ' + DISP;
-  ctx.fillText(String(G.launches), h.x + 860, h.y + 62);
+  ctx.fillText(String(G.launches), lx, h.y + 62);
 
   // mute
   const mx = h.x + h.w - 70;
@@ -990,7 +1085,20 @@ function drawConsole() {
   ctx.fillStyle = COL.dim;
   ctx.font = '800 13px ' + DISP;
   ctx.textAlign = 'left';
-  ctx.fillText('CONTROL CONSOLE  ·  SELECT TARGET ESTIMATE', c.x + 22, c.y + 28);
+  const consoleLabel = G.playerCount > 1
+    ? 'CONTROL CONSOLE  ·  DUO RACE — FIRST CORRECT LOCKS'
+    : 'CONTROL CONSOLE  ·  SELECT TARGET ESTIMATE';
+  ctx.fillText(consoleLabel, c.x + 22, c.y + 28);
+
+  if (G.playerCount > 1) {
+    ctx.font = '700 12px ' + FONT;
+    ctx.textAlign = 'right';
+    players.forEach((p, i) => {
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.short + ' · ' + PLAYER_META[i].help, c.x + c.w - 22, c.y + 18 + i * 15);
+    });
+    ctx.textAlign = 'left';
+  }
 
   const meta = stepMeta();
   const rects = choiceRects();
@@ -999,13 +1107,14 @@ function drawConsole() {
     const val = G.choices[i];
     const hovered = G.hover === i;
     const selected = G.selected === i;
+    const focused = players.some((p) => p.keypad === i);
     const locked = G.phase !== 'choose' || G.t < G.lockUntil;
 
     ctx.fillStyle = selected && G.feedbackKind === 'good'
       ? 'rgba(93,255,176,0.35)'
       : selected && G.feedbackKind === 'bad'
         ? 'rgba(255,93,108,0.3)'
-        : hovered
+        : hovered || focused
           ? 'rgba(62,240,255,0.22)'
           : 'rgba(8, 20, 40, 0.9)';
     roundRect(b.x, b.y, b.w, b.h, 12);
@@ -1025,13 +1134,23 @@ function drawConsole() {
     if (!locked) hotspots.push({ id: 'choice', i, x: b.x, y: b.y, w: b.w, h: b.h });
   }
 
-  // keypad focus ring
-  if (G.phase === 'choose' && G.keypad >= 0 && G.keypad < 4) {
-    const b = rects[G.keypad];
-    ctx.strokeStyle = 'rgba(255, 200, 87, 0.85)';
-    ctx.lineWidth = 2;
-    roundRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8, 14);
-    ctx.stroke();
+  // Per-player focus rings (offset so overlapping cursors stay readable)
+  if (G.phase === 'choose') {
+    players.forEach((p, pi) => {
+      if (p.keypad < 0 || p.keypad > 3) return;
+      const b = rects[p.keypad];
+      const grow = 4 + pi * 4;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 2.5;
+      ctx.globalAlpha = G.t < p.lockUntil ? 0.35 : 0.95;
+      roundRect(b.x - grow, b.y - grow, b.w + grow * 2, b.h + grow * 2, 14);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = p.color;
+      ctx.font = '800 11px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.fillText(p.short, b.x - grow + 4, b.y - grow - 4);
+    });
   }
   ctx.textAlign = 'left';
 }
@@ -1078,22 +1197,28 @@ function drawTitle() {
   ctx.font = '700 18px ' + FONT;
   ctx.fillText('Round · Multiply · Divide — estimate every launch load', LW / 2, 220);
 
-  const bx = LW / 2 - 160;
-  const by = 540;
+  const buttons = [
+    { id: 'solo', label: 'SOLO MISSION', x: LW / 2 - 340, focus: 0 },
+    { id: 'duo', label: 'DUO RACE', x: LW / 2 + 20, focus: 1 }
+  ];
+  const by = 520;
   const bw = 320;
   const bh = 64;
-  const hover = pointer.x >= bx && pointer.x <= bx + bw && pointer.y >= by && pointer.y <= by + bh;
-  ctx.fillStyle = hover ? 'rgba(57,255,196,0.35)' : 'rgba(62,240,255,0.18)';
-  roundRect(bx, by, bw, bh, 14);
-  ctx.fill();
-  ctx.strokeStyle = hover ? COL.green : COL.cyan;
-  ctx.lineWidth = 3;
-  roundRect(bx, by, bw, bh, 14);
-  ctx.stroke();
-  ctx.fillStyle = COL.ink;
-  ctx.font = '800 24px ' + DISP;
-  ctx.fillText('START MISSION', LW / 2, by + 42);
-  hotspots.push({ id: 'start', x: bx, y: by, w: bw, h: bh });
+  buttons.forEach((btn) => {
+    const hover = pointer.x >= btn.x && pointer.x <= btn.x + bw && pointer.y >= by && pointer.y <= by + bh;
+    const focused = G.titleFocus === btn.focus;
+    ctx.fillStyle = hover || focused ? 'rgba(57,255,196,0.35)' : 'rgba(62,240,255,0.18)';
+    roundRect(btn.x, by, bw, bh, 14);
+    ctx.fill();
+    ctx.strokeStyle = hover || focused ? COL.green : COL.cyan;
+    ctx.lineWidth = focused ? 4 : 3;
+    roundRect(btn.x, by, bw, bh, 14);
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.font = '800 22px ' + DISP;
+    ctx.fillText(btn.label, btn.x + bw / 2, by + 42);
+    hotspots.push({ id: btn.id, x: btn.x, y: by, w: bw, h: bh });
+  });
 
   const mx = LW - 100;
   const my = 24;
@@ -1102,9 +1227,17 @@ function drawTitle() {
   ctx.fillText(audio.muted ? 'MUTE' : 'SFX', mx + 26, my + 27);
   hotspots.push({ id: 'mute', x: mx, y: my, w: 52, h: 42 });
 
-  ctx.fillStyle = COL.dim;
+  ctx.fillStyle = COL.p1;
   ctx.font = '700 14px ' + FONT;
-  ctx.fillText('Click / tap answers  ·  ← → choose  ·  Space / Enter confirm', LW / 2, 630);
+  ctx.fillText('P1: ← → + Space / Enter · 8BitDo #1 D-pad + A', LW / 2, 610);
+  ctx.fillStyle = COL.p2;
+  ctx.fillText('P2: A D + F · 8BitDo #2 D-pad + A', LW / 2, 632);
+  ctx.fillStyle = COL.dim;
+  ctx.fillText('← → pick mode · Space / A starts · Click / tap · M mute', LW / 2, 658);
+  if (G.padNote) {
+    ctx.fillStyle = COL.amber;
+    ctx.fillText(G.padNote, LW / 2, 682);
+  }
   ctx.textAlign = 'left';
 }
 
@@ -1191,6 +1324,9 @@ function update(dt) {
   if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 28);
   updateFx(dt);
 
+  if (G.mode === 'title') pollTitlePads();
+  else pollPlayPads();
+
   // hover choices
   G.hover = -1;
   if (G.mode === 'play' && G.phase === 'choose') {
@@ -1239,13 +1375,18 @@ function onActivate(h) {
     audio.click();
     return;
   }
-  if (h.id === 'start') {
-    beginPlay();
+  if (h.id === 'solo') {
+    beginPlay(1);
+    audio.click();
+    return;
+  }
+  if (h.id === 'duo') {
+    beginPlay(2);
     audio.click();
     return;
   }
   if (h.id === 'choice') {
-    chooseAnswer(h.i);
+    chooseAnswer(players[0], h.i);
   }
 }
 
@@ -1275,48 +1416,217 @@ function onPointerUp() {
   pointer.down = false;
 }
 
+function playerKeySets(p) {
+  const meta = PLAYER_META[p.i];
+  if (p.i === 0 && G.playerCount === 1) {
+    return { left: meta.soloLeft, right: meta.soloRight, fire: meta.fire };
+  }
+  return { left: meta.left, right: meta.right, fire: meta.fire };
+}
+
+function moveSelect(player, dir) {
+  player.keypad = (player.keypad + dir + 4) % 4;
+  if (player.i === 0) G.keypad = player.keypad;
+  audio.tick();
+}
+
+function padPressed(gp, i) {
+  const b = gp.buttons && gp.buttons[i];
+  return !!(b && (b.pressed || b.value > 0.5));
+}
+
+function padDirs(gp) {
+  if (!gp) return { left: false, right: false, up: false, down: false, fire: false, start: false };
+  const axes = gp.axes || [];
+  const axX = axes[0] != null ? axes[0] : 0;
+  const axY = axes[1] != null ? axes[1] : 0;
+  // 8BitDo Micro / macOS / D-input: hat switch on axis 9, idle near -1.
+  let hatL = false;
+  let hatR = false;
+  let hatU = false;
+  let hatD = false;
+  if (axes.length > 9) {
+    const hat = axes[9];
+    if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+    if (hat != null && Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+  }
+  return {
+    left: padPressed(gp, PAD.LEFT) || axX < -AXIS_DEAD || hatL,
+    right: padPressed(gp, PAD.RIGHT) || axX > AXIS_DEAD || hatR,
+    up: padPressed(gp, PAD.UP) || axY < -AXIS_DEAD || hatU,
+    down: padPressed(gp, PAD.DOWN) || axY > AXIS_DEAD || hatD,
+    fire: padPressed(gp, PAD.A) || padPressed(gp, PAD.B),
+    start: padPressed(gp, PAD.START) || padPressed(gp, PAD.START_ALT)
+  };
+}
+
+function justPressed(store, key, on) {
+  const was = !!store[key];
+  store[key] = on;
+  return on && !was;
+}
+
+function listPads() {
+  try {
+    return navigator.getGamepads ? navigator.getGamepads() : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function pollTitlePads() {
+  const pads = listPads();
+  const store = G._titlePad || (G._titlePad = {});
+  let anyLeft = false;
+  let anyRight = false;
+  let anyFire = false;
+  let anyStart = false;
+  for (let i = 0; i < pads.length; i++) {
+    if (!pads[i]) continue;
+    const d = padDirs(pads[i]);
+    if (d.left || d.up) anyLeft = true;
+    if (d.right || d.down) anyRight = true;
+    if (d.fire) anyFire = true;
+    if (d.start) anyStart = true;
+  }
+  if (justPressed(store, 'left', anyLeft)) {
+    G.titleFocus = 0;
+    audio.tick();
+  }
+  if (justPressed(store, 'right', anyRight)) {
+    G.titleFocus = 1;
+    audio.tick();
+  }
+  if (justPressed(store, 'fire', anyFire) || justPressed(store, 'start', anyStart)) {
+    beginPlay(G.titleFocus === 1 ? 2 : 1);
+    audio.click();
+  }
+}
+
+function livePadIndexes(pads) {
+  const live = [];
+  for (let i = 0; i < pads.length; i++) {
+    if (pads[i]) live.push(i);
+  }
+  return live;
+}
+
+function syncPadBindings(pads) {
+  // Map players to connected pads in order so Duo works even if indexes skip.
+  const live = livePadIndexes(pads);
+  players.forEach((p, i) => {
+    if (live[i] != null) p.padIndex = live[i];
+  });
+}
+
+function resolvePad(player, pads) {
+  syncPadBindings(pads);
+  if (player.padIndex != null && pads[player.padIndex]) return pads[player.padIndex];
+  return null;
+}
+
+function pollPlayPads() {
+  if (G.mode !== 'play' || G.phase !== 'choose') return;
+  const pads = listPads();
+  players.forEach((p) => {
+    const gp = resolvePad(p, pads);
+    if (!gp) return;
+    const d = padDirs(gp);
+    const prev = justPressed(p.gpPrev, 'prev', d.left || d.up);
+    const next = justPressed(p.gpPrev, 'next', d.right || d.down);
+    if (prev && !next) moveSelect(p, -1);
+    else if (next && !prev) moveSelect(p, 1);
+    if (justPressed(p.gpPrev, 'fire', d.fire)) chooseAnswer(p, p.keypad);
+  });
+}
+
 function onKeyDown(e) {
   audio.ensure();
+  held.add(e.code);
   if (e.code === 'KeyM') {
     audio.toggle();
     e.preventDefault();
     return;
   }
   if (G.mode === 'title') {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+      G.titleFocus = 0;
+      audio.tick();
+      e.preventDefault();
+      return;
+    }
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+      G.titleFocus = 1;
+      audio.tick();
+      e.preventDefault();
+      return;
+    }
     if (e.code === 'Space' || e.code === 'Enter') {
-      beginPlay();
+      beginPlay(G.titleFocus === 1 ? 2 : 1);
       e.preventDefault();
     }
     return;
   }
   if (G.mode !== 'play' || G.phase !== 'choose') return;
+  if (e.repeat) return;
 
-  if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
-    G.keypad = (G.keypad + 3) % 4;
-    audio.tick();
-    e.preventDefault();
-  } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
-    G.keypad = (G.keypad + 1) % 4;
-    audio.tick();
-    e.preventDefault();
-  } else if (e.code === 'Digit1' || e.code === 'Numpad1') {
-    chooseAnswer(0); e.preventDefault();
-  } else if (e.code === 'Digit2' || e.code === 'Numpad2') {
-    chooseAnswer(1); e.preventDefault();
-  } else if (e.code === 'Digit3' || e.code === 'Numpad3') {
-    chooseAnswer(2); e.preventDefault();
-  } else if (e.code === 'Digit4' || e.code === 'Numpad4') {
-    chooseAnswer(3); e.preventDefault();
-  } else if (e.code === 'Space' || e.code === 'Enter') {
-    chooseAnswer(G.keypad);
-    e.preventDefault();
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    const keys = playerKeySets(p);
+    if (keys.left.indexOf(e.code) >= 0) {
+      moveSelect(p, -1);
+      e.preventDefault();
+      return;
+    }
+    if (keys.right.indexOf(e.code) >= 0) {
+      moveSelect(p, 1);
+      e.preventDefault();
+      return;
+    }
+    if (keys.fire.indexOf(e.code) >= 0) {
+      chooseAnswer(p, p.keypad);
+      e.preventDefault();
+      return;
+    }
   }
+
+  // Digits always fire for P1
+  if (e.code === 'Digit1' || e.code === 'Numpad1') {
+    chooseAnswer(players[0], 0); e.preventDefault();
+  } else if (e.code === 'Digit2' || e.code === 'Numpad2') {
+    chooseAnswer(players[0], 1); e.preventDefault();
+  } else if (e.code === 'Digit3' || e.code === 'Numpad3') {
+    chooseAnswer(players[0], 2); e.preventDefault();
+  } else if (e.code === 'Digit4' || e.code === 'Numpad4') {
+    chooseAnswer(players[0], 3); e.preventDefault();
+  }
+}
+
+function onKeyUp(e) {
+  held.delete(e.code);
 }
 
 canvas.addEventListener('pointerdown', onPointerDown);
 window.addEventListener('pointermove', onPointerMove);
 window.addEventListener('pointerup', onPointerUp);
 window.addEventListener('keydown', onKeyDown);
+window.addEventListener('keyup', onKeyUp);
+window.addEventListener('gamepadconnected', (e) => {
+  audio.ensure();
+  const n = e.gamepad.index + 1;
+  G.padNote = '8BitDo / Gamepad ' + n + ' linked · D-pad moves · A confirms';
+  speak('Gamepad ' + n + ' connected.');
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  G.padNote = 'Gamepad ' + (e.gamepad.index + 1) + ' disconnected';
+});
 
 /* ---------- Resize / loop ---------- */
 
@@ -1348,7 +1658,7 @@ function frame(now) {
 window.addEventListener('resize', resize);
 resize();
 requestAnimationFrame(frame);
-speak('Cargo Rocket Launcher. Press Start Mission to begin estimating launch weights.');
+speak('Cargo Rocket Launcher. Choose Solo Mission or Duo Race. 8BitDo pads use D-pad and A.');
 </script>
 </body>
 </html>
