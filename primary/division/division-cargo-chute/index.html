@@ -1,0 +1,1787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Cargo Chute: The D-M-S-B Refinery</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0a0e14;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript { color: #e8f7ff; padding: 24px; }
+</style>
+</head>
+<body>
+<noscript>JavaScript and Canvas are required for Cargo Chute.</noscript>
+<canvas id="game" aria-label="Cargo Chute: The D-M-S-B Refinery. Place-value ×10/÷10 and long division D-M-S-B for Primary 3–4. P1: WASD + F/Space or gamepad 1. P2: Arrows + Enter or gamepad 2."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+
+/* ==========================================================================
+   CARGO CHUTE: THE D-M-S-B REFINERY
+   Singapore Primary 3–4 · ×10/÷10 place-value + single-digit long division
+   Single-file HTML5 Canvas · 2P Co-op / Competitive · Web Audio · Gamepad
+   ========================================================================== */
+
+const W = 1280, H = 720;
+const COL = {
+  bg: '#0a0e14', ink: '#eaf2ff', dim: '#7a90a8', muted: '#4a5d72',
+  amber: '#ffb84a', amberDim: '#c47a18', cyan: '#3ef0ff', green: '#5dff9a',
+  lime: '#b8ff4a', bad: '#ff4d6a', warn: '#ff8a3d', panel: 'rgba(8,14,24,0.92)',
+  steel: '#2a3a4e', rail: '#1a2838', glow: '#ffd56a', crystal: '#9ad8ff',
+  p1: '#ff5a6e', p2: '#3aa8ff', brass: '#d4a04a', steam: '#c8d8e8'
+};
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const live = document.getElementById('live');
+
+const held = new Set();
+const fx = [];
+const sparks = [];
+const steamPuffs = [];
+const conveyors = [];
+const hotspots = [];
+
+const view = { cssW: W, cssH: H, dpr: 1, scale: 1, ox: 0, oy: 0 };
+const pointer = { x: W / 2, y: H / 2, down: false };
+
+const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+const AXIS_DEAD = 0.5;
+
+const STEP_LABELS = ['DIVIDE', 'MULTIPLY', 'SUBTRACT', 'BRING DOWN'];
+const STEP_KEYS = ['D', 'M', 'S', 'B'];
+
+/* ---------- Utils ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function speak(msg) { live.textContent = msg; }
+function fmt(n) {
+  return String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009');
+}
+function pulse(t, speed, min, max) {
+  return min + (max - min) * (0.5 + 0.5 * Math.sin(t * speed));
+}
+
+/* ---------- Audio ---------- */
+const audio = (() => {
+  let actx = null, muted = false, bgmOn = false, step = 0, timer = null, master = null;
+  function ensure() {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain();
+      master.gain.value = muted ? 0 : 0.55;
+      master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume();
+    if (!bgmOn) startBgm();
+  }
+  function setMute(m) {
+    muted = m;
+    if (master) master.gain.value = muted ? 0 : 0.55;
+  }
+  function toggle() { setMute(!muted); return !muted; }
+  function tone(freq, dur, type, vol, delay) {
+    if (!actx || muted) return;
+    const t0 = actx.currentTime + (delay || 0);
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol || 0.12, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, vol) {
+    if (!actx || muted) return;
+    const n = Math.floor(actx.sampleRate * dur);
+    const buf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = actx.createBufferSource();
+    const g = actx.createGain();
+    const f = actx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 900;
+    src.buffer = buf; g.gain.value = vol || 0.08;
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start();
+  }
+  function startBgm() {
+    if (!actx || bgmOn) return;
+    bgmOn = true;
+    const bpm = 132;
+    const beat = 60 / bpm;
+    step = 0;
+    const bass = [98, 98, 110, 98, 87, 87, 98, 110];
+    const lead = [196, 0, 233, 196, 262, 233, 196, 0, 175, 196, 233, 262, 233, 196, 175, 0];
+    function tick() {
+      if (!actx || muted) { timer = setTimeout(tick, beat * 1000); step++; return; }
+      const t = actx.currentTime;
+      const bi = step % 8;
+      const li = step % 16;
+      // kick
+      if (step % 2 === 0) {
+        const o = actx.createOscillator(), g = actx.createGain();
+        o.type = 'triangle';
+        o.frequency.setValueAtTime(140, t);
+        o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+        g.gain.setValueAtTime(0.18, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+        o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.15);
+      }
+      // hat
+      noise(0.03, step % 2 ? 0.04 : 0.02);
+      // bass
+      tone(bass[bi], beat * 0.7, 'sawtooth', 0.06);
+      // lead
+      if (lead[li]) tone(lead[li], beat * 0.45, 'square', 0.045);
+      step++;
+      timer = setTimeout(tick, beat * 1000);
+    }
+    tick();
+  }
+  return {
+    ensure, toggle, isMuted: () => muted,
+    slide() { tone(320, 0.08, 'sine', 0.1); tone(480, 0.1, 'sine', 0.08, 0.06); tone(640, 0.12, 'triangle', 0.06, 0.12); },
+    stamp() { tone(880, 0.06, 'square', 0.1); tone(1320, 0.08, 'triangle', 0.07, 0.04); },
+    press() { tone(90, 0.18, 'triangle', 0.16); noise(0.12, 0.1); },
+    clank() { tone(220, 0.05, 'square', 0.1); tone(165, 0.1, 'sawtooth', 0.08, 0.04); noise(0.06, 0.06); },
+    buzz() { tone(110, 0.18, 'sawtooth', 0.14); tone(95, 0.22, 'square', 0.1, 0.05); },
+    chime() { tone(523, 0.1, 'sine', 0.1); tone(659, 0.12, 'sine', 0.08, 0.08); tone(784, 0.16, 'triangle', 0.07, 0.16); },
+    rocket() {
+      for (let i = 0; i < 8; i++) tone(180 + i * 40, 0.12, 'sawtooth', 0.07, i * 0.05);
+      tone(523, 0.2, 'square', 0.1, 0.35);
+      tone(659, 0.2, 'square', 0.1, 0.45);
+      tone(784, 0.35, 'triangle', 0.12, 0.55);
+    },
+    ok() { tone(660, 0.07, 'square', 0.09); tone(880, 0.1, 'triangle', 0.08, 0.05); },
+    select() { tone(440, 0.04, 'square', 0.05); },
+    handoff() { tone(392, 0.06, 'sine', 0.08); tone(523, 0.08, 'sine', 0.07, 0.05); }
+  };
+})();
+
+/* ---------- Problem banks & generators ---------- */
+const PLACE_BANK = [
+  { op: '×10', n: 47, ans: 470 },
+  { op: '×10', n: 305, ans: 3050 },
+  { op: '×10', n: 820, ans: 8200 },
+  { op: '×10', n: 63, ans: 630 },
+  { op: '×10', n: 148, ans: 1480 },
+  { op: '×10', n: 902, ans: 9020 },
+  { op: '÷10', n: 640, ans: 64 },
+  { op: '÷10', n: 4500, ans: 450 },
+  { op: '÷10', n: 9080, ans: 908 },
+  { op: '÷10', n: 730, ans: 73 },
+  { op: '÷10', n: 2160, ans: 216 },
+  { op: '÷10', n: 5040, ans: 504 }
+];
+
+const DIV_TIER1 = [
+  { d: 84, v: 4, q: 21, r: 0 },
+  { d: 96, v: 3, q: 32, r: 0 },
+  { d: 735, v: 5, q: 147, r: 0 },
+  { d: 864, v: 6, q: 144, r: 0 },
+  { d: 69, v: 3, q: 23, r: 0 },
+  { d: 48, v: 2, q: 24, r: 0 },
+  { d: 936, v: 3, q: 312, r: 0 },
+  { d: 555, v: 5, q: 111, r: 0 }
+];
+const DIV_TIER2 = [
+  { d: 816, v: 4, q: 204, r: 0 },
+  { d: 927, v: 9, q: 103, r: 0 },
+  { d: 618, v: 3, q: 206, r: 0 },
+  { d: 248, v: 4, q: 62, r: 0 },
+  { d: 515, v: 5, q: 103, r: 0 },
+  { d: 728, v: 7, q: 104, r: 0 },
+  { d: 369, v: 3, q: 123, r: 0 },
+  { d: 406, v: 2, q: 203, r: 0 }
+];
+const DIV_TIER3 = [
+  { d: 749, v: 6, q: 124, r: 5 },
+  { d: 835, v: 4, q: 208, r: 3 },
+  { d: 950, v: 7, q: 135, r: 5 },
+  { d: 583, v: 5, q: 116, r: 3 },
+  { d: 674, v: 8, q: 84, r: 2 },
+  { d: 391, v: 3, q: 130, r: 1 },
+  { d: 862, v: 9, q: 95, r: 7 },
+  { d: 457, v: 2, q: 228, r: 1 }
+];
+
+function digitsOf(n) { return String(n).split('').map(Number); }
+
+/** Build D-M-S-B step list for long division of dividend ÷ divisor. */
+function buildDivisionSteps(dividend, divisor) {
+  const digs = digitsOf(dividend);
+  const steps = [];
+  let working = 0;
+  let idx = 0;
+  let quotientDigits = [];
+  let started = false;
+  let bringFrom = -1;
+
+  // Leading grouping: consume digits until working >= divisor
+  while (idx < digs.length && working < divisor) {
+    working = working * 10 + digs[idx];
+    bringFrom = idx;
+    idx++;
+  }
+  // First working number may span multiple leading digits
+  const firstWorking = working;
+  const firstEndIdx = idx - 1;
+
+  while (true) {
+    const qDigit = Math.floor(working / divisor);
+    const product = qDigit * divisor;
+    const diff = working - product;
+    const needsZeroHint = started && working < divisor && qDigit === 0;
+
+    steps.push({
+      type: 'D',
+      working,
+      correct: qDigit,
+      hint: needsZeroHint
+        ? `${divisor} cannot fit into ${working}! Place a 0 on the roof before bringing down the next digit!`
+        : `How many times does ${divisor} fit into ${working}?`,
+      zeroPlaceholder: needsZeroHint,
+      col: firstEndIdx + quotientDigits.length, // roof column index relative to dividend alignment
+      dividendSpan: started ? null : { from: 0, to: firstEndIdx }
+    });
+    quotientDigits.push(qDigit);
+    started = true;
+
+    steps.push({
+      type: 'M',
+      working,
+      qDigit,
+      correct: product,
+      hint: `Check your multiplication: ${qDigit} × ${divisor} = ${product}!`
+    });
+
+    steps.push({
+      type: 'S',
+      working,
+      product,
+      correct: diff,
+      hint: `Subtract carefully: ${working} − ${product} = ${diff}.`
+    });
+
+    if (idx < digs.length) {
+      const nextDigit = digs[idx];
+      const nextWorking = diff * 10 + nextDigit;
+      steps.push({
+        type: 'B',
+        bringDigit: nextDigit,
+        bringIndex: idx,
+        fromDiff: diff,
+        correct: nextWorking,
+        seal: false,
+        hint: `Bring down the ${nextDigit} next to ${diff}.`
+      });
+      working = nextWorking;
+      idx++;
+    } else {
+      // Finished digits — remainder seal or exact
+      steps.push({
+        type: 'B',
+        bringDigit: null,
+        bringIndex: -1,
+        fromDiff: diff,
+        correct: diff,
+        seal: true,
+        remainder: diff,
+        hint: diff === 0
+          ? 'Exact division! Seal the shipment with remainder 0.'
+          : `No digits left. Load the REMAINDER ${diff} capsule (must be < ${divisor}).`
+      });
+      break;
+    }
+  }
+
+  const qStr = quotientDigits.join('').replace(/^0+(?=\d)/, '') || '0';
+  // Keep leading zeros in roof display aligned to dividend width
+  const roof = [];
+  // Align: first quotient digit sits above the last digit of the first group
+  const pad = firstEndIdx;
+  for (let i = 0; i < digs.length; i++) roof.push(null);
+  for (let i = 0; i < quotientDigits.length; i++) {
+    const col = pad + i;
+    if (col < roof.length) roof[col] = quotientDigits[i];
+    else roof.push(quotientDigits[i]);
+  }
+
+  return {
+    dividend, divisor,
+    digs,
+    steps,
+    quotientDigits,
+    roof,
+    firstEndIdx,
+    expectedQ: Number(qStr),
+    expectedR: working % divisor // last remainder already in final seal
+  };
+}
+
+function fixExpected(prob) {
+  // Recompute remainder properly from last subtract
+  const lastS = [...prob.steps].reverse().find(s => s.type === 'S');
+  const rem = lastS ? lastS.correct : 0;
+  prob.expectedR = rem;
+  return prob;
+}
+
+function makePlaceProblem() {
+  const base = PLACE_BANK[irand(0, PLACE_BANK.length - 1)];
+  // Slight procedural variety
+  if (Math.random() < 0.45) {
+    if (base.op === '×10') {
+      const n = irand(12, 980);
+      return { op: '×10', n, ans: n * 10 };
+    }
+    let n = irand(2, 980) * 10;
+    if (n % 10 !== 0) n = Math.round(n / 10) * 10;
+    return { op: '÷10', n, ans: n / 10 };
+  }
+  return { ...base };
+}
+
+function makeDivProblem(tier) {
+  const bank = tier === 1 ? DIV_TIER1 : tier === 2 ? DIV_TIER2 : DIV_TIER3;
+  const pick = bank[irand(0, bank.length - 1)];
+  const built = fixExpected(buildDivisionSteps(pick.d, pick.v));
+  // Verify against bank
+  built.expectedQ = pick.q;
+  built.expectedR = pick.r;
+  built.tier = tier;
+  return built;
+}
+
+function choiceSet(correct, extras, count) {
+  const wrong = new Set();
+  (extras || []).forEach(v => {
+    if (Number.isFinite(v) && v !== correct && v >= 0) wrong.add(Math.round(v));
+  });
+  let guard = 0;
+  while (wrong.size < (count || 3) && guard++ < 50) {
+    const delta = irand(1, 6) * (Math.random() < 0.5 ? 1 : -1);
+    const v = Math.max(0, Math.round(correct) + delta);
+    if (v !== correct) wrong.add(v);
+  }
+  return shuffle([correct, ...shuffle([...wrong]).slice(0, (count || 3))]);
+}
+
+/* ---------- Players ---------- */
+function makePlayer(i) {
+  return {
+    i,
+    short: i === 0 ? 'P1' : 'P2',
+    color: i === 0 ? COL.p1 : COL.p2,
+    shields: 3,
+    stars: 0,
+    score: 0,
+    combo: 0,
+    reticle: i,
+    padIndex: i,
+    gpPrev: { a: false, left: false, right: false, up: false, down: false, start: false },
+    lockUntil: 0,
+    board: null // competitive private board
+  };
+}
+
+/* ---------- Game state ---------- */
+const G = {
+  mode: 'title', // title | calibrate | play | batchDone | gameOver
+  playMode: 'coop', // coop | versus
+  t: 0,
+  tier: 1,
+  batchesDone: 0,
+  teamScore: 0,
+  teamCombo: 0,
+  feedback: '',
+  feedbackKind: '',
+  feedbackT: 0,
+  flash: 0,
+  shake: 0,
+  titleFocus: 0, // 0 coop, 1 versus
+  muteHover: false,
+  hint: '',
+  phaseLabel: '',
+  // shared / coop board
+  board: null,
+  place: null,
+  placeChoices: [],
+  placeSelected: 0,
+  stepChoices: [],
+  selected: 0,
+  hover: -1,
+  anim: { press: 0, crane: 0, stamp: 0, rocket: 0, jam: 0 },
+  dmsbLit: 0,
+  padNote: '',
+  winPlayer: -1
+};
+
+let players = [makePlayer(0), makePlayer(1)];
+
+function emptyBoard(prob) {
+  return {
+    prob,
+    stepIndex: 0,
+    roof: prob.roof.map(() => null),
+    writtenQ: [],
+    workRows: [], // visual subtract rows { product, diff, indent }
+    brought: [],
+    currentWorking: null,
+    currentProduct: null,
+    currentDiff: null,
+    sealed: false,
+    remainder: null,
+    done: false,
+    placeDone: false
+  };
+}
+
+function currentStep(board) {
+  if (!board || !board.prob) return null;
+  return board.prob.steps[board.stepIndex] || null;
+}
+
+function activePlayerForStep(step) {
+  if (G.playMode !== 'coop' || !step) return -1;
+  // P1: D + S · P2: M + B
+  if (step.type === 'D' || step.type === 'S') return 0;
+  return 1;
+}
+
+function startCalibrate() {
+  G.mode = 'calibrate';
+  G.dmsbLit = -1;
+  G.place = makePlaceProblem();
+  const extras = G.place.op === '×10'
+    ? [G.place.n, G.place.n * 100, G.place.ans + 10, G.place.ans - 10, G.place.n * 10 + 10]
+    : [G.place.n, G.place.n / 100, G.place.ans * 10, G.place.ans + 10, G.place.ans - 1];
+  G.placeChoices = choiceSet(G.place.ans, extras, 3);
+  G.placeSelected = 0;
+  players.forEach(p => { p.reticle = 0; });
+  G.feedback = '';
+  G.hint = G.place.op === '×10'
+    ? 'Shift digits LEFT one place and insert 0 in the Ones car.'
+    : 'Shift digits RIGHT one place and drop the trailing 0 from Ones.';
+  G.phaseLabel = `Intake Calibration · ${G.place.op}`;
+  speak(`Calibrate conveyor: ${fmt(G.place.n)} ${G.place.op === '×10' ? 'times 10' : 'divided by 10'}.`);
+}
+
+function cloneProb(prob) {
+  const built = buildDivisionSteps(prob.dividend, prob.divisor);
+  built.expectedQ = prob.expectedQ;
+  built.expectedR = prob.expectedR;
+  built.tier = prob.tier;
+  return built;
+}
+
+function startDivisionBatch() {
+  const prob = makeDivProblem(G.tier);
+  if (G.playMode === 'versus') {
+    players[0].board = emptyBoard(cloneProb(prob));
+    players[1].board = emptyBoard(cloneProb(prob));
+    G.board = null;
+    G.winPlayer = -1;
+    players.forEach(p => {
+      p.reticle = 0;
+      refreshBoardChoices(p.board);
+    });
+    G.phaseLabel = `Tier ${G.tier} Sprint · ${prob.dividend} ÷ ${prob.divisor} · Race to seal!`;
+    G.hint = 'Same ore block — first foreman to finish launches the rocket.';
+    speak(G.phaseLabel);
+  } else {
+    G.board = emptyBoard(prob);
+    loadStepChoices(G.board);
+  }
+  G.mode = 'play';
+  G.feedback = '';
+  G.anim.rocket = 0;
+}
+
+function buildChoicesForStep(board, step) {
+  const c = step.correct;
+  if (step.type === 'D') {
+    let opts = choiceSet(c, [c + 1, c - 1, c + 2, 0, 1, Math.min(9, c + 3)], 3).map(v => clamp(v, 0, 9));
+    opts = [...new Set(opts)];
+    while (opts.length < 4) {
+      const n = irand(0, 9);
+      if (!opts.includes(n)) opts.push(n);
+    }
+    return shuffle(opts.slice(0, 4));
+  }
+  if (step.type === 'M') {
+    return choiceSet(c, [
+      c + board.prob.divisor, c - board.prob.divisor,
+      step.qDigit * (board.prob.divisor + 1), step.qDigit + board.prob.divisor, c + 1, c - 1
+    ], 3);
+  }
+  if (step.type === 'S') {
+    return choiceSet(c, [
+      c + 1, c - 1, step.working + step.product, Math.abs(step.product - step.working), c + board.prob.divisor
+    ], 3);
+  }
+  // Bring down / seal
+  if (step.seal) {
+    return choiceSet(c, [c + 1, c - 1, board.prob.divisor, board.prob.divisor - 1, 0], 3);
+  }
+  return choiceSet(c, [c + 1, c - 1, step.fromDiff, step.bringDigit, c + 10, step.fromDiff * 10], 3);
+}
+
+function refreshBoardChoices(board) {
+  if (!board || board.done) { board.choices = []; return; }
+  const step = currentStep(board);
+  if (!step) { board.choices = []; return; }
+  board.choices = buildChoicesForStep(board, step);
+  board.selected = 0;
+}
+
+function loadStepChoices(board) {
+  const step = currentStep(board);
+  if (!step) { G.stepChoices = []; return; }
+  G.stepChoices = buildChoicesForStep(board, step);
+  G.selected = 0;
+  G.hover = -1;
+  players.forEach(p => { p.reticle = 0; });
+  G.dmsbLit = STEP_KEYS.indexOf(step.type);
+  G.hint = step.hint;
+  const who = activePlayerForStep(step);
+  if (G.playMode === 'coop' && who >= 0) {
+    G.phaseLabel = `Station ${step.type}: ${STEP_LABELS[G.dmsbLit]} · ${players[who].short}'s turn`;
+    audio.handoff();
+  } else {
+    G.phaseLabel = `Station ${step.type}: ${STEP_LABELS[G.dmsbLit]}`;
+  }
+  speak(G.phaseLabel + '. ' + step.hint);
+}
+
+function beginGame(playMode) {
+  audio.ensure();
+  G.playMode = playMode;
+  players = [makePlayer(0), makePlayer(1)];
+  G.tier = 1;
+  G.batchesDone = 0;
+  G.teamScore = 0;
+  G.teamCombo = 0;
+  G.winPlayer = -1;
+  G.padNote = playMode === 'coop'
+    ? 'Co-op Relay · P1: Divide & Subtract · P2: Multiply & Bring Down'
+    : 'Competitive Sprint · First to seal the shipment wins a Foreman Star';
+  startCalibrate();
+}
+
+/* ---------- Answer handling ---------- */
+function loseShield(pi) {
+  const p = players[pi];
+  p.shields = Math.max(0, p.shields - 1);
+  p.combo = 0;
+  if (G.playMode === 'coop') G.teamCombo = 0;
+  G.anim.jam = 0.45;
+  G.shake = 12;
+  G.flash = 0.4;
+  audio.buzz();
+  spawnSparks(W / 2, H / 2, COL.bad, 18);
+  if (p.shields <= 0) {
+    // soft fail — refill after batch with star penalty
+    p.shields = 3;
+    p.score = Math.max(0, p.score - 50);
+    G.feedback = `${p.short} hardhats depleted! −50 ore credits. Shields refilled.`;
+  }
+}
+
+function awardCorrect(pi, pts) {
+  const p = players[pi];
+  p.combo++;
+  if (G.playMode === 'coop') {
+    G.teamCombo++;
+    const mult = 1 + Math.min(5, Math.floor(G.teamCombo / 2)) * 0.2;
+    const gain = Math.round(pts * mult);
+    p.score += gain;
+    G.teamScore += gain;
+    G.feedback = `Combo ×${mult.toFixed(1)} · +${gain}`;
+  } else {
+    const mult = 1 + Math.min(4, Math.floor(p.combo / 2)) * 0.25;
+    const gain = Math.round(pts * mult);
+    p.score += gain;
+    G.feedback = `${p.short} +${gain}`;
+  }
+  G.feedbackKind = 'good';
+  G.feedbackT = 1.2;
+  audio.ok();
+}
+
+function submitPlace(pi) {
+  if (G.mode !== 'calibrate') return;
+  if (players[pi].lockUntil > G.t) return;
+  const choice = G.placeChoices[players[pi].reticle];
+  if (choice === undefined) return;
+  audio.ensure();
+  if (choice === G.place.ans) {
+    audio.slide();
+    audio.chime();
+    awardCorrect(pi, 80);
+    G.feedback = `Calibration locked: ${fmt(G.place.n)} ${G.place.op} = ${fmt(G.place.ans)}`;
+    G.feedbackKind = 'good';
+    spawnSparks(W / 2, 280, COL.cyan, 20);
+    setTimeout(() => startDivisionBatch(), 700);
+  } else {
+    G.feedback = G.place.op === '×10'
+      ? `Wrong shift! ×10 moves digits LEFT and puts 0 in Ones. Answer is ${fmt(G.place.ans)}.`
+      : `Wrong shift! ÷10 moves digits RIGHT and drops the Ones 0. Answer is ${fmt(G.place.ans)}.`;
+    G.feedbackKind = 'bad';
+    G.feedbackT = 2;
+    loseShield(pi);
+    players[pi].lockUntil = G.t + 0.4;
+  }
+}
+
+function applyStepSuccess(board, step, value) {
+  if (step.type === 'D') {
+    // Place quotient digit on roof
+    const col = board.prob.firstEndIdx + board.writtenQ.length;
+    if (col < board.roof.length) board.roof[col] = value;
+    else board.roof.push(value);
+    board.writtenQ.push(value);
+    board.currentWorking = step.working;
+    G.anim.stamp = 0.35;
+    audio.stamp();
+  } else if (step.type === 'M') {
+    board.currentProduct = value;
+    G.anim.press = 0.15;
+  } else if (step.type === 'S') {
+    board.currentDiff = value;
+    board.workRows.push({
+      product: board.currentProduct,
+      diff: value,
+      working: board.currentWorking
+    });
+    G.anim.press = 0.4;
+    audio.press();
+  } else if (step.type === 'B') {
+    if (step.seal) {
+      board.sealed = true;
+      board.remainder = value;
+      board.done = true;
+      G.anim.crane = 0.3;
+      audio.clank();
+    } else {
+      board.brought.push(step.bringDigit);
+      board.currentWorking = value;
+      G.anim.crane = 0.45;
+      audio.clank();
+    }
+  }
+  board.stepIndex++;
+}
+
+function completeBatch(winnerPi) {
+  G.mode = 'batchDone';
+  G.anim.rocket = 0.01;
+  audio.rocket();
+  G.batchesDone++;
+  if (G.playMode === 'versus' && winnerPi >= 0) {
+    players[winnerPi].stars++;
+    G.winPlayer = winnerPi;
+    G.feedback = `${players[winnerPi].short} launches the cargo rocket! Foreman Star earned!`;
+  } else {
+    G.feedback = `Shipment sealed! Quotient ${G.board.prob.expectedQ}` +
+      (G.board.remainder ? ` R ${G.board.remainder}` : '') + ' · Rocket away!';
+    if (G.teamCombo >= 4) {
+      players[0].stars++;
+      players[1].stars++;
+    }
+  }
+  G.feedbackKind = 'good';
+  G.feedbackT = 3;
+  speak(G.feedback);
+  // Progress tier every 2 batches
+  if (G.batchesDone % 2 === 0 && G.tier < 3) G.tier++;
+}
+
+function submitDivision(pi) {
+  if (G.mode !== 'play') return;
+  if (players[pi].lockUntil > G.t) return;
+  audio.ensure();
+
+  if (G.playMode === 'versus') {
+    const board = players[pi].board;
+    if (!board || board.done) return;
+    const step = currentStep(board);
+    if (!step) return;
+    const choice = board.choices[players[pi].reticle];
+    if (choice === undefined) return;
+    if (choice === step.correct) {
+      // remainder check
+      if (step.seal && step.remainder >= board.prob.divisor) {
+        G.feedback = `Remainder ${step.remainder} is larger than divisor ${board.prob.divisor} — you can fit one more group!`;
+        G.feedbackKind = 'bad';
+        loseShield(pi);
+        return;
+      }
+      applyStepSuccess(board, step, choice);
+      awardCorrect(pi, step.type === 'B' && step.seal ? 150 : 60);
+      if (board.done) {
+        completeBatch(pi);
+        return;
+      }
+      refreshBoardChoices(board);
+    } else {
+      wrongStep(pi, step, choice, board);
+    }
+    return;
+  }
+
+  // Co-op
+  const board = G.board;
+  const step = currentStep(board);
+  if (!step || board.done) return;
+  const allowed = activePlayerForStep(step);
+  if (allowed !== pi) {
+    G.feedback = `That's ${players[allowed].short}'s station! Hand off the console.`;
+    G.feedbackKind = 'warn';
+    G.feedbackT = 1.2;
+    audio.select();
+    return;
+  }
+  const choice = G.stepChoices[players[pi].reticle];
+  if (choice === undefined) return;
+  if (choice === step.correct) {
+    if (step.seal && step.remainder > 0 && step.remainder >= board.prob.divisor) {
+      G.feedback = `Remainder ${step.remainder} ≥ divisor ${board.prob.divisor} — fit one more group!`;
+      G.feedbackKind = 'bad';
+      loseShield(pi);
+      return;
+    }
+    applyStepSuccess(board, step, choice);
+    awardCorrect(pi, step.type === 'B' && step.seal ? 150 : 70);
+    if (board.done) {
+      completeBatch(-1);
+      return;
+    }
+    loadStepChoices(board);
+  } else {
+    wrongStep(pi, step, choice, board);
+  }
+}
+
+function wrongStep(pi, step, choice, board) {
+  let msg = step.hint;
+  if (step.type === 'D' && step.zeroPlaceholder) {
+    msg = step.hint;
+  } else if (step.type === 'M') {
+    msg = `Check your multiplication: ${step.qDigit} × ${board.prob.divisor} = ${step.correct}, not ${choice}!`;
+  } else if (step.type === 'S') {
+    msg = `Subtract: ${step.working} − ${step.product} = ${step.correct}, not ${choice}.`;
+  } else if (step.type === 'B' && step.seal) {
+    if (choice >= board.prob.divisor) {
+      msg = `Remainder ${choice} is larger than divisor ${board.prob.divisor} — you can fit one more group!`;
+    } else {
+      msg = `Seal remainder ${step.correct}, not ${choice}.`;
+    }
+  } else if (step.type === 'B') {
+    msg = `Bring down ${step.bringDigit} beside ${step.fromDiff} → ${step.correct}.`;
+  } else if (step.type === 'D') {
+    msg = `${board.prob.divisor} into ${step.working} is ${step.correct}, not ${choice}.`;
+  }
+  G.feedback = msg;
+  G.feedbackKind = 'bad';
+  G.feedbackT = 2.4;
+  loseShield(pi);
+  players[pi].lockUntil = G.t + 0.35;
+}
+
+function nextAfterBatch() {
+  if (G.batchesDone >= 6) {
+    G.mode = 'gameOver';
+    speak('Refinery shift complete!');
+    return;
+  }
+  startCalibrate();
+}
+
+/* ---------- FX ---------- */
+function spawnSparks(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    sparks.push({
+      x, y,
+      vx: rand(-180, 180),
+      vy: rand(-220, -40),
+      life: rand(0.3, 0.7),
+      color
+    });
+  }
+}
+function spawnSteam(x, y) {
+  steamPuffs.push({ x, y, r: rand(8, 18), life: 1, vx: rand(-20, 20), vy: rand(-40, -10) });
+}
+
+/* ---------- Input ---------- */
+window.addEventListener('keydown', (e) => {
+  held.add(e.code);
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  audio.ensure();
+
+  if (e.code === 'KeyM') {
+    const on = audio.toggle();
+    G.feedback = on ? 'Audio ON' : 'Audio MUTED';
+    G.feedbackKind = 'good';
+    G.feedbackT = 1;
+    return;
+  }
+
+  if (G.mode === 'title') {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'KeyD') {
+      G.titleFocus = 1 - G.titleFocus;
+      audio.select();
+    }
+    if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') {
+      beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
+    }
+    return;
+  }
+
+  if (G.mode === 'batchDone' || G.mode === 'gameOver') {
+    if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') {
+      if (G.mode === 'gameOver') {
+        G.mode = 'title';
+      } else {
+        nextAfterBatch();
+      }
+    }
+    return;
+  }
+
+  // P1: WASD + F/Space
+  if (e.code === 'KeyA') moveReticle(0, -1);
+  if (e.code === 'KeyD') moveReticle(0, 1);
+  if (e.code === 'KeyW') moveReticle(0, -1);
+  if (e.code === 'KeyS') moveReticle(0, 1);
+  if (e.code === 'KeyF' || e.code === 'Space') confirmPlayer(0);
+
+  // P2: Arrows + Enter
+  if (e.code === 'ArrowLeft') moveReticle(1, -1);
+  if (e.code === 'ArrowRight') moveReticle(1, 1);
+  if (e.code === 'ArrowUp') moveReticle(1, -1);
+  if (e.code === 'ArrowDown') moveReticle(1, 1);
+  if (e.code === 'Enter') confirmPlayer(1);
+});
+window.addEventListener('keyup', (e) => held.delete(e.code));
+
+function choiceCount() {
+  if (G.mode === 'calibrate') return G.placeChoices.length;
+  if (G.mode === 'play') {
+    if (G.playMode === 'versus') return 4;
+    return G.stepChoices.length;
+  }
+  return 4;
+}
+
+function moveReticle(pi, dir) {
+  const n = choiceCount();
+  if (!n) return;
+  const p = players[pi];
+  p.reticle = (p.reticle + dir + n) % n;
+  audio.select();
+}
+
+function confirmPlayer(pi) {
+  if (G.mode === 'calibrate') submitPlace(pi);
+  else if (G.mode === 'play') submitDivision(pi);
+}
+
+function pollGamepads() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  players.forEach((p) => {
+    const gp = pads[p.padIndex];
+    if (!gp) return;
+    const axX = gp.axes[0] || 0;
+    const axY = gp.axes[1] || 0;
+    // 8BitDo hat on axis 9 (macOS D-input)
+    let hatL = false, hatR = false, hatU = false, hatD = false;
+    if (gp.axes.length > 9) {
+      const h = gp.axes[9];
+      if (h >= -1 && h <= 1.1) {
+        // common 8-way hat encoding
+        if (Math.abs(h - (-1)) < 0.1 || Math.abs(h - 1) < 0.15) hatU = Math.abs(h - (-1)) < 0.1;
+        // Simplified: treat negative X stick / dpad buttons
+      }
+    }
+    const left = (gp.buttons[PAD.LEFT] && gp.buttons[PAD.LEFT].pressed) || axX < -AXIS_DEAD || hatL;
+    const right = (gp.buttons[PAD.RIGHT] && gp.buttons[PAD.RIGHT].pressed) || axX > AXIS_DEAD || hatR;
+    const up = (gp.buttons[PAD.UP] && gp.buttons[PAD.UP].pressed) || axY < -AXIS_DEAD;
+    const down = (gp.buttons[PAD.DOWN] && gp.buttons[PAD.DOWN].pressed) || axY > AXIS_DEAD;
+    const a = gp.buttons[PAD.A] && gp.buttons[PAD.A].pressed;
+    const start = (gp.buttons[PAD.START] && gp.buttons[PAD.START].pressed) ||
+      (gp.buttons[PAD.START_ALT] && gp.buttons[PAD.START_ALT].pressed);
+
+    if (left && !p.gpPrev.left) moveReticle(p.i, -1);
+    if (right && !p.gpPrev.right) moveReticle(p.i, 1);
+    if (up && !p.gpPrev.up) moveReticle(p.i, -1);
+    if (down && !p.gpPrev.down) moveReticle(p.i, 1);
+    if (a && !p.gpPrev.a) {
+      if (G.mode === 'title') beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
+      else if (G.mode === 'batchDone') nextAfterBatch();
+      else if (G.mode === 'gameOver') G.mode = 'title';
+      else confirmPlayer(p.i);
+    }
+    if (start && !p.gpPrev.start) {
+      G.titleFocus = 1 - G.titleFocus;
+      audio.select();
+    }
+    p.gpPrev = { a, left, right, up, down, start };
+  });
+}
+
+/* ---------- Pointer ---------- */
+canvas.addEventListener('pointerdown', (e) => {
+  audio.ensure();
+  syncPointer(e);
+  pointer.down = true;
+  handleClick();
+});
+canvas.addEventListener('pointermove', (e) => syncPointer(e));
+canvas.addEventListener('pointerup', () => { pointer.down = false; });
+
+function syncPointer(e) {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = (e.clientX - rect.left) * (W / rect.width);
+  pointer.y = (e.clientY - rect.top) * (H / rect.height);
+}
+
+function handleClick() {
+  // Mute button
+  if (pointer.x > W - 70 && pointer.y < 48) {
+    const on = audio.toggle();
+    G.feedback = on ? 'Audio ON' : 'Audio MUTED';
+    G.feedbackKind = 'good';
+    G.feedbackT = 1;
+    return;
+  }
+  if (G.mode === 'title') {
+    if (pointer.y > 400 && pointer.y < 480) {
+      G.titleFocus = pointer.x < W / 2 ? 0 : 1;
+      beginGame(G.titleFocus === 0 ? 'coop' : 'versus');
+    }
+    return;
+  }
+  if (G.mode === 'batchDone' || G.mode === 'gameOver') {
+    if (G.mode === 'gameOver') G.mode = 'title';
+    else nextAfterBatch();
+    return;
+  }
+  // Choice cards
+  for (const hs of hotspots) {
+    if (pointer.x >= hs.x && pointer.x <= hs.x + hs.w && pointer.y >= hs.y && pointer.y <= hs.y + hs.h) {
+      const pi = hs.player != null ? hs.player : 0;
+      players[pi].reticle = hs.index;
+      confirmPlayer(pi);
+      return;
+    }
+  }
+}
+
+/* ---------- Resize ---------- */
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  view.dpr = dpr;
+  const sw = window.innerWidth, sh = window.innerHeight;
+  const scale = Math.min(sw / W, sh / H);
+  view.scale = scale;
+  view.cssW = Math.floor(W * scale);
+  view.cssH = Math.floor(H * scale);
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = view.cssW + 'px';
+  canvas.style.height = view.cssH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- Drawing helpers ---------- */
+function rr(x, y, w, h, r) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+
+function drawBg(dt) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#121a26');
+  g.addColorStop(0.45, '#0c121c');
+  g.addColorStop(1, '#080b12');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // industrial girders
+  ctx.strokeStyle = 'rgba(60,80,100,0.25)';
+  ctx.lineWidth = 2;
+  for (let x = 40; x < W; x += 80) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 40; y < H; y += 60) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // conveyor belts top & bottom
+  const beltY = [95, H - 28];
+  beltY.forEach((by, bi) => {
+    ctx.fillStyle = '#1a2230';
+    ctx.fillRect(0, by, W, 18);
+    ctx.fillStyle = '#2e3d52';
+    const off = ((G.t * (bi ? 80 : -100)) + (G.anim.jam > 0 ? Math.sin(G.t * 40) * 8 : 0)) % 40;
+    for (let x = -40 + off; x < W; x += 40) {
+      ctx.fillRect(x, by + 3, 22, 12);
+    }
+    ctx.fillStyle = COL.brass;
+    ctx.fillRect(0, by - 2, W, 2);
+    ctx.fillRect(0, by + 18, W, 2);
+  });
+
+  // side pipes
+  ctx.fillStyle = '#243044';
+  ctx.fillRect(18, 120, 22, H - 200);
+  ctx.fillRect(W - 40, 120, 22, H - 200);
+  for (let y = 150; y < H - 100; y += 70) {
+    ctx.fillStyle = COL.amberDim;
+    ctx.beginPath(); ctx.arc(29, y, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(W - 29, y, 6, 0, Math.PI * 2); ctx.fill();
+    if (Math.random() < 0.02) spawnSteam(29, y);
+  }
+
+  // crane rail
+  ctx.fillStyle = '#3a4a5e';
+  ctx.fillRect(80, 108, W - 160, 8);
+  const craneX = 200 + Math.sin(G.t * 0.7) * 80 + (G.anim.crane > 0 ? Math.sin(G.t * 20) * 10 : 0);
+  ctx.fillStyle = '#5a6a80';
+  ctx.fillRect(craneX, 108, 50, 10);
+  ctx.strokeStyle = '#8a9ab0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(craneX + 25, 118);
+  ctx.lineTo(craneX + 25, 118 + 40 + (G.anim.crane > 0 ? 30 * (1 - G.anim.crane / 0.45) : 0));
+  ctx.stroke();
+  ctx.fillStyle = COL.cyan;
+  ctx.fillRect(craneX + 15, 118 + 40 + (G.anim.crane > 0 ? 30 * (1 - G.anim.crane / 0.45) : 0), 20, 10);
+}
+
+function drawHUD() {
+  // Top bar panels
+  const drawBadge = (x, y, p) => {
+    rr(x, y, 200, 52, 8);
+    ctx.fillStyle = COL.panel;
+    ctx.fill();
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = p.color;
+    ctx.font = 'bold 14px Trebuchet MS, sans-serif';
+    ctx.fillText(`${p.short} FOREMAN`, x + 12, y + 18);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '13px Trebuchet MS, sans-serif';
+    ctx.fillText('Shields', x + 12, y + 36);
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = i < p.shields ? p.color : COL.muted;
+      ctx.beginPath();
+      ctx.arc(x + 72 + i * 16, y + 32, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = COL.ink;
+    ctx.fillStyle = COL.amber;
+    ctx.fillText(`★ ${p.stars}  ·  ${p.score}`, x + 118, y + 36);
+  };
+  drawBadge(16, 8, players[0]);
+  drawBadge(W - 216, 8, players[1]);
+
+  // Center mode card
+  rr(W / 2 - 180, 8, 360, 52, 8);
+  ctx.fillStyle = COL.panel;
+  ctx.fill();
+  ctx.strokeStyle = COL.brass;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 13px Trebuchet MS, sans-serif';
+  ctx.textAlign = 'center';
+  const modeStr = G.playMode === 'coop' ? 'CO-OP RELAY' : 'COMPETITIVE SPRINT';
+  ctx.fillText(modeStr, W / 2, 26);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '12px Trebuchet MS, sans-serif';
+  ctx.fillText(`Tier ${G.tier} · Batch ${Math.min(G.batchesDone + 1, 6)}/6 · Team ${G.teamScore}` +
+    (G.playMode === 'coop' ? ` · Combo ${G.teamCombo}` : ''), W / 2, 46);
+  ctx.textAlign = 'left';
+
+  // Mute
+  rr(W - 62, 66, 48, 28, 6);
+  ctx.fillStyle = COL.panel;
+  ctx.fill();
+  ctx.strokeStyle = COL.dim;
+  ctx.stroke();
+  ctx.fillStyle = COL.ink;
+  ctx.font = 'bold 11px Trebuchet MS, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(audio.isMuted() ? 'MUTE' : 'AUDIO', W - 38, 84);
+  ctx.textAlign = 'left';
+}
+
+function drawDMSBBar(x, y) {
+  const labels = STEP_LABELS;
+  const w = 150, gap = 8;
+  const total = labels.length * w + (labels.length - 1) * gap;
+  let cx = x - total / 2;
+  labels.forEach((lab, i) => {
+    const on = G.dmsbLit === i;
+    rr(cx, y, w, 36, 6);
+    ctx.fillStyle = on ? 'rgba(255,184,74,0.25)' : 'rgba(20,30,45,0.85)';
+    ctx.fill();
+    ctx.strokeStyle = on ? COL.amber : COL.steel;
+    ctx.lineWidth = on ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = on ? COL.amber : COL.dim;
+    ctx.font = 'bold 12px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${i + 1}. ${lab}`, cx + w / 2, y + 23);
+    if (i < labels.length - 1) {
+      ctx.fillStyle = COL.muted;
+      ctx.fillText('→', cx + w + gap / 2, y + 23);
+    }
+    cx += w + gap;
+  });
+  ctx.textAlign = 'left';
+}
+
+function placeValueCars(n, x, y, highlightShift) {
+  // Show up to 4 place cars: Th H T O
+  let s = String(Math.round(n));
+  while (s.length < 4) s = ' ' + s;
+  if (s.length > 4) s = s.slice(-4);
+  const labels = ['Th', 'H', 'T', 'O'];
+  const carW = 70, carH = 78, gap = 10;
+  const total = 4 * carW + 3 * gap;
+  let cx = x - total / 2;
+  // rail
+  ctx.fillStyle = '#1c2838';
+  ctx.fillRect(cx - 20, y + carH - 8, total + 40, 14);
+  ctx.fillStyle = COL.brass;
+  ctx.fillRect(cx - 20, y + carH + 2, total + 40, 3);
+
+  for (let i = 0; i < 4; i++) {
+    const ch = s[i];
+    rr(cx, y, carW, carH - 10, 8);
+    const glow = highlightShift && ((highlightShift === 'L' && i < 3) || (highlightShift === 'R' && i > 0));
+    ctx.fillStyle = glow ? 'rgba(62,240,255,0.18)' : 'rgba(18,28,42,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = glow ? COL.cyan : COL.amber;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // inner glow
+    ctx.strokeStyle = 'rgba(255,213,106,0.35)';
+    ctx.strokeRect(cx + 6, y + 6, carW - 12, carH - 22);
+    ctx.fillStyle = COL.dim;
+    ctx.font = 'bold 11px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(labels[i], cx + carW / 2, y + 18);
+    ctx.fillStyle = COL.ink;
+    ctx.font = 'bold 36px "Courier New", monospace';
+    ctx.fillText(ch === ' ' ? '·' : ch, cx + carW / 2, y + 58);
+    // wheels
+    ctx.fillStyle = '#445566';
+    ctx.beginPath(); ctx.arc(cx + 16, y + carH - 6, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + carW - 16, y + carH - 6, 6, 0, Math.PI * 2); ctx.fill();
+    cx += carW + gap;
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawLongDivision(board, ox, oy, scale, spotlight) {
+  if (!board || !board.prob) return;
+  const prob = board.prob;
+  const digs = prob.digs;
+  const cell = 38 * scale;
+  const font = `bold ${Math.floor(32 * scale)}px "Courier New", monospace`;
+  const midFont = `bold ${Math.floor(26 * scale)}px "Courier New", monospace`;
+  const small = `${Math.floor(15 * scale)}px Trebuchet MS, sans-serif`;
+
+  ctx.save();
+  ctx.translate(ox, oy);
+
+  const panelW = (digs.length + 4) * cell + 70;
+  const panelH = 300 * scale;
+  rr(-56, -36, panelW, panelH, 12);
+  ctx.fillStyle = 'rgba(10,16,26,0.92)';
+  ctx.fill();
+  ctx.strokeStyle = COL.crystal;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const baseX = 78;
+  const roofY = 22;
+  const divY = 72;
+  const workY0 = 118;
+
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Divisor left of bracket
+  ctx.fillStyle = COL.amber;
+  ctx.fillText(String(prob.divisor), baseX - cell * 0.95, divY);
+
+  // Long-division bracket (vinculum + vertical)
+  const bracketLeft = baseX - cell * 0.4;
+  const bracketRight = baseX + digs.length * cell + 6;
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 3 * scale;
+  ctx.beginPath();
+  ctx.moveTo(bracketLeft, divY - cell * 0.55);
+  ctx.lineTo(bracketLeft, divY + cell * 0.5);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(bracketLeft, divY - cell * 0.55);
+  ctx.lineTo(bracketRight, divY - cell * 0.55);
+  ctx.stroke();
+
+  // Roof quotient — column-aligned with dividend
+  for (let i = 0; i < board.roof.length; i++) {
+    const v = board.roof[i];
+    if (v == null) continue;
+    const px = baseX + i * cell + cell / 2;
+    if (G.anim.stamp > 0 && i === board.writtenQ.length - 1) {
+      ctx.fillStyle = COL.glow;
+      ctx.beginPath(); ctx.arc(px, roofY, 18 * scale, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.fillStyle = COL.green;
+    ctx.fillText(String(v), px, roofY);
+  }
+
+  // Dividend digits
+  for (let i = 0; i < digs.length; i++) {
+    const px = baseX + i * cell + cell / 2;
+    // brought-down highlight
+    if (board.brought.length && i === prob.firstEndIdx + board.brought.length) {
+      ctx.fillStyle = 'rgba(62,240,255,0.15)';
+      ctx.fillRect(px - cell * 0.4, divY - cell * 0.4, cell * 0.8, cell * 0.8);
+    }
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(String(digs[i]), px, divY);
+  }
+
+  // Working scratch rows: product then difference, right-aligned under active columns
+  let wy = workY0;
+  ctx.font = midFont;
+  board.workRows.forEach((row, ri) => {
+    const endCol = prob.firstEndIdx + ri;
+    const prodStr = String(row.product);
+    const diffStr = String(row.diff);
+    // product digits right-aligned at endCol
+    ctx.fillStyle = COL.cyan;
+    for (let k = 0; k < prodStr.length; k++) {
+      const col = endCol - (prodStr.length - 1 - k);
+      if (col < 0) continue;
+      ctx.fillText(prodStr[k], baseX + col * cell + cell / 2, wy);
+    }
+    // minus sign
+    ctx.fillText('−', baseX + Math.max(0, endCol - prodStr.length) * cell - 6, wy);
+    wy += cell * 0.55;
+    ctx.strokeStyle = COL.muted;
+    ctx.lineWidth = 2;
+    const lineL = baseX + Math.max(0, endCol - Math.max(prodStr.length, diffStr.length)) * cell;
+    const lineR = baseX + (endCol + 1) * cell;
+    ctx.beginPath();
+    ctx.moveTo(lineL, wy);
+    ctx.lineTo(lineR, wy);
+    ctx.stroke();
+    wy += cell * 0.45;
+    ctx.fillStyle = COL.ink;
+    for (let k = 0; k < diffStr.length; k++) {
+      const col = endCol - (diffStr.length - 1 - k);
+      if (col < 0) continue;
+      ctx.fillText(diffStr[k], baseX + col * cell + cell / 2, wy);
+    }
+    // If next digit was brought down onto this diff, show it
+    if (ri < board.brought.length) {
+      ctx.fillStyle = COL.cyan;
+      ctx.fillText(String(board.brought[ri]), baseX + (endCol + 1) * cell + cell / 2, wy);
+    }
+    wy += cell * 0.85;
+  });
+
+  // Live working number callout
+  const step = currentStep(board);
+  if (step && !board.done && (step.type === 'D' || step.type === 'M' || step.type === 'S')) {
+    ctx.font = small;
+    ctx.fillStyle = COL.amber;
+    ctx.textAlign = 'left';
+    ctx.fillText(`Working: ${step.working}`, -40, panelH - 70 * scale);
+  }
+
+  if (board.sealed) {
+    ctx.font = small;
+    ctx.fillStyle = COL.amber;
+    ctx.textAlign = 'left';
+    ctx.fillText(
+      board.remainder === 0 ? 'SEALED · EXACT DIVISION' : `REMAINDER CAPSULE [ ${board.remainder} ]`,
+      -40,
+      panelH - 48 * scale
+    );
+  }
+
+  // Neon spotlight frame
+  if (spotlight && !board.done && step) {
+    ctx.strokeStyle = COL.amber;
+    ctx.lineWidth = 2.5;
+    ctx.globalAlpha = 0.5 + 0.3 * Math.sin(G.t * 7);
+    let sy = divY - 28;
+    if (step.type === 'D') sy = roofY - 22;
+    if (step.type === 'M' || step.type === 'S') sy = Math.min(wy - 40, workY0 - 10);
+    rr(bracketLeft - 8, sy, bracketRight - bracketLeft + 20, 48, 8);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawChoiceCards(choices, y, activePlayers) {
+  hotspots.length = 0;
+  if (!choices || !choices.length) return;
+  const n = choices.length;
+  const cardW = 140, cardH = 72, gap = 18;
+  const total = n * cardW + (n - 1) * gap;
+  let x = (W - total) / 2;
+
+  choices.forEach((c, i) => {
+    const selectedBy = activePlayers.filter(pi => players[pi].reticle === i);
+    rr(x, y, cardW, cardH, 10);
+    ctx.fillStyle = selectedBy.length ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = selectedBy.length ? COL.amber : COL.steel;
+    ctx.lineWidth = selectedBy.length ? 3 : 2;
+    ctx.stroke();
+
+    ctx.fillStyle = COL.ink;
+    ctx.font = 'bold 28px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    const label = (G.mode === 'play' && currentStep(G.board || players[0].board)?.type === 'B' &&
+      currentStep(G.board || players[0].board)?.seal)
+      ? `R ${c}` : String(c);
+    ctx.fillText(label, x + cardW / 2, y + 46);
+
+    selectedBy.forEach((pi, k) => {
+      ctx.strokeStyle = players[pi].color;
+      ctx.lineWidth = 3;
+      rr(x - 4 - k * 3, y - 4 - k * 3, cardW + 8 + k * 6, cardH + 8 + k * 6, 12);
+      ctx.stroke();
+      // reticle crosshair
+      const cx = x + cardW / 2 + (pi === 0 ? -30 : 30);
+      const cy = y + 14;
+      ctx.strokeStyle = players[pi].color;
+      ctx.beginPath();
+      ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
+      ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+      ctx.stroke();
+      ctx.fillStyle = players[pi].color;
+      ctx.font = 'bold 10px Trebuchet MS, sans-serif';
+      ctx.fillText(players[pi].short, cx, cy - 10);
+    });
+
+    hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: activePlayers[0] });
+    // also allow P2 click on same cards in coop
+    if (activePlayers.length > 1) {
+      hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: activePlayers[1] });
+    }
+    x += cardW + gap;
+  });
+  ctx.textAlign = 'left';
+}
+
+function drawTitle() {
+  // Hero brand
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 18px Trebuchet MS, sans-serif';
+  ctx.fillText('ORE REFINERY TRAINING PROTOCOL', W / 2, 100);
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = 'bold 54px Trebuchet MS, sans-serif';
+  ctx.fillText('CARGO CHUTE', W / 2, 168);
+  ctx.fillStyle = COL.cyan;
+  ctx.font = 'bold 28px Trebuchet MS, sans-serif';
+  ctx.fillText('The D-M-S-B Refinery', W / 2, 210);
+
+  ctx.fillStyle = COL.dim;
+  ctx.font = '16px Trebuchet MS, sans-serif';
+  ctx.fillText('Primary 3–4 · Place-value ×10 / ÷10 · Long division Divide → Multiply → Subtract → Bring Down', W / 2, 250);
+
+  // Decorative bracket preview
+  ctx.strokeStyle = 'rgba(154,216,255,0.35)';
+  ctx.lineWidth = 2;
+  rr(W / 2 - 220, 280, 440, 100, 12);
+  ctx.stroke();
+  ctx.fillStyle = COL.crystal;
+  ctx.font = '22px "Courier New", monospace';
+  ctx.fillText('    2 0 4', W / 2, 318);
+  ctx.fillText('4 | 8 1 6', W / 2, 350);
+  ctx.fillStyle = COL.dim;
+  ctx.font = '13px Trebuchet MS, sans-serif';
+  ctx.fillText('Zero-placeholder mastery · Remainder capsules · Refinery combo chain', W / 2, 372);
+
+  // Mode buttons
+  const modes = [
+    { id: 0, title: 'CO-OP RELAY', sub: 'P1: D & S · P2: M & B · Shared combo' },
+    { id: 1, title: 'COMPETITIVE SPRINT', sub: 'Dual brackets · First seal wins a Star' }
+  ];
+  modes.forEach((m, i) => {
+    const x = W / 2 - 340 + i * 360;
+    const y = 420;
+    const on = G.titleFocus === i;
+    rr(x, y, 320, 88, 12);
+    ctx.fillStyle = on ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.9)';
+    ctx.fill();
+    ctx.strokeStyle = on ? COL.amber : COL.steel;
+    ctx.lineWidth = on ? 3 : 2;
+    ctx.stroke();
+    ctx.fillStyle = on ? COL.amber : COL.ink;
+    ctx.font = 'bold 22px Trebuchet MS, sans-serif';
+    ctx.fillText(m.title, x + 160, y + 38);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '13px Trebuchet MS, sans-serif';
+    ctx.fillText(m.sub, x + 160, y + 64);
+  });
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = '14px Trebuchet MS, sans-serif';
+  ctx.fillText('P1: WASD + F / Space · P2: Arrows + Enter · 8BitDo: D-pad + A · M mutes audio', W / 2, 560);
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 16px Trebuchet MS, sans-serif';
+  ctx.fillText('Press Space / A to start selected mode', W / 2, 600);
+  ctx.textAlign = 'left';
+}
+
+function drawCalibrate() {
+  drawDMSBBar(W / 2, 72);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = 'bold 20px Trebuchet MS, sans-serif';
+  ctx.fillText(G.phaseLabel, W / 2, 140);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '18px Trebuchet MS, sans-serif';
+  ctx.fillText(`Shift the place-value train: ${fmt(G.place.n)} ${G.place.op} = ?`, W / 2, 175);
+  ctx.fillStyle = COL.dim;
+  ctx.font = '14px Trebuchet MS, sans-serif';
+  ctx.fillText(G.hint, W / 2, 200);
+  ctx.textAlign = 'left';
+
+  const shift = G.place.op === '×10' ? 'L' : 'R';
+  placeValueCars(G.place.n, W / 2, 230, shift);
+
+  // Arrow indicator
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 28px Trebuchet MS, sans-serif';
+  ctx.fillText(G.place.op === '×10' ? '⟸  ×10  SHIFT LEFT  ·  insert 0 in Ones' : '⟹  ÷10  SHIFT RIGHT  ·  drop Ones 0', W / 2, 360);
+
+  drawChoiceCards(G.placeChoices, 420, [0, 1]);
+  ctx.textAlign = 'left';
+}
+
+function drawPlay() {
+  drawDMSBBar(W / 2, 72);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = 'bold 16px Trebuchet MS, sans-serif';
+  ctx.fillText(G.phaseLabel, W / 2, 128);
+  if (G.hint) {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '13px Trebuchet MS, sans-serif';
+    ctx.fillText(G.hint, W / 2, 150);
+  }
+  ctx.textAlign = 'left';
+
+  if (G.playMode === 'versus') {
+    // Side-by-side brackets
+    ctx.fillStyle = players[0].color;
+    ctx.font = 'bold 14px Trebuchet MS, sans-serif';
+    ctx.fillText('P1 BRACKET', 120, 170);
+    ctx.fillStyle = players[1].color;
+    ctx.fillText('P2 BRACKET', W / 2 + 120, 170);
+    drawLongDivision(players[0].board, 80, 190, 0.85, true);
+    drawLongDivision(players[1].board, W / 2 + 40, 190, 0.85, true);
+
+    // Each player uses own choices — show the active player's card set under their side if both on same step type use dual
+    // Display P1 choices left-bottom, P2 right-bottom when steps differ; else shared mid
+    const c0 = players[0].board.choices || [];
+    const c1 = players[1].board.choices || [];
+    hotspots.length = 0;
+    drawVersusChoices(c0, 60, 520, 0);
+    drawVersusChoices(c1, W / 2 + 20, 520, 1);
+  } else {
+    const board = G.board;
+    const step = currentStep(board);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.amber;
+    ctx.font = 'bold 18px Trebuchet MS, sans-serif';
+    ctx.fillText(`${board.prob.dividend} ÷ ${board.prob.divisor}`, W / 2, 168);
+    ctx.textAlign = 'left';
+    drawLongDivision(board, W / 2 - 160, 190, 1, true);
+
+    // Hydraulic press visual during subtract
+    if (step && step.type === 'S' && G.anim.press > 0) {
+      const py = 200 + (1 - G.anim.press / 0.4) * 80;
+      ctx.fillStyle = '#5a6a80';
+      ctx.fillRect(W / 2 - 40, py, 80, 24);
+      ctx.fillStyle = COL.bad;
+      ctx.fillRect(W / 2 - 30, py + 24, 60, 8);
+    }
+
+    const who = activePlayerForStep(step);
+    const actives = who >= 0 ? [who] : [0, 1];
+    drawChoiceCards(G.stepChoices, 520, actives);
+
+    // Seal button label
+    if (step && step.type === 'B' && step.seal) {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = COL.amber;
+      ctx.font = 'bold 14px Trebuchet MS, sans-serif';
+      ctx.fillText(step.remainder === 0 ? 'Select REMAINDER 0 to seal exact shipment' : `Load REMAINDER capsule to seal`, W / 2, 505);
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
+function drawVersusChoices(choices, x0, y, pi) {
+  if (!choices || !choices.length) return;
+  const n = choices.length;
+  const cardW = 110, cardH = 60, gap = 10;
+  let x = x0;
+  choices.forEach((c, i) => {
+    const on = players[pi].reticle === i;
+    rr(x, y, cardW, cardH, 8);
+    ctx.fillStyle = on ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = on ? players[pi].color : COL.steel;
+    ctx.lineWidth = on ? 3 : 2;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.font = 'bold 22px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(c), x + cardW / 2, y + 38);
+    hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: pi });
+    x += cardW + gap;
+  });
+  ctx.textAlign = 'left';
+}
+
+function drawBatchDone() {
+  ctx.textAlign = 'center';
+  const rocketY = H / 2 + 40 - G.anim.rocket * 200;
+  // rocket
+  ctx.fillStyle = '#d8e0ea';
+  ctx.beginPath();
+  ctx.moveTo(W / 2, rocketY - 70);
+  ctx.lineTo(W / 2 + 28, rocketY);
+  ctx.lineTo(W / 2 + 28, rocketY + 50);
+  ctx.lineTo(W / 2 - 28, rocketY + 50);
+  ctx.lineTo(W / 2 - 28, rocketY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = COL.p1;
+  ctx.fillRect(W / 2 - 28, rocketY + 20, 56, 12);
+  ctx.fillStyle = COL.cyan;
+  ctx.beginPath(); ctx.arc(W / 2, rocketY - 10, 12, 0, Math.PI * 2); ctx.fill();
+  // flame
+  ctx.fillStyle = COL.amber;
+  ctx.beginPath();
+  ctx.moveTo(W / 2 - 16, rocketY + 50);
+  ctx.lineTo(W / 2, rocketY + 50 + 30 + Math.sin(G.t * 20) * 10);
+  ctx.lineTo(W / 2 + 16, rocketY + 50);
+  ctx.fill();
+
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 36px Trebuchet MS, sans-serif';
+  ctx.fillText('CARGO ROCKET LAUNCHED!', W / 2, 140);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '18px Trebuchet MS, sans-serif';
+  ctx.fillText(G.feedback || 'Batch complete', W / 2, 180);
+  ctx.fillStyle = COL.dim;
+  ctx.font = '15px Trebuchet MS, sans-serif';
+  ctx.fillText('Press Space / A for next intake calibration', W / 2, H - 80);
+  ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.amber;
+  ctx.font = 'bold 40px Trebuchet MS, sans-serif';
+  ctx.fillText('REFINERY SHIFT COMPLETE', W / 2, 200);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '20px Trebuchet MS, sans-serif';
+  ctx.fillText(`P1 ${players[0].score} pts · ${players[0].stars} ★    P2 ${players[1].score} pts · ${players[1].stars} ★`, W / 2, 260);
+  ctx.fillText(`Team ore credits: ${G.teamScore}`, W / 2, 300);
+  if (G.playMode === 'versus') {
+    const w = players[0].stars === players[1].stars ? 'DRAW' :
+      (players[0].stars > players[1].stars ? 'P1 FOREMAN' : 'P2 FOREMAN');
+    ctx.fillStyle = COL.cyan;
+    ctx.font = 'bold 28px Trebuchet MS, sans-serif';
+    ctx.fillText(`Winner: ${w}`, W / 2, 360);
+  }
+  ctx.fillStyle = COL.dim;
+  ctx.font = '16px Trebuchet MS, sans-serif';
+  ctx.fillText('Press Space / A to return to title', W / 2, 440);
+  ctx.textAlign = 'left';
+}
+
+function drawFeedback() {
+  if (G.feedbackT <= 0 || !G.feedback) return;
+  const col = G.feedbackKind === 'bad' ? COL.bad : G.feedbackKind === 'warn' ? COL.warn : COL.green;
+  rr(W / 2 - 360, H - 120, 720, 44, 8);
+  ctx.fillStyle = 'rgba(8,12,20,0.92)';
+  ctx.fill();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = col;
+  ctx.font = '14px Trebuchet MS, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(G.feedback, W / 2, H - 93);
+  ctx.textAlign = 'left';
+}
+
+function drawFX(dt) {
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.life -= dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vy += 400 * dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    ctx.globalAlpha = clamp(s.life * 2, 0, 1);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(s.x, s.y, 3, 3);
+    ctx.globalAlpha = 1;
+  }
+  for (let i = steamPuffs.length - 1; i >= 0; i--) {
+    const s = steamPuffs[i];
+    s.life -= dt * 0.6;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.r += 20 * dt;
+    if (s.life <= 0) { steamPuffs.splice(i, 1); continue; }
+    ctx.globalAlpha = s.life * 0.25;
+    ctx.fillStyle = COL.steam;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---------- Main loop ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  G.t += dt;
+  if (G.feedbackT > 0) G.feedbackT -= dt;
+  if (G.flash > 0) G.flash -= dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 30);
+  if (G.anim.press > 0) G.anim.press = Math.max(0, G.anim.press - dt);
+  if (G.anim.crane > 0) G.anim.crane = Math.max(0, G.anim.crane - dt);
+  if (G.anim.stamp > 0) G.anim.stamp = Math.max(0, G.anim.stamp - dt);
+  if (G.anim.jam > 0) G.anim.jam = Math.max(0, G.anim.jam - dt);
+  if (G.anim.rocket > 0 && G.anim.rocket < 3) G.anim.rocket += dt;
+
+  pollGamepads();
+
+  const sx = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  const sy = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  drawBg(dt);
+
+  if (G.mode === 'title') {
+    drawTitle();
+  } else {
+    drawHUD();
+    if (G.mode === 'calibrate') drawCalibrate();
+    else if (G.mode === 'play') drawPlay();
+    else if (G.mode === 'batchDone') drawBatchDone();
+    else if (G.mode === 'gameOver') drawGameOver();
+    drawFeedback();
+  }
+
+  drawFX(dt);
+
+  if (G.flash > 0) {
+    ctx.fillStyle = `rgba(255,60,80,${G.flash * 0.25})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  ctx.restore();
+
+  // pad note
+  if (G.mode !== 'title' && G.padNote) {
+    ctx.fillStyle = COL.muted;
+    ctx.font = '11px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(G.padNote, W / 2, H - 8);
+    ctx.textAlign = 'left';
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Warm conveyors / occasional steam
+setInterval(() => {
+  if (G.mode !== 'title') spawnSteam(rand(40, W - 40), rand(130, 200));
+}, 800);
+
+speak('Cargo Chute Refinery ready. Choose Co-op Relay or Competitive Sprint.');
+</script>
+</body>
+</html>
