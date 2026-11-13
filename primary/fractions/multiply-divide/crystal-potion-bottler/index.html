@@ -1,0 +1,2501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="Crystal Potion Bottler: Liquid Measure Lab. Singapore Primary 5 and 6. Division, fractions, and multiplication by pouring litres, merging beakers, and ladling scoops." />
+<title>Crystal Potion Bottler: Liquid Measure Lab</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070614;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+    outline: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript {
+    color: #e8f7ff;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" role="application" aria-label="Crystal Potion Bottler Liquid Measure Lab. Solo: mouse, WASD or arrows, Space, or 8BitDo pad 0. Co-op and versus: Player 1 uses WASD and F or Space, or gamepad 0. Player 2 uses arrow keys and Enter, or gamepad 1. M mutes."></canvas>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript>This bottling lab needs JavaScript to pour the potions.</noscript>
+<script>
+'use strict';
+
+/* Crystal Potion Bottler: Liquid Measure Lab
+   Singapore Primary 5/6 — the Division–Fraction–Multiplication triangle.
+   Pour:    whole litres ÷ bottles  →  fraction or mixed number per bottle.
+   Merge:   beakers × fraction of a litre  →  whole litres or a mixed number.
+   Ladle:   volume ÷ scoop  →  how many scoops fit, including a fractional last scoop.
+   Every round is built from the number domain, checked, and shuffled.
+*/
+
+const FONT = '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif';
+const GEO = {
+  W: 1280,
+  H: 720,
+  hud: { x: 14, y: 10, w: 1252, h: 54 },
+  ticket: { x: 14, y: 72, w: 1252, h: 108 },
+  stage: { x: 14, y: 190, w: 1252, h: 292 },
+  banner: { x: 28, y: 430, w: 1224, h: 42 },
+  cardY: 492,
+  cardH: 112,
+  seal: { x: 330, y: 616, w: 620, h: 58 },
+  mute: { x: 1216, y: 17, w: 40, h: 40 },
+};
+
+const POTIONS = [
+  { a: '#7af7ff', b: '#0e7490', c: '#e7fdff', name: 'cyan' },
+  { a: '#ff7ae0', b: '#a01478', c: '#ffe4f8', name: 'magenta' },
+  { a: '#c6ff4a', b: '#3f7a0c', c: '#f3ffd0', name: 'lime' },
+  { a: '#ffc14a', b: '#b56a08', c: '#fff0cc', name: 'amber' },
+  { a: '#b69bff', b: '#4c2cb0', c: '#efe8ff', name: 'violet' },
+];
+
+const BEST_SOLO = 'cpb-best-solo';
+const BEST_COOP = 'cpb-best-coop';
+const MUTE_KEY = 'cpb-mute';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const sr = document.getElementById('sr');
+const view = { s: 1, ox: 0, oy: 0, dpr: 1 };
+const keys = {};
+const mouse = { x: 640, y: 360, on: false };
+
+const G = {
+  phase: 'title',
+  mode: 'solo',
+  titleSel: 0,
+  round: 1,
+  step: 0,
+  score: 0,
+  scores: [0, 0],
+  stars: [0, 0],
+  shields: [3, 3],
+  combo: 0,
+  combos: [0, 0],
+  history: [],
+  problem: null,
+  lock: false,
+  feedback: '',
+  feedbackLeft: 0,
+  feedbackDur: 1,
+  hint: '',
+  hintUntil: 0,
+  note: '',
+  noteUntil: 0,
+  shake: 0,
+  ready: [false, false],
+  stepT: 0,
+  floaters: [],
+  sparks: [],
+  overReason: '',
+  bestSolo: 0,
+  bestCoop: 0,
+  padNote: '',
+  time: 0,
+  players: [
+    { sel: 0, x: 180, y: 540, waitX: 0, waitY: 0, ax: 0, ay: 0, a: false, holdDir: 0, holdT: 0 },
+    { sel: 0, x: 480, y: 540, waitX: 0, waitY: 0, ax: 0, ay: 0, a: false, holdDir: 0, holdT: 0 },
+  ],
+  auditErrors: [],
+};
+
+/* ---------- rational helpers ---------- */
+
+function gcd(a, b) {
+  a = Math.abs(a | 0);
+  b = Math.abs(b | 0);
+  while (b) {
+    const t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function lcm(a, b) {
+  return Math.abs(a * b) / gcd(a, b);
+}
+
+function toMixed(n, d) {
+  const g = gcd(n, d);
+  n = n / g;
+  d = d / g;
+  const w = Math.floor(n / d);
+  const rn = n % d;
+  return { w: w, n: rn, d: rn ? d : 1, impN: n, impD: d, exact: rn === 0 };
+}
+
+function fmtSlash(n, d) {
+  const m = toMixed(n, d);
+  if (m.exact) return String(m.w);
+  if (!m.w) return m.n + '/' + m.d;
+  return m.w + ' ' + m.n + '/' + m.d;
+}
+
+function denomWord(d) {
+  const map = {
+    2: 'halves', 3: 'thirds', 4: 'fourths', 5: 'fifths', 6: 'sixths',
+    8: 'eighths', 10: 'tenths', 12: 'twelfths',
+  };
+  return map[d] || (d + 'ths');
+}
+
+function portionPhrase(n, d) {
+  const m = toMixed(n, d);
+  n = m.n;
+  d = m.d;
+  if (m.w) return fmtSlash(m.impN, m.impD);
+  if (n === 1 && d === 2) return 'HALF (1/2)';
+  if (n === 1 && d === 4) return 'A QUARTER (1/4)';
+  if (n === 3 && d === 4) return 'THREE QUARTERS (3/4)';
+  if (n === 1 && d === 3) return 'ONE THIRD (1/3)';
+  if (n === 2 && d === 3) return 'TWO THIRDS (2/3)';
+  return n + '/' + d;
+}
+
+function randInt(a, b) {
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+
+function pick(list) {
+  return list[randInt(0, list.length - 1)];
+}
+
+function shuffle(list) {
+  const b = list.slice();
+  for (let i = b.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = b[i];
+    b[i] = b[j];
+    b[j] = t;
+  }
+  return b;
+}
+
+function tierOf(round) {
+  if (round <= 2) return { id: 'warm', name: 'WARM-UP' };
+  if (round <= 4) return { id: 'mid', name: 'INTERMEDIATE' };
+  if (round <= 6) return { id: 'adv', name: 'ADVANCED' };
+  return { id: 'master', name: 'MASTER ALCHEMIST' };
+}
+
+function tierMult(round) {
+  if (round < 7) return 1;
+  return 1.5 + 0.25 * (round - 7);
+}
+
+function heroText(s) {
+  return [{ k: 't', s: s }];
+}
+
+function heroMeasure(n, d, unit) {
+  const m = toMixed(n, d);
+  if (m.exact) return [{ k: 't', s: String(m.w) }, { k: 'u', s: unit }];
+  if (!m.w) return [{ k: 'f', n: m.n, d: m.d }, { k: 'u', s: unit }];
+  return [{ k: 'm', w: m.w, n: m.n, d: m.d }, { k: 'u', s: unit }];
+}
+
+function heroRaw(n, d, unit) {
+  return [{ k: 'f', n: n, d: d }, { k: 'u', s: unit }];
+}
+
+function formKey(opt) {
+  return JSON.stringify(opt.hero) + '|' + (opt.caption || '');
+}
+
+function makeOpt(hero, caption, correct, trap, hint, extra) {
+  const o = {
+    hero: hero,
+    caption: caption || '',
+    correct: !!correct,
+    trap: trap || '',
+    hint: hint || '',
+    value: null,
+    grad: 0,
+  };
+  if (extra) {
+    if (extra.value) o.value = extra.value;
+    if (extra.grad) o.grad = extra.grad;
+  }
+  return o;
+}
+
+function fillOpts(correct, wrongs, fallback) {
+  const out = [correct];
+  const seen = new Set([formKey(correct)]);
+  for (let i = 0; i < wrongs.length && out.length < 4; i++) {
+    const w = wrongs[i];
+    if (!w || w.correct) continue;
+    const k = formKey(w);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(w);
+  }
+  let salt = 0;
+  while (out.length < 4 && salt < 16) {
+    const w = fallback(salt++);
+    if (!w || w.correct) continue;
+    const k = formKey(w);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(w);
+  }
+  return shuffle(out);
+}
+
+/* ---------- domains: the legal number space, not a fixed playlist ---------- */
+
+function buildDomains() {
+  const warmPour = [];
+  for (const B of [2, 3, 4, 5]) {
+    for (let W = 1; W < B; W++) {
+      if (gcd(W, B) !== 1) continue;
+      warmPour.push({ kind: 'pour', sub: 'warm', W: W, B: B, key: 'pour:' + W + '/' + B });
+    }
+  }
+
+  const warmMerge = [];
+  for (const B of [2, 3, 4, 5]) {
+    for (let A = 1; A < B; A++) {
+      if (gcd(A, B) !== 1) continue;
+      for (let k = 1; k <= 4; k++) {
+        const N = k * B;
+        const result = k * A;
+        if (N < 2 || N > 12) continue;
+        if (result < 2 || result > 8) continue;
+        warmMerge.push({ kind: 'merge', sub: 'warm', N: N, A: A, B: B, key: 'merge:' + N + 'x' + A + '/' + B });
+      }
+    }
+  }
+
+  const midImp = [];
+  for (const B of [3, 4, 5, 6, 8]) {
+    for (let W = B + 1; W <= 12 && W < B * 3; W++) {
+      if (W % B === 0) continue;
+      if (gcd(W, B) !== 1) continue;
+      midImp.push({ kind: 'pour', sub: 'imp', W: W, B: B, key: 'pour:' + W + '/' + B });
+    }
+  }
+
+  const midRed = [];
+  for (const B of [4, 6, 8]) {
+    for (let W = 1; W < B; W++) {
+      if (gcd(W, B) === 1) continue;
+      midRed.push({ kind: 'pour', sub: 'red', W: W, B: B, key: 'pour:' + W + '/' + B });
+    }
+  }
+
+  const midMerge = [];
+  for (const B of [4, 5, 6, 8]) {
+    for (let A = 1; A < B; A++) {
+      if (gcd(A, B) !== 1) continue;
+      for (let N = 2; N <= 8; N++) {
+        const pieces = N * A;
+        if (pieces % B === 0) continue;
+        if (pieces <= B) continue;
+        if (pieces > B * 8) continue;
+        const mixed = toMixed(pieces, B);
+        if (mixed.exact || mixed.w < 1) continue;
+        midMerge.push({ kind: 'merge', sub: 'mix', N: N, A: A, B: B, key: 'merge:' + N + 'x' + A + '/' + B });
+      }
+    }
+  }
+
+  const ladEx = [];
+  const ladRem = [];
+  for (const B of [3, 4, 5, 6, 8]) {
+    for (let A = 1; A < B; A++) {
+      if (gcd(A, B) !== 1) continue;
+      for (let W = 2; W <= 6; W++) {
+        const parts = W * B;
+        const quotN = parts;
+        const quotD = A;
+        const mixed = toMixed(quotN, quotD);
+        const quot = quotN / quotD;
+        if (quot <= 1 || quot > 12) continue;
+        const spec = { kind: 'ladle', W: W, A: A, B: B, key: 'ladle:' + W + '\u00f7' + A + '/' + B };
+        if (parts % A === 0) ladEx.push(Object.assign({ sub: 'exact' }, spec));
+        else {
+          const rem = parts % A;
+          const portionD = toMixed(rem, A).d;
+          if (portionD > 4) continue;
+          ladRem.push(Object.assign({ sub: 'rem' }, spec));
+        }
+      }
+    }
+  }
+
+  const frac = [];
+  const seenF = new Set();
+  const ladles = [[1, 2], [1, 3], [1, 4], [1, 5], [1, 6], [1, 8], [2, 5], [3, 5], [2, 3], [3, 4], [3, 8], [5, 6], [5, 8], [4, 5]];
+  const quots = [[2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [3, 2], [5, 2], [7, 2], [9, 2], [4, 3], [5, 3], [7, 3], [8, 3], [5, 4], [7, 4], [9, 4], [8, 5], [7, 5]];
+  for (let li = 0; li < ladles.length; li++) {
+    const A = ladles[li][0];
+    const B = ladles[li][1];
+    if (gcd(A, B) !== 1) continue;
+    for (let qi = 0; qi < quots.length; qi++) {
+      const qN = quots[qi][0];
+      const qD = quots[qi][1];
+      if (qN <= qD) continue;
+      const rawN = qN * A;
+      const rawD = qD * B;
+      const vol = toMixed(rawN, rawD);
+      if (vol.w !== 0) continue;
+      const P = vol.n;
+      const Q = vol.d;
+      if (Q === B) continue;
+      if (lcm(Q, B) > 12) continue;
+      const key = 'frac:' + P + '/' + Q + '\u00f7' + A + '/' + B;
+      if (seenF.has(key)) continue;
+      seenF.add(key);
+      frac.push({ kind: 'frac', sub: 'frac', P: P, Q: Q, A: A, B: B, key: key });
+    }
+  }
+
+  return {
+    warmPour: warmPour,
+    warmMerge: warmMerge,
+    midImp: midImp,
+    midRed: midRed,
+    midMerge: midMerge,
+    ladEx: ladEx,
+    ladRem: ladRem,
+    frac: frac,
+  };
+}
+
+const DOMAINS = buildDomains();
+
+function listsFor(round) {
+  if (round <= 2) return [DOMAINS.warmPour, DOMAINS.warmMerge];
+  if (round <= 4) return [DOMAINS.midImp, DOMAINS.midRed, DOMAINS.midMerge];
+  if (round === 5) return [DOMAINS.ladEx];
+  if (round === 6) return [DOMAINS.ladRem];
+  return [DOMAINS.frac];
+}
+
+function takeSpec(round, history) {
+  const lists = listsFor(round);
+  const fresh = [];
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = 0; j < lists[i].length; j++) {
+      if (history.indexOf(lists[i][j].key) === -1) fresh.push(lists[i][j]);
+    }
+  }
+  if (fresh.length) return pick(fresh);
+  const all = [];
+  for (let i = 0; i < lists.length; i++) all.push.apply(all, lists[i]);
+  return pick(all);
+}
+
+function gradFallback(correctGrad) {
+  return function (i) {
+    const n = correctGrad + 3 + i;
+    return makeOpt(heroText('\u00f7 ' + n), denomWord(n), false, '', 'Mark the vessels with the denominator the order is really using.', { grad: n });
+  };
+}
+
+function measureFallback(unit) {
+  return function (i) {
+    const n = 1 + (i % 5);
+    const d = 2 + ((i + 3) % 6);
+    return makeOpt(heroMeasure(n + i, d, unit), 'different total', false, '', 'Count the marked pieces again, then regroup.', { value: toMixed(n + i, d) });
+  };
+}
+
+function buildSpec(spec) {
+  if (spec.kind === 'pour') return buildPour(spec);
+  if (spec.kind === 'merge') return buildMerge(spec);
+  if (spec.kind === 'ladle') return buildLadle(spec);
+  return buildFrac(spec);
+}
+
+function buildPour(spec) {
+  const W = spec.W;
+  const B = spec.B;
+  const g = gcd(W, B);
+  const simp = toMixed(W, B);
+  const unit = ' L';
+  const answer = fmtSlash(W, B) + ' L';
+  const singleHint = '1/' + B + ' L is only the pour from ONE jug! All ' + W + ' full 1 L jugs are shared equally among ' + B + ' bottles!';
+  const flipHint = 'Check numerator vs denominator! ' + W + ' L \u00f7 ' + B + ' bottles = ' + fmtSlash(W, B) + ' L per bottle, not ' + B + '/' + W + ' L!';
+  const simpleHint = 'Use the HCF ' + g + ' to simplify ' + W + '/' + B + '. ' + W + '/' + B + ' = ' + fmtSlash(W, B) + ' L.';
+  const improperHint = W + '/' + B + ' L is the improper fraction. Break out whole litres: ' + fmtSlash(W, B) + ' L per bottle.';
+
+  const step0 = fillOpts(
+    makeOpt(heroText('\u00f7 ' + B), denomWord(B), true, '', '', { grad: B }),
+    gradWrongs(B, [W, B - 1, B + 1, 2, 3, 4, 5, 6, 8]),
+    gradFallback(B)
+  );
+
+  const step1Wrongs = [];
+  if (W !== 1) {
+    step1Wrongs.push(makeOpt(
+      [{ k: 't', s: '1 \u00d7' }, { k: 'f', n: 1, d: B }, { k: 'u', s: unit }],
+      'from one jug only',
+      false,
+      'single',
+      singleHint
+    ));
+  }
+  step1Wrongs.push(makeOpt(
+    heroRaw(B, W, unit),
+    'flipped share',
+    false,
+    'flip',
+    flipHint
+  ));
+  const otherD = B === 4 ? 3 : 4;
+  step1Wrongs.push(makeOpt(
+    [{ k: 't', s: W + ' \u00d7' }, { k: 'f', n: 1, d: otherD }, { k: 'u', s: unit }],
+    denomWord(otherD) + ', not ' + denomWord(B),
+    false,
+    '',
+    'The bottles decide the denominator. Mark \u00f7 ' + B + ', then pour 1/' + B + ' L from each of the ' + W + ' jugs.'
+  ));
+  step1Wrongs.push(makeOpt(
+    heroText((W + B) + ' parts'),
+    'added the counts',
+    false,
+    '',
+    'Do not add ' + W + ' and ' + B + '. Each bottle collects one ' + denomWord(B).slice(0, -1) + ' from every jug: ' + W + ' \u00d7 1/' + B + '.'
+  ));
+
+  const step1 = fillOpts(
+    makeOpt(
+      [{ k: 't', s: W + ' \u00d7' }, { k: 'f', n: 1, d: B }, { k: 'u', s: unit }],
+      'from each of the ' + W + ' jugs',
+      true,
+      '',
+      ''
+    ),
+    step1Wrongs,
+    function (i) {
+      return makeOpt(heroText((W + 2 + i) + ' \u00d7 1/' + B), 'wrong jug count', false, '', 'Pour from all ' + W + ' jugs, not a different count.');
+    }
+  );
+
+  const step2Wrongs = [];
+  if (W !== 1) {
+    step2Wrongs.push(makeOpt(heroMeasure(1, B, unit), 'one jug only', false, 'single', singleHint, { value: { n: 1, d: B } }));
+  }
+  step2Wrongs.push(makeOpt(heroRaw(B, W, unit), 'flipped', false, 'flip', flipHint, { value: { n: B, d: W } }));
+  if (g > 1) {
+    step2Wrongs.push(makeOpt(heroRaw(W, B, unit), 'not simplified', false, 'simplify', simpleHint, { value: { n: W, d: B } }));
+  } else if (W > B) {
+    step2Wrongs.push(makeOpt(heroRaw(simp.impN, simp.impD, unit), 'still improper', false, 'improper', improperHint, { value: { n: simp.impN, d: simp.impD } }));
+  }
+  if (!simp.exact && simp.w > 0) {
+    step2Wrongs.push(makeOpt(heroText(String(simp.w)), 'dropped the fraction', false, '', 'There is still a fraction of a litre after the whole. The share is ' + answer + ' per bottle.', { value: { n: simp.w, d: 1 } }));
+  }
+  const offN = W === 1 ? W + 1 : W - 1;
+  step2Wrongs.push(makeOpt(heroMeasure(offN, B, unit), 'off by one piece', false, '', 'Count one piece from each jug. That is ' + W + '/' + B + ', which simplifies to ' + fmtSlash(W, B) + ' L.', { value: toMixed(offN, B) }));
+
+  let lockPrompt = 'Lock the fraction in each crystal bottle.';
+  if (g > 1 && W < B) lockPrompt = 'Lock the share after simplifying by the HCF.';
+  else if (W > B) lockPrompt = 'Lock the mixed number in each crystal bottle.';
+
+  const step2 = fillOpts(
+    makeOpt(heroMeasure(W, B, unit), 'per bottle', true, '', '', { value: { n: simp.impN, d: simp.impD } }),
+    step2Wrongs,
+    measureFallback(unit)
+  );
+
+  return {
+    kind: 'pour',
+    sub: spec.sub,
+    key: spec.key,
+    W: W,
+    B: B,
+    grad: B,
+    remParts: 0,
+    expectN: simp.impN,
+    expectD: simp.impD,
+    kicker: 'DIVISION  \u2192  FRACTION',
+    order: 'Pour ' + W + ' L equally into ' + B + ' crystal bottles.',
+    ticket: [{ k: 't', s: W + ' L' }, { k: 't', s: '\u00f7' }, { k: 't', s: B + ' bottles' }, { k: 't', s: '=' }, { k: 't', s: '?' }],
+    prompts: [
+      'Which graduation lets ' + B + ' bottles share each litre fairly?',
+      'What does the manifold pour into every bottle?',
+      lockPrompt,
+    ],
+    steps: [
+      { prompt: 'calibrate', options: step0 },
+      { prompt: 'pour', options: step1 },
+      { prompt: 'lock', options: step2 },
+    ],
+    bridge: W + ' \u00d7 1/' + B + ' L  from the jugs',
+  };
+}
+
+function gradWrongs(correct, pool) {
+  const seen = new Set([correct]);
+  const out = [];
+  for (let i = 0; i < pool.length; i++) {
+    const n = pool[i];
+    if (!n || n < 2 || seen.has(n)) continue;
+    seen.add(n);
+    out.push(makeOpt(heroText('\u00f7 ' + n), denomWord(n), false, '', 'That scale does not match this order. The graduation is \u00f7 ' + correct + ' (' + denomWord(correct) + ').', { grad: n }));
+    if (out.length === 5) break;
+  }
+  return out;
+}
+
+function buildMerge(spec) {
+  const N = spec.N;
+  const A = spec.A;
+  const B = spec.B;
+  const pieces = N * A;
+  const simp = toMixed(pieces, B);
+  const unit = ' L';
+  const answer = fmtSlash(pieces, B) + ' L';
+  const word = denomWord(B);
+
+  const step0 = fillOpts(
+    makeOpt(heroText('\u00f7 ' + B), word, true, '', '', { grad: B }),
+    gradWrongs(B, [A, N, B - 1, B + 1, 2, 3, 4, 5, 6, 8, 10]),
+    gradFallback(B)
+  );
+
+  const step1 = fillOpts(
+    makeOpt(heroText(N + ' \u00d7 ' + A + ' = ' + pieces), word, true, '', ''),
+    [
+      makeOpt(heroText(N + ' \u00d7 ' + B + ' = ' + (N * B)), word, false, '', 'Multiply the ' + N + ' beakers by the numerator ' + A + ', not by the denominator ' + B + '.'),
+      makeOpt(heroText(N + ' + ' + A + ' = ' + (N + A)), word, false, '', 'The beakers are multiplied, not added. ' + N + ' groups of ' + A + ' ' + word + ' = ' + pieces + ' ' + word + '.'),
+      makeOpt(heroText(String(A)), 'forgot the ' + N + ' beakers', false, '', 'One beaker is only ' + A + '/' + B + ' L. Merge all ' + N + ': ' + N + ' \u00d7 ' + A + ' = ' + pieces + ' ' + word + '.'),
+      makeOpt(heroText(N + ' \u00d7 ' + A + ' = ' + pieces), B === 5 ? 'fourths' : 'fifths', false, '', 'Keep the denominator you calibrated. Those pieces are ' + word + ', so ' + pieces + ' ' + word + ' = ' + answer + '.'),
+    ],
+    function (i) {
+      return makeOpt(heroText(N + ' \u00d7 ' + (A + 2 + i)), 'wrong numerator', false, '', 'Each beaker contributes ' + A + ' ' + word + ', and there are ' + N + ' beakers.');
+    }
+  );
+
+  const wrongs = [];
+  if (!simp.exact) {
+    wrongs.push(makeOpt(heroRaw(pieces, B, unit), 'not regrouped', false, 'improper', pieces + '/' + B + ' L still needs regrouping. ' + answer + ' is the mixed measure.', { value: { n: pieces, d: B } }));
+    wrongs.push(makeOpt(heroText(String(simp.w)), 'dropped the fraction', false, '', 'The whole litres are only part of the brew. Keep the leftover: ' + answer + '.', { value: { n: simp.w, d: 1 } }));
+    const offN = simp.n === 1 ? simp.n + 1 : simp.n - 1;
+    wrongs.push(makeOpt(
+      [{ k: 'm', w: simp.w, n: offN, d: simp.d }, { k: 'u', s: unit }],
+      'wrong remainder',
+      false,
+      '',
+      'After ' + simp.w + ' whole litres, ' + simp.n + '/' + simp.d + ' L is still in the last jug.',
+      { value: { n: simp.w * simp.d + offN, d: simp.d } }
+    ));
+  } else {
+    wrongs.push(makeOpt(heroRaw(pieces, B, unit), 'not simplified', false, 'simplify', pieces + ' ' + word + ' regroup into ' + simp.w + ' whole litres. ' + pieces + '/' + B + ' = ' + simp.w + '.', { value: { n: pieces, d: B } }));
+    wrongs.push(makeOpt(heroText(String(pieces)), 'counted pieces as litres', false, '', pieces + ' ' + word + ' are not ' + pieces + ' litres. Divide by ' + B + ' to get ' + simp.w + ' L.', { value: { n: pieces, d: 1 } }));
+    wrongs.push(makeOpt(heroMeasure(A, B, unit), 'one beaker only', false, '', 'That is a single beaker. ' + N + ' of them make ' + answer + '.', { value: { n: A, d: B } }));
+  }
+  wrongs.push(makeOpt(heroText(String(N * A)), 'pieces, not litres', false, '', 'You have ' + pieces + ' ' + word + '. Regroup by ' + B + ' to get ' + answer + '.', { value: { n: pieces, d: 1 } }));
+
+  const lockPrompt = simp.exact
+    ? 'Lock the whole litres in the master jugs.'
+    : 'Lock the mixed number after regrouping ' + pieces + '/' + B + ' L.';
+
+  const step2 = fillOpts(
+    makeOpt(heroMeasure(pieces, B, unit), simp.exact ? 'whole litres' : 'master jugs', true, '', '', { value: { n: simp.impN, d: simp.impD } }),
+    wrongs,
+    measureFallback(unit)
+  );
+
+  return {
+    kind: 'merge',
+    sub: spec.sub,
+    key: spec.key,
+    N: N,
+    A: A,
+    B: B,
+    grad: B,
+    remParts: simp.exact ? 0 : simp.n,
+    expectN: simp.impN,
+    expectD: simp.impD,
+    kicker: 'FRACTION  \u00d7  WHOLE  \u2192  TOTAL',
+    order: 'Merge ' + N + ' beakers of ' + A + '/' + B + ' L into master jugs.',
+    ticket: [{ k: 't', s: String(N) }, { k: 't', s: '\u00d7' }, { k: 'f', n: A, d: B }, { k: 'u', s: ' L' }, { k: 't', s: '=' }, { k: 't', s: '?' }],
+    prompts: [
+      'Which lines match the ' + A + '/' + B + ' L beakers?',
+      'How many ' + word + ' are you merging?',
+      lockPrompt,
+    ],
+    steps: [
+      { prompt: 'calibrate', options: step0 },
+      { prompt: 'merge', options: step1 },
+      { prompt: 'lock', options: step2 },
+    ],
+    bridge: pieces + ' ' + word + '  ready to regroup',
+  };
+}
+
+function scoopRemainderHint(remParts, unitDenom, ladleParts, ladleA, ladleB, expectN, expectD) {
+  const portion = toMixed(remParts, ladleParts);
+  return 'The ' + remParts + '/' + unitDenom + ' L left in the vat fills ' + portionPhrase(portion.n, portion.d) + ' of one final ' + ladleA + '/' + ladleB + ' L ladle -> ' + fmtSlash(expectN, expectD) + ' scoops!';
+}
+
+function buildLadle(spec) {
+  const W = spec.W;
+  const A = spec.A;
+  const B = spec.B;
+  return buildScoop({
+    kind: 'ladle',
+    sub: spec.sub,
+    key: spec.key,
+    W: W,
+    A: A,
+    B: B,
+    P: W,
+    Q: 1,
+    grad: B,
+    volParts: W * B,
+    ladParts: A,
+    unitDenom: B,
+    kicker: 'HOW MANY LADLES FIT INSIDE?',
+    order: 'Ladle ' + A + '/' + B + ' L scoops out of a ' + W + ' L vat.',
+    ticket: [{ k: 't', s: W + ' L' }, { k: 't', s: '\u00f7' }, { k: 'f', n: A, d: B }, { k: 'u', s: ' L' }, { k: 't', s: '=' }, { k: 't', s: '?' }],
+    prompts0: 'Which lines match the ' + A + '/' + B + ' L ladle?',
+    hint0: 'The ladle holds ' + A + '/' + B + ' L. Mark the vat in ' + denomWord(B) + ' (\u00f7 ' + B + '), then group by ' + A + '.',
+  });
+}
+
+function buildFrac(spec) {
+  const P = spec.P;
+  const Q = spec.Q;
+  const A = spec.A;
+  const B = spec.B;
+  const L = lcm(Q, B);
+  const volParts = P * L / Q;
+  const ladParts = A * L / B;
+  return buildScoop({
+    kind: 'frac',
+    sub: 'frac',
+    key: spec.key,
+    A: A,
+    B: B,
+    P: P,
+    Q: Q,
+    grad: L,
+    volParts: volParts,
+    ladParts: ladParts,
+    unitDenom: L,
+    kicker: 'FRACTION  \u00f7  FRACTION',
+    order: 'Ladle ' + A + '/' + B + ' L scoops out of ' + P + '/' + Q + ' L.',
+    ticket: [{ k: 'f', n: P, d: Q }, { k: 'u', s: ' L' }, { k: 't', s: '\u00f7' }, { k: 'f', n: A, d: B }, { k: 'u', s: ' L' }, { k: 't', s: '=' }, { k: 't', s: '?' }],
+    prompts0: 'Which common lines rewrite both fractions?',
+    hint0: 'Rewrite both fractions in ' + denomWord(L) + '. ' + P + '/' + Q + ' = ' + volParts + '/' + L + ' and ' + A + '/' + B + ' = ' + ladParts + '/' + L + '.',
+  });
+}
+
+function buildScoop(info) {
+  const volParts = info.volParts;
+  const ladParts = info.ladParts;
+  const simp = toMixed(volParts, ladParts);
+  const remParts = volParts % ladParts;
+  const full = Math.floor(volParts / ladParts);
+  const unit = ' scoops';
+  const answer = fmtSlash(volParts, ladParts);
+  const word = denomWord(info.unitDenom);
+  const remHint = remParts
+    ? scoopRemainderHint(remParts, info.unitDenom, ladParts, info.A, info.B, simp.impN, simp.impD)
+    : '';
+
+  const step0 = fillOpts(
+    makeOpt(heroText('\u00f7 ' + info.grad), word, true, '', '', { grad: info.grad }),
+    gradWrongs(info.grad, [info.A, info.B, info.Q || 0, info.P || 0, info.W || 0, info.grad - 1, info.grad + 1, 2, 3, 4, 5, 6, 8, 12]),
+    gradFallback(info.grad)
+  );
+  step0.forEach(function (o) {
+    if (!o.correct && info.hint0 && o.hint.indexOf('That scale') === 0) o.hint = info.hint0;
+  });
+
+  const groupCaption = 'groups of ' + ladParts + ' ' + word;
+  const step1Wrongs = [
+    makeOpt(heroText(volParts + ' \u00f7 1'), 'groups of 1 ' + word.slice(0, -1), false, '', 'The ladle is not one ' + word.slice(0, -1) + '. Each scoop takes ' + ladParts + ' of the ' + volParts + ' ' + word + '.'),
+    makeOpt(heroText(volParts + ' \u2212 ' + ladParts + ' = ' + (volParts - ladParts)), 'subtracted', false, '', 'Division asks how many scoops fit, not the difference. ' + volParts + ' \u00f7 ' + ladParts + ' = ' + answer + ' scoops.'),
+    makeOpt(heroText((info.P || info.W) + ' \u00f7 ' + info.A), 'skipped the scale', false, '', 'Convert to ' + word + ' first. You have ' + volParts + ' ' + word + ', grouped by ' + ladParts + '.'),
+    makeOpt(heroText(volParts + ' \u00f7 ' + (ladParts + 1)), 'group too big', false, '', 'Each ladle is ' + info.A + '/' + info.B + ' L, which is ' + ladParts + ' ' + word + ' on this scale.'),
+    makeOpt(heroText(volParts + ' \u00d7 ' + ladParts), 'multiplied', false, '', 'You are fitting scoops inside the vat, so divide ' + volParts + ' by ' + ladParts + '.'),
+  ];
+
+  const step1 = fillOpts(
+    makeOpt(heroText(volParts + ' \u00f7 ' + ladParts), groupCaption, true, '', ''),
+    step1Wrongs,
+    function (i) {
+      return makeOpt(heroText(volParts + ' \u00f7 ' + (ladParts + 3 + i)), 'wrong group', false, '', 'Group the ' + word + ' in sets of ' + ladParts + '.');
+    }
+  );
+
+  const wrongs = [];
+  if (remParts > 0) {
+    wrongs.push(makeOpt(heroText(full + ' R ' + remParts), 'whole-number remainder', false, 'remainder', remHint));
+    wrongs.push(makeOpt(heroText(String(full)), 'dropped the last scoop', false, '', 'There is still potion in the vat. It fills part of one more ladle: ' + answer + ' scoops.', { value: { n: full, d: 1 } }));
+    wrongs.push(makeOpt(
+      [{ k: 'm', w: full, n: remParts, d: info.unitDenom }, { k: 'u', s: unit }],
+      'leftover as a litre fraction',
+      false,
+      'litre',
+      remParts + '/' + info.unitDenom + ' L is what is left in the vat. That fills ' + portionPhrase(remParts, ladParts) + ' of the ladle, so the scoops are ' + answer + '.',
+      { value: { n: full * info.unitDenom + remParts, d: info.unitDenom } }
+    ));
+  } else {
+    wrongs.push(makeOpt(heroText(String(full + 1)), 'one scoop too many', false, '', volParts + ' \u00f7 ' + ladParts + ' = ' + full + ' scoops exactly.', { value: { n: full + 1, d: 1 } }));
+    if (full > 1) {
+      wrongs.push(makeOpt(heroText(String(full - 1)), 'one scoop too few', false, '', 'Keep going until the vat is empty. The count is ' + full + ' scoops.', { value: { n: full - 1, d: 1 } }));
+    }
+    wrongs.push(makeOpt(heroText(String(volParts)), 'counted marks, not scoops', false, '', volParts + ' ' + word + ' grouped by ' + ladParts + ' is ' + full + ' scoops.', { value: { n: volParts, d: 1 } }));
+  }
+  if (!simp.exact) {
+    wrongs.push(makeOpt(heroRaw(simp.impN, simp.impD, unit), 'not a mixed number', false, '', 'Turn ' + simp.impN + '/' + simp.impD + ' into ' + answer + ' scoops.', { value: { n: simp.impN, d: simp.impD } }));
+  }
+
+  const lockPrompt = remParts
+    ? 'Lock the mixed number of scoops. The leftover fills part of the last ladle.'
+    : 'Lock the exact number of scoops.';
+
+  const step2 = fillOpts(
+    makeOpt(heroMeasure(volParts, ladParts, unit), 'scoops', true, '', '', { value: { n: simp.impN, d: simp.impD } }),
+    wrongs,
+    measureFallback(unit)
+  );
+
+  const problem = {
+    kind: info.kind,
+    sub: info.sub,
+    key: info.key,
+    W: info.W || 0,
+    N: 0,
+    A: info.A,
+    B: info.B,
+    P: info.P,
+    Q: info.Q,
+    grad: info.grad,
+    volParts: volParts,
+    ladParts: ladParts,
+    remParts: remParts,
+    scoopFull: full,
+    scoopFrac: ladParts ? remParts / ladParts : 0,
+    expectN: simp.impN,
+    expectD: simp.impD,
+    kicker: info.kicker,
+    order: info.order,
+    ticket: info.ticket,
+    prompts: [info.prompts0, 'How do you group the ' + word + ' into scoops?', lockPrompt],
+    steps: [
+      { prompt: 'calibrate', options: step0 },
+      { prompt: 'ladle', options: step1 },
+      { prompt: 'lock', options: step2 },
+    ],
+    bridge: volParts + ' ' + word + '  grouped by ' + ladParts,
+  };
+  return problem;
+}
+
+function sameValue(v, n, d) {
+  if (!v) return false;
+  return v.n * d === v.d * n;
+}
+
+function problemOK(p) {
+  if (!p || !p.steps || p.steps.length !== 3) return false;
+  for (let s = 0; s < 3; s++) {
+    const step = p.steps[s];
+    if (!step.options || step.options.length !== 4) return false;
+    if (step.options.filter(function (o) { return o.correct; }).length !== 1) return false;
+    const keys = step.options.map(formKey);
+    if (new Set(keys).size !== 4) return false;
+    for (let i = 0; i < step.options.length; i++) {
+      const o = step.options[i];
+      if (!o.hero || !o.hero.length) return false;
+      if (!o.correct && !o.hint) return false;
+    }
+  }
+  const ans = p.steps[2].options.find(function (o) { return o.correct; });
+  if (!sameValue(ans.value, p.expectN, p.expectD)) return false;
+  const gopt = p.steps[0].options.find(function (o) { return o.correct; });
+  if (!gopt || gopt.grad !== p.grad) return false;
+  if (p.kind === 'pour' && p.W !== 1) {
+    if (!p.steps[2].options.some(function (o) { return o.trap === 'single'; })) return false;
+  }
+  if (p.kind === 'pour') {
+    if (!p.steps[2].options.some(function (o) { return o.trap === 'flip'; })) return false;
+  }
+  if (p.kind === 'pour' && gcd(p.W, p.B) > 1) {
+    if (!p.steps[2].options.some(function (o) { return o.trap === 'simplify'; })) return false;
+  }
+  if (p.kind === 'pour' && p.W > p.B && gcd(p.W, p.B) === 1) {
+    if (!p.steps[2].options.some(function (o) { return o.trap === 'improper'; })) return false;
+  }
+  if ((p.kind === 'ladle' || p.kind === 'frac') && p.remParts > 0) {
+    if (!p.steps[2].options.some(function (o) { return o.trap === 'remainder'; })) return false;
+  }
+  if ((p.kind === 'ladle' || p.kind === 'frac') && p.remParts === 0 && (p.expectN % p.expectD !== 0)) return false;
+  return true;
+}
+
+function makeProblem(round) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const spec = takeSpec(round, G.history);
+    const p = buildSpec(spec);
+    if (!problemOK(p)) continue;
+    if (G.history.indexOf(p.key) !== -1 && attempt < 8) continue;
+    G.history.push(p.key);
+    if (G.history.length > 6) G.history.shift();
+    return p;
+  }
+  const spec = takeSpec(round, []);
+  const p = buildSpec(spec);
+  G.history.push(p.key);
+  if (G.history.length > 6) G.history.shift();
+  return p;
+}
+
+function audit() {
+  const errors = [];
+  function need(cond, msg) {
+    if (!cond) errors.push(msg);
+  }
+  need(DOMAINS.warmPour.length >= 8, 'warm pour domain ' + DOMAINS.warmPour.length);
+  need(DOMAINS.warmMerge.length >= 8, 'warm merge domain ' + DOMAINS.warmMerge.length);
+  need(DOMAINS.midImp.length >= 8, 'mid improper ' + DOMAINS.midImp.length);
+  need(DOMAINS.midRed.length >= 6, 'mid reduce ' + DOMAINS.midRed.length);
+  need(DOMAINS.midMerge.length >= 8, 'mid merge ' + DOMAINS.midMerge.length);
+  need(DOMAINS.ladEx.length >= 8, 'ladle exact ' + DOMAINS.ladEx.length);
+  need(DOMAINS.ladRem.length >= 8, 'ladle rem ' + DOMAINS.ladRem.length);
+  need(DOMAINS.frac.length >= 12, 'frac domain ' + DOMAINS.frac.length);
+
+  const lists = [DOMAINS.warmPour, DOMAINS.warmMerge, DOMAINS.midImp, DOMAINS.midRed, DOMAINS.midMerge, DOMAINS.ladEx, DOMAINS.ladRem, DOMAINS.frac];
+  for (let li = 0; li < lists.length; li++) {
+    for (let i = 0; i < lists[li].length; i++) {
+      const spec = lists[li][i];
+      const p = buildSpec(spec);
+      if (!problemOK(p)) errors.push('invalid ' + spec.key);
+      else if (p.key !== spec.key) errors.push('key drift ' + spec.key);
+    }
+  }
+
+  const canonPour = buildSpec({ kind: 'pour', sub: 'warm', W: 3, B: 4, key: 'pour:3/4' });
+  const single = canonPour.steps[2].options.find(function (o) { return o.trap === 'single'; });
+  const flip = canonPour.steps[2].options.find(function (o) { return o.trap === 'flip'; });
+  need(single && single.hint === '1/4 L is only the pour from ONE jug! All 3 full 1 L jugs are shared equally among 4 bottles!', 'single hint');
+  need(flip && flip.hint === 'Check numerator vs denominator! 3 L \u00f7 4 bottles = 3/4 L per bottle, not 4/3 L!', 'flip hint');
+
+  const canonLad = buildSpec({ kind: 'ladle', sub: 'rem', W: 3, A: 2, B: 5, key: 'ladle:3\u00f72/5' });
+  const rem = canonLad.steps[2].options.find(function (o) { return o.trap === 'remainder'; });
+  need(canonLad.expectN === 15 && canonLad.expectD === 2, '3\u00f72/5 value');
+  need(rem && rem.hint === 'The 1/5 L left in the vat fills HALF (1/2) of one final 2/5 L ladle -> 7 1/2 scoops!', 'remainder hint');
+  need(fmtSlash(canonLad.expectN, canonLad.expectD) === '7 1/2', 'mixed 7 1/2');
+
+  const canonFrac = buildSpec({ kind: 'frac', sub: 'frac', P: 5, Q: 6, A: 1, B: 3, key: 'frac:5/6\u00f71/3' });
+  need(canonFrac.grad === 6, 'common sixths');
+  need(canonFrac.expectN === 5 && canonFrac.expectD === 2, '5/6\u00f71/3 = 5/2');
+
+  const six = buildSpec({ kind: 'frac', sub: 'frac', P: 3, Q: 4, A: 1, B: 8, key: 'frac:3/4\u00f71/8' });
+  need(six.expectN === 6 && six.expectD === 1, '3/4\u00f71/8 = 6');
+  const half = buildSpec({ kind: 'frac', sub: 'frac', P: 7, Q: 8, A: 1, B: 4, key: 'frac:7/8\u00f71/4' });
+  need(half.expectN === 7 && half.expectD === 2, '7/8\u00f71/4 = 7/2');
+
+  const mergeA = buildSpec({ kind: 'merge', sub: 'warm', N: 4, A: 3, B: 4, key: 'merge:4x3/4' });
+  need(mergeA.expectN === 3 && mergeA.expectD === 1, '4\u00d73/4 = 3');
+  const mergeB = buildSpec({ kind: 'merge', sub: 'mix', N: 5, A: 3, B: 4, key: 'merge:5x3/4' });
+  need(mergeB.expectN === 15 && mergeB.expectD === 4, '5\u00d73/4 = 15/4');
+  const pourRed = buildSpec({ kind: 'pour', sub: 'red', W: 4, B: 6, key: 'pour:4/6' });
+  need(pourRed.expectN === 2 && pourRed.expectD === 3, '4/6 = 2/3');
+  const pourImp = buildSpec({ kind: 'pour', sub: 'imp', W: 5, B: 3, key: 'pour:5/3' });
+  need(pourImp.expectN === 5 && pourImp.expectD === 3, '5/3');
+  need(toMixed(7, 4).w === 1 && toMixed(7, 4).n === 3, '7/4 mixed');
+
+  const saved = G.history.slice();
+  G.history = [];
+  const recent = [];
+  for (let n = 0; n < 12; n++) {
+    const round = (n % 8) + 1;
+    const p = makeProblem(round);
+    if (recent.indexOf(p.key) !== -1) errors.push('repeat ' + p.key);
+    recent.push(p.key);
+    if (recent.length > 6) recent.shift();
+    if (round <= 2 && p.kind === 'pour' && (p.W >= p.B || gcd(p.W, p.B) !== 1)) errors.push('warm pour rule ' + p.key);
+    if (round <= 2 && p.kind === 'merge' && (p.expectN % p.expectD !== 0)) errors.push('warm merge rule ' + p.key);
+    if (round === 5 && !(p.kind === 'ladle' && p.remParts === 0)) errors.push('round 5 ' + p.key);
+    if (round === 6 && !(p.kind === 'ladle' && p.remParts > 0)) errors.push('round 6 ' + p.key);
+    if (round >= 7 && p.kind !== 'frac') errors.push('master ' + p.key);
+    if (!problemOK(p)) errors.push('play invalid ' + p.key);
+  }
+  if (G.history.length !== 6) errors.push('history length ' + G.history.length);
+  G.history = saved;
+
+  const spec = { kind: 'pour', sub: 'warm', W: 2, B: 5, key: 'pour:2/5' };
+  const slots = new Set();
+  for (let i = 0; i < 16; i++) {
+    const p = buildSpec(spec);
+    slots.add(p.steps[2].options.findIndex(function (o) { return o.correct; }));
+  }
+  need(slots.size >= 2, 'shuffle stuck');
+  return errors;
+}
+
+/* ---------- storage, audio ---------- */
+
+function readStore(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+function writeStore(key, val) {
+  try { localStorage.setItem(key, val); } catch (e) { /* private mode */ }
+}
+
+let audioCtx = null;
+let musicGain = null;
+let sfxGain = null;
+let noiseBuf = null;
+let muted = readStore(MUTE_KEY) === '1';
+const music = { next: 0, step: 0 };
+
+function ensureAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audioCtx) {
+    try {
+    audioCtx = new AC();
+    musicGain = audioCtx.createGain();
+    sfxGain = audioCtx.createGain();
+    musicGain.gain.value = muted ? 0 : 0.09;
+    sfxGain.gain.value = muted ? 0 : 0.32;
+    const comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 12;
+    comp.ratio.value = 3;
+    musicGain.connect(comp);
+    sfxGain.connect(comp);
+    comp.connect(audioCtx.destination);
+    const len = Math.floor(audioCtx.sampleRate * 0.25);
+    noiseBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    music.next = audioCtx.currentTime + 0.05;
+    } catch (err) {
+      audioCtx = null;
+      return;
+    }
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function midi(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+function tone(t, freq, dur, type, vol, dest, slide) {
+  if (!audioCtx || !dest) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(dest);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function noiseHit(t, dur, vol, freq) {
+  if (!audioCtx || !noiseBuf || muted) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = noiseBuf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(sfxGain);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+function sfxPing() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  tone(t, 880, 0.12, 'sine', 0.12, sfxGain, 1320);
+  tone(t + 0.04, 1320, 0.16, 'triangle', 0.06, sfxGain);
+}
+
+function sfxPour() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  tone(t, 520, 0.32, 'sine', 0.1, sfxGain, 168);
+  tone(t, 760, 0.22, 'triangle', 0.06, sfxGain, 280);
+  noiseHit(t, 0.18, 0.05, 900);
+}
+
+function sfxCork() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  noiseHit(t, 0.08, 0.12, 400);
+  tone(t, 196, 0.12, 'sine', 0.12, sfxGain);
+  [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+    tone(t + 0.06 + i * 0.07, f, 0.28, 'triangle', 0.09, sfxGain);
+  });
+}
+
+function sfxBuzz() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  tone(t, 92, 0.22, 'sawtooth', 0.05, sfxGain, 70);
+  tone(t, 58, 0.28, 'square', 0.04, sfxGain);
+}
+
+function sfxFizzle() {
+  if (muted || !audioCtx) return;
+  noiseHit(audioCtx.currentTime, 0.22, 0.1, 1400);
+}
+
+function sfxUi() {
+  if (muted || !audioCtx) return;
+  tone(audioCtx.currentTime, 660, 0.05, 'sine', 0.05, sfxGain);
+}
+
+function pumpMusic() {
+  if (!audioCtx || muted) return;
+  const lead = [62, 65, 69, 74, 72, 69, 67, 65, 64, 67, 71, 74, 72, 67, 65, 62];
+  const bass = [38, 0, 45, 0, 41, 0, 43, 0, 38, 0, 36, 0, 41, 0, 33, 0];
+  const stepDur = 60 / 132 / 2;
+  while (music.next < audioCtx.currentTime + 0.28) {
+    const i = music.step % 16;
+    const t = music.next;
+    tone(t, midi(lead[i] + 12), 0.18, 'triangle', 0.05, musicGain);
+    if (i % 2 === 0) tone(t, midi(lead[i]), 0.2, 'sine', 0.04, musicGain);
+    if (bass[i]) tone(t, midi(bass[i]), 0.22, 'sawtooth', 0.035, musicGain);
+    if (i % 4 === 0) noiseHit(t, 0.05, 0.03, 180);
+    if (i % 2 === 1) noiseHit(t, 0.03, 0.015, 2400);
+    music.step++;
+    music.next += stepDur;
+  }
+}
+
+function toggleMute() {
+  muted = !muted;
+  writeStore(MUTE_KEY, muted ? '1' : '0');
+  if (!muted) {
+    ensureAudio();
+    if (musicGain) musicGain.gain.value = 0.09;
+    if (sfxGain) sfxGain.gain.value = 0.32;
+    if (audioCtx) music.next = audioCtx.currentTime + 0.05;
+  } else if (musicGain) {
+    musicGain.gain.value = 0;
+    sfxGain.gain.value = 0;
+  }
+  sfxUi();
+}
+
+/* ---------- flow ---------- */
+
+function potionOf() {
+  return POTIONS[(G.round - 1) % POTIONS.length];
+}
+
+function ownerOfStep() {
+  if (G.mode !== 'coop') return -1;
+  const p1First = (G.round % 2) === 1;
+  if (G.step === 2) return -1;
+  if (G.step === 0) return p1First ? 0 : 1;
+  return p1First ? 1 : 0;
+}
+
+function roleLine() {
+  if (G.mode === 'solo') return 'SOLO VALVES';
+  if (G.mode === 'versus') return 'FIRST LOCK TAKES THE STEP';
+  const owner = ownerOfStep();
+  if (owner < 0) return 'BOTH SEAL AND SHIP';
+  return owner === 0 ? 'P1 RED CALIBRATES' : 'P2 BLUE RUNS THE MANIFOLD';
+}
+
+function scoreMult(comboBefore) {
+  return (1 + Math.min(comboBefore, 8) * 0.25) * tierMult(G.round);
+}
+
+function pointsFor(step, comboBefore) {
+  const base = [100, 140, 350][step];
+  return Math.round(base * scoreMult(comboBefore));
+}
+
+function speak(text) {
+  if (sr) sr.textContent = text;
+}
+
+function announce() {
+  const p = G.problem;
+  if (!p) return;
+  const tier = tierOf(G.round);
+  speak('Round ' + G.round + ', ' + tier.name + '. ' + p.order + ' ' + p.prompts[G.step]);
+}
+
+function cardRects() {
+  const gap = 12;
+  const x0 = 14;
+  const tw = 1252;
+  const w = (tw - gap * 3) / 4;
+  const rects = [];
+  for (let i = 0; i < 4; i++) {
+    rects.push({ i: i, x: x0 + i * (w + gap), y: GEO.cardY, w: w, h: GEO.cardH });
+  }
+  return rects;
+}
+
+function resetPlayers() {
+  G.players.forEach(function (p, i) {
+    p.sel = randInt(0, 3);
+    const c = cardRects()[p.sel];
+    p.x = c.x + c.w / 2;
+    p.y = c.y + c.h / 2;
+    p.ax = 0;
+    p.ay = 0;
+    p.a = false;
+    p.holdDir = 0;
+    p.holdT = 0;
+  });
+  G.ready = [false, false];
+}
+
+function beginGame(mode) {
+  ensureAudio();
+  G.mode = mode;
+  G.phase = 'play';
+  G.round = 1;
+  G.step = 0;
+  G.score = 0;
+  G.scores = [0, 0];
+  G.stars = [0, 0];
+  G.shields = mode === 'coop' ? [4, 4] : [3, 3];
+  G.combo = 0;
+  G.combos = [0, 0];
+  G.problem = makeProblem(1);
+  G.lock = false;
+  G.feedback = '';
+  G.feedbackLeft = 0;
+  G.hint = '';
+  G.hintUntil = 0;
+  G.note = '';
+  G.floaters = [];
+  G.sparks = [];
+  G.shake = 0;
+  G.stepT = performance.now();
+  G.overReason = '';
+  resetPlayers();
+  mouse.on = false;
+  announce();
+}
+
+function spawnFloater(text, color, x, y) {
+  G.floaters.push({ text: text, color: color, x: x, y: y, vy: -28, life: 1.25 });
+  if (G.floaters.length > 8) G.floaters.shift();
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 30 + Math.random() * 90;
+    G.sparks.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 20,
+      life: 0.45 + Math.random() * 0.35,
+      age: 0,
+      color: color,
+      r: 2 + Math.random() * 3,
+    });
+  }
+  if (G.sparks.length > 120) G.sparks.splice(0, G.sparks.length - 120);
+}
+
+function visNow() {
+  const u = G.feedback === 'good' && G.feedbackDur
+    ? 1 - Math.max(0, G.feedbackLeft) / G.feedbackDur
+    : 0;
+  if (G.feedback === 'good') {
+    if (G.step === 0) return { lines: u, pour: 0, ship: 0 };
+    if (G.step === 1) return { lines: 1, pour: u, ship: 0 };
+    return { lines: 1, pour: 1, ship: u };
+  }
+  if (G.step <= 0) return { lines: 0, pour: 0, ship: 0 };
+  if (G.step === 1) return { lines: 1, pour: 0, ship: 0 };
+  return { lines: 1, pour: 1, ship: 0 };
+}
+
+function finishFeedback() {
+  G.feedbackLeft = 0;
+  if (G.feedback === 'good') {
+    if (G.step < 2) {
+      G.step += 1;
+      G.stepT = performance.now();
+      G.lock = false;
+      G.feedback = '';
+      G.ready = [false, false];
+      resetSelOnly();
+      announce();
+    } else {
+      nextRound();
+    }
+    return;
+  }
+  G.feedback = '';
+  G.lock = false;
+  if (G.mode === 'versus') {
+    if (G.shields[0] <= 0 || G.shields[1] <= 0) {
+      const winner = G.shields[0] <= 0 && G.shields[1] <= 0 ? -1 : (G.shields[0] <= 0 ? 1 : 0);
+      endGame(winner < 0 ? 'Both labs lost pressure.' : (winner === 0 ? 'Red keeps the lab.' : 'Blue keeps the lab.'));
+    }
+  } else if (G.shields[0] <= 0) {
+    endGame(G.mode === 'coop' ? 'The team shields are spent.' : 'The lab shields are spent.');
+  }
+}
+
+function resetSelOnly() {
+  G.players.forEach(function (p) {
+    p.sel = randInt(0, 3);
+  });
+}
+
+function nextRound() {
+  G.round += 1;
+  G.step = 0;
+  G.problem = makeProblem(G.round);
+  G.lock = false;
+  G.feedback = '';
+  G.feedbackLeft = 0;
+  G.ready = [false, false];
+  G.hint = '';
+  G.stepT = performance.now();
+  resetPlayers();
+  announce();
+}
+
+function endGame(reason) {
+  G.phase = 'over';
+  G.overReason = reason;
+  G.lock = true;
+  const val = G.mode === 'versus' ? Math.max(G.scores[0], G.scores[1]) : G.score;
+  if (G.mode === 'coop') {
+    if (val > G.bestCoop) {
+      G.bestCoop = val;
+      writeStore(BEST_COOP, String(val));
+    }
+  } else if (G.mode === 'solo') {
+    if (val > G.bestSolo) {
+      G.bestSolo = val;
+      writeStore(BEST_SOLO, String(val));
+    }
+  }
+  speak(reason + ' Score ' + val + '.');
+}
+
+function deny(pi) {
+  const owner = ownerOfStep();
+  G.note = owner === 0 ? 'Red has this valve.' : 'Blue has this valve.';
+  G.noteUntil = performance.now() + 1100;
+  sfxUi();
+  G.players[pi].x += (pi === 0 ? -6 : 6);
+}
+
+function submit(pi) {
+  if (G.phase !== 'play' || G.lock || !G.problem) return;
+  if (G.mode === 'versus' && G.shields[pi] <= 0) return;
+  const owner = ownerOfStep();
+  if (G.mode === 'coop' && owner !== -1 && owner !== pi) {
+    deny(pi);
+    return;
+  }
+  const options = G.problem.steps[G.step].options;
+  const opt = options[G.players[pi].sel];
+  if (!opt) return;
+  if (!opt.correct) {
+    fail(pi, opt);
+    return;
+  }
+  if (G.mode === 'coop' && G.step === 2) {
+    G.ready[pi] = true;
+    sfxUi();
+    G.note = (G.ready[0] ? 'P1 locked' : 'P1 waiting') + '  ·  ' + (G.ready[1] ? 'P2 locked' : 'P2 waiting');
+    G.noteUntil = performance.now() + 2000;
+    if (!(G.ready[0] && G.ready[1])) return;
+  }
+  succeed(pi);
+}
+
+function fail(pi, opt) {
+  if (G.mode === 'versus') {
+    G.shields[pi] = Math.max(0, G.shields[pi] - 1);
+    G.combos[pi] = 0;
+  } else {
+    G.shields[0] = Math.max(0, G.shields[0] - 1);
+    G.combo = 0;
+  }
+  G.hint = opt.hint;
+  G.hintUntil = performance.now() + 20000;
+  G.lock = true;
+  G.feedback = 'bad';
+  G.feedbackDur = 700;
+  G.feedbackLeft = 700;
+  G.shake = 12;
+  G.ready = [false, false];
+  sfxBuzz();
+  sfxFizzle();
+  const rect = cardRects()[G.players[pi].sel];
+  burst(rect.x + rect.w / 2, rect.y + rect.h / 2, '#c084fc', 18);
+  speak(opt.hint);
+}
+
+function succeed(pi) {
+  const elapsed = (performance.now() - G.stepT) / 1000;
+  const comboBefore = G.mode === 'versus' ? G.combos[pi] : G.combo;
+  let pts = pointsFor(G.step, comboBefore);
+  let speed = 0;
+  if (elapsed < 4) speed = 80;
+  else if (elapsed < 8) speed = 40;
+  if (G.mode === 'versus') speed += 70;
+  pts += speed;
+  if (G.mode === 'versus') {
+    G.scores[pi] += pts;
+    G.combos[pi] += 1;
+    if (G.step === 2) G.stars[pi] += 1;
+  } else {
+    G.score += pts;
+    G.combo += 1;
+  }
+  G.hint = '';
+  G.lock = true;
+  G.feedback = 'good';
+  G.feedbackDur = G.step === 2 ? 1400 : (G.step === 1 ? 980 : 620);
+  G.feedbackLeft = G.feedbackDur;
+  if (G.step === 0) sfxPing();
+  else if (G.step === 1) sfxPour();
+  else sfxCork();
+  const label = G.step === 2 ? 'SHIPPED +' + pts : '+' + pts;
+  spawnFloater(label, '#d6ffe8', 640, 360);
+  burst(640, 340, potionOf().a, G.step === 2 ? 28 : 12);
+  if (G.step === 2) speak('Sealed and shipped. Plus ' + pts + ' alchemy points.');
+}
+
+/* ---------- input ---------- */
+
+const BLOCK = new Set([
+  'Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyM',
+]);
+
+function moveSel(pi, dir) {
+  if (G.phase === 'title') {
+    G.titleSel = (G.titleSel + dir + 3) % 3;
+    sfxUi();
+    return;
+  }
+  if (G.phase === 'over') return;
+  if (G.phase !== 'play' || G.lock) return;
+  const p = G.players[pi];
+  p.sel = (p.sel + dir + 4) % 4;
+  if (G.mode === 'solo') mouse.on = false;
+  sfxUi();
+}
+
+function confirmPlayer(pi) {
+  ensureAudio();
+  if (G.phase === 'title') {
+    beginGame(['solo', 'coop', 'versus'][G.titleSel]);
+    return;
+  }
+  if (G.phase === 'over') {
+    beginGame(G.mode);
+    return;
+  }
+  if (G.phase === 'pause') {
+    G.phase = 'play';
+    return;
+  }
+  submit(pi);
+}
+
+function onKeyDown(e) {
+  if (BLOCK.has(e.code)) e.preventDefault();
+  if (keys[e.code]) return;
+  keys[e.code] = performance.now();
+  ensureAudio();
+  if (e.code === 'KeyM') {
+    toggleMute();
+    return;
+  }
+  if (e.code === 'Escape') {
+    if (G.phase === 'play') G.phase = 'pause';
+    else if (G.phase === 'pause') G.phase = 'play';
+    return;
+  }
+  const solo = G.mode === 'solo' || G.phase === 'title' || G.phase === 'over';
+  if (solo) {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') moveSel(0, -1);
+    else if (e.code === 'ArrowRight' || e.code === 'KeyD') moveSel(0, 1);
+    else if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') confirmPlayer(0);
+    else if (e.code === 'Digit1' && G.phase === 'title') { G.titleSel = 0; beginGame('solo'); }
+    else if (e.code === 'Digit2' && G.phase === 'title') { G.titleSel = 1; beginGame('coop'); }
+    else if (e.code === 'Digit3' && G.phase === 'title') { G.titleSel = 2; beginGame('versus'); }
+    return;
+  }
+  if (e.code === 'KeyA') moveSel(0, -1);
+  else if (e.code === 'KeyD') moveSel(0, 1);
+  else if (e.code === 'KeyF' || e.code === 'Space') confirmPlayer(0);
+  if (e.code === 'ArrowLeft') moveSel(1, -1);
+  else if (e.code === 'ArrowRight') moveSel(1, 1);
+  else if (e.code === 'Enter') confirmPlayer(1);
+}
+
+function onKeyUp(e) {
+  keys[e.code] = 0;
+}
+
+function repeatKeys() {
+  const now = performance.now();
+  function held(code) {
+    const t = keys[code];
+    if (!t) return false;
+    if (now - t < 260) return false;
+    return Math.floor((now - t - 260) / 150) !== Math.floor((now - t - 16 - 260) / 150);
+  }
+  const solo = G.mode === 'solo' || G.phase === 'title';
+  if (solo) {
+    if (held('ArrowLeft') || held('KeyA')) moveSel(0, -1);
+    if (held('ArrowRight') || held('KeyD')) moveSel(0, 1);
+  } else if (G.phase === 'play') {
+    if (held('KeyA')) moveSel(0, -1);
+    if (held('KeyD')) moveSel(0, 1);
+    if (held('ArrowLeft')) moveSel(1, -1);
+    if (held('ArrowRight')) moveSel(1, 1);
+  }
+}
+
+function pointerPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const cssX = (e.clientX - r.left) * (window.innerWidth / Math.max(1, r.width));
+  const cssY = (e.clientY - r.top) * (window.innerHeight / Math.max(1, r.height));
+  return { x: (cssX - view.ox) / view.s, y: (cssY - view.oy) / view.s };
+}
+
+function inside(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+function titleRects() {
+  return [0, 1, 2].map(function (i) {
+    return { i: i, x: 56 + i * 400, y: 318, w: 368, h: 236 };
+  });
+}
+
+function overRects() {
+  return [
+    { id: 'again', x: 360, y: 430, w: 250, h: 64 },
+    { id: 'title', x: 670, y: 430, w: 250, h: 64 },
+  ];
+}
+
+function onPointerMove(e) {
+  const pos = pointerPos(e);
+  mouse.x = pos.x;
+  mouse.y = pos.y;
+  mouse.on = true;
+  if (G.phase !== 'play' || G.mode !== 'solo' || G.lock) return;
+  const rects = cardRects();
+  for (let i = 0; i < rects.length; i++) {
+    if (inside(pos.x, pos.y, rects[i])) G.players[0].sel = i;
+  }
+}
+
+function onPointerDown(e) {
+  canvas.focus();
+  ensureAudio();
+  const pos = pointerPos(e);
+  mouse.x = pos.x;
+  mouse.y = pos.y;
+  mouse.on = true;
+  if (e.cancelable) e.preventDefault();
+  if (inside(pos.x, pos.y, GEO.mute)) {
+    toggleMute();
+    return;
+  }
+  if (G.phase === 'title') {
+    const rects = titleRects();
+    for (let i = 0; i < rects.length; i++) {
+      if (inside(pos.x, pos.y, rects[i])) {
+        G.titleSel = i;
+        beginGame(['solo', 'coop', 'versus'][i]);
+        return;
+      }
+    }
+    return;
+  }
+  if (G.phase === 'pause') {
+    if (inside(pos.x, pos.y, { x: 440, y: 300, w: 400, h: 64 })) G.phase = 'play';
+    else if (inside(pos.x, pos.y, { x: 440, y: 384, w: 400, h: 64 })) G.phase = 'title';
+    return;
+  }
+  if (G.phase === 'over') {
+    const rects = overRects();
+    for (let i = 0; i < rects.length; i++) {
+      if (inside(pos.x, pos.y, rects[i])) {
+        if (rects[i].id === 'again') beginGame(G.mode);
+        else G.phase = 'title';
+        return;
+      }
+    }
+    return;
+  }
+  if (G.lock) return;
+  const rects = cardRects();
+  for (let i = 0; i < rects.length; i++) {
+    if (inside(pos.x, pos.y, rects[i])) {
+      G.players[0].sel = i;
+      submit(0);
+      return;
+    }
+  }
+  if (inside(pos.x, pos.y, GEO.seal)) submit(0);
+}
+
+function pollPads() {
+  const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
+  for (let i = 0; i < 2; i++) {
+    const gp = pads[i];
+    const p = G.players[i];
+    if (!gp) continue;
+    G.padNote = '8BitDo ' + (i + 1) + ' linked';
+    const ax = gp.axes[0] || 0;
+    const dir = ax > 0.5 ? 1 : ax < -0.5 ? -1 : 0;
+    const dL = gp.buttons[14] && gp.buttons[14].pressed;
+    const dR = gp.buttons[15] && gp.buttons[15].pressed;
+    const dpad = dL ? -1 : dR ? 1 : 0;
+    const move = dpad || dir;
+    const soloPad = G.mode === 'solo' || G.phase === 'title' || G.phase === 'over';
+    if (soloPad && i > 0) {
+      p.holdDir = 0;
+      p.a = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      continue;
+    } else if (move && move !== p.holdDir) {
+      p.holdDir = move;
+      p.holdT = performance.now();
+      p._rep = 0;
+      moveSel(soloPad ? 0 : i, move);
+    } else if (!move) {
+      p.holdDir = 0;
+      p._rep = 0;
+    } else if (performance.now() - p.holdT > 280) {
+      const steps = Math.floor((performance.now() - p.holdT - 280) / 160);
+      const prev = p._rep || 0;
+      if (steps !== prev) {
+        p._rep = steps;
+        moveSel(soloPad ? 0 : i, move);
+      }
+    }
+    if (!p.holdDir) p._rep = 0;
+    const a = gp.buttons[0] && gp.buttons[0].pressed;
+    if (a && !p.a) {
+      ensureAudio();
+      if (G.mode === 'solo') confirmPlayer(0);
+      else confirmPlayer(i);
+    }
+    p.a = !!a;
+  }
+}
+
+/* ---------- draw ---------- */
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const sw = window.innerWidth || GEO.W;
+  const sh = window.innerHeight || GEO.H;
+  canvas.width = Math.max(1, Math.floor(sw * dpr));
+  canvas.height = Math.max(1, Math.floor(sh * dpr));
+  const s = Math.min(sw / GEO.W, sh / GEO.H);
+  view.s = s;
+  view.ox = (sw - GEO.W * s) / 2;
+  view.oy = (sh - GEO.H * s) / 2;
+  view.dpr = dpr;
+}
+
+function applyView() {
+  const d = view.dpr;
+  ctx.setTransform(d * view.s, 0, 0, d * view.s, d * view.ox, d * view.oy);
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function panel(x, y, w, h, r, fill, stroke) {
+  roundRect(x, y, w, h, r);
+  ctx.fillStyle = fill || 'rgba(8, 12, 28, 0.9)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = stroke || 'rgba(125, 236, 255, 0.45)';
+  ctx.stroke();
+}
+
+function text(str, x, y, size, color, align, base) {
+  ctx.fillStyle = color;
+  ctx.font = '700 ' + size + 'px ' + FONT;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = base || 'middle';
+  ctx.fillText(str, x, y);
+}
+
+function tokenWidth(tok, size) {
+  if (tok.k === 't') {
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    return ctx.measureText(tok.s).width;
+  }
+  if (tok.k === 'u') {
+    ctx.font = '700 ' + Math.round(size * 0.62) + 'px ' + FONT;
+    return ctx.measureText(tok.s).width;
+  }
+  if (tok.k === 'f') {
+    const fs = Math.round(size * 0.72);
+    ctx.font = '700 ' + fs + 'px ' + FONT;
+    return Math.max(ctx.measureText(String(tok.n)).width, ctx.measureText(String(tok.d)).width) + 12;
+  }
+  if (tok.k === 'm') {
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    const ww = ctx.measureText(String(tok.w)).width;
+    const fs = Math.round(size * 0.72);
+    ctx.font = '700 ' + fs + 'px ' + FONT;
+    const fw = Math.max(ctx.measureText(String(tok.n)).width, ctx.measureText(String(tok.d)).width) + 12;
+    return ww + 8 + fw;
+  }
+  return 0;
+}
+
+function drawFrac(cx, cy, n, d, size, color) {
+  ctx.fillStyle = color;
+  ctx.font = '700 ' + size + 'px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = Math.max(ctx.measureText(String(n)).width, ctx.measureText(String(d)).width);
+  ctx.fillText(String(n), cx, cy - size * 0.62);
+  ctx.fillRect(cx - (w + 8) / 2, cy - 1.5, w + 8, 3);
+  ctx.fillText(String(d), cx, cy + size * 0.68);
+}
+
+function drawTok(tok, x, cy, size, color, w) {
+  const cx = x + w / 2;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (tok.k === 't') {
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    ctx.fillText(tok.s, cx, cy);
+  } else if (tok.k === 'u') {
+    ctx.font = '700 ' + Math.round(size * 0.62) + 'px ' + FONT;
+    ctx.fillText(tok.s, cx, cy + size * 0.06);
+  } else if (tok.k === 'f') {
+    drawFrac(cx, cy, tok.n, tok.d, Math.round(size * 0.72), color);
+  } else if (tok.k === 'm') {
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    const ww = ctx.measureText(String(tok.w)).width;
+    const fs = Math.round(size * 0.72);
+    ctx.font = '700 ' + fs + 'px ' + FONT;
+    const fw = Math.max(ctx.measureText(String(tok.n)).width, ctx.measureText(String(tok.d)).width) + 12;
+    const left = cx - (ww + 8 + fw) / 2;
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = color;
+    ctx.fillText(String(tok.w), left, cy + 1);
+    drawFrac(left + ww + 8 + fw / 2, cy, tok.n, tok.d, fs, color);
+  }
+}
+
+function drawTokens(tokens, cx, cy, size, color, maxW) {
+  let s = size;
+  let widths = tokens.map(function (t) { return tokenWidth(t, s); });
+  let total = widths.reduce(function (a, b) { return a + b; }, 0) + Math.max(0, tokens.length - 1) * 8;
+  while (s > 13 && total > maxW) {
+    s -= 2;
+    widths = tokens.map(function (t) { return tokenWidth(t, s); });
+    total = widths.reduce(function (a, b) { return a + b; }, 0) + Math.max(0, tokens.length - 1) * 8;
+  }
+  let x = cx - total / 2;
+  for (let i = 0; i < tokens.length; i++) {
+    drawTok(tokens[i], x, cy, s, color, widths[i]);
+    x += widths[i] + 8;
+  }
+}
+
+function wrapLines(str, maxW, size) {
+  ctx.font = '700 ' + size + 'px ' + FONT;
+  const words = String(str).split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (ctx.measureText(next).width > maxW && cur) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 3);
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, GEO.H);
+  g.addColorStop(0, '#14082c');
+  g.addColorStop(0.45, '#081226');
+  g.addColorStop(1, '#061018');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, GEO.W, GEO.H);
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = '#1c8ea8';
+  ctx.lineWidth = 1;
+  const t = G.time;
+  for (let i = 0; i < 8; i++) {
+    ctx.beginPath();
+    ctx.moveTo(-40, 80 + i * 90);
+    ctx.bezierCurveTo(300, 40 + i * 70 + Math.sin(t + i) * 10, 800, 160 + i * 40, 1320, 60 + i * 80);
+    ctx.stroke();
+  }
+  ctx.restore();
+  for (let i = 0; i < 26; i++) {
+    const x = (i * 97 + t * (8 + (i % 5))) % (GEO.W + 40) - 20;
+    const y = (i * 53 + Math.sin(t * 0.6 + i) * 18) % GEO.H;
+    ctx.globalAlpha = 0.25 + 0.25 * Math.sin(t * 2 + i);
+    ctx.fillStyle = i % 3 === 0 ? '#ff7ae0' : '#7af7ff';
+    ctx.beginPath();
+    ctx.arc(x, y, 1.4 + (i % 3), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawShield(x, y, s, on) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, -s);
+  ctx.lineTo(s * 0.85, -s * 0.45);
+  ctx.lineTo(s * 0.7, s * 0.55);
+  ctx.lineTo(0, s);
+  ctx.lineTo(-s * 0.7, s * 0.55);
+  ctx.lineTo(-s * 0.85, -s * 0.45);
+  ctx.closePath();
+  ctx.fillStyle = on ? '#7af7ff' : 'rgba(120, 150, 170, 0.25)';
+  ctx.fill();
+  ctx.strokeStyle = on ? '#e7fdff' : 'rgba(180, 210, 220, 0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawStar(x, y, r, on) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+    const b = a + Math.PI / 5;
+    ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    ctx.lineTo(Math.cos(b) * r * 0.45, Math.sin(b) * r * 0.45);
+  }
+  ctx.closePath();
+  ctx.fillStyle = on ? '#ffc14a' : 'rgba(255, 193, 74, 0.2)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function comma(n) {
+  return String(Math.max(0, n | 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function drawMute() {
+  const m = GEO.mute;
+  panel(m.x, m.y, m.w, m.h, 10, 'rgba(10, 18, 32, 0.95)', muted ? 'rgba(255, 120, 160, 0.7)' : 'rgba(125, 236, 255, 0.7)');
+  ctx.strokeStyle = '#e8f7ff';
+  ctx.fillStyle = '#e8f7ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(m.x + 12, m.y + 16);
+  ctx.lineTo(m.x + 18, m.y + 16);
+  ctx.lineTo(m.x + 24, m.y + 11);
+  ctx.lineTo(m.x + 24, m.y + 29);
+  ctx.lineTo(m.x + 18, m.y + 24);
+  ctx.lineTo(m.x + 12, m.y + 24);
+  ctx.closePath();
+  ctx.fill();
+  if (muted) {
+    ctx.strokeStyle = '#ff8aa8';
+    ctx.beginPath();
+    ctx.moveTo(m.x + 28, m.y + 14);
+    ctx.lineTo(m.x + 36, m.y + 26);
+    ctx.moveTo(m.x + 36, m.y + 14);
+    ctx.lineTo(m.x + 28, m.y + 26);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(m.x + 26, m.y + 20, 6, -0.8, 0.8);
+    ctx.stroke();
+  }
+}
+
+function drawHUD() {
+  const h = GEO.hud;
+  panel(h.x, h.y, h.w, h.h, 14);
+  const tier = tierOf(G.round);
+  const midY = h.y + h.h / 2;
+  if (G.phase === 'title') {
+    text('CRYSTAL POTION BOTTLER', h.x + 22, midY, 20, '#e8f7ff', 'left', 'middle');
+    text(muted ? 'SOUND OFF' : 'SOUND ON', h.x + 980, midY, 14, '#9ec9d6', 'left', 'middle');
+    drawMute();
+    return;
+  }
+  let modeLabel = 'SOLO ALCHEMIST';
+  if (G.mode === 'coop') modeLabel = '2P CO-OP TEAM';
+  if (G.mode === 'versus') modeLabel = '2P VERSUS';
+  text(modeLabel, h.x + 18, midY, 16, '#e8f7ff', 'left', 'middle');
+  text('ROUND ' + G.round + '  ·  ' + tier.name, h.x + 250, midY, 15, '#ffc14a', 'left', 'middle');
+  if (G.mode === 'versus') {
+    text('P1', h.x + 560, midY, 14, '#ff5d6c', 'left', 'middle');
+    for (let i = 0; i < 3; i++) drawShield(h.x + 610 + i * 22, midY, 8, i < G.shields[0]);
+    drawStar(h.x + 690, midY, 9, G.stars[0] > 0);
+    text(String(G.stars[0]), h.x + 706, midY, 14, '#ffc14a', 'left', 'middle');
+    text(comma(G.scores[0]), h.x + 736, midY, 14, '#ffd0d4', 'left', 'middle');
+    text('P2', h.x + 860, midY, 14, '#6eb0ff', 'left', 'middle');
+    for (let i = 0; i < 3; i++) drawShield(h.x + 910 + i * 22, midY, 8, i < G.shields[1]);
+    drawStar(h.x + 990, midY, 9, G.stars[1] > 0);
+    text(String(G.stars[1]), h.x + 1006, midY, 14, '#ffc14a', 'left', 'middle');
+    text(comma(G.scores[1]), h.x + 1036, midY, 14, '#d5e6ff', 'left', 'middle');
+  } else {
+    const shieldN = G.mode === 'coop' ? 4 : 3;
+    const shieldLabel = G.mode === 'coop' ? 'TEAM SHIELDS' : 'SHIELDS';
+    text(shieldLabel, h.x + 560, midY, 13, '#9ec9d6', 'left', 'middle');
+    for (let i = 0; i < shieldN; i++) drawShield(h.x + 680 + i * 24, midY, 9, i < G.shields[0]);
+    const combo = G.combo;
+    text('COMBO ' + combo, h.x + 800, midY, 15, combo ? '#c6ff4a' : '#9ec9d6', 'left', 'middle');
+    const heat = tierMult(G.round);
+    if (heat > 1) text('×' + heat.toFixed(2), h.x + 900, midY, 13, '#ff7ae0', 'left', 'middle');
+    const scoreLabel = G.mode === 'coop' ? 'TEAM SCORE' : 'SCORE';
+    text(scoreLabel + '  ' + comma(G.score), h.x + 980, midY, 16, '#e8f7ff', 'left', 'middle');
+  }
+  drawMute();
+}
+
+function drawTicket() {
+  const p = G.problem;
+  const box = GEO.ticket;
+  panel(box.x, box.y, box.w, box.h, 16);
+  if (!p) return;
+  text(p.kicker, box.x + 24, box.y + 22, 13, '#7af7ff', 'left', 'middle');
+  text('BATCH ORDER', box.x + box.w - 24, box.y + 22, 13, '#ff7ae0', 'right', 'middle');
+  drawTokens(p.ticket, box.x + box.w / 2, box.y + 68, 34, '#f4fbff', box.w - 80);
+}
+
+function flaskPath(x, y, w, h, beaker) {
+  const neck = beaker ? w * 0.72 : w * 0.4;
+  const neckH = h * (beaker ? 0.08 : 0.14);
+  const cx = x + w / 2;
+  const top = y;
+  const bot = y + h;
+  ctx.beginPath();
+  ctx.moveTo(cx - neck / 2, top);
+  ctx.lineTo(cx + neck / 2, top);
+  ctx.lineTo(cx + neck / 2, top + neckH);
+  ctx.quadraticCurveTo(x + w + 2, top + neckH + 6, x + w - 1, top + neckH + h * 0.18);
+  ctx.lineTo(x + w - w * 0.06, bot - 10);
+  ctx.quadraticCurveTo(cx, bot + 12, x + w * 0.06, bot - 10);
+  ctx.lineTo(x + 1, top + neckH + h * 0.18);
+  ctx.quadraticCurveTo(x - 2, top + neckH + 6, cx - neck / 2, top + neckH);
+  ctx.closePath();
+}
+
+function drawFlask(x, baseline, w, h, fillLitres, capacity, grad, linesAmt, potion, label, beaker) {
+  const y = baseline - h;
+  capacity = Math.max(1, capacity);
+  const fill01 = Math.max(0, Math.min(1, fillLitres / capacity));
+  ctx.save();
+  flaskPath(x, y, w, h, beaker);
+  ctx.clip();
+  const glass = ctx.createLinearGradient(x, y, x + w, y);
+  glass.addColorStop(0, 'rgba(190, 230, 255, 0.16)');
+  glass.addColorStop(0.5, 'rgba(255, 255, 255, 0.04)');
+  glass.addColorStop(1, 'rgba(120, 190, 220, 0.14)');
+  ctx.fillStyle = glass;
+  ctx.fillRect(x - 4, y - 4, w + 8, h + 16);
+  const innerTop = y + h * 0.16;
+  const innerBot = y + h - 8;
+  const innerH = innerBot - innerTop;
+  const fillH = innerH * fill01;
+  if (fillH > 1) {
+    const top = innerBot - fillH;
+    const lg = ctx.createLinearGradient(x, top, x, innerBot);
+    lg.addColorStop(0, potion.c);
+    lg.addColorStop(0.35, potion.a);
+    lg.addColorStop(1, potion.b);
+    ctx.fillStyle = lg;
+    ctx.beginPath();
+    ctx.moveTo(x - 2, innerBot + 8);
+    for (let px = 0; px <= w + 4; px += 4) {
+      const wy = top + Math.sin(px * 0.18 + G.time * 4 + x) * 2.4 * Math.min(1, fillH / 20);
+      ctx.lineTo(x - 2 + px, wy);
+    }
+    ctx.lineTo(x + w + 4, innerBot + 8);
+    ctx.closePath();
+    ctx.fill();
+    for (let b = 0; b < 4; b++) {
+      const by = top + ((G.time * 28 + b * 23 + x) % Math.max(8, fillH));
+      const bx = x + 8 + ((b * 37 + x) % Math.max(8, w - 16));
+      if (by > top + 4 && by < innerBot) {
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(bx, by, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+  if (linesAmt > 0.02) {
+    ctx.globalAlpha = 0.35 + 0.65 * linesAmt;
+    const litres = capacity;
+    const parts = Math.max(1, grad) * litres;
+    function laser(y1, x0, x1, wide) {
+      ctx.beginPath();
+      ctx.moveTo(x0, y1);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = 'rgba(4, 10, 20, 0.8)';
+      ctx.lineWidth = wide ? 4 : 3;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0, y1);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = wide ? '#fff4c2' : '#b8fff4';
+      ctx.lineWidth = wide ? 2 : 1.4;
+      ctx.stroke();
+    }
+    for (let L = 1; L < litres; L++) laser(innerBot - innerH * (L / litres), x + 8, x + w - 8, true);
+    for (let i = 1; i < parts; i++) {
+      if (litres > 1 && i % grad === 0) continue;
+      laser(innerBot - innerH * (i / parts), x + w * 0.2, x + w * 0.8, false);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  flaskPath(x, y, w, h, beaker);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(232, 247, 255, 0.9)';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.18, y + h * 0.28);
+  ctx.quadraticCurveTo(x + w * 0.22, y + h * 0.7, x + w * 0.16, y + h * 0.82);
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  if (label) text(label, x + w / 2, baseline + 14, 12, '#d5f6ff', 'center', 'middle');
+}
+
+function drawCork(x, baseline, w, h, amt) {
+  if (amt <= 0) return;
+  const y = baseline - h;
+  ctx.globalAlpha = Math.min(1, amt * 1.4);
+  roundRect(x + w * 0.34, y - 8 * amt, w * 0.32, 10, 3);
+  ctx.fillStyle = '#e6b15a';
+  ctx.fill();
+  ctx.strokeStyle = '#fff1cc';
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function rowMetrics(n, zoneX, zoneW, maxW, minW) {
+  n = Math.max(1, n | 0);
+  let w = maxW;
+  let g = n === 1 ? 0 : 10;
+  while (n * w + (n - 1) * g > zoneW && w > minW) w -= 2;
+  let total = n * w + (n - 1) * g;
+  if (total > zoneW) {
+    w = minW;
+    g = n === 1 ? 0 : Math.max(3, (zoneW - n * w) / Math.max(1, n - 1));
+    total = n * w + (n - 1) * g;
+  }
+  return { w: w, g: g, x: zoneX + Math.max(0, (zoneW - total) / 2), n: n };
+}
+
+function drawPipe(x1, y1, x2, y2, amt, color) {
+  if (amt <= 0.02) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.35 + 0.5 * amt;
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  const my = (y1 + y2) / 2 - 30;
+  ctx.moveTo(x1, y1);
+  ctx.bezierCurveTo(x1, my, x2, my, x2, y2);
+  ctx.stroke();
+  ctx.setLineDash([7, 9]);
+  ctx.lineDashOffset = -G.time * 48;
+  ctx.strokeStyle = '#f4fdff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawChute(amt) {
+  if (amt <= 0) return;
+  const x = 1080;
+  const y = 214;
+  ctx.save();
+  ctx.globalAlpha = 0.35 + amt * 0.65;
+  roundRect(x, y, 160, 36, 16);
+  ctx.fillStyle = 'rgba(8, 20, 36, 0.8)';
+  ctx.fill();
+  ctx.strokeStyle = '#7af7ff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  text('DISPATCH', x + 80, y + 18, 13, '#d8fbff', 'center', 'middle');
+  ctx.restore();
+}
+
+function drawLadle(x, y, w, h, fill01, potion, label) {
+  roundRect(x, y, w, h, 10);
+  ctx.fillStyle = 'rgba(210, 240, 255, 0.08)';
+  ctx.fill();
+  ctx.save();
+  roundRect(x, y, w, h, 10);
+  ctx.clip();
+  const fh = h * Math.max(0, Math.min(1, fill01));
+  if (fh > 0) {
+    const lg = ctx.createLinearGradient(x, y + h - fh, x, y + h);
+    lg.addColorStop(0, potion.c);
+    lg.addColorStop(1, potion.b);
+    ctx.fillStyle = lg;
+    ctx.fillRect(x, y + h - fh, w, fh + 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.beginPath();
+    ctx.moveTo(x + 3, y + h - fh);
+    ctx.bezierCurveTo(x + w * 0.3, y + h - fh - 3, x + w * 0.7, y + h - fh + 3, x + w - 3, y + h - fh);
+    ctx.stroke();
+  }
+  ctx.restore();
+  roundRect(x, y, w, h, 10);
+  ctx.strokeStyle = '#e8f7ff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x + w, y + h * 0.35);
+  ctx.quadraticCurveTo(x + w + 28, y + h * 0.1, x + w + 34, y - 8);
+  ctx.strokeStyle = '#ffc14a';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  if (label) text(label, x + w / 2, y + h + 16, 12, '#d5f6ff', 'center', 'middle');
+}
+
+function drawScene() {
+  const box = GEO.stage;
+  panel(box.x, box.y, box.w, box.h, 16, 'rgba(6, 14, 30, 0.78)', 'rgba(125, 236, 255, 0.28)');
+  const p = G.problem;
+  if (!p) return;
+  const vis = visNow();
+  const potion = potionOf();
+  const top = box.y + 28;
+  const baseline = GEO.banner.y - 30;
+  ctx.save();
+  if (G.shake > 0) ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+
+  ctx.fillStyle = 'rgba(80, 200, 220, 0.08)';
+  roundRect(28, baseline - 6, 1224, 10, 5);
+  ctx.fill();
+
+  if (p.kind === 'pour') {
+    const share = p.W / p.B;
+    const cap = Math.max(1, Math.ceil(share - 1e-6));
+    const left = rowMetrics(p.W, 36, 620, 78, 36);
+    const right = rowMetrics(p.B, 700, 500, 74, 34);
+    const hL = Math.min(186, Math.max(112, left.w * 2.05));
+    const hR = Math.min(186, Math.max(104, right.w * (1.55 + 0.22 * cap)));
+    for (let i = 0; i < p.W; i++) {
+      const x = left.x + i * (left.w + left.g);
+      drawFlask(x, baseline, left.w, hL, 1 - vis.pour * 0.15, 1, p.grad, vis.lines, potion, left.w >= 52 ? '1 L' : '', false);
+    }
+    for (let i = 0; i < p.B; i++) {
+      const x = right.x + i * (right.w + right.g) + vis.ship * 180;
+      ctx.globalAlpha = 1 - vis.ship * 0.85;
+      drawFlask(x, baseline, right.w, hR, share * vis.pour, cap, p.grad, vis.lines, potion, right.w >= 58 ? 'bottle' : '', false);
+      drawCork(x, baseline, right.w, hR, vis.ship);
+      ctx.globalAlpha = 1;
+    }
+    if (p.W && p.B) {
+      const destX = right.x + ((p.B - 1) * (right.w + right.g)) / 2 + right.w / 2;
+      const srcX = left.x + (p.W - 1) * (left.w + left.g) + left.w / 2;
+      drawPipe(srcX, baseline - hL + 14, destX, baseline - hR + 14, vis.pour, potion.a);
+    }
+  } else if (p.kind === 'merge') {
+    const simp = toMixed(p.N * p.A, p.B);
+    const outs = simp.w + (simp.exact ? 0 : 1);
+    const left = rowMetrics(Math.min(p.N, 8), 36, 640, 70, 32);
+    const right = rowMetrics(Math.max(1, outs), 740, 460, 78, 40);
+    const hL = Math.min(156, left.w * 1.65);
+    const hR = Math.min(186, right.w * 2);
+    const shown = Math.min(p.N, 8);
+    for (let i = 0; i < shown; i++) {
+      const x = left.x + i * (left.w + left.g);
+      const fill = (p.A / p.B) * (1 - vis.pour * 0.85);
+      drawFlask(x, baseline, left.w, hL, fill, 1, p.grad, vis.lines, potion, '', true);
+    }
+    if (p.N > 8) text('\u00d7 ' + p.N + ' beakers', left.x + 20, top + 8, 14, '#d5f6ff', 'left', 'middle');
+    else text(p.N + ' beakers', left.x, top + 4, 13, '#9ec9d6', 'left', 'middle');
+    if (vis.pour < 0.2) {
+      drawFlask(900, baseline, 86, hR, 0, 1, p.grad, vis.lines, potion, 'master', false);
+    } else {
+      for (let i = 0; i < outs; i++) {
+        const x = right.x + i * (right.w + right.g) + vis.ship * 160;
+        const litres = simp.exact || i < simp.w ? 1 : (simp.n / simp.d);
+        ctx.globalAlpha = 1 - vis.ship * 0.85;
+        drawFlask(x, baseline, right.w, hR, litres * vis.pour, 1, p.grad, vis.lines, potion, '1 L', false);
+        drawCork(x, baseline, right.w, hR, vis.ship);
+        ctx.globalAlpha = 1;
+      }
+    }
+    const srcX = left.x + (shown - 1) * (left.w + left.g) + left.w / 2;
+    const destX = vis.pour < 0.2 ? 943 : right.x + Math.max(0, outs - 1) * (right.w + right.g) / 2 + right.w / 2;
+    drawPipe(srcX, baseline - hL + 12, destX, baseline - hR + 12, vis.pour, potion.a);
+  } else {
+    const cap = p.kind === 'frac' ? 1 : Math.max(1, p.W);
+    const start = p.kind === 'frac' ? p.P / p.Q : p.W;
+    const leftover = p.remParts / p.grad;
+    const fill = start + (leftover - start) * vis.pour;
+    drawFlask(70, baseline, 210, 188, fill, cap, p.grad, vis.lines, potion, p.kind === 'frac' ? 'vat' : (p.W + ' L vat'), false);
+    const showPartial = p.remParts > 0;
+    const ladleFill = showPartial ? p.scoopFrac * vis.pour : vis.pour;
+    drawLadle(520, baseline - 132, 78, 70, ladleFill, potion, showPartial ? 'last scoop' : 'ladle');
+    drawTokens([{ k: 'f', n: p.A, d: p.B }, { k: 'u', s: ' L' }], 559, baseline - 154, 18, '#ffc14a', 120);
+    const nShow = Math.min(p.scoopFull, 8);
+    for (let i = 0; i < nShow; i++) {
+      const appear = vis.pour * p.scoopFull - i;
+      if (appear <= 0) continue;
+      drawLadle(700 + (i % 8) * 58, baseline - 70, 40, 44, Math.max(0, Math.min(1, appear)), potion, '');
+    }
+    if (vis.pour > 0.82) {
+      text(p.scoopFull > 8 ? (p.scoopFull + ' full scoops, then read the last ladle') : 'Count the full scoops. Read the last ladle.', 700, top + 4, 14, '#d5f6ff', 'left', 'middle');
+    } else {
+      text('Vat marked. Ladle waits.', 700, top + 4, 15, '#9ec9d6', 'left', 'middle');
+    }
+  }
+
+  drawChute(vis.ship);
+  ctx.restore();
+
+  const banner = GEO.banner;
+  const hintOn = !!G.hint;
+  panel(banner.x, banner.y, banner.w, banner.h, 12, hintOn ? 'rgba(48, 16, 72, 0.92)' : 'rgba(8, 20, 36, 0.92)', hintOn ? 'rgba(210, 140, 255, 0.8)' : 'rgba(125, 236, 255, 0.35)');
+  const msg = hintOn ? G.hint : p.prompts[G.step];
+  const lines = wrapLines(msg, banner.w - 280, hintOn ? 14 : 16);
+  lines.forEach(function (line, i) {
+    text(line, banner.x + 16, banner.y + (lines.length === 1 ? 21 : 14 + i * 16), hintOn ? 14 : 16, hintOn ? '#f0d4ff' : '#e8f7ff', 'left', 'middle');
+  });
+  text(roleLine(), banner.x + banner.w - 16, banner.y + 21, 13, '#ffc14a', 'right', 'middle');
+}
+
+function drawCards() {
+  if (!G.problem) return;
+  const rects = cardRects();
+  const options = G.problem.steps[G.step].options;
+  const owner = ownerOfStep();
+  for (let i = 0; i < rects.length; i++) {
+    const c = rects[i];
+    const opt = options[i];
+    const hot0 = G.players[0].sel === i && (G.mode !== 'coop' || owner === -1 || owner === 0 || G.step === 2);
+    const hot1 = G.mode !== 'solo' && G.players[1].sel === i && (G.mode !== 'coop' || owner === -1 || owner === 1 || G.step === 2);
+    let stroke = 'rgba(140, 190, 210, 0.35)';
+    if (G.feedback === 'good' && opt && opt.correct) stroke = '#5dff9a';
+    else if (G.feedback === 'bad' && opt && !opt.correct && (G.players[0].sel === i || (G.mode !== 'solo' && G.players[1].sel === i))) stroke = '#d28cff';
+    else if (hot0 && hot1) stroke = '#f4fbff';
+    else if (hot0) stroke = G.mode === 'solo' ? '#7af7ff' : '#ff5d6c';
+    else if (hot1) stroke = '#6eb0ff';
+    panel(c.x, c.y, c.w, c.h, 14, 'rgba(10, 16, 34, 0.94)', stroke);
+    if (!opt) continue;
+    const col = opt.correct && G.feedback === 'good' ? '#b9ffd6' : '#f4fbff';
+    drawTokens(opt.hero, c.x + c.w / 2, c.y + (opt.caption ? 46 : 56), 30, col, c.w - 22);
+    if (opt.caption) {
+      const capLines = wrapLines(opt.caption, c.w - 20, 13);
+      text(capLines[0], c.x + c.w / 2, c.y + c.h - 20, 13, '#9ec9d6', 'center', 'middle');
+    }
+    if (G.mode === 'coop' && G.step === 2 && opt.correct) {
+      if (G.ready[0]) text('P1', c.x + 16, c.y + 16, 11, '#ff5d6c', 'left', 'middle');
+      if (G.ready[1]) text('P2', c.x + c.w - 16, c.y + 16, 11, '#6eb0ff', 'right', 'middle');
+    }
+  }
+}
+
+function sealLabel() {
+  if (!G.problem) return 'SEAL & SHIP POTIONS';
+  if (G.step === 0) return 'SET GRADUATION';
+  if (G.step === 1) return G.problem.kind === 'merge' ? 'MERGE THE BEAKERS' : (G.problem.kind === 'pour' ? 'OPEN THE MANIFOLD' : 'DIP THE LADLE');
+  return 'SEAL & SHIP POTIONS';
+}
+
+function drawSeal() {
+  const s = GEO.seal;
+  const pulse = G.step === 2 ? 0.55 + 0.45 * Math.sin(G.time * 5) : 0.85;
+  panel(s.x, s.y, s.w, s.h, 16, 'rgba(16, 40, 48, 0.95)', 'rgba(122, 247, 255, ' + pulse + ')');
+  text(sealLabel(), s.x + s.w / 2, s.y + 22, 18, '#e8f7ff', 'center', 'middle');
+  const sub = G.note && performance.now() < G.noteUntil ? G.note : 'SPACE  ·  ENTER  ·  CLICK  ·  8BITDO A';
+  text(sub, s.x + s.w / 2, s.y + 42, 12, '#9ec9d6', 'center', 'middle');
+}
+
+function drawReticle(x, y, color, label) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-22, 0);
+  ctx.lineTo(-8, 0);
+  ctx.moveTo(8, 0);
+  ctx.lineTo(22, 0);
+  ctx.moveTo(0, -22);
+  ctx.lineTo(0, -8);
+  ctx.moveTo(0, 8);
+  ctx.lineTo(0, 22);
+  ctx.stroke();
+  ctx.restore();
+  if (label) text(label, x, y - 28, 12, color, 'center', 'middle');
+}
+
+function drawReticles() {
+  if (G.phase !== 'play') return;
+  const rects = cardRects();
+  const count = G.mode === 'solo' ? 1 : 2;
+  const colors = G.mode === 'solo' ? ['#7af7ff'] : ['#ff5d6c', '#6eb0ff'];
+  const names = G.mode === 'solo' ? [''] : ['P1', 'P2'];
+  for (let i = 0; i < count; i++) {
+    const p = G.players[i];
+    const hovered = (G.mode === 'solo' && mouse.on) ? rects.find(function (c) { return inside(mouse.x, mouse.y, c); }) : null;
+    const c = hovered || rects[p.sel];
+    let tx;
+    let ty;
+    if (c && (hovered || G.mode !== 'solo' || !mouse.on)) {
+      tx = (i === 1 ? c.x + 26 : c.x + c.w - 26);
+      ty = c.y + 18;
+    } else {
+      tx = mouse.x;
+      ty = mouse.y;
+    }
+    p.x += (tx - p.x) * 0.35;
+    p.y += (ty - p.y) * 0.35;
+    const owner = ownerOfStep();
+    const dim = G.mode === 'coop' && owner !== -1 && owner !== i;
+    ctx.globalAlpha = dim ? 0.4 : 1;
+    drawReticle(p.x, p.y, colors[i], names[i]);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawFloaters() {
+  for (let i = 0; i < G.floaters.length; i++) {
+    const f = G.floaters[i];
+    ctx.globalAlpha = Math.max(0, Math.min(1, f.life));
+    text(f.text, f.x, f.y, 28, f.color, 'center', 'middle');
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < G.sparks.length; i++) {
+    const s = G.sparks[i];
+    ctx.globalAlpha = Math.max(0, 1 - s.age / s.life);
+    ctx.fillStyle = s.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  text('PRIMARY 5  ·  PRIMARY 6', 640, 118, 14, '#7af7ff', 'center', 'middle');
+  text('CRYSTAL POTION BOTTLER', 640, 164, 46, '#f4fbff', 'center', 'middle');
+  text('LIQUID MEASURE LAB', 640, 214, 22, '#ff7ae0', 'center', 'middle');
+  text('Division   ·   Fraction   ·   Multiplication', 640, 268, 16, '#ffc14a', 'center', 'middle');
+
+  const cards = [
+    { t: 'SOLO ALCHEMIST', d: 'Mouse, keyboard, or one 8BitDo.\n3 lab shields. One score.', c: '#7af7ff' },
+    { t: '2P CO-OP TEAM', d: 'Share the valves. One team score.\n4 shared shields. No solo stars.', c: '#c6ff4a' },
+    { t: '2P VERSUS', d: 'Same order, first lock wins.\nShields and Master Alchemist stars.', c: '#ff7ae0' },
+  ];
+  const rects = titleRects();
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    const on = G.titleSel === i;
+    panel(r.x, r.y, r.w, r.h, 18, 'rgba(8, 14, 30, 0.92)', on ? cards[i].c : 'rgba(140, 180, 200, 0.3)');
+    text(cards[i].t, r.x + r.w / 2, r.y + 48, 20, cards[i].c, 'center', 'middle');
+    const lines = cards[i].d.split('\n');
+    lines.forEach(function (line, li) {
+      text(line, r.x + r.w / 2, r.y + 100 + li * 26, 15, '#d5eaf2', 'center', 'middle');
+    });
+    text(on ? 'PRESS A  ·  ENTER' : 'SELECT', r.x + r.w / 2, r.y + 190, 14, on ? '#ffffff' : '#8fb4c4', 'center', 'middle');
+  }
+  text('SOLO    mouse hover + click    ·    WASD or arrows    ·    Space / Enter    ·    Pad 0  A', 640, 590, 14, '#c5e4ee', 'center', 'middle');
+  text('CO-OP & VERSUS    P1  WASD + F / Space or Pad 0     ·     P2  Arrows + Enter or Pad 1', 640, 616, 14, '#c5e4ee', 'center', 'middle');
+  text('M mute    ·    Esc pause    ·    best solo ' + comma(G.bestSolo) + '    ·    best team ' + comma(G.bestCoop), 640, 648, 14, '#8fb4c4', 'center', 'middle');
+  if (G.padNote) text(G.padNote, 640, 678, 13, '#7af7ff', 'center', 'middle');
+}
+
+function drawOverlay(title, sub, buttons) {
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.62)';
+  ctx.fillRect(0, 0, GEO.W, GEO.H);
+  panel(300, 160, 680, 380, 20);
+  text(title, 640, 230, 32, '#f4fbff', 'center', 'middle');
+  const lines = wrapLines(sub, 600, 16);
+  lines.forEach(function (line, i) {
+    text(line, 640, 290 + i * 24, 16, '#d5eaf2', 'center', 'middle');
+  });
+  buttons.forEach(function (b) {
+    panel(b.x, b.y, b.w, b.h, 14, 'rgba(10, 24, 40, 0.95)', '#7af7ff');
+    text(b.label, b.x + b.w / 2, b.y + b.h / 2, 16, '#e8f7ff', 'center', 'middle');
+  });
+}
+
+function drawOver() {
+  const val = G.mode === 'versus' ? Math.max(G.scores[0], G.scores[1]) : G.score;
+  let sub = G.overReason + '  Score ' + comma(val) + '.';
+  if (G.mode === 'versus') sub += '  Stars ' + G.stars[0] + ' – ' + G.stars[1] + '.';
+  drawOverlay('LAB PRESSURE LOST', sub, [
+    { x: 360, y: 430, w: 250, h: 64, label: 'BREW AGAIN' },
+    { x: 670, y: 430, w: 250, h: 64, label: 'TITLE' },
+  ]);
+}
+
+function drawPause() {
+  drawOverlay('VALVES PAUSED', 'The batch is waiting on the bench.', [
+    { x: 440, y: 300, w: 400, h: 64, label: 'RESUME' },
+    { x: 440, y: 384, w: 400, h: 64, label: 'RETURN TO TITLE' },
+  ]);
+}
+
+function draw() {
+  applyView();
+  drawBackground();
+  if (G.phase === 'title') {
+    drawHUD();
+    drawTitle();
+    return;
+  }
+  drawHUD();
+  drawTicket();
+  drawScene();
+  drawCards();
+  drawSeal();
+  drawReticles();
+  drawFloaters();
+  if (G.phase === 'over') drawOver();
+  if (G.phase === 'pause') drawPause();
+}
+
+function update(dt) {
+  G.time += dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 28);
+  for (let i = G.floaters.length - 1; i >= 0; i--) {
+    const f = G.floaters[i];
+    f.y += f.vy * dt;
+    f.life -= dt;
+    if (f.life <= 0) G.floaters.splice(i, 1);
+  }
+  for (let i = G.sparks.length - 1; i >= 0; i--) {
+    const s = G.sparks[i];
+    s.age += dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vy += 40 * dt;
+    if (s.age >= s.life) G.sparks.splice(i, 1);
+  }
+  if (G.phase === 'pause') return;
+  if (G.feedbackLeft > 0) {
+    G.feedbackLeft -= dt * 1000;
+    if (G.feedbackLeft <= 0) finishFeedback();
+  }
+}
+
+let last = 0;
+function frame(now) {
+  const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
+  last = now;
+  pollPads();
+  repeatKeys();
+  pumpMusic();
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  G.bestSolo = Number(readStore(BEST_SOLO) || 0) || 0;
+  G.bestCoop = Number(readStore(BEST_COOP) || 0) || 0;
+  G.auditErrors = audit();
+  if (G.auditErrors.length) console.error('Crystal Potion Bottler audit', G.auditErrors);
+  resize();
+  canvas.focus();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+document.addEventListener('keydown', onKeyDown);
+document.addEventListener('keyup', onKeyUp);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerdown', onPointerDown);
+window.addEventListener('gamepadconnected', function (e) {
+  G.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+});
+window.addEventListener('gamepaddisconnected', function (e) {
+  G.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+});
+
+window.__CPB = { G: G, audit: audit, buildSpec: buildSpec, DOMAINS: DOMAINS, submit: submit, cardRects: cardRects, beginGame: beginGame };
+
+boot();
+</script>
+</body>
+</html>
