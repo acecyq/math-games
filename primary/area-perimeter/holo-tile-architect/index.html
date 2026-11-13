@@ -1,0 +1,2560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="Holo-Tile Architect: Cross and Mosaic Lab. Singapore Primary 5 and 6. Shaded tile fractions in simplest form, and perimeter of interlocking tile clusters." />
+<title>Holo-Tile Architect: Cross &amp; Mosaic Lab</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070814;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+    outline: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript {
+    color: #e8fbff;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" role="application" aria-label="Holo-Tile Architect. Solo: mouse, WASD or arrows, Space, or 8BitDo pad 0. Co-op and versus: Player 1 uses WASD and F or Space, or gamepad 0. Player 2 uses arrow keys and Enter, or gamepad 1. M mutes. Escape pauses."></canvas>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript>This mosaic lab needs JavaScript to cut the tiles.</noscript>
+<script>
+'use strict';
+
+/* Holo-Tile Architect: Cross & Mosaic Lab
+   Singapore Primary 5/6.
+   Step 1 — drop auxiliary lines, read the shaded fraction in simplest form.
+   Step 2 — count exposed exterior tile-sides of the cluster (not tiles × 4).
+   Step 3 — side AB = perimeter ÷ exposed sides, or total shaded mosaic area.
+   Every puzzle is built from the number domain, checked, and shuffled.
+*/
+
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const GEO = {
+  W: 1280,
+  H: 720,
+  hud: { x: 16, y: 10, w: 1248, h: 52 },
+  spec: { x: 16, y: 70, w: 1248, h: 78 },
+  left: { x: 16, y: 158, w: 612, h: 316 },
+  right: { x: 652, y: 158, w: 612, h: 316 },
+  hint: { x: 16, y: 482, w: 1248, h: 38 },
+  cardY: 528,
+  cardH: 100,
+  fuse: { x: 418, y: 640, w: 444, h: 62 },
+  mute: { x: 1214, y: 16, w: 40, h: 40 },
+};
+
+const BEST_SOLO = 'hta-best-solo';
+const BEST_COOP = 'hta-best-coop';
+const MUTE_KEY = 'hta-mute';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const sr = document.getElementById('sr');
+const view = { s: 1, ox: 0, oy: 0, dpr: 1 };
+const keys = {};
+const mouse = { x: 640, y: 360, on: false, down: false };
+
+const G = {
+  phase: 'title',
+  mode: 'solo',
+  titleSel: 0,
+  round: 1,
+  step: 0,
+  score: 0,
+  combo: 0,
+  shields: 3,
+  history: [],
+  problem: null,
+  solved: [false, false, false],
+  lock: false,
+  hint: '',
+  hintUntil: 0,
+  note: '',
+  noteUntil: 0,
+  shake: 0,
+  ready: [false, false],
+  stepT: 0,
+  advanceAt: 0,
+  celebrate: 0,
+  overAt: 0,
+  overReason: '',
+  winner: -1,
+  laserT: 0,
+  laserHeard: -1,
+  chimed: false,
+  floaters: [],
+  sparks: [],
+  motes: [],
+  time: 0,
+  last: 0,
+  bestSolo: 0,
+  bestCoop: 0,
+  padNote: '',
+  audit: [],
+  p: [
+    { sel: 0, score: 0, combo: 0, shields: 3, stars: 0, a: false, b: false, holdDir: 0, holdT: 0, rep: 0 },
+    { sel: 0, score: 0, combo: 0, shields: 3, stars: 0, a: false, b: false, holdDir: 0, holdT: 0, rep: 0 },
+  ],
+};
+
+/* ---------- storage & rationals ---------- */
+
+function readStore(key) {
+  try { return localStorage.getItem(key); } catch (err) { return null; }
+}
+function writeStore(key, val) {
+  try { localStorage.setItem(key, val); } catch (err) { /* private mode */ }
+}
+
+function gcd(a, b) {
+  a = Math.abs(a | 0);
+  b = Math.abs(b | 0);
+  while (b) {
+    const t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function simplify(n, d) {
+  const g = gcd(n, d);
+  return { n: n / g, d: d / g };
+}
+
+function randInt(a, b) {
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+
+function pick(list) {
+  return list[randInt(0, list.length - 1)];
+}
+
+function shuffle(list) {
+  const b = list.slice();
+  for (let i = b.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = b[i];
+    b[i] = b[j];
+    b[j] = t;
+  }
+  return b;
+}
+
+function tierOf(round) {
+  if (round <= 2) return { id: 'warm', name: 'WARM-UP' };
+  if (round <= 4) return { id: 'mid', name: 'INTERMEDIATE' };
+  if (round <= 6) return { id: 'adv', name: 'ADVANCED' };
+  return { id: 'master', name: 'MASTER MOSAICIST' };
+}
+
+function fmtTenths(t) {
+  t = Math.round(t);
+  const sign = t < 0 ? '-' : '';
+  t = Math.abs(t);
+  const w = Math.floor(t / 10);
+  const f = t % 10;
+  return sign + (f ? w + '.' + f : String(w));
+}
+
+function fmtHundredths(h) {
+  h = Math.round(h);
+  const sign = h < 0 ? '-' : '';
+  h = Math.abs(h);
+  const w = Math.floor(h / 100);
+  const f = h % 100;
+  if (f === 0) return sign + String(w);
+  if (f % 10 === 0) return sign + w + '.' + (f / 10);
+  return sign + w + '.' + (f < 10 ? '0' : '') + f;
+}
+
+/* ---------- clusters: exposed edges are computed, never assumed ---------- */
+
+const CLUSTERS = {
+  warm: [
+    { name: 'L-cluster', cells: [[0, 0], [0, 1], [1, 1]] },
+    { name: 'L-cluster', cells: [[1, 0], [0, 1], [1, 1]] },
+    { name: 'L-cluster', cells: [[0, 0], [1, 0], [1, 1]] },
+    { name: 'L-cluster', cells: [[0, 0], [1, 0], [0, 1]] },
+    { name: 'T-bar', cells: [[0, 0], [1, 0], [2, 0]] },
+    { name: 'T-bar', cells: [[0, 0], [0, 1], [0, 2]] },
+  ],
+  mid: [
+    { name: 'cross', cells: [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]] },
+  ],
+  adv: [
+    { name: 'staircase', cells: [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 3]] },
+    { name: 'hook mosaic', cells: [[0, 0], [1, 0], [2, 0], [0, 1], [0, 2], [1, 2]] },
+    { name: 'staircase', cells: [[0, 0], [0, 1], [1, 1], [0, 2], [1, 2], [2, 2], [3, 2]] },
+    { name: 'branch mosaic', cells: [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [1, 3], [2, 3]] },
+    { name: 'staircase', cells: [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 3], [3, 3]] },
+    { name: 'staircase', cells: [[0, 0], [0, 1], [1, 1], [0, 2], [1, 2], [2, 2], [3, 2], [4, 2]] },
+    { name: 'ring mosaic', cells: [[0, 0], [1, 0], [2, 0], [3, 0], [0, 1], [0, 2], [1, 2], [2, 2]] },
+    { name: 'staircase', cells: [[0, 0], [1, 0], [1, 1], [2, 1], [2, 2], [3, 2], [3, 3], [4, 3]] },
+    { name: 'staircase', cells: [[0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 3], [3, 3], [3, 4]] },
+  ],
+};
+
+function countEdges(cells) {
+  const s = new Set(cells.map(function (c) { return c[0] + ',' + c[1]; }));
+  let n = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const x = cells[i][0];
+    const y = cells[i][1];
+    if (!s.has((x + 1) + ',' + y)) n++;
+    if (!s.has((x - 1) + ',' + y)) n++;
+    if (!s.has(x + ',' + (y + 1))) n++;
+    if (!s.has(x + ',' + (y - 1))) n++;
+  }
+  return n;
+}
+
+function traceLoop(cells) {
+  const occ = new Set(cells.map(function (c) { return c[0] + ',' + c[1]; }));
+  const from = new Map();
+  const segs = [];
+  function add(x0, y0, x1, y1, dir) {
+    const key = x0 + ',' + y0;
+    if (from.has(key)) return false;
+    const seg = { x0: x0, y0: y0, x1: x1, y1: y1, dir: dir };
+    segs.push(seg);
+    from.set(key, seg);
+    return true;
+  }
+  for (let i = 0; i < cells.length; i++) {
+    const cx = cells[i][0];
+    const cy = cells[i][1];
+    if (!occ.has(cx + ',' + (cy - 1)) && !add(cx, cy, cx + 1, cy, 0)) return null;
+    if (!occ.has((cx + 1) + ',' + cy) && !add(cx + 1, cy, cx + 1, cy + 1, 1)) return null;
+    if (!occ.has(cx + ',' + (cy + 1)) && !add(cx + 1, cy + 1, cx, cy + 1, 2)) return null;
+    if (!occ.has((cx - 1) + ',' + cy) && !add(cx, cy + 1, cx, cy, 3)) return null;
+  }
+  if (!segs.length) return null;
+  const loop = [];
+  let seg = segs[0];
+  const seen = new Set();
+  while (seg && !seen.has(seg.x0 + ',' + seg.y0)) {
+    seen.add(seg.x0 + ',' + seg.y0);
+    loop.push(seg);
+    seg = from.get(seg.x1 + ',' + seg.y1);
+  }
+  if (loop.length !== segs.length) return null;
+  return loop;
+}
+
+function prepareCluster(raw) {
+  const cells = raw.cells.map(function (c) { return [c[0], c[1]]; });
+  const exposed = countEdges(cells);
+  const loop = traceLoop(cells);
+  if (!loop || loop.length !== exposed) return null;
+  return {
+    name: raw.name,
+    cells: cells,
+    tiles: cells.length,
+    exposed: exposed,
+    loop: loop,
+  };
+}
+
+const BOOKS = { warm: [], mid: [], adv: [] };
+(function bakeClusters() {
+  ['warm', 'mid', 'adv'].forEach(function (tier) {
+    CLUSTERS[tier].forEach(function (raw) {
+      const c = prepareCluster(raw);
+      if (c) BOOKS[tier].push(c);
+    });
+  });
+})();
+
+/* ---------- tile patterns ---------- */
+
+function mapPoints(cols, rows, pts, op) {
+  let c = cols;
+  let r = rows;
+  let cells = pts.map(function (p) { return [p[0], p[1]]; });
+  if (op & 4) cells = cells.map(function (p) { return [c - 1 - p[0], p[1]]; });
+  const rot = op & 3;
+  for (let k = 0; k < rot; k++) {
+    const rr = r;
+    cells = cells.map(function (p) { return [rr - 1 - p[1], p[0]]; });
+    const nc = r;
+    r = c;
+    c = nc;
+  }
+  return { cols: c, rows: r, pts: cells };
+}
+
+function idx(cols, c, r) {
+  return r * cols + c;
+}
+
+function gridUnits(cols, rows, shaded) {
+  const set = new Set(shaded);
+  const units = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const id = idx(cols, c, r);
+      const x0 = c / cols;
+      const y0 = r / rows;
+      const x1 = (c + 1) / cols;
+      const y1 = (r + 1) / rows;
+      units.push({
+        id: id,
+        shaded: set.has(id),
+        poly: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+        cx: (x0 + x1) / 2,
+        cy: (y0 + y1) / 2,
+      });
+    }
+  }
+  return units;
+}
+
+function pinUnits(shaded) {
+  const set = new Set(shaded);
+  const ring = [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]];
+  const units = [];
+  for (let i = 0; i < 8; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % 8];
+    units.push({
+      id: i,
+      shaded: set.has(i),
+      poly: [[0.5, 0.5], a, b],
+      cx: (0.5 + a[0] + b[0]) / 3,
+      cy: (0.5 + a[1] + b[1]) / 3,
+    });
+  }
+  return units;
+}
+
+function stripUnits(vertical, shaded) {
+  const set = new Set(shaded);
+  const units = [];
+  for (let i = 0; i < 3; i++) {
+    const poly = vertical
+      ? [[i / 3, 0], [(i + 1) / 3, 0], [(i + 1) / 3, 1], [i / 3, 1]]
+      : [[0, i / 3], [1, i / 3], [1, (i + 1) / 3], [0, (i + 1) / 3]];
+    let sx = 0;
+    let sy = 0;
+    for (let k = 0; k < poly.length; k++) {
+      sx += poly[k][0];
+      sy += poly[k][1];
+    }
+    units.push({
+      id: i,
+      shaded: set.has(i),
+      poly: poly,
+      cx: sx / 4,
+      cy: sy / 4,
+    });
+  }
+  return units;
+}
+
+function regionCounts(cols, rows, parts, shaded, seams) {
+  const set = new Set(shaded);
+  const wall = new Set(seams.map(function (s) {
+    return s[0] < s[1] ? s[0] + '-' + s[1] : s[1] + '-' + s[0];
+  }));
+  const seen = new Array(parts).fill(false);
+  let shadedBlobs = 0;
+  let openBlobs = 0;
+  const areas = [];
+  function neigh(i) {
+    if (!cols) {
+      const o = [];
+      if (parts === 8 && rows === 0) {
+        o.push((i + 7) % 8, (i + 1) % 8);
+        return o;
+      }
+      if (i > 0) o.push(i - 1);
+      if (i + 1 < parts) o.push(i + 1);
+      return o;
+    }
+    const r = Math.floor(i / cols);
+    const c = i % cols;
+    const o = [];
+    if (c > 0) o.push(i - 1);
+    if (c + 1 < cols) o.push(i + 1);
+    if (r > 0) o.push(i - cols);
+    if (r + 1 < rows) o.push(i + cols);
+    return o;
+  }
+  for (let i = 0; i < parts; i++) {
+    if (seen[i]) continue;
+    const shade = set.has(i);
+    let count = 0;
+    const st = [i];
+    seen[i] = true;
+    while (st.length) {
+      const u = st.pop();
+      count++;
+      const nb = neigh(u);
+      for (let k = 0; k < nb.length; k++) {
+        const v = nb[k];
+        if (seen[v] || set.has(v) !== shade) continue;
+        const key = u < v ? u + '-' + v : v + '-' + u;
+        if (wall.has(key)) continue;
+        seen[v] = true;
+        st.push(v);
+      }
+    }
+    if (shade) shadedBlobs++;
+    else openBlobs++;
+    areas.push(count);
+  }
+  const unequal = areas.length > 1 && Math.min.apply(null, areas) !== Math.max.apply(null, areas);
+  return { shadedBlobs: shadedBlobs, openBlobs: openBlobs, unequal: unequal, areas: areas };
+}
+
+function finishPattern(spec) {
+  const shaded = spec.shaded.slice().sort(function (a, b) { return a - b; });
+  const parts = spec.parts;
+  const count = shaded.length;
+  if (count <= 0 || count >= parts) return null;
+  const simp = simplify(count, parts);
+  const seams = spec.seams || [];
+  const regions = regionCounts(spec.cols || 0, spec.kind === 'pin' ? 0 : (spec.rows || 0), parts, shaded, seams);
+  let units;
+  if (spec.kind === 'pin') units = pinUnits(shaded);
+  else if (spec.kind === 'strips') units = stripUnits(!!spec.vertical, shaded);
+  else units = gridUnits(spec.cols, spec.rows, shaded);
+  let trap = null;
+  if (spec.allowUnequal !== false && regions.unequal && regions.shadedBlobs + regions.openBlobs > 1) {
+    const raw = simplify(regions.shadedBlobs, regions.shadedBlobs + regions.openBlobs);
+    if (raw.n !== simp.n || raw.d !== simp.d) trap = raw;
+  }
+  return {
+    kind: spec.kind,
+    cols: spec.cols || 0,
+    rows: spec.rows || 0,
+    parts: parts,
+    shaded: shaded,
+    shadedCount: count,
+    units: units,
+    seams: seams,
+    diamond: !!spec.diamond,
+    showEqualLines: !!spec.showEqualLines,
+    note: spec.note,
+    sn: simp.n,
+    sd: simp.d,
+    trap: trap,
+    vertical: !!spec.vertical,
+  };
+}
+
+function examPattern(op, diamond) {
+  const mapped = mapPoints(4, 2, [[0, 0], [1, 0], [2, 0], [3, 0], [0, 1], [0, 0], [0, 1]], op);
+  const cols = mapped.cols;
+  const rows = mapped.rows;
+  const pts = mapped.pts;
+  const shaded = pts.slice(0, 5).map(function (p) { return idx(cols, p[0], p[1]); });
+  const a = idx(cols, pts[5][0], pts[5][1]);
+  const b = idx(cols, pts[6][0], pts[6][1]);
+  return finishPattern({
+    kind: 'grid',
+    cols: cols,
+    rows: rows,
+    parts: 8,
+    shaded: shaded,
+    seams: [[a, b]],
+    diamond: diamond,
+    note: 'AE = BE',
+    allowUnequal: true,
+  });
+}
+
+function pinPattern(start, count, diamond) {
+  const shaded = [];
+  for (let i = 0; i < count; i++) shaded.push((start + i) % 8);
+  return finishPattern({
+    kind: 'pin',
+    parts: 8,
+    shaded: shaded,
+    diamond: diamond,
+    note: 'AE = BE',
+    allowUnequal: true,
+  });
+}
+
+function stripPattern() {
+  const hide = randInt(0, 2);
+  const vertical = Math.random() < 0.5;
+  const shaded = [0, 1, 2].filter(function (i) { return i !== hide; });
+  return finishPattern({
+    kind: 'strips',
+    parts: 3,
+    shaded: shaded,
+    vertical: vertical,
+    diamond: false,
+    showEqualLines: true,
+    note: '3 identical strips',
+    allowUnequal: false,
+  });
+}
+
+function randomGrid(cols, rows, count, diamond, note, allowUnequal) {
+  const parts = cols * rows;
+  const bag = [];
+  for (let i = 0; i < parts; i++) bag.push(i);
+  const shaded = shuffle(bag).slice(0, count);
+  return finishPattern({
+    kind: 'grid',
+    cols: cols,
+    rows: rows,
+    parts: parts,
+    shaded: shaded,
+    diamond: diamond,
+    note: note,
+    allowUnequal: allowUnequal !== false,
+  });
+}
+
+function patternOk(p, style) {
+  if (!p) return false;
+  const g = gcd(p.shadedCount, p.parts);
+  if (style === 'warm') {
+    if (p.kind === 'strips') return p.sn === 2 && p.sd === 3;
+    return p.parts === 8 && g === 1 && (p.shadedCount === 3 || p.shadedCount === 5 || p.shadedCount === 7);
+  }
+  if (style === 'mid') return p.parts === 8 && p.shadedCount === 5 && p.sn === 5 && p.sd === 8;
+  if (style === 'adv') return (p.parts === 12 || p.parts === 16) && g > 1 && (p.sn !== p.shadedCount || p.sd !== p.parts);
+  return false;
+}
+
+function makePattern(style) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    let p = null;
+    if (style === 'warm') {
+      if (Math.random() < 0.42) p = stripPattern();
+      else if (Math.random() < 0.55) p = examPattern(randInt(0, 7), Math.random() < 0.35);
+      else p = pinPattern(randInt(0, 7), pick([3, 5, 7]), Math.random() < 0.45);
+    } else if (style === 'mid') {
+      if (Math.random() < 0.72) p = examPattern(randInt(0, 7), true);
+      else p = pinPattern(randInt(0, 7), 5, true);
+    } else {
+      const sixteen = Math.random() < 0.5;
+      const parts = sixteen ? 16 : 12;
+      const counts = sixteen ? [4, 6, 8, 10, 12] : [4, 6, 8, 9, 10];
+      const cols = sixteen ? 4 : 3;
+      const rows = 4;
+      p = randomGrid(cols, rows, pick(counts), Math.random() < 0.55, parts + ' equal units', true);
+      if (p && p.trap && p.trap.n === p.sn && p.trap.d === p.sd) p = null;
+    }
+    if (patternOk(p, style)) return p;
+  }
+  if (style === 'adv') {
+    const p = randomGrid(4, 4, 6, false, '16 equal units', true);
+    if (patternOk(p, 'adv')) return p;
+    return randomGrid(3, 4, 9, true, '12 equal units', true);
+  }
+  if (style === 'warm') return stripPattern();
+  return examPattern(randInt(0, 7), true);
+}
+
+/* ---------- choice builders ---------- */
+
+function fracOpt(n, d, correct, trap, hint) {
+  return {
+    kind: 'frac',
+    n: n,
+    d: d,
+    correct: !!correct,
+    trap: trap || '',
+    hint: hint || '',
+    text: n + '/' + d,
+    unit: '',
+    key: 'f' + n + '/' + d,
+  };
+}
+
+function numOpt(kind, hundredths, text, unit, correct, trap, hint) {
+  return {
+    kind: kind,
+    hundredths: hundredths,
+    text: text,
+    unit: unit,
+    correct: !!correct,
+    trap: trap || '',
+    hint: hint || '',
+    key: kind + ':' + hundredths + ':' + text,
+  };
+}
+
+function uniquePush(list, opt) {
+  if (!opt) return false;
+  if (list.some(function (o) { return o.key === opt.key; })) return false;
+  if (opt.kind === 'frac') {
+    const v = simplify(opt.n, opt.d);
+    const clash = list.some(function (o) {
+      if (o.kind !== 'frac') return false;
+      const ov = simplify(o.n, o.d);
+      return ov.n === v.n && ov.d === v.d;
+    });
+    if (clash && opt.trap !== 'simplify') return false;
+    if (opt.trap === 'simplify') {
+      const correct = list.filter(function (o) { return o.correct; })[0];
+      if (!correct) return false;
+      const cv = simplify(correct.n, correct.d);
+      if (v.n !== cv.n || v.d !== cv.d) return false;
+      if (opt.n === correct.n && opt.d === correct.d) return false;
+    }
+  }
+  list.push(opt);
+  return true;
+}
+
+function unequalHint(parts) {
+  return 'Those pieces are NOT equal in size! Drop the auxiliary symmetry lines first to split the tile into ' + parts + ' equal sub-units!';
+}
+
+function simplifyHint() {
+  return 'Correct value, but simplify your fraction by dividing top and bottom by their HCF!';
+}
+
+function seamHint(tiles, exposed, shape) {
+  if (tiles === 5 && exposed === 12) {
+    return 'Shared interior seams are hidden inside the cross! Count ONLY the 12 exposed exterior edges around the outer silhouette!';
+  }
+  const where = shape === 'cross' ? 'the cross' : 'the cluster';
+  return 'Shared interior seams are hidden inside ' + where + '! Count ONLY the ' + exposed + ' exposed exterior edges around the outer silhouette!';
+}
+
+function buildFracStep(pattern) {
+  const out = [];
+  uniquePush(out, fracOpt(pattern.sn, pattern.sd, true, '', ''));
+  if (gcd(pattern.shadedCount, pattern.parts) > 1 && (pattern.shadedCount !== pattern.sn || pattern.parts !== pattern.sd)) {
+    uniquePush(out, fracOpt(pattern.shadedCount, pattern.parts, false, 'simplify', simplifyHint()));
+  }
+  if (pattern.trap) {
+    uniquePush(out, fracOpt(pattern.trap.n, pattern.trap.d, false, 'unequal', unequalHint(pattern.parts)));
+  }
+  const offs = [1, -1, 2, -2, 3, -3];
+  for (let i = 0; i < offs.length; i++) {
+    const n = pattern.shadedCount + offs[i];
+    if (n <= 0 || n >= pattern.parts) continue;
+    const s = simplify(n, pattern.parts);
+    uniquePush(out, fracOpt(
+      s.n, s.d, false, 'off',
+      'Count the equal sub-units again. ' + pattern.shadedCount + ' of the ' + pattern.parts + ' units are shaded, which is ' + pattern.sn + '/' + pattern.sd + ' in simplest form.'
+    ));
+  }
+  if (pattern.parts % 2 === 0) {
+    uniquePush(out, fracOpt(
+      1, 2, false, 'half',
+      'One half would be ' + (pattern.parts / 2) + ' of the ' + pattern.parts + ' equal units. This tile shades ' + pattern.shadedCount + '.'
+    ));
+  }
+  uniquePush(out, fracOpt(
+    1, pattern.parts, false, 'off',
+    'That is a single sub-unit. The shaded region covers ' + pattern.shadedCount + ' of them.'
+  ));
+  let salt = 2;
+  while (out.length < 4 && salt < 12) {
+    const d = pattern.parts === salt ? salt + 1 : salt;
+    uniquePush(out, fracOpt(
+      1, d, false, 'off',
+      'The tile is partitioned into ' + pattern.parts + ' equal sub-units, not ' + d + '.'
+    ));
+    salt++;
+  }
+  if (out.length < 4 || !out.some(function (o) { return o.correct; })) return null;
+  const correct = out.filter(function (o) { return o.correct; });
+  const rest = out.filter(function (o) { return !o.correct; });
+  return shuffle(correct.concat(rest.slice(0, 3)));
+}
+
+function buildEdgeStep(cluster) {
+  const exposed = cluster.exposed;
+  const tiles = cluster.tiles;
+  const out = [];
+  uniquePush(out, numOpt('count', exposed, String(exposed), 'sides', true, '', ''));
+  const hintSeam = seamHint(tiles, exposed, cluster.name);
+  const candidates = [
+    { n: tiles * 4, trap: 'seams', hint: hintSeam },
+    { n: tiles * 2, trap: 'seams', hint: hintSeam },
+    { n: exposed + 2, trap: 'off', hint: 'That is two edges away from the silhouette. Walk the outside once and count ' + exposed + ' exposed sides.' },
+    { n: exposed - 2, trap: 'off', hint: 'Two exterior sides are still missing. The silhouette has ' + exposed + ' exposed tile-sides.' },
+    { n: exposed + 4, trap: 'off', hint: 'Those extra sides are shared seams inside the mosaic. Only ' + exposed + ' sides face outward.' },
+    { n: Math.max(1, exposed - 4), trap: 'off', hint: 'Keep going around the silhouette. ' + exposed + ' tile-sides are exposed.' },
+    { n: tiles, trap: 'off', hint: 'That is the number of tiles, not the number of outside edges. Count ' + exposed + ' exposed sides.' },
+  ];
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (c.n <= 0 || c.n === exposed || c.n > 48) continue;
+    uniquePush(out, numOpt('count', c.n, String(c.n), 'sides', false, c.trap, c.hint));
+    if (out.length >= 4) break;
+  }
+  if (out.length < 4) return null;
+  const correct = out.filter(function (o) { return o.correct; });
+  const rest = out.filter(function (o) { return !o.correct; });
+  return shuffle(correct.concat(rest.slice(0, 3)));
+}
+
+function lengthHundredths(perimTenths, divisor) {
+  if (divisor <= 0) return null;
+  if ((perimTenths * 10) % divisor !== 0) return null;
+  const h = (perimTenths * 10) / divisor;
+  if (h <= 0) return null;
+  return h;
+}
+
+function buildLengthStep(perimTenths, sideTenths, cluster) {
+  const correctH = sideTenths * 10;
+  const out = [];
+  uniquePush(out, numOpt('len', correctH, fmtTenths(sideTenths), 'm', true, '', ''));
+  const seam = seamHint(cluster.tiles, cluster.exposed, cluster.name);
+  const divisors = [
+    { d: cluster.tiles * 4, trap: 'seams', hint: seam + ' ' + fmtTenths(perimTenths) + ' m / ' + cluster.exposed + ' = ' + fmtTenths(sideTenths) + ' m.' },
+    { d: cluster.tiles * 2, trap: 'seams', hint: seam },
+    { d: cluster.exposed + 2, trap: 'off', hint: 'Check the edge count before you divide. The silhouette has ' + cluster.exposed + ' sides, so AB = ' + fmtTenths(sideTenths) + ' m.' },
+    { d: cluster.exposed - 2, trap: 'off', hint: 'Check the edge count before you divide. The silhouette has ' + cluster.exposed + ' sides, so AB = ' + fmtTenths(sideTenths) + ' m.' },
+    { d: cluster.tiles, trap: 'off', hint: 'Divide the perimeter by the exposed sides (' + cluster.exposed + '), not by the number of tiles.' },
+    { d: cluster.exposed + 4, trap: 'off', hint: 'Hidden seams are not part of the perimeter. Use ' + cluster.exposed + ' exterior sides.' },
+  ];
+  for (let i = 0; i < divisors.length; i++) {
+    const h = lengthHundredths(perimTenths, divisors[i].d);
+    if (h == null || h === correctH) continue;
+    uniquePush(out, numOpt('len', h, fmtHundredths(h), 'm', false, divisors[i].trap, divisors[i].hint));
+  }
+  const deltas = [10, -10, 20, -20, 8, -8, 16, -16, 5, -5];
+  for (let i = 0; i < deltas.length && out.length < 4; i++) {
+    const t = sideTenths + deltas[i];
+    if (t <= 0) continue;
+    const h = t * 10;
+    uniquePush(out, numOpt(
+      'len', h, fmtTenths(t), 'm', false, 'off',
+      'AB = ' + fmtTenths(perimTenths) + ' m / ' + cluster.exposed + ' exposed sides = ' + fmtTenths(sideTenths) + ' m.'
+    ));
+  }
+  if (out.length < 4) return null;
+  const correct = out.filter(function (o) { return o.correct; });
+  const rest = out.filter(function (o) { return !o.correct; });
+  return shuffle(correct.concat(rest.slice(0, 3)));
+}
+
+function areaExact(sideTenths, numer, denom, tiles) {
+  const num = sideTenths * sideTenths * numer * tiles;
+  if (denom === 0 || num % denom !== 0) return null;
+  const h = num / denom;
+  if (h <= 0) return null;
+  return h;
+}
+
+function buildAreaStep(sideTenths, pattern, cluster, areaHundredths) {
+  const out = [];
+  const totalText = fmtHundredths(areaHundredths);
+  uniquePush(out, numOpt('area', areaHundredths, totalText, 'm²', true, '', ''));
+  const full = areaExact(sideTenths, 1, 1, cluster.tiles);
+  if (full != null) {
+    uniquePush(out, numOpt(
+      'area', full, fmtHundredths(full), 'm²', false, 'full',
+      'That is every full tile. Multiply each tile area by the shaded fraction ' + pattern.sn + '/' + pattern.sd + ' first.'
+    ));
+  }
+  const one = areaExact(sideTenths, pattern.sn, pattern.sd, 1);
+  if (one != null) {
+    uniquePush(out, numOpt(
+      'area', one, fmtHundredths(one), 'm²', false, 'one',
+      'That is the shaded area of ONE tile. The mosaic has ' + cluster.tiles + ' identical tiles.'
+    ));
+  }
+  if (cluster.tiles > 1) {
+    const almost = areaExact(sideTenths, pattern.sn, pattern.sd, cluster.tiles - 1);
+    if (almost != null) {
+      uniquePush(out, numOpt(
+        'area', almost, fmtHundredths(almost), 'm²', false, 'off',
+        'Use all ' + cluster.tiles + ' tiles, then the shaded fraction of each one.'
+      ));
+    }
+  }
+  const halfDenom = 2;
+  const half = areaExact(sideTenths, 1, halfDenom, cluster.tiles);
+  if (half != null && (pattern.sn !== 1 || pattern.sd !== 2)) {
+    uniquePush(out, numOpt(
+      'area', half, fmtHundredths(half), 'm²', false, 'half',
+      'The shaded fraction is ' + pattern.sn + '/' + pattern.sd + ', not 1/2.'
+    ));
+  }
+  const linearNum = sideTenths * 10 * pattern.sn * cluster.tiles;
+  if (linearNum % pattern.sd === 0) {
+    const linear = linearNum / pattern.sd;
+    uniquePush(out, numOpt(
+      'area', linear, fmtHundredths(linear), 'm²', false, 'off',
+      'Square the side to get one tile area, then take ' + pattern.sn + '/' + pattern.sd + ' of it.'
+    ));
+  }
+  const perimAsArea = Math.round(cluster.exposed * sideTenths) * 10;
+  uniquePush(out, numOpt(
+    'area', perimAsArea, fmtHundredths(perimAsArea), 'm²', false, 'off',
+    'That number is a length total, not an area. Square side AB, then apply the shaded fraction.'
+  ));
+  if (out.length < 4) return null;
+  const correct = out.filter(function (o) { return o.correct; });
+  const rest = out.filter(function (o) { return !o.correct; });
+  return shuffle(correct.concat(rest.slice(0, 3)));
+}
+
+function pickCluster(round) {
+  const tier = tierOf(round).id;
+  if (tier === 'warm') return pick(BOOKS.warm);
+  if (tier === 'mid') return pick(BOOKS.mid);
+  if (tier === 'adv') {
+    const pool = BOOKS.adv.filter(function (c) { return c.exposed >= 14 && c.exposed <= 18; });
+    return pick(pool.length ? pool : BOOKS.adv);
+  }
+  const late = round >= 9;
+  const pool = late
+    ? BOOKS.adv.filter(function (c) { return c.tiles >= 7; }).concat(BOOKS.mid)
+    : BOOKS.mid.concat(BOOKS.adv.filter(function (c) { return c.tiles <= 7; }));
+  return pick(pool.length ? pool : BOOKS.adv);
+}
+
+function pickSide(tier, exposed, pattern, tiles) {
+  if (tier === 'warm') {
+    const side = pick([4, 5, 6, 7, 8, 9, 10, 12]);
+    return { sideTenths: side * 10, perimTenths: side * 10 * exposed, areaHundredths: 0 };
+  }
+  if (tier === 'mid') {
+    const t = pick([42, 48, 56, 64, 72, 80, 82, 88, 96, 104, 112, 66, 74, 58]);
+    return { sideTenths: t, perimTenths: t * exposed, areaHundredths: 0 };
+  }
+  if (tier === 'adv') {
+    const t = pick([40, 50, 60, 70, 80, 90, 100, 35, 45, 55, 65, 75, 85, 64, 82]);
+    return { sideTenths: t, perimTenths: t * exposed, areaHundredths: 0 };
+  }
+  const sides = shuffle([4, 5, 6, 7, 8, 9, 10, 12]);
+  for (let i = 0; i < sides.length; i++) {
+    const sideTenths = sides[i] * 10;
+    const oneNum = sideTenths * sideTenths * pattern.sn;
+    if (oneNum % pattern.sd !== 0) continue;
+    const areaHundredths = (oneNum / pattern.sd) * tiles;
+    if (areaHundredths < 400 || areaHundredths > 400000) continue;
+    return { sideTenths: sideTenths, perimTenths: sideTenths * exposed, areaHundredths: areaHundredths };
+  }
+  return null;
+}
+
+function puzzleKey(pattern, cluster, perimTenths, master) {
+  return [
+    pattern.kind,
+    pattern.cols + 'x' + pattern.rows,
+    pattern.shaded.join('.'),
+    pattern.diamond ? 'd' : 'u',
+    pattern.vertical ? 'v' : 'h',
+    cluster.name,
+    cluster.cells.map(function (c) { return c[0] + ',' + c[1]; }).join(';'),
+    perimTenths,
+    master ? 'M' : 'S',
+  ].join('|');
+}
+
+function tryPuzzle(round) {
+  const tier = tierOf(round);
+  const master = tier.id === 'master';
+  const style = master ? (round >= 8 && Math.random() < 0.62 ? 'adv' : 'mid') : tier.id;
+  const pattern = makePattern(style === 'master' ? 'mid' : style);
+  if (!pattern || !patternOk(pattern, style === 'master' ? 'mid' : style)) return null;
+  const cluster = pickCluster(round);
+  if (!cluster) return null;
+  const side = pickSide(master ? 'master' : tier.id, cluster.exposed, pattern, cluster.tiles);
+  if (!side) return null;
+  if (side.sideTenths * cluster.exposed !== side.perimTenths) return null;
+  const steps = [];
+  steps[0] = buildFracStep(pattern);
+  steps[1] = buildEdgeStep(cluster);
+  steps[2] = master
+    ? buildAreaStep(side.sideTenths, pattern, cluster, side.areaHundredths)
+    : buildLengthStep(side.perimTenths, side.sideTenths, cluster);
+  if (!steps[0] || !steps[1] || !steps[2]) return null;
+  const prompts = [
+    'What fraction of tile ABCD is shaded, in simplest form?',
+    'How many exposed exterior tile-sides form the silhouette of Figure 1?',
+    master
+      ? 'Side AB = perimeter / exposed sides. What is the total shaded area of the mosaic?'
+      : 'Perimeter / exposed sides. What is the length of side AB?',
+  ];
+  return {
+    key: puzzleKey(pattern, cluster, side.perimTenths, master),
+    tier: tier.id,
+    tierName: tier.name,
+    master: master,
+    pattern: pattern,
+    cluster: cluster,
+    sideTenths: side.sideTenths,
+    perimTenths: side.perimTenths,
+    areaHundredths: side.areaHundredths,
+    steps: steps,
+    prompts: prompts,
+    captions: [
+      'of tile ABCD',
+      'exterior sides',
+      master ? 'shaded area' : 'length of AB',
+    ],
+  };
+}
+
+function validate(p) {
+  if (!p) return 'empty';
+  const pat = p.pattern;
+  const cl = p.cluster;
+  const simp = simplify(pat.shadedCount, pat.parts);
+  if (simp.n !== pat.sn || simp.d !== pat.sd) return 'fraction';
+  if (countEdges(cl.cells) !== cl.exposed) return 'edges';
+  if (!cl.loop || cl.loop.length !== cl.exposed) return 'loop';
+  if (p.sideTenths * cl.exposed !== p.perimTenths) return 'perimeter';
+  if (pat.shadedCount !== pat.units.filter(function (u) { return u.shaded; }).length) return 'shade-draw';
+  for (let s = 0; s < 3; s++) {
+    if (!p.steps[s] || p.steps[s].length !== 4) return 'cards-' + s;
+    const good = p.steps[s].filter(function (o) { return o.correct; });
+    if (good.length !== 1) return 'correct-' + s;
+    const keys = {};
+    for (let i = 0; i < p.steps[s].length; i++) {
+      if (keys[p.steps[s][i].key]) return 'dup-' + s;
+      keys[p.steps[s][i].key] = 1;
+      if (!p.steps[s][i].correct && !p.steps[s][i].hint) return 'hint-' + s;
+    }
+  }
+  const f = p.steps[0].filter(function (o) { return o.correct; })[0];
+  if (f.n !== pat.sn || f.d !== pat.sd) return 'frac-card';
+  const e = p.steps[1].filter(function (o) { return o.correct; })[0];
+  if (Number(e.text) !== cl.exposed) return 'edge-card';
+  if (p.master) {
+    const expect = (p.sideTenths * p.sideTenths * pat.sn * cl.tiles) / pat.sd;
+    if (expect !== p.areaHundredths) return 'area-formula';
+    const a = p.steps[2].filter(function (o) { return o.correct; })[0];
+    if (a.hundredths !== p.areaHundredths) return 'area-card';
+  } else {
+    const len = p.steps[2].filter(function (o) { return o.correct; })[0];
+    if (len.hundredths !== p.sideTenths * 10) return 'len-card';
+    if (len.text !== fmtTenths(p.sideTenths)) return 'len-text';
+  }
+  return '';
+}
+
+function makePuzzle(round, history) {
+  let lastErr = '';
+  for (let i = 0; i < 80; i++) {
+    const relax = i > 50;
+    const p = tryPuzzle(round);
+    const err = validate(p);
+    if (err) {
+      lastErr = err;
+      continue;
+    }
+    if (!relax && history.indexOf(p.key) !== -1) continue;
+    return p;
+  }
+  const emergency = tryPuzzle(round <= 2 ? 1 : round <= 4 ? 3 : round <= 6 ? 5 : 7);
+  if (emergency && !validate(emergency)) return emergency;
+  throw new Error('puzzle generator failed: ' + lastErr);
+}
+
+function runAudit() {
+  const errors = [];
+  if (BOOKS.warm.length < 4 || BOOKS.mid.length < 1 || BOOKS.adv.length < 4) {
+    errors.push('cluster book incomplete');
+  }
+  BOOKS.mid.forEach(function (c) {
+    if (c.tiles !== 5 || c.exposed !== 12) errors.push('cross is not 12 edges');
+  });
+  BOOKS.warm.forEach(function (c) {
+    if (c.tiles !== 3 || c.exposed !== 8) errors.push('warm cluster edges');
+  });
+  const hist = [];
+  const rounds = [1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 10];
+  for (let n = 0; n < 36; n++) {
+    const round = rounds[n % rounds.length];
+    try {
+      const p = makePuzzle(round, hist);
+      const err = validate(p);
+      if (err) errors.push('r' + round + ' ' + err);
+      hist.push(p.key);
+      if (hist.length > 6) hist.shift();
+      if (round <= 2 && p.cluster.exposed !== 8) errors.push('warm exposed');
+      if (round >= 3 && round <= 4 && (p.cluster.exposed !== 12 || p.pattern.sn !== 5)) errors.push('mid signature');
+      if (round >= 5 && round <= 6 && (p.cluster.exposed < 14 || p.cluster.exposed > 18)) errors.push('adv exposed');
+      if (round >= 7 && !p.master) errors.push('master flag');
+    } catch (err) {
+      errors.push(String(err && err.message || err));
+    }
+  }
+  return errors.slice(0, 6);
+}
+
+/* ---------- audio ---------- */
+
+let audioCtx = null;
+let musicGain = null;
+let sfxGain = null;
+let noiseBuf = null;
+let muted = readStore(MUTE_KEY) === '1';
+const music = { next: 0, step: 0 };
+
+function ensureAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audioCtx) {
+    try {
+      audioCtx = new AC();
+      musicGain = audioCtx.createGain();
+      sfxGain = audioCtx.createGain();
+      musicGain.gain.value = muted ? 0 : 0.07;
+      sfxGain.gain.value = muted ? 0 : 0.28;
+      const comp = audioCtx.createDynamicsCompressor();
+      comp.threshold.value = -18;
+      comp.knee.value = 10;
+      comp.ratio.value = 3;
+      musicGain.connect(comp);
+      sfxGain.connect(comp);
+      comp.connect(audioCtx.destination);
+      const len = Math.floor(audioCtx.sampleRate * 0.25);
+      noiseBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      music.next = audioCtx.currentTime + 0.05;
+    } catch (err) {
+      audioCtx = null;
+      return;
+    }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function midi(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+function tone(t, freq, dur, type, vol, dest, slide) {
+  if (!audioCtx || !dest) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t + Math.max(0.02, dur));
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(dest);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function noiseHit(t, dur, vol, freq) {
+  if (!audioCtx || !noiseBuf || muted) return;
+  const src = audioCtx.createBufferSource();
+  src.buffer = noiseBuf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(sfxGain);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+function sfxUi() {
+  if (muted || !audioCtx) return;
+  tone(audioCtx.currentTime, 740, 0.05, 'sine', 0.05, sfxGain);
+}
+
+function sfxChime() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  tone(t, 988, 0.18, 'sine', 0.08, sfxGain, 1568);
+  tone(t + 0.03, 1318, 0.22, 'triangle', 0.06, sfxGain);
+  tone(t + 0.07, 1976, 0.28, 'sine', 0.04, sfxGain);
+}
+
+function sfxTick(i) {
+  if (muted || !audioCtx) return;
+  const f = 980 + (i % 12) * 70;
+  tone(audioCtx.currentTime, f, 0.045, 'square', 0.035, sfxGain, f * 1.4);
+}
+
+function sfxChord() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+    tone(t + i * 0.045, f, 0.42, 'triangle', 0.07, sfxGain);
+    tone(t + i * 0.045, f * 2, 0.3, 'sine', 0.025, sfxGain);
+  });
+  noiseHit(t, 0.08, 0.04, 1800);
+}
+
+function sfxBuzz() {
+  if (muted || !audioCtx) return;
+  const t = audioCtx.currentTime;
+  tone(t, 90, 0.22, 'sawtooth', 0.05, sfxGain, 54);
+  tone(t, 62, 0.26, 'square', 0.03, sfxGain);
+  noiseHit(t, 0.12, 0.06, 240);
+}
+
+function pumpMusic() {
+  if (!audioCtx || muted) return;
+  if (music.next < audioCtx.currentTime - 0.4) music.next = audioCtx.currentTime;
+  const arp = [69, 72, 76, 81, 84, 81, 76, 72, 71, 74, 79, 83, 86, 83, 79, 74];
+  const bass = [45, 0, 45, 52, 41, 0, 48, 0, 43, 0, 43, 50, 40, 0, 47, 0];
+  const stepDur = 60 / 118 / 2;
+  while (music.next < audioCtx.currentTime + 0.25) {
+    const i = music.step % 16;
+    const t = music.next;
+    tone(t, midi(arp[i] + 12), 0.16, 'triangle', 0.045, musicGain);
+    if (i % 2 === 0) tone(t, midi(arp[i]), 0.18, 'sine', 0.03, musicGain);
+    if (bass[i]) tone(t, midi(bass[i]), 0.24, 'sawtooth', 0.03, musicGain);
+    if (i % 4 === 0) noiseHit(t, 0.05, 0.028, 160);
+    if (i % 2 === 1) noiseHit(t, 0.03, 0.012, 2800);
+    music.step++;
+    music.next += stepDur;
+  }
+}
+
+function toggleMute() {
+  muted = !muted;
+  writeStore(MUTE_KEY, muted ? '1' : '0');
+  if (!muted) {
+    ensureAudio();
+    if (musicGain) musicGain.gain.value = 0.07;
+    if (sfxGain) sfxGain.gain.value = 0.28;
+    if (audioCtx) music.next = audioCtx.currentTime + 0.05;
+  } else if (musicGain) {
+    musicGain.gain.value = 0;
+    sfxGain.gain.value = 0;
+  }
+  sfxUi();
+}
+
+/* ---------- flow ---------- */
+
+function freshPlayer() {
+  return { sel: 0, score: 0, combo: 0, shields: 3, stars: 0, a: false, b: false, holdDir: 0, holdT: 0, rep: 0 };
+}
+
+function speak(text) {
+  if (sr) sr.textContent = text;
+}
+
+function ownerOfStep() {
+  if (G.mode !== 'coop') return -1;
+  const p1First = (G.round % 2) === 1;
+  if (G.step === 2) return -1;
+  if (G.step === 0) return p1First ? 0 : 1;
+  return p1First ? 1 : 0;
+}
+
+function roleLine() {
+  if (G.mode === 'solo') return 'SOLO MOSAICIST';
+  if (G.mode === 'versus') return 'FIRST LOCK TAKES THE STEP';
+  const owner = ownerOfStep();
+  if (owner < 0) return 'BOTH ARCHITECTS FUSE';
+  if (G.step === 0) return owner === 0 ? 'P1 RED SLICES THE TILE' : 'P2 BLUE SLICES THE TILE';
+  return owner === 0 ? 'P1 RED SCANS THE RIM' : 'P2 BLUE SCANS THE RIM';
+}
+
+function announce() {
+  const p = G.problem;
+  if (!p) return;
+  speak('Round ' + G.round + ', ' + p.tierName + '. ' + roleLine() + '. ' + p.prompts[G.step]);
+}
+
+function beginRound() {
+  const puz = makePuzzle(G.round, G.history);
+  G.history.push(puz.key);
+  if (G.history.length > 6) G.history.shift();
+  G.problem = puz;
+  G.step = 0;
+  G.solved = [false, false, false];
+  G.stepT = performance.now();
+  G.advanceAt = 0;
+  G.celebrate = 0;
+  G.lock = false;
+  G.ready = [false, false];
+  G.laserT = 0;
+  G.laserHeard = -1;
+  G.hint = '';
+  G.hintUntil = 0;
+  G.p[0].sel = 0;
+  G.p[1].sel = 0;
+  announce();
+}
+
+function beginGame(mode) {
+  ensureAudio();
+  sfxUi();
+  G.mode = mode;
+  G.phase = 'play';
+  G.round = 1;
+  G.score = 0;
+  G.combo = 0;
+  G.shields = mode === 'coop' ? 4 : 3;
+  G.p = [freshPlayer(), freshPlayer()];
+  G.overReason = '';
+  G.winner = -1;
+  G.overAt = 0;
+  G.floaters = [];
+  G.sparks = [];
+  G.note = '';
+  beginRound();
+}
+
+function saveBest() {
+  if (G.mode === 'solo' && G.score > G.bestSolo) {
+    G.bestSolo = G.score;
+    writeStore(BEST_SOLO, String(G.score));
+  }
+  if (G.mode === 'coop' && G.score > G.bestCoop) {
+    G.bestCoop = G.score;
+    writeStore(BEST_COOP, String(G.score));
+  }
+}
+
+function award(pi, step) {
+  const base = [100, 100, 350][step];
+  const elapsed = (performance.now() - G.stepT) / 1000;
+  if (G.mode === 'versus') {
+    const speed = Math.max(0, Math.round(130 - elapsed * 28));
+    const bonus = Math.min(G.p[pi].combo, 8) * 20;
+    const gained = base + speed + bonus;
+    G.p[pi].combo += 1;
+    G.p[pi].score += gained;
+    if (step === 2) G.p[pi].stars += 1;
+    return gained;
+  }
+  const bonus = Math.min(G.combo, 8) * 20;
+  const gained = base + bonus;
+  G.combo += 1;
+  G.score += gained;
+  return gained;
+}
+
+function spawnFloater(text, x, y, color) {
+  G.floaters.push({ text: text, x: x, y: y, vy: -38, life: 1.15, age: 0, color: color || '#ffe08a' });
+}
+
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 50 + Math.random() * 180;
+    G.sparks.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.35,
+      age: 0,
+      color: color,
+    });
+  }
+}
+
+function cardCenter(i) {
+  const r = cardRects()[i];
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
+function workedLine(p) {
+  const P = fmtTenths(p.perimTenths);
+  const side = fmtTenths(p.sideTenths);
+  if (!p.master) return 'AB = ' + P + ' m / ' + p.cluster.exposed + ' = ' + side + ' m';
+  const oneH = (p.sideTenths * p.sideTenths * p.pattern.sn) / p.pattern.sd;
+  return 'AB = ' + side + ' m · tile ' + side + '×' + side + ' × ' + p.pattern.sn + '/' + p.pattern.sd +
+    ' = ' + fmtHundredths(oneH) + ' m² · × ' + p.cluster.tiles + ' tiles = ' + fmtHundredths(p.areaHundredths) + ' m²';
+}
+
+function onCorrect(pi) {
+  const step = G.step;
+  G.solved[step] = true;
+  G.lock = true;
+  G.ready = [false, false];
+  const gained = award(pi, step);
+  const c = cardCenter(G.p[pi].sel);
+  spawnFloater('+' + gained, c.x, c.y - 10, '#ffe7a3');
+  burst(c.x, c.y, '#7ef6ff', 14);
+  if (step === 0) sfxChime();
+  if (step === 1) {
+    G.laserT = performance.now();
+    G.laserHeard = -1;
+  }
+  if (step === 2) {
+    sfxChord();
+    burst(640, 360, '#ffc44a', 28);
+    G.hint = workedLine(G.problem);
+    G.hintUntil = performance.now() + 4000;
+    G.celebrate = performance.now() + 1750;
+    speak('Mosaic fused. ' + G.hint);
+    return;
+  }
+  const wait = step === 0 ? 560 : Math.max(980, G.problem.cluster.exposed * 85);
+  G.advanceAt = performance.now() + wait;
+}
+
+function onWrong(pi, opt) {
+  sfxBuzz();
+  G.shake = 9;
+  G.hint = opt.hint;
+  G.hintUntil = performance.now() + 4600;
+  G.ready = [false, false];
+  const c = cardCenter(G.p[pi].sel);
+  burst(c.x, c.y, '#ff4d6a', 18);
+  G.lock = true;
+  G.unlockAt = performance.now() + 380;
+  if (G.mode === 'versus') {
+    G.p[pi].combo = 0;
+    G.p[pi].shields -= 1;
+    if (G.p[pi].shields <= 0) {
+      G.winner = 1 - pi;
+      G.overReason = 'P' + (pi + 1) + ' shields shattered. P' + (G.winner + 1) + ' holds the foundry.';
+      G.overAt = performance.now() + 900;
+    }
+  } else {
+    G.combo = 0;
+    G.shields -= 1;
+    if (G.shields <= 0) {
+      G.overReason = G.mode === 'coop' ? 'Team shields shattered.' : 'Mosaic shields shattered.';
+      G.overAt = performance.now() + 1000;
+    }
+  }
+  speak(opt.hint);
+}
+
+function submit(pi) {
+  if (G.phase !== 'play' || G.lock || G.celebrate) return;
+  const owner = ownerOfStep();
+  if (G.mode === 'coop' && owner !== -1 && owner !== pi) {
+    G.note = pi === 0 ? 'Red architect, this station is your partner’s.' : 'Blue architect, this station is your partner’s.';
+    G.noteUntil = performance.now() + 1400;
+    sfxUi();
+    return;
+  }
+  const sel = G.p[pi].sel;
+  if (sel < 0 || sel > 3) return;
+  if (G.mode === 'coop' && owner === -1) {
+    G.ready[pi] = true;
+    if (!(G.ready[0] && G.ready[1])) {
+      G.note = 'P' + (pi + 1) + ' locked in. Partner, fuse the same card.';
+      G.noteUntil = performance.now() + 1400;
+      sfxUi();
+      return;
+    }
+    if (G.p[0].sel !== G.p[1].sel) {
+      G.ready = [false, false];
+      G.note = 'Architects disagree — highlight the same answer, then fuse together.';
+      G.noteUntil = performance.now() + 1700;
+      sfxUi();
+      return;
+    }
+  }
+  const opt = G.problem.steps[G.step][sel];
+  if (!opt) return;
+  if (opt.correct) onCorrect(pi);
+  else onWrong(pi, opt);
+}
+
+function moveSel(pi, dir) {
+  if (G.phase === 'title') {
+    G.titleSel = (G.titleSel + dir + 3) % 3;
+    sfxUi();
+    return;
+  }
+  if (G.phase === 'over' || G.phase === 'pause') {
+    G.titleSel = G.titleSel ? 0 : 1;
+    return;
+  }
+  if (G.phase !== 'play' || G.lock) return;
+  const p = G.p[pi];
+  p.sel = (p.sel + dir + 4) % 4;
+  G.ready[pi] = false;
+}
+
+function confirmPlayer(pi) {
+  ensureAudio();
+  if (G.phase === 'title') {
+    beginGame(['solo', 'coop', 'versus'][G.titleSel]);
+    return;
+  }
+  if (G.phase === 'pause') {
+    if (G.titleSel === 0) G.phase = 'play';
+    else G.phase = 'title';
+    return;
+  }
+  if (G.phase === 'over') {
+    if (G.titleSel === 0) beginGame(G.mode);
+    else G.phase = 'title';
+    return;
+  }
+  submit(pi);
+}
+
+/* ---------- input ---------- */
+
+function pointerPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const cssX = (e.clientX - r.left) * (window.innerWidth / Math.max(1, r.width));
+  const cssY = (e.clientY - r.top) * (window.innerHeight / Math.max(1, r.height));
+  return { x: (cssX - view.ox) / view.s, y: (cssY - view.oy) / view.s };
+}
+
+function inside(px, py, r) {
+  return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+}
+
+function cardRects() {
+  const gap = 12;
+  const x0 = 16;
+  const w = (1248 - gap * 3) / 4;
+  const rects = [];
+  for (let i = 0; i < 4; i++) rects.push({ i: i, x: x0 + i * (w + gap), y: GEO.cardY, w: w, h: GEO.cardH });
+  return rects;
+}
+
+function pointerOnChoice(x, y) {
+  if (inside(x, y, GEO.fuse) || inside(x, y, GEO.mute)) return true;
+  const rects = cardRects();
+  for (let i = 0; i < rects.length; i++) if (inside(x, y, rects[i])) return true;
+  return false;
+}
+
+function titleRects() {
+  return [0, 1, 2].map(function (i) {
+    return { i: i, x: 48 + i * 404, y: 248, w: 376, h: 268 };
+  });
+}
+
+function overRects() {
+  return [
+    { id: 'again', x: 390, y: 468, w: 230, h: 58 },
+    { id: 'title', x: 660, y: 468, w: 230, h: 58 },
+  ];
+}
+
+function onPointerMove(e) {
+  const pos = pointerPos(e);
+  mouse.x = pos.x;
+  mouse.y = pos.y;
+  mouse.on = true;
+  if (G.phase === 'title') {
+    const rects = titleRects();
+    for (let i = 0; i < rects.length; i++) if (inside(pos.x, pos.y, rects[i])) G.titleSel = i;
+    return;
+  }
+  if (G.phase === 'over' || G.phase === 'pause') {
+    const rects = G.phase === 'pause'
+      ? [{ x: 440, y: 300, w: 400, h: 58 }, { x: 440, y: 376, w: 400, h: 58 }]
+      : overRects();
+    for (let i = 0; i < rects.length; i++) if (inside(pos.x, pos.y, rects[i])) G.titleSel = i;
+    return;
+  }
+  if (G.phase !== 'play' || G.mode === 'versus' && false) return;
+  if (G.lock) return;
+  const pi = 0;
+  const rects = cardRects();
+  for (let i = 0; i < rects.length; i++) {
+    if (inside(pos.x, pos.y, rects[i])) {
+      if (G.p[pi].sel !== i) G.ready[pi] = false;
+      G.p[pi].sel = i;
+    }
+  }
+}
+
+function onPointerDown(e) {
+  canvas.focus();
+  ensureAudio();
+  const pos = pointerPos(e);
+  mouse.x = pos.x;
+  mouse.y = pos.y;
+  mouse.on = true;
+  if (e.cancelable) e.preventDefault();
+  if (inside(pos.x, pos.y, GEO.mute)) {
+    toggleMute();
+    return;
+  }
+  if (G.phase === 'title') {
+    const rects = titleRects();
+    for (let i = 0; i < rects.length; i++) {
+      if (inside(pos.x, pos.y, rects[i])) {
+        G.titleSel = i;
+        beginGame(['solo', 'coop', 'versus'][i]);
+        return;
+      }
+    }
+    return;
+  }
+  if (G.phase === 'pause') {
+    if (inside(pos.x, pos.y, { x: 440, y: 300, w: 400, h: 58 })) G.phase = 'play';
+    else if (inside(pos.x, pos.y, { x: 440, y: 376, w: 400, h: 58 })) G.phase = 'title';
+    return;
+  }
+  if (G.phase === 'over') {
+    const rects = overRects();
+    for (let i = 0; i < rects.length; i++) {
+      if (inside(pos.x, pos.y, rects[i])) {
+        if (rects[i].id === 'again') beginGame(G.mode);
+        else G.phase = 'title';
+        return;
+      }
+    }
+    return;
+  }
+  if (G.lock || G.celebrate) return;
+  const rects = cardRects();
+  for (let i = 0; i < rects.length; i++) {
+    if (inside(pos.x, pos.y, rects[i])) {
+      G.p[0].sel = i;
+      submit(0);
+      return;
+    }
+  }
+  if (inside(pos.x, pos.y, GEO.fuse)) submit(0);
+}
+
+function onKeyDown(e) {
+  keys[e.code] = keys[e.code] || performance.now();
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(e.code) !== -1) e.preventDefault();
+  if (e.repeat) return;
+  ensureAudio();
+  if (e.code === 'KeyM') {
+    toggleMute();
+    return;
+  }
+  if (e.code === 'Escape') {
+    if (G.phase === 'play') {
+      G.phase = 'pause';
+      G.titleSel = 0;
+    } else if (G.phase === 'pause') G.phase = 'play';
+    else if (G.phase === 'over') G.phase = 'title';
+    return;
+  }
+  const solo = G.mode === 'solo' || G.phase === 'title' || G.phase === 'over' || G.phase === 'pause';
+  if (solo) {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') moveSel(0, -1);
+    else if (e.code === 'ArrowRight' || e.code === 'KeyD') moveSel(0, 1);
+    else if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') confirmPlayer(0);
+    return;
+  }
+  if (e.code === 'KeyA') moveSel(0, -1);
+  else if (e.code === 'KeyD') moveSel(0, 1);
+  else if (e.code === 'KeyF' || e.code === 'Space') confirmPlayer(0);
+  else if (e.code === 'ArrowLeft') moveSel(1, -1);
+  else if (e.code === 'ArrowRight') moveSel(1, 1);
+  else if (e.code === 'Enter') confirmPlayer(1);
+}
+
+function onKeyUp(e) {
+  keys[e.code] = 0;
+}
+
+function repeatKeys() {
+  const now = performance.now();
+  function held(code) {
+    const t = keys[code];
+    if (!t) return false;
+    if (now - t < 280) return false;
+    return Math.floor((now - t - 280) / 150) !== Math.floor((now - t - 16 - 280) / 150);
+  }
+  const solo = G.mode === 'solo' || G.phase === 'title' || G.phase === 'over' || G.phase === 'pause';
+  if (solo) {
+    if (held('ArrowLeft') || held('KeyA')) moveSel(0, -1);
+    if (held('ArrowRight') || held('KeyD')) moveSel(0, 1);
+  } else if (G.phase === 'play') {
+    if (held('KeyA')) moveSel(0, -1);
+    if (held('KeyD')) moveSel(0, 1);
+    if (held('ArrowLeft')) moveSel(1, -1);
+    if (held('ArrowRight')) moveSel(1, 1);
+  }
+}
+
+function pollPads() {
+  const pads = (navigator.getGamepads && navigator.getGamepads()) || [];
+  for (let i = 0; i < 2; i++) {
+    const gp = pads[i];
+    const p = G.p[i];
+    if (!gp) continue;
+    G.padNote = '8BitDo ' + (i + 1) + ' linked';
+    const ax = gp.axes[0] || 0;
+    const dir = ax > 0.55 ? 1 : ax < -0.55 ? -1 : 0;
+    const dL = gp.buttons[14] && gp.buttons[14].pressed;
+    const dR = gp.buttons[15] && gp.buttons[15].pressed;
+    const dpad = dL ? -1 : dR ? 1 : 0;
+    const move = dpad || dir;
+    const soloPad = G.mode === 'solo' || G.phase === 'title' || G.phase === 'over' || G.phase === 'pause';
+    if (soloPad && i > 0) {
+      p.holdDir = 0;
+    } else if (move && move !== p.holdDir) {
+      p.holdDir = move;
+      p.holdT = performance.now();
+      p.rep = 0;
+      moveSel(soloPad ? 0 : i, move);
+    } else if (!move) {
+      p.holdDir = 0;
+      p.rep = 0;
+    } else if (performance.now() - p.holdT > 280) {
+      const steps = Math.floor((performance.now() - p.holdT - 280) / 160);
+      if (steps !== p.rep) {
+        p.rep = steps;
+        moveSel(soloPad ? 0 : i, move);
+      }
+    }
+    const a = !!((gp.buttons[0] && gp.buttons[0].pressed) || (gp.buttons[1] && gp.buttons[1].pressed));
+    if (a && !p.a) {
+      ensureAudio();
+      if (soloPad) confirmPlayer(0);
+      else confirmPlayer(i);
+    }
+    p.a = a;
+  }
+}
+
+/* ---------- draw helpers ---------- */
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const sw = window.innerWidth || GEO.W;
+  const sh = window.innerHeight || GEO.H;
+  canvas.width = Math.max(1, Math.floor(sw * dpr));
+  canvas.height = Math.max(1, Math.floor(sh * dpr));
+  const s = Math.min(sw / GEO.W, sh / GEO.H);
+  view.s = s;
+  view.ox = (sw - GEO.W * s) / 2;
+  view.oy = (sh - GEO.H * s) / 2;
+  view.dpr = dpr;
+}
+
+function applyView() {
+  const d = view.dpr;
+  const sh = G.shake > 0.2 ? Math.sin(G.time * 48) * G.shake : 0;
+  ctx.setTransform(d * view.s, 0, 0, d * view.s, d * (view.ox + sh), d * view.oy);
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function panel(x, y, w, h, r, fill, stroke) {
+  roundRect(x, y, w, h, r);
+  ctx.fillStyle = fill || 'rgba(8, 14, 32, 0.88)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = stroke || 'rgba(126, 246, 255, 0.38)';
+  ctx.stroke();
+}
+
+function text(str, x, y, size, color, align, base) {
+  ctx.fillStyle = color;
+  ctx.font = '700 ' + size + 'px ' + FONT;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = base || 'middle';
+  ctx.fillText(str, x, y);
+}
+
+function drawFrac(cx, cy, n, d, size, color) {
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 ' + size + 'px ' + FONT;
+  const w = Math.max(ctx.measureText(String(n)).width, ctx.measureText(String(d)).width);
+  ctx.fillText(String(n), cx, cy - size * 0.62);
+  ctx.fillRect(cx - (w + 10) / 2, cy - 1.4, w + 10, 2.6);
+  ctx.fillText(String(d), cx, cy + size * 0.68);
+}
+
+function mapPoint(x, y, cx, cy, span, diamond) {
+  if (!diamond) return [cx + (x - 0.5) * span, cy + (y - 0.5) * span];
+  const dx = x - 0.5;
+  const dy = y - 0.5;
+  const rx = (dx - dy) * Math.SQRT1_2;
+  const ry = (dx + dy) * Math.SQRT1_2;
+  const half = span / 2;
+  return [cx + rx * half * Math.SQRT2, cy + ry * half * Math.SQRT2];
+}
+
+function traceLocal(poly, cx, cy, span, diamond) {
+  ctx.beginPath();
+  for (let i = 0; i < poly.length; i++) {
+    const p = mapPoint(poly[i][0], poly[i][1], cx, cy, span, diamond);
+    if (i === 0) ctx.moveTo(p[0], p[1]);
+    else ctx.lineTo(p[0], p[1]);
+  }
+  ctx.closePath();
+}
+
+function drawShield(x, y, on, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 8);
+  ctx.lineTo(x + 7, y - 4);
+  ctx.lineTo(x + 7, y + 3);
+  ctx.lineTo(x, y + 9);
+  ctx.lineTo(x - 7, y + 3);
+  ctx.lineTo(x - 7, y - 4);
+  ctx.closePath();
+  ctx.fillStyle = on ? color : 'rgba(255,255,255,0.08)';
+  ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = on ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.18)';
+  ctx.stroke();
+}
+
+function drawStar(x, y, r, on) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = x + Math.cos(a) * rad;
+    const py = y + Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = on ? '#ffd56a' : 'rgba(255,255,255,0.1)';
+  ctx.fill();
+}
+
+function laserProgress() {
+  const p = G.problem;
+  if (!p || !G.solved[1]) return 0;
+  const dur = Math.max(0.9, p.cluster.exposed * 0.085);
+  return Math.min(1, (performance.now() - G.laserT) / 1000 / dur);
+}
+
+/* ---------- scenes ---------- */
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, GEO.H);
+  g.addColorStop(0, '#10182f');
+  g.addColorStop(0.45, '#0a1022');
+  g.addColorStop(1, '#070812');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, GEO.W, GEO.H);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(126, 246, 255, 0.045)';
+  ctx.lineWidth = 1;
+  const drift = (G.time * 12) % 48;
+  for (let x = -48 + drift; x < GEO.W; x += 48) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x - 80, GEO.H);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.save();
+  ctx.translate(980, 250);
+  ctx.rotate(G.time * 0.15);
+  ctx.strokeStyle = 'rgba(126, 246, 255, 0.08)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-70, -70, 140, 140);
+  ctx.restore();
+  for (let i = 0; i < G.motes.length; i++) {
+    const m = G.motes[i];
+    ctx.globalAlpha = 0.25 + Math.sin(G.time * 2 + m.ph) * 0.15;
+    ctx.fillStyle = m.gold ? '#ffc44a' : '#7ef6ff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  const tier = G.problem ? G.problem.tierName : tierOf(G.round).name;
+  panel(GEO.hud.x, GEO.hud.y, GEO.hud.w, GEO.hud.h, 12, 'rgba(6, 12, 28, 0.92)', 'rgba(126, 246, 255, 0.45)');
+  let x = 32;
+  const y = 36;
+  if (G.mode === 'solo') {
+    text('SOLO MOSAICIST', x, y, 15, '#7ef6ff', 'left');
+    x += 168;
+  } else if (G.mode === 'coop') {
+    text('2P CO-OP TEAM', x, y, 15, '#d7b0ff', 'left');
+    x += 150;
+  } else {
+    text('2P VERSUS', x, y, 15, '#ffd0e4', 'left');
+    x += 118;
+  }
+  text('R' + G.round + '  ·  ' + tier, x, y, 14, '#e8fbff', 'left');
+  if (G.mode === 'versus') {
+    drawVersusHud();
+  } else {
+    x = 620;
+    text(G.mode === 'coop' ? 'TEAM SHIELDS' : 'SHIELDS', x, y, 11, '#8eb4c6', 'left');
+    for (let i = 0; i < (G.mode === 'coop' ? 4 : 3); i++) drawShield(x + 108 + i * 20, y, i < G.shields, '#3dffb0');
+    text(G.mode === 'coop' ? 'TEAM COMBO' : 'COMBO', 900, y, 11, '#8eb4c6', 'left');
+    text('×' + G.combo, 990, y, 16, '#ffc44a', 'left');
+    text(G.mode === 'coop' ? 'TEAM SCORE' : 'SCORE', 1060, y, 11, '#8eb4c6', 'left');
+    text(String(G.score), 1148, y, 18, '#ffe7a3', 'right');
+  }
+  roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 8);
+  ctx.fillStyle = 'rgba(8, 20, 36, 0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(126, 246, 255, 0.5)';
+  ctx.stroke();
+  text(muted ? 'MUTE' : 'SND', GEO.mute.x + 20, GEO.mute.y + 20, 9, '#7ef6ff', 'center');
+}
+
+function drawVersusHud() {
+  const y = 36;
+  function side(pi, x) {
+    const col = pi === 0 ? '#ff5a7a' : '#4db4ff';
+    text('P' + (pi + 1), x, y, 14, col, 'left');
+    for (let i = 0; i < 3; i++) drawShield(x + 32 + i * 18, y, i < G.p[pi].shields, col);
+    drawStar(x + 96, y, 7, G.p[pi].stars > 0);
+    text(String(G.p[pi].stars), x + 110, y, 14, '#ffd56a', 'left');
+    text(String(G.p[pi].score), x + 168, y, 15, '#e8fbff', 'left');
+  }
+  side(0, 470);
+  side(1, 780);
+}
+
+function drawSpec() {
+  const p = G.problem;
+  panel(GEO.spec.x, GEO.spec.y, GEO.spec.w, GEO.spec.h, 12, 'rgba(8, 16, 34, 0.9)', 'rgba(255, 196, 74, 0.28)');
+  text('MASTER TILE  ABCD', 34, 90, 11, '#7ef6ff', 'left');
+  text(p.pattern.note, 34, 112, 20, '#ffe7a3', 'left');
+  const fig = 'FIGURE 1  ·  ' + p.cluster.tiles + ' identical tiles  ·  ' + p.cluster.name.toUpperCase();
+  text(fig, 34, 134, 13, '#d5f6ff', 'left');
+  const labels = ['1  FRACTION', '2  EDGES', '3  SOLVE'];
+  for (let i = 0; i < 3; i++) {
+    const on = G.step === i;
+    const done = G.solved[i];
+    const x = 560 + i * 150;
+    roundRect(x, 92, 138, 36, 8);
+    ctx.fillStyle = done ? 'rgba(61, 255, 176, 0.16)' : on ? 'rgba(126, 246, 255, 0.16)' : 'rgba(255,255,255,0.03)';
+    ctx.fill();
+    ctx.strokeStyle = done ? 'rgba(61,255,176,0.7)' : on ? 'rgba(126,246,255,0.8)' : 'rgba(255,255,255,0.12)';
+    ctx.stroke();
+    text(labels[i], x + 69, 110, 12, done ? '#3dffb0' : on ? '#e8fbff' : '#8eb4c6', 'center');
+  }
+  text('OUTER PERIMETER', 1088, 92, 11, '#8eb4c6', 'center');
+  text(fmtTenths(p.perimTenths) + ' m', 1088, 118, 26, '#7ef6ff', 'center');
+}
+
+function inkSeamPolys(pattern) {
+  const lines = [];
+  if (pattern.kind !== 'grid') return lines;
+  const cols = pattern.cols;
+  const rows = pattern.rows;
+  for (let i = 0; i < pattern.seams.length; i++) {
+    const a = pattern.seams[i][0];
+    const b = pattern.seams[i][1];
+    const ar = Math.floor(a / cols);
+    const ac = a % cols;
+    const br = Math.floor(b / cols);
+    const bc = b % cols;
+    if (ar === br && Math.abs(ac - bc) === 1) {
+      const x = Math.max(ac, bc) / cols;
+      const y0 = ar / rows;
+      const y1 = (ar + 1) / rows;
+      lines.push([[x, y0], [x, y1]]);
+    } else if (ac === bc && Math.abs(ar - br) === 1) {
+      const y = Math.max(ar, br) / rows;
+      const x0 = ac / cols;
+      const x1 = (ac + 1) / cols;
+      lines.push([[x0, y], [x1, y]]);
+    }
+  }
+  return lines;
+}
+
+function drawMasterTile(rect) {
+  const p = G.problem.pattern;
+  panel(rect.x, rect.y, rect.w, rect.h, 14, 'rgba(6, 12, 28, 0.78)', 'rgba(126, 246, 255, 0.32)');
+  text('TILE  ABCD', rect.x + 18, rect.y + 20, 12, '#8eb4c6', 'left');
+  if (G.solved[0]) text(p.sn + '/' + p.sd + ' shaded', rect.x + rect.w - 18, rect.y + 20, 13, '#ffc44a', 'right');
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2 + 12;
+  const span = 198;
+  const reveal = G.solved[0] ? Math.min(1, (performance.now() - G.stepT) / 480 + (G.step > 0 ? 1 : 0)) : 0;
+  traceLocal([[0, 0], [1, 0], [1, 1], [0, 1]], cx, cy, span, p.diamond);
+  ctx.fillStyle = 'rgba(10, 36, 58, 0.92)';
+  ctx.fill();
+  const glass = ctx.createLinearGradient(cx - span / 2, cy - span / 2, cx + span / 2, cy + span / 2);
+  glass.addColorStop(0, '#ffe08a');
+  glass.addColorStop(0.55, '#f0a21a');
+  glass.addColorStop(1, '#3dffb0');
+  ctx.fillStyle = glass;
+  ctx.strokeStyle = glass;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  for (let i = 0; i < p.units.length; i++) {
+    if (!p.units[i].shaded) continue;
+    traceLocal(puffPoly(p.units[i].poly, 1.035), cx, cy, span, p.diamond);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.save();
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = 'rgba(232, 251, 255, 0.88)';
+  ctx.lineJoin = 'round';
+  strokePatternSeams(p, function (a, b) {
+    const pa = mapPoint(a[0], a[1], cx, cy, span, p.diamond);
+    const pb = mapPoint(b[0], b[1], cx, cy, span, p.diamond);
+    ctx.beginPath();
+    ctx.moveTo(pa[0], pa[1]);
+    ctx.lineTo(pb[0], pb[1]);
+    ctx.stroke();
+  });
+  ctx.restore();
+  traceLocal([[0, 0], [1, 0], [1, 1], [0, 1]], cx, cy, span, p.diamond);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#7ef6ff';
+  ctx.shadowColor = 'rgba(126, 246, 255, 0.65)';
+  ctx.shadowBlur = 12;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  if (reveal > 0.05) {
+    ctx.save();
+    ctx.globalAlpha = reveal;
+    ctx.setLineDash([5, 5]);
+    ctx.lineDashOffset = -G.time * 18;
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = '#7ef6ff';
+    for (let i = 0; i < p.units.length; i++) {
+      traceLocal(p.units[i].poly, cx, cy, span, p.diamond);
+      ctx.stroke();
+      const cpt = mapPoint(p.units[i].cx, p.units[i].cy, cx, cy, span, p.diamond);
+      text(String(i + 1), cpt[0], cpt[1], 11, p.units[i].shaded ? '#3a2400' : '#d8fbff', 'center');
+    }
+    ctx.restore();
+  }
+  drawVertexLabels(cx, cy, span, p.diamond, p.note === 'AE = BE');
+  if (G.celebrate) {
+    ctx.save();
+    ctx.globalAlpha = 0.18 + Math.sin(G.time * 6) * 0.06;
+    traceLocal([[0, 0], [1, 0], [1, 1], [0, 1]], cx, cy, span, p.diamond);
+    ctx.fillStyle = '#ffc44a';
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function puffPoly(poly, k) {
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < poly.length; i++) {
+    sx += poly[i][0];
+    sy += poly[i][1];
+  }
+  sx /= poly.length;
+  sy /= poly.length;
+  return poly.map(function (p) {
+    return [sx + (p[0] - sx) * k, sy + (p[1] - sy) * k];
+  });
+}
+
+function strokePatternSeams(pattern, drawSeg) {
+  const units = pattern.units;
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    for (let e = 0; e < u.poly.length; e++) {
+      const a = u.poly[e];
+      const b = u.poly[(e + 1) % u.poly.length];
+      const share = sharesEdge(units, i, a, b);
+      if (!share) continue;
+      const other = units[share.index];
+      const ink = seamIsInk(pattern, u.id, other.id);
+      const contrast = other.shaded !== u.shaded;
+      if (pattern.showEqualLines || ink || contrast) {
+        if (u.id < other.id || contrast) drawSeg(a, b);
+      }
+    }
+  }
+}
+
+function sameSeg(a, b, c, d) {
+  return near(a, c) && near(b, d);
+}
+
+function near(a, b) {
+  return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
+}
+
+function sharesEdge(units, i, a, b) {
+  for (let j = 0; j < units.length; j++) {
+    if (j === i) continue;
+    const q = units[j].poly;
+    for (let f = 0; f < q.length; f++) {
+      const c = q[f];
+      const d = q[(f + 1) % q.length];
+      if ((near(a, c) && near(b, d)) || (near(a, d) && near(b, c))) return { index: j };
+    }
+  }
+  return null;
+}
+
+function seamIsInk(pattern, a, b) {
+  if (b < 0) return false;
+  for (let i = 0; i < pattern.seams.length; i++) {
+    const s = pattern.seams[i];
+    if ((s[0] === a && s[1] === b) || (s[0] === b && s[1] === a)) return true;
+  }
+  return false;
+}
+
+function drawVertexLabels(cx, cy, span, diamond, showE) {
+  const pts = [
+    ['A', 0, 0],
+    ['B', 1, 0],
+    ['C', 1, 1],
+    ['D', 0, 1],
+  ];
+  if (showE) pts.push(['E', 0.5, 0]);
+  for (let i = 0; i < pts.length; i++) {
+    const local = mapPoint(pts[i][1], pts[i][2], cx, cy, span, diamond);
+    const vx = local[0] - cx;
+    const vy = local[1] - cy;
+    const len = Math.hypot(vx, vy) || 1;
+    const x = local[0] + (vx / len) * 18;
+    const y = local[1] + (vy / len) * 18;
+    text(pts[i][0], x, y, pts[i][0] === 'E' ? 14 : 16, pts[i][0] === 'E' ? '#3dffb0' : '#e8fbff', 'center');
+  }
+}
+
+function clusterLayout(cluster, rect) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  cluster.cells.forEach(function (c) {
+    minX = Math.min(minX, c[0]);
+    minY = Math.min(minY, c[1]);
+    maxX = Math.max(maxX, c[0] + 1);
+    maxY = Math.max(maxY, c[1] + 1);
+  });
+  const gw = maxX - minX;
+  const gh = maxY - minY;
+  const padX = 64;
+  const padY = 58;
+  const s = Math.min((rect.w - padX * 2) / gw, (rect.h - padY * 2) / gh);
+  const ox = rect.x + (rect.w - gw * s) / 2 - minX * s;
+  const oy = rect.y + (rect.h - gh * s) / 2 + 8 - minY * s;
+  return { s: s, ox: ox, oy: oy };
+}
+
+function drawCluster(rect) {
+  const prob = G.problem;
+  const cl = prob.cluster;
+  const pat = prob.pattern;
+  panel(rect.x, rect.y, rect.w, rect.h, 14, 'rgba(6, 12, 28, 0.78)', 'rgba(255, 196, 74, 0.25)');
+  text('FIGURE 1  ·  ' + cl.name.toUpperCase(), rect.x + 18, rect.y + 20, 12, '#8eb4c6', 'left');
+  if (G.solved[1]) text(cl.exposed + ' exposed sides', rect.x + rect.w - 18, rect.y + 20, 13, '#7ef6ff', 'right');
+  const lay = clusterLayout(cl, rect);
+  const occ = new Set(cl.cells.map(function (c) { return c[0] + ',' + c[1]; }));
+  const lit = G.solved[1];
+  for (let i = 0; i < cl.cells.length; i++) {
+    const c = cl.cells[i];
+    const x = lay.ox + c[0] * lay.s;
+    const y = lay.oy + c[1] * lay.s;
+    roundRect(x + 1, y + 1, lay.s - 2, lay.s - 2, 4);
+    ctx.fillStyle = 'rgba(8, 22, 40, 0.95)';
+    ctx.fill();
+    const inset = Math.max(3, lay.s * 0.08);
+    const inner = lay.s - inset * 2;
+    ctx.fillStyle = 'rgba(255, 186, 48, 0.95)';
+    ctx.strokeStyle = 'rgba(255, 186, 48, 0.95)';
+    ctx.lineWidth = Math.max(1, lay.s * 0.02);
+    ctx.lineJoin = 'round';
+    for (let u = 0; u < pat.units.length; u++) {
+      if (!pat.units[u].shaded) continue;
+      const poly = puffPoly(pat.units[u].poly, 1.04);
+      ctx.beginPath();
+      for (let k = 0; k < poly.length; k++) {
+        const px = x + inset + poly[k][0] * inner;
+        const py = y + inset + poly[k][1] * inner;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.lineWidth = 1.25;
+    ctx.strokeStyle = 'rgba(8, 22, 40, 0.85)';
+    strokePatternSeams(pat, function (a, b) {
+      ctx.beginPath();
+      ctx.moveTo(x + inset + a[0] * inner, y + inset + a[1] * inner);
+      ctx.lineTo(x + inset + b[0] * inner, y + inset + b[1] * inner);
+      ctx.stroke();
+    });
+    ctx.lineWidth = 1.5;
+    const sides = [
+      { nx: 0, ny: -1, x0: x, y0: y, x1: x + lay.s, y1: y },
+      { nx: 1, ny: 0, x0: x + lay.s, y0: y, x1: x + lay.s, y1: y + lay.s },
+      { nx: 0, ny: 1, x0: x + lay.s, y0: y + lay.s, x1: x, y1: y + lay.s },
+      { nx: -1, ny: 0, x0: x, y0: y + lay.s, x1: x, y1: y },
+    ];
+    for (let s = 0; s < sides.length; s++) {
+      const exposed = !occ.has((c[0] + sides[s].nx) + ',' + (c[1] + sides[s].ny));
+      ctx.beginPath();
+      ctx.moveTo(sides[s].x0, sides[s].y0);
+      ctx.lineTo(sides[s].x1, sides[s].y1);
+      if (lit && !exposed) ctx.strokeStyle = 'rgba(126, 246, 255, 0.08)';
+      else if (lit && exposed) ctx.strokeStyle = 'rgba(126, 246, 255, 0.15)';
+      else ctx.strokeStyle = exposed ? 'rgba(232, 251, 255, 0.85)' : 'rgba(126, 246, 255, 0.35)';
+      ctx.stroke();
+    }
+  }
+  if (lit) drawLaser(cl, lay);
+  if (G.celebrate) {
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    for (let i = 0; i < cl.cells.length; i++) {
+      const c = cl.cells[i];
+      ctx.fillStyle = '#ffc44a';
+      ctx.fillRect(lay.ox + c[0] * lay.s, lay.oy + c[1] * lay.s, lay.s, lay.s);
+    }
+    ctx.restore();
+  }
+}
+
+const OUTWARD = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+function drawLaser(cluster, lay) {
+  const loop = cluster.loop;
+  const pts = [];
+  for (let i = 0; i < loop.length; i++) {
+    pts.push([lay.ox + loop[i].x0 * lay.s, lay.oy + loop[i].y0 * lay.s]);
+  }
+  pts.push([lay.ox + loop[0].x0 * lay.s, lay.oy + loop[0].y0 * lay.s]);
+  const prog = laserProgress();
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(126, 246, 255, 0.25)';
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+  ctx.strokeStyle = '#7ef6ff';
+  ctx.shadowColor = '#7ef6ff';
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  let drawn = 0;
+  const lens = [];
+  for (let i = 0; i < pts.length - 1; i++) lens.push(Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]));
+  const total = lens.reduce(function (a, b) { return a + b; }, 0) || 1;
+  const budget = total * prog;
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 0; i < lens.length; i++) {
+    if (drawn >= budget) break;
+    const remain = budget - drawn;
+    if (remain >= lens[i]) {
+      ctx.lineTo(pts[i + 1][0], pts[i + 1][1]);
+      drawn += lens[i];
+    } else {
+      const t = remain / lens[i];
+      ctx.lineTo(pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t);
+      drawn = budget;
+    }
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  let spark = pts[0];
+  let acc = 0;
+  for (let i = 0; i < lens.length; i++) {
+    if (acc + lens[i] >= budget) {
+      const t = lens[i] ? (budget - acc) / lens[i] : 0;
+      spark = [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t];
+      break;
+    }
+    acc += lens[i];
+    spark = pts[i + 1];
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(spark[0], spark[1], 4.5, 0, Math.PI * 2);
+  ctx.fill();
+  const shown = Math.max(1, Math.round(prog * loop.length));
+  for (let i = 0; i < shown && i < loop.length; i++) {
+    const seg = loop[i];
+    const mx = lay.ox + ((seg.x0 + seg.x1) / 2) * lay.s;
+    const my = lay.oy + ((seg.y0 + seg.y1) / 2) * lay.s;
+    const n = OUTWARD[seg.dir];
+    const pull = Math.min(18, lay.s * 0.28);
+    text(String(i + 1), mx + n[0] * pull, my + n[1] * pull, 12, '#e8fbff', 'center');
+  }
+  ctx.restore();
+}
+
+function drawHint() {
+  panel(GEO.hint.x, GEO.hint.y, GEO.hint.w, GEO.hint.h, 10, 'rgba(8, 14, 28, 0.92)', 'rgba(126, 246, 255, 0.22)');
+  const now = performance.now();
+  let msg = G.problem.prompts[G.step];
+  let col = '#d7f7ff';
+  if (G.hint && now < G.hintUntil) {
+    msg = G.hint;
+    col = G.solved[2] ? '#ffe7a3' : '#ffb4c0';
+  } else if (G.note && now < G.noteUntil) {
+    msg = G.note;
+    col = '#ffd56a';
+  }
+  const prefix = roleLine();
+  text(prefix, 32, 501, 11, '#8eb4c6', 'left');
+  ctx.font = '700 14px ' + FONT;
+  const pw = ctx.measureText(prefix).width;
+  let body = msg;
+  const max = 1180 - pw;
+  while (body.length > 8 && ctx.measureText(body).width > max) body = body.slice(0, -2);
+  if (body !== msg) body = body.slice(0, -1) + '…';
+  text(body, 40 + pw, 501, 14, col, 'left');
+}
+
+function drawCards() {
+  const rects = cardRects();
+  const step = G.problem.steps[G.step];
+  const caption = G.problem.captions[G.step];
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    const p1 = G.p[0].sel === i;
+    const p2 = G.mode !== 'solo' && G.p[1].sel === i;
+    const hot = p1 || p2;
+    roundRect(r.x, r.y + (hot ? -2 : 0), r.w, r.h, 12);
+    const grd = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+    grd.addColorStop(0, hot ? 'rgba(18, 42, 68, 0.96)' : 'rgba(10, 18, 36, 0.94)');
+    grd.addColorStop(1, 'rgba(6, 10, 22, 0.94)');
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.lineWidth = hot ? 2.5 : 1.5;
+    if (p1 && p2) ctx.strokeStyle = '#e8fbff';
+    else if (p1) ctx.strokeStyle = G.mode === 'solo' ? '#7ef6ff' : '#ff5a7a';
+    else if (p2) ctx.strokeStyle = '#4db4ff';
+    else ctx.strokeStyle = 'rgba(126, 246, 255, 0.22)';
+    ctx.stroke();
+    const opt = step[i];
+    const col = '#f4fbff';
+    if (opt.kind === 'frac') drawFrac(r.x + r.w / 2, r.y + 42, opt.n, opt.d, 24, col);
+    else {
+      text(opt.text, r.x + r.w / 2, r.y + 40, opt.text.length > 5 ? 28 : 34, col, 'center');
+      text(opt.unit, r.x + r.w / 2, r.y + 68, 13, '#9ad7ea', 'center');
+    }
+    if (opt.kind === 'frac') text(caption, r.x + r.w / 2, r.y + 84, 12, '#8eb4c6', 'center');
+  }
+}
+
+function drawFuse() {
+  const r = GEO.fuse;
+  const hover = mouse.on && inside(mouse.x, mouse.y, r);
+  roundRect(r.x, r.y, r.w, r.h, 14);
+  const grd = ctx.createLinearGradient(r.x, r.y, r.x + r.w, r.y);
+  grd.addColorStop(0, G.celebrate ? '#ffc44a' : '#0e7490');
+  grd.addColorStop(1, G.celebrate ? '#3dffb0' : '#155e75');
+  ctx.fillStyle = grd;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = hover ? '#ffffff' : 'rgba(232, 251, 255, 0.7)';
+  ctx.stroke();
+  const label = G.celebrate ? 'MOSAIC FUSED' : 'FUSE MOSAIC';
+  text(label, r.x + r.w / 2, r.y + (G.mode === 'coop' && G.step === 2 ? 22 : 32), 20, '#f4fbff', 'center');
+  if (G.mode === 'coop' && G.step === 2 && !G.celebrate) {
+    text(G.ready[0] ? 'P1 READY' : 'P1 …', r.x + 90, r.y + 46, 12, G.ready[0] ? '#ffd0dc' : '#8eb4c6', 'center');
+    text(G.ready[1] ? 'P2 READY' : 'P2 …', r.x + r.w - 90, r.y + 46, 12, G.ready[1] ? '#cde6ff' : '#8eb4c6', 'center');
+  }
+}
+
+function drawReticle(x, y, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.arc(x, y, 9, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 14, y);
+  ctx.lineTo(x - 5, y);
+  ctx.moveTo(x + 5, y);
+  ctx.lineTo(x + 14, y);
+  ctx.moveTo(x, y - 14);
+  ctx.lineTo(x, y - 5);
+  ctx.moveTo(x, y + 5);
+  ctx.lineTo(x, y + 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSparks() {
+  for (let i = 0; i < G.sparks.length; i++) {
+    const s = G.sparks[i];
+    const t = 1 - s.age / s.life;
+    ctx.globalAlpha = Math.max(0, t);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(s.x - 2, s.y - 2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < G.floaters.length; i++) {
+    const f = G.floaters[i];
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    text(f.text, f.x, f.y, 20, f.color, 'center');
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawPlay() {
+  drawBackground();
+  drawHUD();
+  if (!G.problem) return;
+  drawSpec();
+  drawMasterTile(GEO.left);
+  drawCluster(GEO.right);
+  drawHint();
+  drawCards();
+  drawFuse();
+  if (mouse.on && (G.mode === 'solo' || G.mode === 'coop') && !pointerOnChoice(mouse.x, mouse.y)) {
+    drawReticle(mouse.x, mouse.y, '#7ef6ff');
+  }
+  if (G.mode !== 'solo') {
+    const rects = cardRects();
+    const a = rects[G.p[0].sel];
+    const b = rects[G.p[1].sel];
+    drawReticle(a.x + 18, a.y + 16, '#ff5a7a');
+    drawReticle(b.x + b.w - 18, b.y + 16, '#4db4ff');
+  }
+  drawSparks();
+  if (G.audit.length && G.round === 1) {
+    text(G.audit[0], 640, 16, 12, '#ff4d6a', 'center');
+  }
+}
+
+function drawTitle() {
+  drawBackground();
+  text('HOLO-TILE ARCHITECT', 640, 62, 42, '#e8fbff', 'center');
+  text('CROSS  &  MOSAIC LAB', 640, 102, 16, '#7ef6ff', 'center');
+  text('Primary 5 · 6    ·    shaded fractions    ·    cluster perimeter', 640, 132, 14, '#9ad7ea', 'center');
+  text('Drop symmetry lines. Count only the exposed rim. Fuse the mosaic.', 640, 168, 15, '#d7f7ff', 'center');
+  if (G.bestSolo) text('BEST SOLO  ' + G.bestSolo, 48, 200, 13, '#ffc44a', 'left');
+  if (G.bestCoop) text('BEST TEAM  ' + G.bestCoop, 1232, 200, 13, '#d7b0ff', 'right');
+  const cards = [
+    {
+      k: 'SOLO MOSAICIST',
+      d: 'Mouse, keyboard, or one 8BitDo.\n3 mosaic shields.\nYour score.',
+      lines: ['Mouse, keyboard, or one 8BitDo', '3 mosaic shields', 'Your own score'],
+    },
+    {
+      k: '2P CO-OP TEAM',
+      lines: ['P1  WASD + F / Space  ·  Pad 0', 'P2  Arrows + Enter  ·  Pad 1', '4 shared shields', 'One team score only'],
+    },
+    {
+      k: '2P VERSUS',
+      lines: ['Same pads and keys, one mosaic', 'First correct lock takes the step', 'Step 3 claims the star', 'Shields and stars, head to head'],
+    },
+  ];
+  const rects = titleRects();
+  for (let i = 0; i < 3; i++) {
+    const r = rects[i];
+    const on = G.titleSel === i;
+    panel(r.x, r.y, r.w, r.h, 16, on ? 'rgba(14, 40, 64, 0.94)' : 'rgba(8, 14, 30, 0.9)', on ? '#7ef6ff' : 'rgba(126,246,255,0.25)');
+    text(cards[i].k, r.x + r.w / 2, r.y + 42, 18, on ? '#ffe7a3' : '#e8fbff', 'center');
+    for (let L = 0; L < cards[i].lines.length; L++) {
+      text(cards[i].lines[L], r.x + r.w / 2, r.y + 96 + L * 32, 14, '#c5e7f4', 'center');
+    }
+  }
+  text('W A S D  or  arrows to choose    ·    Space or A to enter    ·    M mutes', 640, 560, 14, '#8eb4c6', 'center');
+  text('Warm-up builds 8 equal units and 3-tile clusters. The cross has 12 exposed sides, never 20.', 640, 598, 14, '#d7f7ff', 'center');
+  text(G.padNote || 'Plug in 8BitDo pads any time', 640, 640, 13, '#7ef6ff', 'center');
+  if (G.audit.length) text('Generator check: ' + G.audit[0], 640, 680, 13, '#ff8aa0', 'center');
+  roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 8);
+  ctx.fillStyle = 'rgba(8, 20, 36, 0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(126, 246, 255, 0.5)';
+  ctx.stroke();
+  text(muted ? 'MUTE' : 'SND', GEO.mute.x + 20, GEO.mute.y + 20, 9, '#7ef6ff', 'center');
+}
+
+function drawOverlay(title, sub, aLabel, bLabel) {
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.72)';
+  ctx.fillRect(0, 0, GEO.W, GEO.H);
+  panel(340, 180, 600, 380, 18, 'rgba(8, 14, 30, 0.96)', '#7ef6ff');
+  text(title, 640, 240, 28, '#ffe7a3', 'center');
+  const lines = String(sub || '').split('\n');
+  for (let i = 0; i < lines.length; i++) text(lines[i], 640, 290 + i * 26, 16, '#d7f7ff', 'center');
+  const buttons = [
+    { x: 390, y: 430, w: 230, h: 58, label: aLabel },
+    { x: 660, y: 430, w: 230, h: 58, label: bLabel },
+  ];
+  if (G.phase === 'pause') {
+    buttons[0].y = 300;
+    buttons[1].y = 376;
+  }
+  for (let i = 0; i < buttons.length; i++) {
+    const b = buttons[i];
+    roundRect(b.x, b.y, b.w, b.h, 12);
+    ctx.fillStyle = G.titleSel === i ? 'rgba(14, 90, 110, 0.95)' : 'rgba(10, 22, 40, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = G.titleSel === i ? '#7ef6ff' : 'rgba(126,246,255,0.3)';
+    ctx.stroke();
+    text(b.label, b.x + b.w / 2, b.y + b.h / 2, 16, '#e8fbff', 'center');
+  }
+}
+
+function drawOver() {
+  drawPlay();
+  let sub = G.overReason || '';
+  if (G.mode === 'versus') {
+    sub += '\nP1  ' + G.p[0].stars + ' stars   ·   ' + G.p[0].score + ' pts';
+    sub += '\nP2  ' + G.p[1].stars + ' stars   ·   ' + G.p[1].score + ' pts';
+  } else if (G.mode === 'coop') {
+    sub += '\nTeam score  ' + G.score + (G.score >= G.bestCoop ? '   ·   new best' : '');
+  } else {
+    sub += '\nScore  ' + G.score + (G.score >= G.bestSolo ? '   ·   new best' : '');
+  }
+  drawOverlay(G.mode === 'versus' ? 'FOUNDRY CLAIMED' : 'SHIELDS DOWN', sub, 'PLAY AGAIN', 'TITLE');
+}
+
+function drawPause() {
+  drawPlay();
+  drawOverlay('PAUSED', 'The mosaic holds its shape.', 'RESUME', 'TITLE');
+}
+
+function draw() {
+  applyView();
+  ctx.clearRect(-40, -40, GEO.W + 80, GEO.H + 80);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (G.phase === 'title') drawTitle();
+  else if (G.phase === 'pause') drawPause();
+  else if (G.phase === 'over') drawOver();
+  else drawPlay();
+}
+
+function updateLaserTicks() {
+  if (!G.problem || !G.solved[1] || G.phase !== 'play') return;
+  const exposed = G.problem.cluster.exposed;
+  const n = Math.min(exposed - 1, Math.floor(laserProgress() * exposed));
+  if (n > G.laserHeard) {
+    sfxTick(n);
+    G.laserHeard = n;
+  }
+}
+
+function tick(now) {
+  const dt = Math.min(0.034, (now - (G.last || now)) / 1000);
+  G.last = now;
+  G.time += dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 18);
+  for (let i = G.sparks.length - 1; i >= 0; i--) {
+    const s = G.sparks[i];
+    s.age += dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    if (s.age >= s.life) G.sparks.splice(i, 1);
+  }
+  for (let i = G.floaters.length - 1; i >= 0; i--) {
+    const f = G.floaters[i];
+    f.age += dt;
+    f.y += f.vy * dt;
+    if (f.age >= f.life) G.floaters.splice(i, 1);
+  }
+  for (let i = 0; i < G.motes.length; i++) {
+    const m = G.motes[i];
+    m.y -= m.sp * dt;
+    if (m.y < -8) {
+      m.y = GEO.H + 8;
+      m.x = Math.random() * GEO.W;
+    }
+  }
+  pollPads();
+  repeatKeys();
+  pumpMusic();
+  updateLaserTicks();
+  if (G.unlockAt && now >= G.unlockAt && !G.overAt) {
+    G.unlockAt = 0;
+    if (G.phase === 'play' && !G.celebrate) G.lock = false;
+  }
+  if (G.advanceAt && now >= G.advanceAt) {
+    G.advanceAt = 0;
+    G.step += 1;
+    G.stepT = now;
+    G.lock = false;
+    G.ready = [false, false];
+    G.p[0].sel = 0;
+    G.p[1].sel = 0;
+    announce();
+  }
+  if (G.celebrate && now >= G.celebrate && G.phase === 'play') {
+    G.celebrate = 0;
+    G.round += 1;
+    beginRound();
+  }
+  if (G.overAt && now >= G.overAt) {
+    G.overAt = 0;
+    G.phase = 'over';
+    G.titleSel = 0;
+    G.lock = false;
+    saveBest();
+    speak(G.overReason);
+  }
+  draw();
+  requestAnimationFrame(tick);
+}
+
+function boot() {
+  G.bestSolo = Number(readStore(BEST_SOLO) || 0) || 0;
+  G.bestCoop = Number(readStore(BEST_COOP) || 0) || 0;
+  for (let i = 0; i < 26; i++) {
+    G.motes.push({
+      x: Math.random() * GEO.W,
+      y: Math.random() * GEO.H,
+      r: Math.random() * 1.8 + 0.4,
+      sp: 8 + Math.random() * 18,
+      ph: Math.random() * 6,
+      gold: Math.random() < 0.35,
+    });
+  }
+  try {
+    G.audit = runAudit();
+  } catch (err) {
+    G.audit = [String(err && err.message || err)];
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  canvas.focus();
+  requestAnimationFrame(tick);
+}
+
+boot();
+</script>
+</body>
+</html>

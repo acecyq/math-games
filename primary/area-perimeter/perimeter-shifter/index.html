@@ -1,0 +1,3209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Perimeter Shifter: The Wall Pusher</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #040a08;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+  }
+  #mute {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  noscript p {
+    color: #e7fff4;
+    font-family: "Trebuchet MS", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" role="application" aria-label="Perimeter Shifter, The Wall Pusher. Find the outer frame, push indented walls outward, then add only the inner walls that stay. Solo uses the mouse, W A S D or arrow keys, and Space or Enter. Two players: red uses W A S D and F, blue uses arrow keys and Enter. Gamepads use the D-pad or stick and the A button."></canvas>
+<button id="mute" type="button" aria-pressed="false">Sound on</button>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript><p>Perimeter Shifter runs in JavaScript. Enable JavaScript to push walls and lock the laser fence.</p></noscript>
+<script>
+'use strict';
+
+/**
+ * Perimeter Shifter — The Wall Pusher
+ * Singapore Primary 4–6 composite perimeter.
+ * Push indented walls out to the bounding frame.
+ * Corner cuts and staircases: the new edges replace the old ones, so 0 extra walls.
+ * A side indent: the parallel wall completes the outer side; the two perpendicular walls stay.
+ * Perimeter = outer perimeter + those extra inner walls.
+ */
+
+const VIEW_W = 1280;
+const VIEW_H = 800;
+const STORE = 'perimeter-shifter-v1';
+const SQUARE_SIDES = [6, 7, 8, 9, 10, 11, 12];
+const HISTORY_MAX = 6;
+
+const UI = {
+  hud: { x: 16, y: 12, w: 1136, h: 56 },
+  sound: { x: 1164, y: 14, w: 100, h: 52 },
+  spec: { x: 16, y: 78, w: 1248, h: 96 },
+  arena: { x: 16, y: 184, w: 1248, h: 318 },
+  console: { x: 16, y: 512, w: 1248, h: 272 },
+  cards: [],
+  button: { x: 32, y: 728, w: 1216, h: 40 }
+};
+(function buildCards() {
+  const y = 630;
+  const h = 88;
+  const w = 292;
+  const gap = 12;
+  const x0 = 32;
+  for (let i = 0; i < 4; i++) UI.cards.push({ x: x0 + i * (w + gap), y: y, w: w, h: h });
+})();
+
+const TITLE_CARDS = [
+  { id: 'solo', x: 48, y: 214, w: 376, h: 228 },
+  { id: 'coop', x: 452, y: 214, w: 376, h: 228 },
+  { id: 'versus', x: 856, y: 214, w: 376, h: 228 }
+];
+const OVER_RETRY = { x: 400, y: 520, w: 220, h: 58 };
+const OVER_TITLE = { x: 660, y: 520, w: 220, h: 58 };
+const PAUSE_RESUME = { x: 400, y: 360, w: 220, h: 58 };
+const PAUSE_QUIT = { x: 660, y: 360, w: 220, h: 58 };
+
+const history = [];
+let BOOT_ERROR = '';
+
+const G = {
+  screen: 'title',
+  mode: 'solo',
+  round: 1,
+  step: 0,
+  phase: 'choose',
+  phaseT: 0,
+  problem: null,
+  score: 0,
+  combo: 0,
+  shields: 3,
+  maxShields: 3,
+  cleared: 0,
+  bestSolo: 0,
+  bestTeam: 0,
+  hint: '',
+  shake: 0,
+  floaters: [],
+  particles: [],
+  pollen: [],
+  reveal: '',
+  overTitle: '',
+  overBody: '',
+  titleFocus: 0,
+  hoverCard: -1,
+  hoverButton: false,
+  hoverSound: false,
+  stepT: 0,
+  time: 0,
+  pads: 0,
+  live: '',
+  scorePop: 0,
+  flash: null,
+  lastDevice: 'key'
+};
+
+const P = [
+  { focus: 0, shields: 3, stars: 0, score: 0, combo: 0, out: false, name: 'RED', color: '#ff4d6a' },
+  { focus: 0, shields: 3, stars: 0, score: 0, combo: 0, out: false, name: 'BLUE', color: '#49b4ff' }
+];
+
+const reticle = [
+  { x: 180, y: 670 },
+  { x: 480, y: 670 }
+];
+
+const heldKeys = new Set();
+const justKeys = new Set();
+const padNow = [
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false }
+];
+const padPrev = [
+  { x: 0, y: 0, a: false, start: false },
+  { x: 0, y: 0, a: false, start: false }
+];
+const padEdge = [
+  { a: false, start: false },
+  { a: false, start: false }
+];
+const axisState = [
+  { dir: 0, cool: 0 },
+  { dir: 0, cool: 0 }
+];
+const axisTap = [0, 0];
+const pointer = { x: 640, y: 420, inside: false };
+const clicks = [];
+
+const fit = { scale: 1, ox: 0, oy: 0, dpr: 1 };
+let canvas, ctx, muteBtn, sr;
+let reduceMotion = false;
+let demo = null;
+
+const audio = {
+  ac: null,
+  master: null,
+  music: null,
+  sfx: null,
+  noise: null,
+  muted: false,
+  started: false,
+  next: 0,
+  step: 0
+};
+
+const LEAD = [72, 76, 79, 84, 79, 76, 72, 67, 72, 76, 79, 76, 84, 79, 76, 72];
+const BASS = [36, 36, 43, 41, 36, 31, 34, 36];
+
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+function font(px, weight) {
+  return (weight || 700) + ' ' + Math.round(px) + 'px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif';
+}
+
+function fmt(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function pick(list) {
+  return list[randInt(0, list.length - 1)];
+}
+
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function ease(t) {
+  const x = clamp(t, 0, 1);
+  return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function roundRect(c, x, y, w, h, r) {
+  const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+  c.beginPath();
+  c.moveTo(x + rad, y);
+  c.arcTo(x + w, y, x + w, y + h, rad);
+  c.arcTo(x + w, y + h, x, y + h, rad);
+  c.arcTo(x, y + h, x, y, rad);
+  c.arcTo(x, y, x + w, y, rad);
+  c.closePath();
+}
+
+function hit(rect, x, y) {
+  return !!rect && x >= rect.x && y >= rect.y && x <= rect.x + rect.w && y <= rect.y + rect.h;
+}
+
+function shoelace(pts) {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+
+function pip(pts, x, y) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const yi = pts[i].y;
+    const yj = pts[j].y;
+    const xi = pts[i].x;
+    const xj = pts[j].x;
+    if ((yi > y) !== (yj > y)) {
+      const xint = ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+      if (x < xint) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function tierInfo(round) {
+  if (round <= 2) return { name: 'WARM-UP', blurb: 'Corners and staircases · 0 extra walls' };
+  if (round <= 4) return { name: 'GARDEN SHIFT', blurb: 'C-indent and U-indent · +2 walls' };
+  if (round <= 6) return { name: 'DOUBLE INDENT', blurb: 'Two sides · +4 walls' };
+  return {
+    name: 'MASTER ARCHITECT',
+    blurb: round % 2 === 0 ? 'Reverse survey · side and area' : 'Multi-indent challenge'
+  };
+}
+
+function notchRect(W, H, n) {
+  if (n.side === 'top') return { x: n.offset, y: 0, w: n.mouth, h: n.depth };
+  if (n.side === 'right') return { x: W - n.depth, y: n.offset, w: n.depth, h: n.mouth };
+  if (n.side === 'bottom') return { x: n.offset, y: H - n.depth, w: n.mouth, h: n.depth };
+  return { x: 0, y: n.offset, w: n.depth, h: n.mouth };
+}
+
+function notchValid(W, H, n) {
+  const span = (n.side === 'top' || n.side === 'bottom') ? W : H;
+  const depthSpan = (n.side === 'left' || n.side === 'right') ? W : H;
+  if (n.offset < 1 || n.mouth < 2 || n.depth < 2) return false;
+  if (n.offset + n.mouth > span - 1) return false;
+  if (n.depth > depthSpan - 3) return false;
+  return true;
+}
+
+function separated(a, b) {
+  return a.x + a.w + 1 <= b.x || b.x + b.w + 1 <= a.x || a.y + a.h + 1 <= b.y || b.y + b.h + 1 <= a.y;
+}
+
+function validSet(W, H, notches) {
+  if (!notches || !notches.length) return false;
+  const rects = [];
+  for (let i = 0; i < notches.length; i++) {
+    if (!notchValid(W, H, notches[i])) return false;
+    rects.push(notchRect(W, H, notches[i]));
+  }
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = i + 1; j < rects.length; j++) {
+      if (!separated(rects[i], rects[j])) return false;
+    }
+  }
+  let cut = 0;
+  rects.forEach(function (r) { cut += r.w * r.h; });
+  if (cut <= 0 || cut > W * H * 0.62) return false;
+  return true;
+}
+
+function walkNotches(W, H, notches) {
+  const by = { top: null, right: null, bottom: null, left: null };
+  notches.forEach(function (n, i) {
+    if (by[n.side]) throw new Error('two notches on ' + n.side);
+    n.index = i;
+    by[n.side] = n;
+  });
+  const edges = [];
+  function edge(x1, y1, x2, y2, role, target, notch) {
+    if (x1 === x2 && y1 === y2) return;
+    edges.push({
+      x1: x1, y1: y1, x2: x2, y2: y2,
+      role: role,
+      target: target || null,
+      notch: notch == null ? -1 : notch,
+      len: Math.abs(x2 - x1) + Math.abs(y2 - y1)
+    });
+  }
+  const top = by.top;
+  if (!top) edge(0, 0, W, 0, 'outer');
+  else {
+    edge(0, 0, top.offset, 0, 'stub');
+    edge(top.offset, 0, top.offset, top.depth, 'extra', null, top.index);
+    edge(top.offset, top.depth, top.offset + top.mouth, top.depth, 'slide', {
+      x1: top.offset, y1: 0, x2: top.offset + top.mouth, y2: 0
+    }, top.index);
+    edge(top.offset + top.mouth, top.depth, top.offset + top.mouth, 0, 'extra', null, top.index);
+    edge(top.offset + top.mouth, 0, W, 0, 'stub');
+  }
+  const right = by.right;
+  if (!right) edge(W, 0, W, H, 'outer');
+  else {
+    edge(W, 0, W, right.offset, 'stub');
+    edge(W, right.offset, W - right.depth, right.offset, 'extra', null, right.index);
+    edge(W - right.depth, right.offset, W - right.depth, right.offset + right.mouth, 'slide', {
+      x1: W, y1: right.offset, x2: W, y2: right.offset + right.mouth
+    }, right.index);
+    edge(W - right.depth, right.offset + right.mouth, W, right.offset + right.mouth, 'extra', null, right.index);
+    edge(W, right.offset + right.mouth, W, H, 'stub');
+  }
+  const bottom = by.bottom;
+  if (!bottom) edge(W, H, 0, H, 'outer');
+  else {
+    const e = bottom.offset;
+    const m = bottom.mouth;
+    const d = bottom.depth;
+    edge(W, H, e + m, H, 'stub');
+    edge(e + m, H, e + m, H - d, 'extra', null, bottom.index);
+    edge(e + m, H - d, e, H - d, 'slide', { x1: e + m, y1: H, x2: e, y2: H }, bottom.index);
+    edge(e, H - d, e, H, 'extra', null, bottom.index);
+    edge(e, H, 0, H, 'stub');
+  }
+  const left = by.left;
+  if (!left) edge(0, H, 0, 0, 'outer');
+  else {
+    const f = left.offset;
+    const m = left.mouth;
+    const d = left.depth;
+    edge(0, H, 0, f + m, 'stub');
+    edge(0, f + m, d, f + m, 'extra', null, left.index);
+    edge(d, f + m, d, f, 'slide', { x1: 0, y1: f + m, x2: 0, y2: f }, left.index);
+    edge(d, f, 0, f, 'extra', null, left.index);
+    edge(0, f, 0, 0, 'stub');
+  }
+  const beds = notches.map(function (n) {
+    const r = notchRect(W, H, n);
+    r.kind = 'flower';
+    r.mouth = n.mouth;
+    r.depth = n.depth;
+    r.side = n.side;
+    r.notch = n.index;
+    return r;
+  });
+  return { edges: edges, beds: beds };
+}
+
+function buildStair(W, H, steps) {
+  const totalRise = steps.reduce(function (s, st) { return s + st.rise; }, 0);
+  const totalRun = steps.reduce(function (s, st) { return s + st.run; }, 0);
+  if (totalRise > H - 3 || totalRun > W - 3) throw new Error('stair overflow');
+  const edges = [];
+  function edge(x1, y1, x2, y2, role, target) {
+    edges.push({
+      x1: x1, y1: y1, x2: x2, y2: y2,
+      role: role,
+      target: target || null,
+      notch: -1,
+      len: Math.abs(x2 - x1) + Math.abs(y2 - y1)
+    });
+  }
+  let y = H - totalRise;
+  let x = W;
+  edge(0, 0, W, 0, 'outer');
+  edge(W, 0, W, y, 'stub');
+  steps.forEach(function (st) {
+    const x2 = x - st.run;
+    const y2 = y + st.rise;
+    edge(x, y, x2, y, 'slide', { x1: x, y1: H, x2: x2, y2: H });
+    edge(x2, y, x2, y2, 'slide', { x1: W, y1: y, x2: W, y2: y2 });
+    x = x2;
+    y = y2;
+  });
+  if (y !== H) throw new Error('stair rise');
+  edge(x, H, 0, H, 'stub');
+  edge(0, H, 0, 0, 'outer');
+  const beds = [];
+  x = W;
+  y = H - totalRise;
+  steps.forEach(function (st) {
+    beds.push({
+      x: x - st.run, y: y, w: st.run, h: H - y,
+      kind: 'court', mouth: st.run, depth: st.rise, side: 'corner', notch: -1
+    });
+    x -= st.run;
+    y += st.rise;
+  });
+  const cutArea = beds.reduce(function (s, b) { return s + b.w * b.h; }, 0);
+  return { edges: edges, beds: beds, cutArea: cutArea };
+}
+
+function mirrorPoint(x, y, W, H, flipX, flipY) {
+  return { x: flipX ? W - x : x, y: flipY ? H - y : y };
+}
+
+function mirrorGeometry(geom, W, H, flipX, flipY) {
+  if (!flipX && !flipY) return { W: W, H: H, edges: geom.edges, beds: geom.beds };
+  function mp(x, y) { return mirrorPoint(x, y, W, H, flipX, flipY); }
+  const edges = geom.edges.map(function (e) {
+    const a = mp(e.x1, e.y1);
+    const b = mp(e.x2, e.y2);
+    let target = null;
+    if (e.target) {
+      const t1 = mp(e.target.x1, e.target.y1);
+      const t2 = mp(e.target.x2, e.target.y2);
+      target = { x1: t1.x, y1: t1.y, x2: t2.x, y2: t2.y };
+    }
+    return {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      role: e.role, target: target, notch: e.notch, len: e.len
+    };
+  });
+  const beds = geom.beds.map(function (bed) {
+    const corners = [
+      mp(bed.x, bed.y),
+      mp(bed.x + bed.w, bed.y),
+      mp(bed.x, bed.y + bed.h),
+      mp(bed.x + bed.w, bed.y + bed.h)
+    ];
+    const xs = corners.map(function (c) { return c.x; });
+    const ys = corners.map(function (c) { return c.y; });
+    return {
+      x: Math.min.apply(null, xs),
+      y: Math.min.apply(null, ys),
+      w: Math.max.apply(null, xs) - Math.min.apply(null, xs),
+      h: Math.max.apply(null, ys) - Math.min.apply(null, ys),
+      kind: bed.kind, mouth: bed.mouth, depth: bed.depth, side: bed.side, notch: bed.notch,
+      caption: bed.caption || '', sub: bed.sub || ''
+    };
+  });
+  return { W: W, H: H, edges: edges, beds: beds };
+}
+
+function analyze(edges, W, H, cutArea) {
+  let extraLen = 0;
+  let extraCount = 0;
+  let per = 0;
+  let slides = 0;
+  edges.forEach(function (e) {
+    per += e.len;
+    if (e.role === 'extra') {
+      extraLen += e.len;
+      extraCount += 1;
+    }
+    if (e.role === 'slide') slides += 1;
+  });
+  const outerPerim = 2 * (W + H);
+  if (per !== outerPerim + extraLen) throw new Error('perimeter formula ' + per + ' vs ' + (outerPerim + extraLen));
+  if (!slides) throw new Error('no sliding wall');
+  const pts = edges.map(function (e) { return { x: e.x1, y: e.y1 }; });
+  const area = shoelace(pts);
+  if (Math.abs(area - (W * H - cutArea)) > 0.001) {
+    throw new Error('area ' + area + ' expected ' + (W * H - cutArea));
+  }
+  return {
+    perimeter: per,
+    outerPerim: outerPerim,
+    extraLen: extraLen,
+    extraCount: extraCount,
+    area: area
+  };
+}
+
+function verifyLoop(edges, W, H) {
+  if (!edges.length) throw new Error('no edges');
+  const first = edges[0];
+  let x = first.x1;
+  let y = first.y1;
+  let minx = Infinity;
+  let miny = Infinity;
+  let maxx = -Infinity;
+  let maxy = -Infinity;
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    if (e.x1 !== x || e.y1 !== y) throw new Error('broken loop');
+    if (e.x1 !== e.x2 && e.y1 !== e.y2) throw new Error('diagonal');
+    if (e.len <= 0) throw new Error('zero edge');
+    minx = Math.min(minx, e.x1, e.x2);
+    miny = Math.min(miny, e.y1, e.y2);
+    maxx = Math.max(maxx, e.x1, e.x2);
+    maxy = Math.max(maxy, e.y1, e.y2);
+    if (e.role === 'slide') {
+      if (!e.target) throw new Error('missing target');
+      const tlen = Math.abs(e.target.x2 - e.target.x1) + Math.abs(e.target.y2 - e.target.y1);
+      if (tlen !== e.len) throw new Error('target length');
+      [[e.target.x1, e.target.y1], [e.target.x2, e.target.y2]].forEach(function (pt) {
+        const on = (pt[0] === 0 || pt[0] === W || pt[1] === 0 || pt[1] === H) &&
+          pt[0] >= 0 && pt[0] <= W && pt[1] >= 0 && pt[1] <= H;
+        if (!on) throw new Error('target off frame');
+      });
+    }
+    x = e.x2;
+    y = e.y2;
+  }
+  if (x !== first.x1 || y !== first.y1) throw new Error('not closed');
+  if (minx !== 0 || miny !== 0 || maxx !== W || maxy !== H) throw new Error('bounds');
+}
+
+function sideSpan(side, W, H) {
+  return (side === 'top' || side === 'bottom') ? W : H;
+}
+
+function stubSplit(total) {
+  const a = Math.floor(total / 2);
+  const b = total - a;
+  return a + ' cm + ' + b + ' cm';
+}
+
+function plantBeds(beds, seed) {
+  const rng = mulberry32(seed);
+  const palette = ['#ff4fa3', '#ffd23f', '#c084fc', '#7af0ff', '#ff8a3d', '#fff6fb'];
+  beds.forEach(function (bed, i) {
+    bed.blooms = [];
+    if (bed.kind !== 'flower') return;
+    const n = clamp(Math.round(bed.w * bed.h / 10), 2, 5);
+    for (let k = 0; k < n; k++) {
+      bed.blooms.push({
+        u: 0.22 + rng() * 0.56,
+        v: 0.22 + rng() * 0.56,
+        r: 0.16 + rng() * 0.14,
+        color: palette[Math.floor(rng() * palette.length)],
+        spin: rng() * Math.PI
+      });
+    }
+    bed.seed = seed + i * 17;
+  });
+}
+
+function makeSpeckles(edges, W, H) {
+  const pts = edges.map(function (e) { return { x: e.x1, y: e.y1 }; });
+  const out = [];
+  for (let x = 0.8; x < W - 0.3; x += 1.4) {
+    for (let y = 0.8; y < H - 0.3; y += 1.4) {
+      if (pip(pts, x, y)) out.push({ x: x, y: y, s: 0.18 + ((Math.floor(x * 3 + y * 5) % 5) * 0.05) });
+      if (out.length >= 80) return out;
+    }
+  }
+  return out;
+}
+
+function takeOptions(correctText, correctSub, candidates) {
+  const used = {};
+  used[correctText] = true;
+  const wrongs = [];
+  candidates.forEach(function (c) {
+    if (!c || !c.text || used[c.text]) return;
+    if (!c.hint) return;
+    used[c.text] = true;
+    wrongs.push({
+      text: c.text,
+      sub: c.sub || 'fence length',
+      correct: false,
+      hint: c.hint,
+      trap: c.trap || '',
+      dead: false
+    });
+  });
+  if (wrongs.length < 3) throw new Error('distractors ' + correctText);
+  const options = [{
+    text: correctText,
+    sub: correctSub,
+    correct: true,
+    hint: '',
+    trap: '',
+    dead: false
+  }].concat(wrongs.slice(0, 3));
+  shuffle(options);
+  return options;
+}
+
+function forgotHint(p) {
+  if (p.extraCount === 0) {
+    return 'Corner cuts and staircases have ZERO extra edges. Every inner step slides onto the frame, so the perimeter stays ' + p.outerPerim + ' cm.';
+  }
+  if (p.squareNotch && p.extraCount === 2) {
+    const axis = p.talk.slideAxis;
+    const other = axis === 'vertical' ? 'horizontal' : 'vertical';
+    const s = p.talk.slide;
+    return 'Pushing out the ' + axis + ' ' + s + ' cm wall completes the ' + p.outerPerim + ' cm outer square, but don\'t forget the TWO ' + other + ' ' + s + ' cm inner walls (+' + (2 * s) + ' cm)! The perimeter is ' + p.perimeter + ' cm.';
+  }
+  return 'Pushing the inner walls out completes the ' + p.outerPerim + ' cm frame, but don\'t forget the ' + p.extraCount + ' extra inner walls (+' + p.extraLen + ' cm)! The perimeter is ' + p.perimeter + ' cm.';
+}
+
+function stubHint(p) {
+  if (p.talk.slideAxis === 'steps') {
+    return 'You don\'t need the separate stub lengths! Slide every inner step outward — together with the stubs, they always rebuild the full ' + p.W + ' cm and ' + p.H + ' cm sides. Extra walls that stay: ' + p.extraCount + '.';
+  }
+  return 'You don\'t need the separate stub lengths! Slide the inner ' + p.talk.slide + ' cm wall outward — together with both stubs, it always equals the full ' + p.talk.outerSide + ' cm side! Extra walls that stay: ' + p.extraCount + '.';
+}
+
+function subtractHint(p) {
+  if (p.extraCount === 0) {
+    return 'Cutting this corner NEVER shrinks the perimeter. The new inner walls replace the outer edges exactly, so the fence stays ' + p.outerPerim + ' cm.';
+  }
+  return 'Cutting a bite out of a shape NEVER shrinks the perimeter — it replaces the outer edge and adds TWO extra inner walls! The perimeter is ' + p.perimeter + ' cm.';
+}
+
+function wallHint(picked, p) {
+  const n = p.extraCount;
+  if (n === 0) {
+    return 'Corner cuts and staircases push EVERY inner step onto the frame. Nothing is left inside — 0 extra walls.';
+  }
+  if (picked === 0) {
+    return 'The sliding wall completes the outer side, but the perpendicular inner walls stay inside. Count those extra walls: ' + n + '.';
+  }
+  const indents = n / 2;
+  if (picked < n) {
+    const word = indents === 1 ? 'is an indent on ONE side' : 'are indents on ' + indents + ' sides';
+    return 'There ' + word + '. Each leaves 2 extra walls, so ' + n + ' stay inside.';
+  }
+  return 'Only ' + indents + ' indent' + (indents === 1 ? '' : 's') + ' here. That leaves ' + n + ' extra walls, not ' + picked + '.';
+}
+
+function frameStep(p, misreads) {
+  const correct = p.W + ' cm × ' + p.H + ' cm';
+  const cands = [];
+  function add(text, sub, hint, trap) {
+    cands.push({ text: text, sub: sub, hint: hint, trap: trap });
+  }
+  misreads.forEach(function (m) { add(m.text, 'width × height', m.hint, 'stubs'); });
+  add(p.W * p.H + ' cm²', 'an area', p.W * p.H + ' cm² is the area of the rectangle. The dashed frame is ' + p.W + ' cm by ' + p.H + ' cm.', 'area');
+  add((p.W + p.H) + ' cm', 'fence length', 'Adding ' + p.W + ' + ' + p.H + ' is only halfway around. The frame size is ' + p.W + ' cm by ' + p.H + ' cm.', 'half');
+  if (p.W !== p.H) {
+    add(p.H + ' cm × ' + p.W + ' cm', 'width × height', 'The top of the dashed frame is ' + p.W + ' cm. The side is ' + p.H + ' cm.', 'swap');
+  }
+  add(p.W + ' cm × ' + Math.max(1, p.H - 1) + ' cm', 'width × height', 'That height is 1 cm short. The dashed outer frame is ' + p.H + ' cm tall.', 'stubs');
+  add(Math.max(1, p.W - 1) + ' cm × ' + p.H + ' cm', 'width × height', 'That width is 1 cm short. The dashed outer frame is ' + p.W + ' cm wide.', 'stubs');
+  return {
+    kicker: 'STEP 1 — OUTER BOUNDING DIMENSION',
+    prompt: 'Which pair matches the dashed outer frame?',
+    coach: 'Read the dashed cyan frame. The bites do not change its width or height.',
+    options: takeOptions(correct, 'width × height', cands)
+  };
+}
+
+function sideStep(S, s, inner, U) {
+  const total = S * S;
+  const near = S - 1;
+  const cands = [
+    {
+      text: total + ' cm²',
+      sub: 'an area',
+      hint: total + ' cm² is the area, not the side. ' + S + ' × ' + S + ' = ' + total + ', so the outer side is ' + S + ' cm.',
+      trap: 'area'
+    },
+    {
+      text: s + ' cm',
+      sub: 'a side length',
+      hint: s + ' cm is only the flower bed. Add ' + inner + ' + ' + U + ' = ' + total + '. The outer side is ' + S + ' cm because ' + S + ' × ' + S + ' = ' + total + '.',
+      trap: 'part'
+    },
+    {
+      text: near + ' cm',
+      sub: 'a side length',
+      hint: near + ' × ' + near + ' = ' + (near * near) + ', but the total area is ' + total + '. ' + S + ' × ' + S + ' = ' + total + '.',
+      trap: 'square'
+    },
+    {
+      text: (S + 1) + ' cm',
+      sub: 'a side length',
+      hint: (S + 1) + ' × ' + (S + 1) + ' = ' + ((S + 1) * (S + 1)) + ', which is bigger than ' + total + '. ' + S + ' × ' + S + ' = ' + total + '.',
+      trap: 'square'
+    },
+    {
+      text: (U > s * s ? U - inner : U) + ' cm',
+      sub: 'a length',
+      hint: 'The uncovered garden is part of the whole square. Add the flower bed: ' + inner + ' + ' + U + ' = ' + total + '. The side is ' + S + ' cm.',
+      trap: 'subtract'
+    }
+  ];
+  return {
+    kicker: 'STEP 1 — OUTER BOUNDING DIMENSION',
+    prompt: 'The whole garden is a square. Flower bed ' + s + ' × ' + s + ' = ' + inner + ' cm². Uncovered garden = ' + U + ' cm². What is the outer side?',
+    coach: 'The outer shape is a square. Add the flower-bed area and the uncovered garden. The side is the number that multiplies by itself to make that total.',
+    options: takeOptions(S + ' cm', 'a side length', cands)
+  };
+}
+
+function reverseSideStep(p) {
+  const S = p.W;
+  const Pper = p.givenFence;
+  const extra = p.extraLen;
+  const forgotDiv = Pper / 4;
+  const doubled = (Pper - extra) / 2;
+  const mouth = p.notches[0].mouth;
+  const depth = p.notches[0].depth;
+  const phrase = p.notches.length === 1
+    ? 'two extra ' + depth + ' cm walls'
+    : p.notches.map(function (n) { return '2 × ' + n.depth + ' cm'; }).join(' + ');
+  const cands = [
+    {
+      text: forgotDiv + ' cm',
+      sub: 'a side length',
+      hint: 'Divide only after you remove the extra walls. ' + Pper + ' − ' + extra + ' = ' + (Pper - extra) + ', then ÷ 4 = ' + S + ' cm.',
+      trap: 'forgot'
+    },
+    {
+      text: doubled + ' cm',
+      sub: 'a side length',
+      hint: (Pper - extra) + ' ÷ 2 is not a square side. A square has 4 equal sides, so ÷ 4 = ' + S + ' cm.',
+      trap: 'half'
+    },
+    {
+      text: mouth + ' cm',
+      sub: 'a side length',
+      hint: mouth + ' cm is a cutout length, not the outer side. ' + Pper + ' − ' + extra + ' = ' + (Pper - extra) + ', and ' + (Pper - extra) + ' ÷ 4 = ' + S + ' cm.',
+      trap: 'part'
+    },
+    {
+      text: depth + ' cm',
+      sub: 'a side length',
+      hint: depth + ' cm is an extra inner wall, not the outer side. The outer side is ' + S + ' cm.',
+      trap: 'part'
+    },
+    {
+      text: (S + 2) + ' cm',
+      sub: 'a side length',
+      hint: 'Check the division. ' + Pper + ' − ' + extra + ' = ' + (Pper - extra) + '. ' + (Pper - extra) + ' ÷ 4 = ' + S + ' cm.',
+      trap: 'square'
+    },
+    {
+      text: Pper + ' cm',
+      sub: 'a length',
+      hint: Pper + ' cm is the whole fence, extras included. Remove ' + extra + ' cm, then divide by 4 to get ' + S + ' cm.',
+      trap: 'unit'
+    }
+  ];
+  return {
+    kicker: 'STEP 1 — OUTER BOUNDING DIMENSION',
+    prompt: 'The outer garden is a square. The full fence is ' + Pper + ' cm. Extra walls: ' + phrase + '. What is the outer side?',
+    coach: 'This outer shape is a square. Subtract the extra walls from the fence, then divide by 4.',
+    options: takeOptions(S + ' cm', 'a side length', cands.filter(function (c) {
+      return Number.isInteger(Number(String(c.text).split(' ')[0]));
+    }))
+  };
+}
+
+function wallStep(p) {
+  const counts = [0, 2, 4, 6].filter(function (n) { return n !== p.extraCount; });
+  counts.sort(function (a, b) { return Math.abs(a - p.extraCount) - Math.abs(b - p.extraCount); });
+  const options = [{
+    text: p.extraCount + ' extra walls',
+    sub: 'after the push',
+    correct: true,
+    hint: '',
+    trap: '',
+    dead: false
+  }];
+  counts.slice(0, 2).forEach(function (n) {
+    options.push({
+      text: n + ' extra walls',
+      sub: 'after the push',
+      correct: false,
+      hint: wallHint(n, p),
+      trap: 'walls',
+      dead: false
+    });
+  });
+  options.push({
+    text: p.stubText,
+    sub: 'split the stubs',
+    correct: false,
+    hint: stubHint(p),
+    trap: 'stubs',
+    dead: false
+  });
+  const texts = options.map(function (o) { return o.text; });
+  if (new Set(texts).size !== 4) throw new Error('wall cards ' + texts.join(' | '));
+  shuffle(options);
+  return {
+    kicker: 'STEP 2 — MAGNETIC WALL PUSH',
+    prompt: 'Slide the indented walls out to the dashed frame. How many inner walls stay behind?',
+    coach: 'Walls that land on the frame are not extra. Count only the walls that stay inside.',
+    options: options
+  };
+}
+
+function perimeterStep(p) {
+  const o = p.outerPerim;
+  const Pper = p.perimeter;
+  const extraWords = p.edges.filter(function (e) { return e.role === 'extra'; }).map(function (e) { return e.len + ' cm'; }).join(' + ');
+  let prompt;
+  if (p.extraLen === 0) {
+    prompt = '2 × (' + p.W + ' + ' + p.H + ') = ' + o + ' cm. Every inner wall slides onto the frame. What is the perimeter?';
+  } else {
+    prompt = '2 × (' + p.W + ' + ' + p.H + ') = ' + o + ' cm + ' + extraWords + '. What is the perimeter?';
+  }
+  const cands = [];
+  if (p.extraLen > 0) {
+    cands.push({ text: o + ' cm', sub: 'fence length', hint: forgotHint(p), trap: 'forgot' });
+    cands.push({
+      text: (o + p.extraLen / 2) + ' cm',
+      sub: 'fence length',
+      hint: 'Each indent leaves a PAIR of extra walls. Add the full +' + p.extraLen + ' cm. The perimeter is ' + Pper + ' cm.',
+      trap: 'forgot'
+    });
+  } else {
+    const bump = p.talk.bump || 6;
+    cands.push({
+      text: (o + bump) + ' cm',
+      sub: 'fence length',
+      hint: 'Those steps slide out to the dashed frame. They are not extra. The perimeter stays ' + o + ' cm.',
+      trap: 'forgot'
+    });
+    cands.push({
+      text: (o + bump * 2) + ' cm',
+      sub: 'fence length',
+      hint: 'Corner cuts and staircases have ZERO extra edges. The perimeter equals the outer frame: ' + o + ' cm.',
+      trap: 'forgot'
+    });
+  }
+  if (p.cutPeri && o - p.cutPeri > 0) {
+    cands.push({
+      text: (o - p.cutPeri) + ' cm',
+      sub: 'fence length',
+      hint: subtractHint(p),
+      trap: 'subtract'
+    });
+  }
+  if (p.extraLen > 0 && o - p.extraLen > 0) {
+    cands.push({
+      text: (o - p.extraLen) + ' cm',
+      sub: 'fence length',
+      hint: subtractHint(p),
+      trap: 'subtract'
+    });
+  }
+  cands.push({
+    text: (p.W * p.H) + ' cm²',
+    sub: 'an area',
+    hint: (p.W * p.H) + ' cm² is area. The fence is a length. The perimeter is ' + Pper + ' cm.',
+    trap: 'area'
+  });
+  cands.push({
+    text: (p.W + p.H) + ' cm',
+    sub: 'fence length',
+    hint: 'The frame goes all the way around. 2 × (' + p.W + ' + ' + p.H + ') = ' + o + ' cm. The perimeter is ' + Pper + ' cm.',
+    trap: 'half'
+  });
+  if (p.talk.slide && p.extraLen > 0) {
+    cands.push({
+      text: (Pper + p.talk.slide) + ' cm',
+      sub: 'fence length',
+      hint: 'The wall that slides out is already part of the outer frame. Don\'t add it again. The perimeter is ' + Pper + ' cm.',
+      trap: 'stubs'
+    });
+  }
+  const coach = p.extraLen === 0
+    ? 'The new walls replace the old ones. The perimeter equals the outer frame.'
+    : 'Add the outer frame and every extra inner wall. Do not subtract the bite.';
+  return {
+    kicker: 'STEP 3 — LOCK TOTAL PERIMETER',
+    prompt: prompt,
+    coach: coach,
+    options: takeOptions(Pper + ' cm', 'fence length', cands)
+  };
+}
+
+function areaStep(p) {
+  const S = p.W;
+  const whole = S * S;
+  const cut = p.cutArea;
+  const open = p.uncovered;
+  const beds = p.notches.map(function (n) { return n.mouth + ' × ' + n.depth; }).join(' and ');
+  const one = p.notches[0];
+  const partial = whole - one.mouth * one.depth;
+  const cands = [
+    {
+      text: whole + ' cm²',
+      sub: 'an area',
+      hint: whole + ' cm² is the whole square. Subtract the cutouts: ' + whole + ' − ' + cut + ' = ' + open + ' cm².',
+      trap: 'part'
+    },
+    {
+      text: cut + ' cm²',
+      sub: 'an area',
+      hint: cut + ' cm² is only the cutout. The uncovered garden is ' + whole + ' − ' + cut + ' = ' + open + ' cm².',
+      trap: 'part'
+    },
+    {
+      text: partial + ' cm²',
+      sub: 'an area',
+      hint: 'Subtract every cutout. ' + whole + ' − ' + cut + ' = ' + open + ' cm².',
+      trap: 'forgot'
+    },
+    {
+      text: (whole + cut) + ' cm²',
+      sub: 'an area',
+      hint: 'The cutout is already inside the square. Subtract it: ' + whole + ' − ' + cut + ' = ' + open + ' cm².',
+      trap: 'add'
+    },
+    {
+      text: p.givenFence + ' cm',
+      sub: 'a length',
+      hint: p.givenFence + ' cm is the fence length, not an area. Uncovered area is ' + open + ' cm².',
+      trap: 'unit'
+    }
+  ];
+  return {
+    kicker: 'STEP 3 — LOCK UNCOVERED AREA',
+    prompt: 'The outer garden is a square of side ' + S + ' cm. Cutouts: ' + beds + ' cm. What is the uncovered area?',
+    coach: 'The outer shape is a square. Whole square minus the cutouts. Area is in cm².',
+    options: takeOptions(open + ' cm²', 'uncovered garden', cands)
+  };
+}
+
+function attachQuestions(p) {
+  if (p.ask === 'side' && p.kind === 'garden') {
+    p.steps = [sideStep(p.W, p.flower, p.flower * p.flower, p.uncovered), wallStep(p), perimeterStep(p)];
+  } else if (p.ask === 'side') {
+    p.steps = [reverseSideStep(p), wallStep(p), areaStep(p)];
+  } else {
+    p.steps = [frameStep(p, p.misreads || []), wallStep(p), perimeterStep(p)];
+  }
+  p.steps.forEach(function (step) {
+    if (!step.options || step.options.length !== 4) throw new Error('step size');
+    const texts = step.options.map(function (o) { return o.text; });
+    if (new Set(texts).size !== 4) throw new Error('duplicate ' + texts.join(' | '));
+    if (step.options.filter(function (o) { return o.correct; }).length !== 1) throw new Error('one correct');
+    step.options.forEach(function (o) {
+      if (!o.correct && !o.hint) throw new Error('hint missing for ' + o.text);
+    });
+  });
+}
+
+function leftoverOf(n, W, H) {
+  return sideSpan(n.side, W, H) - n.mouth;
+}
+
+function compile(spec) {
+  let W = spec.W;
+  let H = spec.H;
+  let edges;
+  let beds;
+  let cutArea;
+  if (spec.stepsGeom) {
+    const stair = buildStair(W, H, spec.stepsGeom);
+    const spun = mirrorGeometry(stair, W, H, !!spec.flipX, !!spec.flipY);
+    W = spun.W;
+    H = spun.H;
+    edges = spun.edges;
+    beds = spun.beds;
+    cutArea = stair.cutArea;
+  } else {
+    const walked = walkNotches(W, H, spec.notches);
+    edges = walked.edges;
+    beds = walked.beds;
+    cutArea = spec.notches.reduce(function (s, n) { return s + n.mouth * n.depth; }, 0);
+  }
+  verifyLoop(edges, W, H);
+  const stats = analyze(edges, W, H, cutArea);
+  const slide = edges.filter(function (e) { return e.role === 'slide'; })[0];
+  const slideAxis = spec.slideAxis || (slide && slide.x1 === slide.x2 ? 'vertical' : 'horizontal');
+  const outerSide = spec.outerSide || (spec.notches && spec.notches.length === 1
+    ? sideSpan(spec.notches[0].side, W, H)
+    : Math.max(W, H));
+  beds.forEach(function (bed) {
+    if (spec.bedCaption) bed.caption = spec.bedCaption(bed);
+    if (spec.bedSub) bed.sub = spec.bedSub(bed);
+  });
+  plantBeds(beds, spec.seed || (W * 1000 + H * 17 + cutArea));
+  const p = {
+    kind: spec.kind,
+    title: spec.title,
+    ask: spec.ask,
+    lockMode: spec.lockMode,
+    W: W,
+    H: H,
+    edges: edges,
+    beds: beds,
+    speckles: makeSpeckles(edges, W, H),
+    notches: spec.notches || [],
+    cutArea: cutArea,
+    cutPeri: spec.cutPeri || 0,
+    perimeter: stats.perimeter,
+    outerPerim: stats.outerPerim,
+    extraLen: stats.extraLen,
+    extraCount: stats.extraCount,
+    uncovered: spec.uncovered != null ? spec.uncovered : (W * H - cutArea),
+    givenFence: spec.givenFence || 0,
+    flower: spec.flower || 0,
+    showOuter: spec.showOuter !== false,
+    labelExtras: !!spec.labelExtras,
+    labelSlides: !!spec.labelSlides,
+    squareNotch: !!spec.squareNotch,
+    stubText: spec.stubText,
+    misreads: spec.misreads || [],
+    chips: spec.chips || [],
+    talk: {
+      slide: slide ? slide.len : 0,
+      slideAxis: slideAxis,
+      outerSide: outerSide,
+      bump: spec.bump || (spec.stepsGeom ? spec.stepsGeom[0].rise * 2 : 6)
+    },
+    signature: spec.signature,
+    solvedLine: ''
+  };
+  if (p.extraCount === 0) {
+    p.solvedLine = '2 × (' + W + ' + ' + H + ') = ' + p.perimeter + ' cm';
+  } else if (p.lockMode === 'area') {
+    p.solvedLine = W + ' × ' + W + ' − ' + cutArea + ' = ' + p.uncovered + ' cm²';
+  } else {
+    p.solvedLine = '2 × (' + W + ' + ' + H + ') + ' + p.extraLen + ' = ' + p.perimeter + ' cm';
+  }
+  if (p.stubText === p.extraCount + ' extra walls') throw new Error('stub collides');
+  attachQuestions(p);
+  if (p.ask === 'side') {
+    const t = p.steps[0].options.find(function (o) { return o.correct; }).text;
+    if (t !== W + ' cm') throw new Error('side card ' + t);
+    if (W !== H) throw new Error('side ask on a rectangle');
+  } else {
+    const t = p.steps[0].options.find(function (o) { return o.correct; }).text;
+    if (t !== W + ' cm × ' + H + ' cm') throw new Error('frame card ' + t);
+  }
+  const wall = p.steps[1].options.find(function (o) { return o.correct; }).text;
+  if (wall !== p.extraCount + ' extra walls') throw new Error('wall card');
+  const lock = p.steps[2].options.find(function (o) { return o.correct; }).text;
+  if (p.lockMode === 'area') {
+    if (lock !== p.uncovered + ' cm²') throw new Error('area card ' + lock);
+  } else if (lock !== p.perimeter + ' cm') throw new Error('peri card ' + lock);
+  return p;
+}
+
+function randomNotch(side, W, H) {
+  const span = (side === 'top' || side === 'bottom') ? W : H;
+  const depthMax = ((side === 'left' || side === 'right') ? W : H) - 3;
+  if (span < 7 || depthMax < 2) return null;
+  const mouth = randInt(3, Math.min(7, span - 3));
+  const offsetMax = span - mouth - 1;
+  if (offsetMax < 1) return null;
+  return {
+    side: side,
+    offset: randInt(1, offsetMax),
+    mouth: mouth,
+    depth: randInt(2, Math.min(5, depthMax))
+  };
+}
+
+function fitDouble(W, H) {
+  const adjacent = Math.random() < 0.62;
+  const pairs = adjacent
+    ? [['top', 'right'], ['right', 'bottom'], ['bottom', 'left'], ['left', 'top']]
+    : [['top', 'bottom'], ['left', 'right']];
+  const pair = pick(pairs);
+  for (let i = 0; i < 24; i++) {
+    const n1 = randomNotch(pair[0], W, H);
+    const n2 = randomNotch(pair[1], W, H);
+    if (n1 && n2 && validSet(W, H, [n1, n2])) return [n1, n2];
+  }
+  return null;
+}
+
+function fitTriple(W, H) {
+  if (W < 18 || H < 16) return null;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const dTop = randInt(2, 3);
+    const dRight = randInt(2, 3);
+    const dBot = randInt(2, 3);
+    if (dTop + dBot > H - 4) continue;
+    const m1Max = Math.min(6, W - dRight - 4);
+    if (m1Max < 3) continue;
+    const m1 = randInt(3, m1Max);
+    const aMax = W - dRight - 1 - m1;
+    if (aMax < 1) continue;
+    const a = randInt(1, aMax);
+    const m2Max = Math.min(5, H - dTop - dBot - 3);
+    if (m2Max < 3) continue;
+    const m2 = randInt(3, m2Max);
+    const cMin = dTop + 1;
+    const cMax = H - dBot - 1 - m2;
+    if (cMax < cMin) continue;
+    const c = randInt(cMin, cMax);
+    const m3Max = Math.min(5, W - dRight - 3);
+    if (m3Max < 3) continue;
+    const m3 = randInt(3, m3Max);
+    const eMax = W - dRight - 1 - m3;
+    if (eMax < 1) continue;
+    const notches = [
+      { side: 'top', offset: a, mouth: m1, depth: dTop },
+      { side: 'right', offset: c, mouth: m2, depth: dRight },
+      { side: 'bottom', offset: randInt(1, eMax), mouth: m3, depth: dBot }
+    ];
+    if (validSet(W, H, notches)) return notches;
+  }
+  return null;
+}
+
+function makeStairSteps(count, W, H) {
+  const steps = [];
+  let roomW = W - 3;
+  let roomH = H - 3;
+  for (let i = 0; i < count; i++) {
+    const left = count - i - 1;
+    const runMax = roomW - 2 * left;
+    const riseMax = roomH - 2 * left;
+    if (runMax < 2 || riseMax < 2) return null;
+    const run = randInt(2, Math.min(6, runMax));
+    const rise = randInt(2, Math.min(5, riseMax));
+    steps.push({ run: run, rise: rise });
+    roomW -= run;
+    roomH -= rise;
+  }
+  return steps;
+}
+
+function makeWarmup(round) {
+  const count = round <= 1 ? (Math.random() < 0.5 ? 1 : 2) : (Math.random() < 0.45 ? 2 : 3);
+  const W = randInt(round <= 1 ? 12 : 14, round <= 1 ? 16 : 20);
+  const H = randInt(round <= 1 ? 9 : 11, round <= 1 ? 13 : 16);
+  const steps = makeStairSteps(count, W, H);
+  if (!steps) throw new Error('stair fit');
+  const totalRise = steps.reduce(function (s, st) { return s + st.rise; }, 0);
+  const flipX = Math.random() < 0.5;
+  const flipY = Math.random() < 0.5;
+  const misreads = [];
+  steps.forEach(function (st) {
+    if (H - st.rise >= 4 && H - st.rise !== H) {
+      misreads.push({
+        text: W + ' cm × ' + (H - st.rise) + ' cm',
+        hint: 'That height stops at a step. The dashed outer frame is still ' + H + ' cm tall.'
+      });
+    }
+    if (W - st.run >= 4) {
+      misreads.push({
+        text: (W - st.run) + ' cm × ' + H + ' cm',
+        hint: 'That width stops at a step. The dashed outer frame is still ' + W + ' cm wide.'
+      });
+    }
+  });
+  const title = count === 1 ? 'CORNER CUTOUT' : count + '-STEP STAIRCASE';
+  const sig = 'stair|' + count + '|' + W + 'x' + H + '|' + steps.map(function (s) { return s.run + 'x' + s.rise; }).join(',') + '|' + (flipX ? 'x' : '') + (flipY ? 'y' : '');
+  return compile({
+    kind: 'stair',
+    title: title,
+    ask: 'frame',
+    lockMode: 'peri',
+    W: W,
+    H: H,
+    stepsGeom: steps,
+    flipX: flipX,
+    flipY: flipY,
+    showOuter: true,
+    labelExtras: false,
+    labelSlides: false,
+    slideAxis: 'steps',
+    stubText: stubSplit(Math.max(2, H - totalRise)),
+    bump: steps[0].rise * 2,
+    cutPeri: 2 * (steps[0].run + steps[0].rise),
+    misreads: misreads,
+    chips: [
+      'FRAME ON THE DASHED BOX',
+      count === 1 ? 'CORNER BITE' : count + ' HIDDEN STEPS',
+      'STUBS MARKED ?'
+    ],
+    signature: sig,
+    seed: W * 97 + H * 13 + count * 5 + (flipX ? 3 : 1) + (flipY ? 8 : 0),
+    bedCaption: function () { return ''; },
+    bedSub: function () { return ''; }
+  });
+}
+
+function makeGarden(round) {
+  const pool = round <= 3 ? SQUARE_SIDES.filter(function (s) { return s >= 7 && s <= 11; }) : SQUARE_SIDES.filter(function (s) { return s >= 8; });
+  const S = pick(pool);
+  const sMax = S - 2;
+  const s = randInt(3, sMax);
+  const offset = randInt(1, S - s - 1);
+  const side = pick(['top', 'right', 'bottom', 'left']);
+  const notches = [{ side: side, offset: offset, mouth: s, depth: s }];
+  if (!validSet(S, S, notches)) throw new Error('garden fit');
+  const inner = s * s;
+  const U = S * S - inner;
+  const cShape = side === 'left' || side === 'right';
+  return compile({
+    kind: 'garden',
+    title: cShape ? 'SQUARE GARDEN · C-SHAPED BED' : 'SQUARE GARDEN · U-SHAPED BED',
+    ask: 'side',
+    lockMode: 'peri',
+    W: S,
+    H: S,
+    notches: notches,
+    showOuter: false,
+    labelExtras: true,
+    labelSlides: true,
+    squareNotch: true,
+    slideAxis: cShape ? 'vertical' : 'horizontal',
+    outerSide: S,
+    flower: s,
+    uncovered: U,
+    stubText: stubSplit(S - s),
+    cutPeri: 4 * s,
+    chips: [
+      'OUTER SHAPE: SQUARE',
+      'FLOWER BED ' + s + ' cm × ' + s + ' cm',
+      inner + ' cm² BED',
+      U + ' cm² UNCOVERED',
+      'STUBS MARKED ?'
+    ],
+    signature: 'garden|' + S + '|' + s + '|' + side + '|' + offset,
+    seed: S * 131 + s * 17 + offset + side.length,
+    bedCaption: function () { return s + ' × ' + s + ' cm'; },
+    bedSub: function () { return inner + ' cm²'; }
+  });
+}
+
+function makeDouble(round, master) {
+  const W = randInt(master ? 16 : 14, master ? 22 : 18);
+  const H = randInt(master ? 14 : 12, master ? 18 : 16);
+  const notches = fitDouble(W, H);
+  if (!notches) throw new Error('double fit');
+  const depths = notches.map(function (n) { return n.depth + ' cm'; }).join(' & ');
+  const misreads = notches.map(function (n) {
+    if (n.side === 'left' || n.side === 'right') {
+      return {
+        text: (W - n.depth) + ' cm × ' + H + ' cm',
+        hint: 'The indent does not shrink the outer frame. The dashed rectangle is still ' + W + ' cm by ' + H + ' cm.'
+      };
+    }
+    return {
+      text: W + ' cm × ' + (H - n.depth) + ' cm',
+      hint: 'The indent does not shrink the outer frame. The dashed rectangle is still ' + W + ' cm by ' + H + ' cm.'
+    };
+  });
+  const first = notches[0];
+  return compile({
+    kind: master ? 'master' : 'double',
+    title: 'DOUBLE INDENT · ' + notches.map(function (n) { return n.side.toUpperCase(); }).join(' + '),
+    ask: 'frame',
+    lockMode: 'peri',
+    W: W,
+    H: H,
+    notches: notches,
+    showOuter: true,
+    labelExtras: true,
+    labelSlides: false,
+    squareNotch: false,
+    stubText: stubSplit(leftoverOf(first, W, H)),
+    cutPeri: notches.reduce(function (s, n) { return s + 2 * (n.mouth + n.depth); }, 0),
+    misreads: misreads,
+    chips: [
+      'DASHED FRAME ' + W + ' cm × ' + H + ' cm',
+      'EXTRA DEPTHS ' + depths,
+      'STUBS MARKED ?'
+    ],
+    signature: 'double|' + W + 'x' + H + '|' + notches.map(function (n) {
+      return n.side + ':' + n.offset + ':' + n.mouth + 'x' + n.depth;
+    }).join('/'),
+    seed: W * 80 + H * 9 + notches[0].mouth * 3,
+    bedCaption: function (bed) { return bed.depth + ' cm'; },
+    bedSub: function () { return 'extra walls'; }
+  });
+}
+
+function makeTriple(round) {
+  const W = randInt(18, 22);
+  const H = randInt(16, 19);
+  const notches = fitTriple(W, H);
+  if (!notches) throw new Error('triple fit');
+  const first = notches[0];
+  return compile({
+    kind: 'triple',
+    title: 'TRIPLE INDENT',
+    ask: 'frame',
+    lockMode: 'peri',
+    W: W,
+    H: H,
+    notches: notches,
+    showOuter: true,
+    labelExtras: true,
+    labelSlides: false,
+    stubText: stubSplit(leftoverOf(first, W, H)),
+    cutPeri: notches.reduce(function (s, n) { return s + 2 * (n.mouth + n.depth); }, 0),
+    misreads: [{
+      text: (W - notches[1].depth) + ' cm × ' + H + ' cm',
+      hint: 'Indents do not change the dashed outer frame. It is still ' + W + ' cm by ' + H + ' cm.'
+    }],
+    chips: [
+      'DASHED FRAME ' + W + ' cm × ' + H + ' cm',
+      'THREE INDENTS',
+      'STUBS MARKED ?'
+    ],
+    signature: 'triple|' + W + 'x' + H + '|' + notches.map(function (n) {
+      return n.side + ':' + n.offset + ':' + n.mouth + 'x' + n.depth;
+    }).join('/'),
+    seed: W * 50 + H * 11,
+    bedCaption: function (bed) { return bed.depth + ' cm'; },
+    bedSub: function () { return 'extra walls'; }
+  });
+}
+
+function makeReverse(round) {
+  const dual = Math.random() < (round >= 10 ? 0.62 : 0.4);
+  const S = randInt(round >= 12 ? 10 : 8, round >= 12 ? 16 : 13);
+  let notches = null;
+  if (!dual) {
+    let s = randInt(4, Math.max(4, S - 3));
+    if (s % 2) s += 1;
+    if (s > S - 2) throw new Error('reverse s');
+    const side = pick(['top', 'right', 'bottom', 'left']);
+    notches = [{ side: side, offset: randInt(1, S - s - 1), mouth: s, depth: s }];
+  } else {
+    for (let i = 0; i < 20 && !notches; i++) {
+      let d1 = randInt(2, Math.min(4, Math.floor(S / 4)));
+      let d2 = randInt(2, Math.min(4, Math.floor(S / 4)));
+      if ((d1 + d2) % 2) d2 += 1;
+      const trial = fitDouble(S, S);
+      if (!trial) continue;
+      trial[0].depth = d1;
+      trial[1].depth = d2;
+      if (validSet(S, S, trial) && (d1 + d2) % 2 === 0) notches = trial;
+    }
+  }
+  if (!notches || !validSet(S, S, notches)) throw new Error('reverse fit');
+  const extraLen = 2 * notches.reduce(function (s, n) { return s + n.depth; }, 0);
+  const fence = 4 * S + extraLen;
+  if (fence % 4 !== 0) throw new Error('fence div');
+  if (fence / 4 === 2 * S) throw new Error('distractor clash');
+  const cutArea = notches.reduce(function (s, n) { return s + n.mouth * n.depth; }, 0);
+  const squareNotch = notches.length === 1 && notches[0].mouth === notches[0].depth;
+  const side = notches[0].side;
+  const cShape = side === 'left' || side === 'right';
+  return compile({
+    kind: 'reverse',
+    title: dual ? 'REVERSE · DOUBLE INDENT' : (cShape ? 'REVERSE · C-INDENT' : 'REVERSE · U-INDENT'),
+    ask: 'side',
+    lockMode: 'area',
+    W: S,
+    H: S,
+    notches: notches,
+    showOuter: false,
+    labelExtras: true,
+    labelSlides: false,
+    squareNotch: squareNotch,
+    slideAxis: notches.length === 1 ? (cShape ? 'vertical' : 'horizontal') : 'horizontal',
+    outerSide: S,
+    uncovered: S * S - cutArea,
+    givenFence: fence,
+    flower: notches[0].mouth,
+    stubText: stubSplit(S - notches[0].mouth),
+    cutPeri: notches.reduce(function (s, n) { return s + 2 * (n.mouth + n.depth); }, 0),
+    chips: [
+      'OUTER SHAPE: SQUARE',
+      'TOTAL FENCE ' + fence + ' cm',
+      notches.map(function (n) { return n.mouth + '×' + n.depth + ' cm'; }).join('  +  '),
+      'OUTER SIDE ?'
+    ],
+    signature: 'rev|' + S + '|' + fence + '|' + notches.map(function (n) {
+      return n.side + ':' + n.offset + ':' + n.mouth + 'x' + n.depth;
+    }).join('/'),
+    seed: S * 70 + fence,
+    bedCaption: function (bed) { return bed.mouth + ' × ' + bed.depth + ' cm'; },
+    bedSub: function (bed) { return (bed.mouth * bed.depth) + ' cm²'; }
+  });
+}
+
+function makeProblem(round) {
+  if (round <= 2) return makeWarmup(round);
+  if (round <= 4) return makeGarden(round);
+  if (round <= 6) return makeDouble(round, false);
+  if (round % 2 === 0) return makeReverse(round);
+  if (Math.random() < 0.5) {
+    try { return makeTriple(round); } catch (err) { /* a double indent still teaches the master tier */ }
+  }
+  return makeDouble(round, true);
+}
+
+function generate(round) {
+  let last = 'none';
+  for (let pass = 0; pass < 2; pass++) {
+    for (let n = 0; n < 40; n++) {
+      try {
+        const p = makeProblem(round);
+        if (pass === 0 && history.indexOf(p.signature) !== -1) {
+          last = 'repeat';
+          continue;
+        }
+        return p;
+      } catch (err) {
+        last = err && err.message ? err.message : String(err);
+      }
+    }
+    if (history.length) history.shift();
+  }
+  throw new Error('Could not build a floorplan (' + last + ')');
+}
+
+function selfTest() {
+  history.length = 0;
+  for (let r = 1; r <= 12; r++) {
+    for (let n = 0; n < 5; n++) {
+      const p = generate(r);
+      if (history.indexOf(p.signature) !== -1) throw new Error('repeated ' + p.signature);
+      history.push(p.signature);
+      if (history.length > HISTORY_MAX) history.shift();
+      if (p.extraCount % 2 !== 0) throw new Error('odd extras');
+      if (r <= 2 && p.extraCount !== 0) throw new Error('warmup extras');
+      if (r >= 3 && r <= 4 && p.extraCount !== 2) throw new Error('garden extras');
+      if (r >= 5 && r <= 6 && p.extraCount !== 4) throw new Error('double extras');
+    }
+  }
+  for (let n = 0; n < 20; n++) generate(randInt(1, 14));
+  history.length = 0;
+}
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && typeof data.bestSolo === 'number') G.bestSolo = data.bestSolo;
+    if (data && typeof data.bestTeam === 'number') G.bestTeam = data.bestTeam;
+    if (data && data.mute) audio.muted = true;
+  } catch (err) { /* private mode */ }
+}
+
+function saveStore() {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({
+      bestSolo: G.bestSolo,
+      bestTeam: G.bestTeam,
+      mute: audio.muted
+    }));
+  } catch (err) { /* private mode */ }
+}
+
+function fitProblem(p) {
+  const a = UI.arena;
+  const padX = 78;
+  const padY = 40;
+  const availW = a.w - padX * 2;
+  const availH = a.h - padY * 2;
+  const scale = Math.min(availW / p.W, availH / p.H);
+  const dw = p.W * scale;
+  const dh = p.H * scale;
+  p.layout = {
+    scale: scale,
+    ox: a.x + (a.w - dw) / 2,
+    oy: a.y + (a.h - dh) / 2 + 4
+  };
+}
+
+function remember(p) {
+  history.push(p.signature);
+  if (history.length > HISTORY_MAX) history.shift();
+}
+
+function freshRun(mode) {
+  G.mode = mode;
+  G.screen = 'play';
+  G.round = 1;
+  G.step = 0;
+  G.phase = 'choose';
+  G.phaseT = 0;
+  G.score = 0;
+  G.combo = 0;
+  G.cleared = 0;
+  G.maxShields = mode === 'coop' ? 4 : 3;
+  G.shields = G.maxShields;
+  G.hint = '';
+  G.reveal = '';
+  G.shake = 0;
+  P.forEach(function (pl, i) {
+    pl.focus = i;
+    pl.shields = 3;
+    pl.stars = 0;
+    pl.score = 0;
+    pl.combo = 0;
+    pl.out = false;
+  });
+  G.problem = generate(1);
+  fitProblem(G.problem);
+  remember(G.problem);
+  G.stepT = performance.now();
+  announce();
+}
+
+function nextRound() {
+  try {
+    G.round += 1;
+    G.step = 0;
+    G.phase = 'choose';
+    G.phaseT = 0;
+    G.hint = '';
+    G.reveal = '';
+    G.problem = generate(G.round);
+    fitProblem(G.problem);
+    remember(G.problem);
+    G.stepT = performance.now();
+    announce();
+  } catch (err) {
+    G.overTitle = 'SURVEY RESET';
+    G.overBody = 'The next floorplan could not be built. Start a fresh survey.';
+    G.screen = 'over';
+  }
+}
+
+function stepOwner() {
+  if (G.mode !== 'coop') return -1;
+  if (G.step >= 2) return -1;
+  const swap = G.round % 2 === 0;
+  if (G.step === 0) return swap ? 1 : 0;
+  return swap ? 0 : 1;
+}
+
+function award(pid, step) {
+  const pts = [100, 150, 350][step];
+  let speed = 0;
+  let bonus = 0;
+  if (G.mode === 'versus') {
+    const pl = P[pid];
+    pl.combo += 1;
+    bonus = Math.max(0, pl.combo - 1) * 40;
+    const elapsed = (performance.now() - G.stepT) / 1000;
+    speed = elapsed < 8 ? 120 : elapsed < 15 ? 80 : 40;
+    pl.score += pts + bonus + speed;
+    if (step === 2) pl.stars += 1;
+    spawnFloater(pid === 0 ? 430 : 850, 250, '+' + pts, pl.color);
+    spawnFloater(pid === 0 ? 430 : 850, 284, 'SPEED +' + speed, '#ffe08a');
+  } else {
+    G.combo += 1;
+    bonus = Math.max(0, G.combo - 1) * 40;
+    G.score += pts + bonus;
+    if (G.mode === 'solo' && G.score > G.bestSolo) G.bestSolo = G.score;
+    if (G.mode === 'coop' && G.score > G.bestTeam) G.bestTeam = G.score;
+    saveStore();
+    spawnFloater(640, 250, '+' + pts, '#d9ffe9');
+    if (bonus) spawnFloater(640, 286, 'COMBO +' + bonus, '#ffc14a');
+  }
+  G.scorePop = 1;
+}
+
+function onCorrect(pid) {
+  const step = G.step;
+  award(pid, step);
+  G.hint = '';
+  if (step === 0) {
+    G.problem.showOuter = true;
+    G.step = 1;
+    G.phase = 'choose';
+    G.stepT = performance.now();
+    blip();
+    spawnFloater(640, 210, 'OUTER FRAME LOCKED', '#9bfff6');
+  } else if (step === 1) {
+    G.phase = 'push';
+    G.phaseT = 0;
+    servo();
+    chime();
+  } else {
+    G.phase = 'laser';
+    G.phaseT = 0;
+    G.reveal = G.problem.solvedLine;
+    G.cleared += 1;
+    laserSound();
+    fanfare();
+    burst(640, 340, '#b8fff4', 28, 220);
+  }
+  announce();
+}
+
+function loseShield(pid) {
+  if (G.mode === 'versus') {
+    const pl = P[pid];
+    pl.combo = 0;
+    pl.shields -= 1;
+    rumble(pid, 160, 0.7);
+    if (pl.shields <= 0) {
+      pl.out = true;
+      const other = P[1 - pid];
+      G.overTitle = other.name + ' SURVEYOR WINS';
+      G.overBody = pl.name + ' ran out of fence shields. Stars ' + P[0].stars + '–' + P[1].stars + '.';
+      G.screen = 'over';
+    }
+  } else {
+    G.combo = 0;
+    G.shields -= 1;
+    rumble(0, 180, 0.8);
+    if (G.mode === 'coop') rumble(1, 180, 0.5);
+    if (G.shields <= 0) {
+      G.overTitle = 'FENCE DOWN';
+      G.overBody = 'Shields emptied on round ' + G.round + '. Gardens fenced: ' + G.cleared + '.';
+      G.screen = 'over';
+      saveStore();
+    }
+  }
+}
+
+function onWrong(pid, opt, cardIndex) {
+  if (opt.dead) return;
+  opt.dead = true;
+  G.hint = opt.hint;
+  G.shake = 1;
+  G.flash = { index: cardIndex, until: G.time + 0.35 };
+  buzz();
+  const card = UI.cards[cardIndex];
+  burst(card.x + card.w / 2, card.y + card.h / 2, '#ff5a6a', 16, 160);
+  spawnFloater(card.x + card.w / 2, card.y - 8, 'SHORT CIRCUIT', '#ff8d9a');
+  loseShield(pid);
+  announce();
+}
+
+function submit(pid, cardIndex) {
+  if (G.screen !== 'play' || G.phase !== 'choose' || !G.problem) return;
+  if (cardIndex < 0 || cardIndex > 3) return;
+  if (G.mode === 'versus' && P[pid].out) return;
+  if (G.mode === 'coop') {
+    const owner = stepOwner();
+    if (owner !== -1 && pid !== owner) {
+      const who = owner === 0 ? 'Red' : 'Blue';
+      G.hint = who + ' Surveyor locks this step. The other reticle can line up the next one.';
+      return;
+    }
+  }
+  const opt = G.problem.steps[G.step].options[cardIndex];
+  if (!opt || opt.dead) return;
+  if (opt.correct) onCorrect(pid);
+  else onWrong(pid, opt, cardIndex);
+}
+
+function focusPlayer(pid) {
+  if (G.mode === 'solo') return P[0];
+  return P[pid];
+}
+
+function moveFocus(pid, dir) {
+  if (!dir) return;
+  const pl = focusPlayer(pid);
+  pl.focus = (pl.focus + dir + 4) % 4;
+  G.lastDevice = 'key';
+  tick();
+}
+
+function liveText() {
+  if (BOOT_ERROR) return 'The arena hit a problem. ' + BOOT_ERROR;
+  if (G.screen === 'title') {
+    return 'Perimeter Shifter, The Wall Pusher. Choose Solo Surveyor, 2 player co-op, or 2 player versus.';
+  }
+  if (G.screen === 'over') return G.overTitle + '. ' + G.overBody;
+  if (G.screen === 'pause') return 'Paused. Resume or quit to the title.';
+  if (!G.problem) return '';
+  const step = G.problem.steps[G.step];
+  const cards = step.options.map(function (o, i) {
+    return (i + 1) + '. ' + o.text + (o.dead ? ', already tried' : '');
+  }).join(' ');
+  let text = 'Round ' + G.round + '. ' + G.problem.title + '. Step ' + (G.step + 1) + '. ' + step.prompt + ' Choices: ' + cards + '.';
+  if (G.hint) text += ' ' + G.hint;
+  if (G.reveal) text += ' ' + G.reveal;
+  return text;
+}
+
+function announce() {
+  const text = liveText();
+  if (text === G.live) return;
+  G.live = text;
+  if (sr) sr.textContent = text;
+}
+
+function normKey(e) {
+  if (e.code === 'Space') return 'space';
+  return String(e.key || '').toLowerCase();
+}
+
+function connectedPads() {
+  const list = [];
+  try {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i] && pads[i].connected) list.push(pads[i]);
+    }
+  } catch (err) { /* no gamepad */ }
+  return list;
+}
+
+function readPad(gp) {
+  if (!gp) return { x: 0, y: 0, a: false, start: false };
+  const ax = gp.axes || [];
+  let x = ax.length ? ax[0] || 0 : 0;
+  let y = ax.length > 1 ? ax[1] || 0 : 0;
+  if (Math.abs(x) < 0.28) x = 0;
+  if (Math.abs(y) < 0.28) y = 0;
+  function btn(i) {
+    const b = gp.buttons && gp.buttons[i];
+    return !!(b && (b.pressed || b.value > 0.5));
+  }
+  if (btn(14)) x = -1;
+  if (btn(15)) x = 1;
+  if (btn(12)) y = -1;
+  if (btn(13)) y = 1;
+  return { x: x, y: y, a: btn(0), start: btn(9) };
+}
+
+function pollPads() {
+  const pads = connectedPads();
+  G.pads = pads.length;
+  for (let i = 0; i < 2; i++) {
+    const next = readPad(pads[i]);
+    const prev = padPrev[i];
+    padEdge[i].a = next.a && !prev.a;
+    padEdge[i].start = next.start && !prev.start;
+    padNow[i] = next;
+    padPrev[i] = next;
+  }
+}
+
+function consumeAxis(i, dt) {
+  const pad = padNow[i];
+  const st = axisState[i];
+  let dir = 0;
+  if (pad.x < -0.45) dir = -1;
+  else if (pad.x > 0.45) dir = 1;
+  else if (pad.y < -0.45) dir = -1;
+  else if (pad.y > 0.45) dir = 1;
+  if (!dir) {
+    st.dir = 0;
+    st.cool = 0;
+    return 0;
+  }
+  if (dir !== st.dir) {
+    st.dir = dir;
+    st.cool = 0.24;
+    return dir;
+  }
+  st.cool -= dt;
+  if (st.cool <= 0) {
+    st.cool = 0.16;
+    return dir;
+  }
+  return 0;
+}
+
+function keyDir(lefts, rights) {
+  let d = 0;
+  if (lefts.some(function (k) { return justKeys.has(k); })) d -= 1;
+  if (rights.some(function (k) { return justKeys.has(k); })) d += 1;
+  return d;
+}
+
+function burst(x, y, color, n, speed) {
+  for (let i = 0; i < n; i++) {
+    if (G.particles.length > 220) G.particles.shift();
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.35 + Math.random() * 0.75);
+    G.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: 0.35 + Math.random() * 0.4,
+      age: 0,
+      color: color,
+      r: 1.4 + Math.random() * 2.2
+    });
+  }
+}
+
+function spawnFloater(x, y, text, color) {
+  G.floaters.push({ x: x, y: y, text: text, color: color, age: 0, life: 1.15 });
+  if (G.floaters.length > 12) G.floaters.shift();
+}
+
+function makeNoise(ac) {
+  const len = ac.sampleRate;
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return buf;
+}
+
+function tone(time, freq, dur, type, vol) {
+  if (!audio.ac) return;
+  const o = audio.ac.createOscillator();
+  const g = audio.ac.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(1, freq), time);
+  g.gain.setValueAtTime(Math.max(0.0001, vol), time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.03, dur));
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(time);
+  o.stop(time + dur + 0.03);
+}
+
+function noiseBurst(time, dur, vol, type, freq) {
+  if (!audio.ac || !audio.noise) return;
+  const src = audio.ac.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ac.createBiquadFilter();
+  filter.type = type;
+  filter.frequency.setValueAtTime(Math.max(40, freq), time);
+  const g = audio.ac.createGain();
+  g.gain.setValueAtTime(Math.max(0.0001, vol), time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + Math.max(0.03, dur));
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(time);
+  src.stop(time + dur + 0.03);
+}
+
+function unlock() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audio.ac) {
+    audio.ac = new AC();
+    audio.master = audio.ac.createGain();
+    audio.master.gain.value = audio.muted ? 0 : 1;
+    audio.master.connect(audio.ac.destination);
+    audio.music = audio.ac.createGain();
+    audio.music.gain.value = 0.85;
+    audio.music.connect(audio.master);
+    audio.sfx = audio.ac.createGain();
+    audio.sfx.gain.value = 1;
+    audio.sfx.connect(audio.master);
+    audio.noise = makeNoise(audio.ac);
+    audio.next = audio.ac.currentTime + 0.06;
+    audio.step = 0;
+  }
+  if (audio.ac.state === 'suspended') audio.ac.resume();
+  audio.started = true;
+}
+
+function scheduleBeat(step, time) {
+  const lead = audio.ac.createOscillator();
+  const lg = audio.ac.createGain();
+  lead.type = 'square';
+  lead.frequency.setValueAtTime(midi(LEAD[step % LEAD.length]), time);
+  lg.gain.setValueAtTime(0.0001, time);
+  lg.gain.exponentialRampToValueAtTime(0.03, time + 0.015);
+  lg.gain.exponentialRampToValueAtTime(0.0001, time + 0.16);
+  lead.connect(lg);
+  lg.connect(audio.music);
+  lead.start(time);
+  lead.stop(time + 0.18);
+  if (step % 2 === 0) {
+    const bass = audio.ac.createOscillator();
+    const bg = audio.ac.createGain();
+    bass.type = 'triangle';
+    bass.frequency.setValueAtTime(midi(BASS[(step / 2) % BASS.length]), time);
+    bg.gain.setValueAtTime(0.0001, time);
+    bg.gain.exponentialRampToValueAtTime(0.07, time + 0.02);
+    bg.gain.exponentialRampToValueAtTime(0.0001, time + 0.24);
+    bass.connect(bg);
+    bg.connect(audio.music);
+    bass.start(time);
+    bass.stop(time + 0.26);
+  }
+  if (step % 4 === 0) noiseBurst(time, 0.05, 0.05, 'lowpass', 180);
+  if (step % 8 === 4) noiseBurst(time, 0.08, 0.04, 'highpass', 1800);
+  noiseBurst(time, 0.03, 0.018, 'highpass', 5000);
+}
+
+function pumpMusic() {
+  if (!audio.ac || !audio.started || audio.muted) return;
+  const eighth = 60 / 134 / 2;
+  const ahead = audio.ac.currentTime + 0.28;
+  while (audio.next < ahead) {
+    scheduleBeat(audio.step, audio.next);
+    audio.next += eighth;
+    audio.step = (audio.step + 1) % 16;
+  }
+}
+
+function blip() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  tone(t, 740, 0.07, 'square', 0.04);
+}
+
+function tick() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  tone(t, 520, 0.04, 'square', 0.02);
+}
+
+function buzz() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  tone(t, 92, 0.22, 'sawtooth', 0.05);
+  tone(t, 58, 0.24, 'square', 0.03);
+  noiseBurst(t, 0.12, 0.05, 'lowpass', 400);
+}
+
+function servo() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  const o = audio.ac.createOscillator();
+  const g = audio.ac.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(220, t);
+  o.frequency.exponentialRampToValueAtTime(70, t + 0.42);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.05, t + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(t);
+  o.stop(t + 0.48);
+  noiseBurst(t, 0.18, 0.04, 'bandpass', 900);
+}
+
+function lockClick() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  tone(t, 180, 0.07, 'square', 0.06);
+  tone(t + 0.05, 420, 0.08, 'square', 0.04);
+  noiseBurst(t, 0.06, 0.08, 'highpass', 2000);
+}
+
+function chime() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  tone(t + 0.12, 880, 0.14, 'sine', 0.05);
+  tone(t + 0.24, 1320, 0.18, 'sine', 0.045);
+}
+
+function laserSound() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  const o = audio.ac.createOscillator();
+  const g = audio.ac.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(240, t);
+  o.frequency.exponentialRampToValueAtTime(1400, t + 0.55);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.035, t + 0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(t);
+  o.stop(t + 0.72);
+  noiseBurst(t, 0.25, 0.04, 'highpass', 2500);
+}
+
+function fanfare() {
+  if (!audio.ac) return;
+  const t = audio.ac.currentTime;
+  [523, 659, 784, 1046].forEach(function (f, i) {
+    tone(t + i * 0.09, f, 0.18, 'square', 0.045);
+    tone(t + i * 0.09, f / 2, 0.2, 'triangle', 0.04);
+  });
+}
+
+function rumble(index, ms, mag) {
+  const pads = connectedPads();
+  const gp = pads[index];
+  if (!gp) return;
+  const actuator = gp.vibrationActuator || (gp.hapticActuators && gp.hapticActuators[0]);
+  if (!actuator) return;
+  try {
+    if (actuator.playEffect) {
+      actuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: mag, weakMagnitude: mag * 0.6 });
+    } else if (actuator.pulse) actuator.pulse(mag, ms);
+  } catch (err) { /* some pads refuse haptics */ }
+}
+
+function toggleMute() {
+  unlock();
+  audio.muted = !audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 1;
+  if (!audio.muted && audio.ac) audio.next = audio.ac.currentTime + 0.05;
+  if (muteBtn) {
+    muteBtn.textContent = audio.muted ? 'Sound off' : 'Sound on';
+    muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+  }
+  saveStore();
+}
+
+function togglePause() {
+  if (G.screen === 'play') G.screen = 'pause';
+  else if (G.screen === 'pause') G.screen = 'play';
+  announce();
+}
+
+function pointerToView(e) {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (canvas.width / r.width);
+  const y = (e.clientY - r.top) * (canvas.height / r.height);
+  return { x: (x - fit.ox) / fit.scale, y: (y - fit.oy) / fit.scale };
+}
+
+function handlePointer(p) {
+  if (hit(UI.sound, p.x, p.y)) {
+    toggleMute();
+    return;
+  }
+  if (G.screen === 'title') {
+    for (let i = 0; i < TITLE_CARDS.length; i++) {
+      if (hit(TITLE_CARDS[i], p.x, p.y)) {
+        G.titleFocus = i;
+        freshRun(TITLE_CARDS[i].id);
+        return;
+      }
+    }
+    return;
+  }
+  if (G.screen === 'over') {
+    if (hit(OVER_RETRY, p.x, p.y)) freshRun(G.mode);
+    else if (hit(OVER_TITLE, p.x, p.y)) G.screen = 'title';
+    announce();
+    return;
+  }
+  if (G.screen === 'pause') {
+    if (hit(PAUSE_RESUME, p.x, p.y)) G.screen = 'play';
+    else if (hit(PAUSE_QUIT, p.x, p.y)) G.screen = 'title';
+    announce();
+    return;
+  }
+  for (let i = 0; i < 4; i++) {
+    if (hit(UI.cards[i], p.x, p.y)) {
+      P[0].focus = i;
+      submit(0, i);
+      return;
+    }
+  }
+  if (hit(UI.button, p.x, p.y)) submit(0, P[0].focus);
+}
+
+function hoverPointer(p) {
+  G.hoverSound = hit(UI.sound, p.x, p.y);
+  G.hoverCard = -1;
+  G.hoverButton = false;
+  if (G.screen === 'play') {
+    for (let i = 0; i < 4; i++) {
+      if (hit(UI.cards[i], p.x, p.y)) G.hoverCard = i;
+    }
+    G.hoverButton = hit(UI.button, p.x, p.y);
+    if (G.hoverCard >= 0 && G.lastDevice === 'mouse') P[0].focus = G.hoverCard;
+  }
+  if (G.screen === 'title') {
+    TITLE_CARDS.forEach(function (card, i) {
+      if (hit(card, p.x, p.y)) G.titleFocus = i;
+    });
+  }
+}
+
+function updatePlay(dt) {
+  axisTap[0] = consumeAxis(0, dt);
+  axisTap[1] = consumeAxis(1, dt);
+  if (padEdge[0].start || padEdge[1].start) togglePause();
+
+  if (G.screen !== 'play') return;
+
+  if (G.mode === 'solo') {
+    let dir = keyDir(['a', 'arrowleft', 'w', 'arrowup'], ['d', 'arrowright', 's', 'arrowdown']);
+    dir += axisTap[0];
+    if (dir < 0) moveFocus(0, -1);
+    else if (dir > 0) moveFocus(0, 1);
+    if (justKeys.has('space') || justKeys.has('enter') || justKeys.has('f') || padEdge[0].a) {
+      submit(0, P[0].focus);
+    }
+  } else {
+    let d1 = keyDir(['a', 'w'], ['d', 's']) + axisTap[0];
+    let d2 = keyDir(['arrowleft', 'arrowup'], ['arrowright', 'arrowdown']) + axisTap[1];
+    if (d1 < 0) moveFocus(0, -1);
+    else if (d1 > 0) moveFocus(0, 1);
+    if (d2 < 0) moveFocus(1, -1);
+    else if (d2 > 0) moveFocus(1, 1);
+    if (justKeys.has('space') || justKeys.has('f') || padEdge[0].a) submit(0, P[0].focus);
+    if (justKeys.has('enter') || padEdge[1].a) submit(1, P[1].focus);
+  }
+
+  if (G.phase === 'push') {
+    G.phaseT += dt;
+    const dur = reduceMotion ? 0.28 : 1.12;
+    if (G.phaseT >= dur) {
+      G.phase = 'choose';
+      G.step = 2;
+      G.phaseT = 0;
+      G.stepT = performance.now();
+      G.hint = '';
+      lockClick();
+      announce();
+    }
+  } else if (G.phase === 'laser') {
+    G.phaseT += dt;
+    const dur = reduceMotion ? 0.45 : 1.55;
+    if (Math.random() < 0.7) {
+      const spot = laserPoint(G.problem, laserProgress());
+      if (spot) burst(spot[0], spot[1], '#d8fff8', 2, 40);
+    }
+    if (G.phaseT >= dur) {
+      G.phase = 'celebrate';
+      G.phaseT = 0;
+    }
+  } else if (G.phase === 'celebrate') {
+    G.phaseT += dt;
+    if (G.phaseT >= (reduceMotion ? 0.35 : 0.95)) nextRound();
+  }
+
+  const target = cardAim(P[0].focus);
+  const roaming = G.lastDevice === 'mouse' && pointer.inside && G.hoverCard < 0 && !G.hoverButton;
+  if (roaming) {
+    reticle[0].x = pointer.x;
+    reticle[0].y = pointer.y;
+  } else {
+    reticle[0].x = lerp(reticle[0].x, target.x, Math.min(1, dt * 12));
+    reticle[0].y = lerp(reticle[0].y, target.y, Math.min(1, dt * 12));
+  }
+  if (G.mode !== 'solo') {
+    const t2 = cardAim(P[1].focus);
+    reticle[1].x = lerp(reticle[1].x, t2.x, Math.min(1, dt * 10));
+    reticle[1].y = lerp(reticle[1].y, t2.y, Math.min(1, dt * 10));
+  }
+}
+
+function updateTitle() {
+  let dir = keyDir(['a', 'arrowleft'], ['d', 'arrowright']) + axisTap[0] + axisTap[1];
+  if (dir < 0) G.titleFocus = (G.titleFocus + 2) % 3;
+  else if (dir > 0) G.titleFocus = (G.titleFocus + 1) % 3;
+  if (justKeys.has('space') || justKeys.has('enter') || justKeys.has('f') || padEdge[0].a || padEdge[1].a) {
+    freshRun(TITLE_CARDS[G.titleFocus].id);
+  }
+}
+
+function updateOver() {
+  if (justKeys.has('enter') || justKeys.has('space') || padEdge[0].a) freshRun(G.mode);
+  if (justKeys.has('escape')) G.screen = 'title';
+}
+
+function update(dt) {
+  G.time += dt;
+  G.shake = Math.max(0, G.shake - dt * 2.4);
+  G.scorePop = Math.max(0, G.scorePop - dt * 2);
+  pollPads();
+  clicks.splice(0).forEach(handlePointer);
+  if (G.screen === 'title') updateTitle();
+  else if (G.screen === 'over') updateOver();
+  else updatePlay(dt);
+  G.particles.forEach(function (p) {
+    p.age += dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 18 * dt;
+  });
+  G.particles = G.particles.filter(function (p) { return p.age < p.life; });
+  G.floaters.forEach(function (f) { f.age += dt; f.y -= 18 * dt; });
+  G.floaters = G.floaters.filter(function (f) { return f.age < f.life; });
+  G.pollen.forEach(function (p) {
+    p.y -= p.s * dt;
+    p.x += Math.sin(G.time * 0.7 + p.ph) * 8 * dt;
+    if (p.y < -10) {
+      p.y = VIEW_H + 8;
+      p.x = Math.random() * VIEW_W;
+    }
+  });
+  justKeys.clear();
+  pumpMusic();
+}
+
+function cardAim(i) {
+  const c = UI.cards[i];
+  return { x: c.x + 18, y: c.y + 16 };
+}
+
+function mapOf(layout, x, y) {
+  return [layout.ox + x * layout.scale, layout.oy + y * layout.scale];
+}
+
+function pushAmount() {
+  if (!G.problem) return 0;
+  if (G.phase === 'push') return ease(G.phaseT / (reduceMotion ? 0.28 : 1.12));
+  if (G.phase === 'laser') {
+    const morph = Math.min(1, G.phaseT / (reduceMotion ? 0.12 : 0.32));
+    return 1 - ease(morph);
+  }
+  if (G.step >= 2 && G.phase === 'choose') return 1;
+  if (G.phase === 'celebrate') return 0;
+  return 0;
+}
+
+function laserProgress() {
+  if (G.phase !== 'laser') return 0;
+  const delay = reduceMotion ? 0.12 : 0.32;
+  if (G.phaseT <= delay) return 0;
+  return clamp((G.phaseT - delay) / (reduceMotion ? 0.28 : 1.15), 0, 1);
+}
+
+function laserPoint(problem, t) {
+  if (!problem || !problem.layout || t <= 0) return null;
+  const edges = problem.edges;
+  const lengths = edges.map(function (e) {
+    const a = mapOf(problem.layout, e.x1, e.y1);
+    const b = mapOf(problem.layout, e.x2, e.y2);
+    return { a: a, b: b, len: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  });
+  const total = lengths.reduce(function (s, e) { return s + e.len; }, 0) || 1;
+  let head = t * total;
+  for (let i = 0; i < lengths.length; i++) {
+    const s = lengths[i];
+    if (head <= s.len) {
+      const u = s.len ? head / s.len : 0;
+      return [s.a[0] + (s.b[0] - s.a[0]) * u, s.a[1] + (s.b[1] - s.a[1]) * u];
+    }
+    head -= s.len;
+  }
+  const last = lengths[lengths.length - 1];
+  return last.b;
+}
+
+function traceEdges(c, edges, layout) {
+  c.beginPath();
+  const p0 = mapOf(layout, edges[0].x1, edges[0].y1);
+  c.moveTo(p0[0], p0[1]);
+  edges.forEach(function (e) {
+    const p = mapOf(layout, e.x2, e.y2);
+    c.lineTo(p[0], p[1]);
+  });
+  c.closePath();
+}
+
+function drawFlower(c, x, y, r, color, spin) {
+  c.save();
+  c.translate(x, y);
+  c.rotate(spin);
+  for (let i = 0; i < 5; i++) {
+    const a = i * Math.PI * 2 / 5;
+    c.beginPath();
+    c.ellipse(Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5, r * 0.46, r * 0.26, a, 0, Math.PI * 2);
+    c.fillStyle = color;
+    c.fill();
+  }
+  c.beginPath();
+  c.arc(0, 0, r * 0.26, 0, Math.PI * 2);
+  c.fillStyle = '#ffe7a3';
+  c.fill();
+  c.restore();
+}
+
+function drawShape(c, problem, pushT, layout, ghostAlpha) {
+  const lay = layout;
+  const scale = lay.scale;
+  const x0 = lay.ox;
+  const y0 = lay.oy;
+  const x1 = lay.ox + problem.W * scale;
+  const y1 = lay.oy + problem.H * scale;
+
+  c.save();
+  problem.beds.forEach(function (bed) {
+    const bx = lay.ox + bed.x * scale;
+    const by = lay.oy + bed.y * scale;
+    const bw = bed.w * scale;
+    const bh = bed.h * scale;
+    if (bed.kind === 'court') {
+      c.fillStyle = '#0d333c';
+      c.fillRect(bx, by, bw, bh);
+      c.save();
+      c.beginPath();
+      c.rect(bx, by, bw, bh);
+      c.clip();
+      c.strokeStyle = 'rgba(90, 220, 210, 0.28)';
+      c.lineWidth = 1;
+      for (let i = -bh; i < bw; i += 10) {
+        c.beginPath();
+        c.moveTo(bx + i, by);
+        c.lineTo(bx + i + bh, by + bh);
+        c.stroke();
+      }
+      c.restore();
+    } else {
+      c.fillStyle = '#4a1842';
+      c.fillRect(bx, by, bw, bh);
+      bed.blooms.forEach(function (b) {
+        drawFlower(
+          c,
+          bx + b.u * bw,
+          by + b.v * bh,
+          Math.min(bw, bh) * b.r,
+          b.color,
+          b.spin + G.time * 0.25
+        );
+      });
+    }
+    if (bed.caption && bw > 46 && bh > 26 && pushT < 0.42) {
+      c.fillStyle = '#fff4fb';
+      c.font = font(Math.min(18, bw / 5), 800);
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText(bed.caption, bx + bw / 2, by + bh / 2 - (bed.sub ? 8 : 0));
+      if (bed.sub && bh > 42) {
+        c.font = font(12, 700);
+        c.fillStyle = '#ffd0ea';
+        c.fillText(bed.sub, bx + bw / 2, by + bh / 2 + 12);
+      }
+    }
+  });
+
+  traceEdges(c, problem.edges, lay);
+  c.save();
+  c.clip();
+  const grd = c.createLinearGradient(x0, y0, x0, y1);
+  grd.addColorStop(0, '#1ed98a');
+  grd.addColorStop(1, '#0b7a45');
+  c.fillStyle = grd;
+  c.fillRect(x0, y0, x1 - x0, y1 - y0);
+  c.fillStyle = 'rgba(232, 255, 214, 0.16)';
+  problem.speckles.forEach(function (s) {
+    const px = lay.ox + s.x * scale;
+    const py = lay.oy + s.y * scale;
+    c.fillRect(px, py, 2, 5 + s.s * 8);
+  });
+  c.restore();
+
+  c.lineJoin = 'round';
+  c.lineCap = 'round';
+  c.shadowColor = 'rgba(40, 255, 160, 0.85)';
+  c.shadowBlur = 10;
+  problem.edges.forEach(function (e) {
+    const t = e.role === 'slide' ? pushT : 0;
+    let xA = e.x1;
+    let yA = e.y1;
+    let xB = e.x2;
+    let yB = e.y2;
+    if (e.role === 'slide' && e.target) {
+      xA = lerp(e.x1, e.target.x1, t);
+      yA = lerp(e.y1, e.target.y1, t);
+      xB = lerp(e.x2, e.target.x2, t);
+      yB = lerp(e.y2, e.target.y2, t);
+      if (t > 0.04 && t < 0.96) {
+        c.save();
+        c.shadowBlur = 0;
+        c.setLineDash([3, 7]);
+        c.strokeStyle = 'rgba(120, 255, 210, 0.55)';
+        c.lineWidth = 2;
+        const s1 = mapOf(lay, e.x1, e.y1);
+        const s2 = mapOf(lay, e.target.x1, e.target.y1);
+        c.beginPath();
+        c.moveTo(s1[0], s1[1]);
+        c.lineTo(s2[0], s2[1]);
+        c.stroke();
+        c.setLineDash([]);
+        c.restore();
+      }
+    }
+    if (e.role !== 'slide' && e.role !== 'extra' && pushT > 0.02) {
+      c.globalAlpha = 1 - pushT * 0.92;
+    } else c.globalAlpha = 1;
+    const amber = e.role === 'extra' && pushT > 0.18;
+    c.strokeStyle = amber ? '#ffc14a' : '#e9fff4';
+    c.lineWidth = amber ? 5 + Math.sin(G.time * 6) * 0.8 : 4.2;
+    c.shadowColor = amber ? '#ffb020' : '#2dff9a';
+    const a = mapOf(lay, xA, yA);
+    const b = mapOf(lay, xB, yB);
+    c.beginPath();
+    c.moveTo(a[0], a[1]);
+    c.lineTo(b[0], b[1]);
+    c.stroke();
+    c.globalAlpha = 1;
+    const bed = bedForEdge(problem, e.notch);
+    if (problem.labelSlides && e.role === 'slide' && pushT > 0.08 && pushT < 0.8) {
+      const pos = outwardTag(a[0], a[1], b[0], b[1], bed, lay);
+      drawTag(c, pos[0], pos[1], e.len + ' cm', '#e9fff4');
+    }
+    if (problem.labelExtras && e.role === 'extra' && pushT > 0.22) {
+      const pos = outwardTag(a[0], a[1], b[0], b[1], bed, lay);
+      drawTag(c, pos[0], pos[1], '+' + e.len + ' cm', '#ffd78a');
+    }
+    if (e.role === 'stub' && pushT < 0.45) {
+      const mx = (a[0] + b[0]) / 2;
+      const my = (a[1] + b[1]) / 2;
+      const cx = (x0 + x1) / 2;
+      const cy = (y0 + y1) / 2;
+      const sdx = mx - cx;
+      const sdy = my - cy;
+      const sd = Math.hypot(sdx, sdy) || 1;
+      c.save();
+      c.shadowBlur = 0;
+      c.font = font(16, 800);
+      c.fillStyle = '#ffd78a';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('?', mx + sdx / sd * 16, my + sdy / sd * 16);
+      c.restore();
+    }
+  });
+
+  if (pushT > 0.02) {
+    c.globalAlpha = pushT;
+    c.strokeStyle = '#f4fff9';
+    c.lineWidth = 5;
+    c.shadowColor = '#39ffb0';
+    c.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    c.globalAlpha = 1;
+  }
+  if (pushT < 0.82) {
+    const gap = 7;
+    c.save();
+    c.shadowBlur = 10;
+    c.shadowColor = 'rgba(120, 255, 255, 0.7)';
+    c.strokeStyle = 'rgba(190, 255, 255, ' + (0.98 * ghostAlpha) + ')';
+    c.lineWidth = 2.6;
+    c.setLineDash([11, 7]);
+    c.strokeRect(x0 - gap, y0 - gap, (x1 - x0) + gap * 2, (y1 - y0) + gap * 2);
+    c.setLineDash([]);
+    c.restore();
+  }
+  c.shadowBlur = 0;
+
+  const square = problem.W === problem.H;
+  const unknown = square ? 'side ?' : '? cm';
+  const widthText = problem.showOuter ? problem.W + ' cm' : unknown;
+  const heightText = problem.showOuter ? problem.H + ' cm' : unknown;
+  c.font = font(18, 800);
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillStyle = problem.showOuter ? '#e8fffb' : '#ffd78a';
+  c.fillText(widthText, (x0 + x1) / 2, y0 - 26);
+  c.fillText(heightText, x0 - 36, (y0 + y1) / 2);
+  c.restore();
+}
+
+function bedForEdge(problem, notch) {
+  if (!problem.beds) return null;
+  for (let i = 0; i < problem.beds.length; i++) {
+    if (problem.beds[i].notch === notch) return problem.beds[i];
+  }
+  return null;
+}
+
+function outwardTag(ax, ay, bx, by, bed, lay) {
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  if (!bed) return [mx, my];
+  const cx = lay.ox + (bed.x + bed.w / 2) * lay.scale;
+  const cy = lay.oy + (bed.y + bed.h / 2) * lay.scale;
+  const dx = mx - cx;
+  const dy = my - cy;
+  const dist = Math.hypot(dx, dy) || 1;
+  return [mx + dx / dist * 20, my + dy / dist * 20];
+}
+
+function drawTag(c, x, y, text, color) {
+  c.save();
+  c.shadowBlur = 0;
+  c.font = font(13, 800);
+  const w = c.measureText(text).width + 12;
+  roundRect(c, x - w / 2, y - 10, w, 20, 8);
+  c.fillStyle = 'rgba(4, 16, 12, 0.82)';
+  c.fill();
+  c.fillStyle = color;
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(text, x, y + 1);
+  c.restore();
+}
+
+function drawLaser(c, problem, t) {
+  if (t <= 0) return;
+  const lay = problem.layout;
+  const segs = problem.edges.map(function (e) {
+    const a = mapOf(lay, e.x1, e.y1);
+    const b = mapOf(lay, e.x2, e.y2);
+    return { a: a, b: b, len: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  });
+  const total = segs.reduce(function (s, e) { return s + e.len; }, 0) || 1;
+  const head = Math.min(total, t * total);
+  c.save();
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.shadowColor = '#8dfff0';
+  c.shadowBlur = 16;
+  c.strokeStyle = '#f4fffd';
+  c.lineWidth = 6;
+  c.beginPath();
+  let walked = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    if (walked >= head) break;
+    if (walked + s.len <= head) {
+      c.moveTo(s.a[0], s.a[1]);
+      c.lineTo(s.b[0], s.b[1]);
+    } else {
+      const u = (head - walked) / s.len;
+      c.moveTo(s.a[0], s.a[1]);
+      c.lineTo(s.a[0] + (s.b[0] - s.a[0]) * u, s.a[1] + (s.b[1] - s.a[1]) * u);
+    }
+    walked += s.len;
+  }
+  c.stroke();
+  c.restore();
+}
+
+function shieldIcon(c, x, y, filled, color) {
+  c.beginPath();
+  c.moveTo(x, y - 9);
+  c.lineTo(x + 8, y - 4);
+  c.lineTo(x + 8, y + 2);
+  c.quadraticCurveTo(x, y + 12, x - 8, y + 2);
+  c.lineTo(x - 8, y - 4);
+  c.closePath();
+  if (filled) {
+    c.fillStyle = color;
+    c.fill();
+  } else {
+    c.strokeStyle = 'rgba(180, 220, 200, 0.35)';
+    c.lineWidth = 1.5;
+    c.stroke();
+  }
+}
+
+function starIcon(c, x, y, r, color) {
+  c.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = x + Math.cos(a) * rad;
+    const py = y + Math.sin(a) * rad;
+    if (i === 0) c.moveTo(px, py);
+    else c.lineTo(px, py);
+  }
+  c.closePath();
+  c.fillStyle = color;
+  c.fill();
+}
+
+function drawHud() {
+  const tier = tierInfo(G.round);
+  roundRect(ctx, UI.hud.x, UI.hud.y, UI.hud.w, UI.hud.h, 14);
+  ctx.fillStyle = 'rgba(6, 22, 16, 0.92)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120, 255, 210, 0.28)';
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = font(15, 800);
+  let x = UI.hud.x + 16;
+  const y = UI.hud.y + UI.hud.h / 2;
+  function pill(text, color) {
+    ctx.font = font(14, 800);
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    x += w + 22;
+  }
+  if (G.mode === 'solo') {
+    pill('SOLO SURVEYOR', '#9bfff6');
+    pill('ROUND ' + G.round + ' · ' + tier.name, '#e9fff4');
+    ctx.fillStyle = '#c9ffe4';
+    ctx.font = font(12, 700);
+    ctx.fillText('SHIELDS', x, y);
+    x += 62;
+    for (let i = 0; i < G.maxShields; i++) shieldIcon(ctx, x + i * 20, y, i < G.shields, '#3dff9a');
+    x += G.maxShields * 20 + 16;
+    pill('COMBO ' + G.combo, '#ffc14a');
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(1 + G.scorePop * 0.08, 1 + G.scorePop * 0.08);
+    ctx.font = font(16, 800);
+    ctx.fillStyle = '#ffe08a';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('SCORE ' + fmt(G.score), 0, 0);
+    ctx.restore();
+  } else if (G.mode === 'coop') {
+    pill('2P CO-OP TEAM', '#9bfff6');
+    pill('ROUND ' + G.round + ' · ' + tier.name, '#e9fff4');
+    ctx.fillStyle = '#c9ffe4';
+    ctx.font = font(12, 700);
+    ctx.fillText('TEAM SHIELDS', x, y);
+    x += 96;
+    for (let i = 0; i < G.maxShields; i++) shieldIcon(ctx, x + i * 20, y, i < G.shields, '#3dff9a');
+    x += G.maxShields * 20 + 16;
+    pill('TEAM COMBO ' + G.combo, '#ffc14a');
+    ctx.font = font(16, 800);
+    ctx.fillStyle = '#ffe08a';
+    ctx.fillText('TEAM SCORE ' + fmt(G.score), x, y);
+  } else {
+    pill('2P VERSUS', '#ffd0d8');
+    pill('ROUND ' + G.round + ' · ' + tier.name, '#e9fff4');
+    [0, 1].forEach(function (i) {
+      const pl = P[i];
+      ctx.fillStyle = pl.color;
+      ctx.font = font(13, 800);
+      ctx.fillText(pl.name, x, y);
+      x += i === 0 ? 42 : 50;
+      for (let s = 0; s < 3; s++) shieldIcon(ctx, x + s * 18, y, s < pl.shields && !pl.out, pl.color);
+      x += 62;
+      starIcon(ctx, x, y, 7, pl.stars ? '#ffe08a' : 'rgba(255,224,138,0.25)');
+      ctx.fillStyle = '#ffe08a';
+      ctx.font = font(13, 800);
+      ctx.fillText(String(pl.stars), x + 12, y);
+      x += 28;
+      ctx.fillStyle = '#d7fff0';
+      ctx.fillText(fmt(pl.score), x, y);
+      x += 78;
+    });
+  }
+}
+
+function drawSound() {
+  const r = UI.sound;
+  roundRect(ctx, r.x, r.y, r.w, r.h, 14);
+  ctx.fillStyle = G.hoverSound ? '#14352c' : 'rgba(6, 22, 16, 0.92)';
+  ctx.fill();
+  ctx.strokeStyle = audio.muted ? '#ff8d9a' : '#7dffe0';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = audio.muted ? '#ffb4be' : '#d9fff2';
+  ctx.font = font(13, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(audio.muted ? 'MUTED' : 'SOUND', r.x + r.w / 2, r.y + r.h / 2);
+}
+
+function wrap(c, text, maxW, size) {
+  c.font = font(size, 700);
+  const words = String(text).split(' ');
+  const lines = [];
+  let line = '';
+  words.forEach(function (word) {
+    const tryLine = line ? line + ' ' + word : word;
+    if (c.measureText(tryLine).width > maxW && line) {
+      lines.push(line);
+      line = word;
+    } else line = tryLine;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawSpec() {
+  const p = G.problem;
+  const tier = tierInfo(G.round);
+  roundRect(ctx, UI.spec.x, UI.spec.y, UI.spec.w, UI.spec.h, 16);
+  ctx.fillStyle = 'rgba(7, 24, 18, 0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120, 255, 210, 0.22)';
+  ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = font(20, 800);
+  ctx.fillStyle = '#f3fff8';
+  ctx.fillText(p.title, UI.spec.x + 18, UI.spec.y + 28);
+  ctx.font = font(13, 700);
+  ctx.fillStyle = '#8dffe0';
+  ctx.textAlign = 'right';
+  ctx.fillText(tier.blurb, UI.spec.x + UI.spec.w - 18, UI.spec.y + 28);
+  let x = UI.spec.x + 18;
+  const y = UI.spec.y + 64;
+  ctx.textAlign = 'left';
+  ctx.font = font(13, 800);
+  p.chips.forEach(function (chip) {
+    const w = ctx.measureText(chip).width + 18;
+    if (x + w > UI.spec.x + UI.spec.w - 16) return;
+    roundRect(ctx, x, y - 12, w, 26, 8);
+    ctx.fillStyle = 'rgba(18, 70, 54, 0.9)';
+    ctx.fill();
+    ctx.fillStyle = '#e7fff6';
+    ctx.fillText(chip, x + 9, y + 1);
+    x += w + 8;
+  });
+}
+
+function drawArena() {
+  const a = UI.arena;
+  roundRect(ctx, a.x, a.y, a.w, a.h, 18);
+  ctx.fillStyle = '#071610';
+  ctx.fill();
+  ctx.save();
+  roundRect(ctx, a.x, a.y, a.w, a.h, 18);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(80, 180, 140, 0.08)';
+  ctx.lineWidth = 1;
+  for (let x = a.x; x < a.x + a.w; x += 28) {
+    ctx.beginPath();
+    ctx.moveTo(x, a.y);
+    ctx.lineTo(x, a.y + a.h);
+    ctx.stroke();
+  }
+  for (let y = a.y; y < a.y + a.h; y += 28) {
+    ctx.beginPath();
+    ctx.moveTo(a.x, y);
+    ctx.lineTo(a.x + a.w, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(90, 255, 190, 0.2)';
+  ctx.stroke();
+  const pushT = pushAmount();
+  drawShape(ctx, G.problem, pushT, G.problem.layout, 1);
+  drawLaser(ctx, G.problem, laserProgress());
+  if (G.phase === 'push') {
+    const cap = pushT < 0.72 ? 'MAGNETIC WALLS SLIDING' : (G.problem.extraCount ? 'AMBER WALLS STAY INSIDE' : 'ZERO EXTRA WALLS');
+    drawCaption(cap);
+  } else if (G.reveal && (G.phase === 'laser' || G.phase === 'celebrate')) {
+    drawCaption(G.reveal);
+  }
+}
+
+function drawCaption(text) {
+  ctx.font = font(14, 800);
+  const w = Math.min(760, ctx.measureText(text).width + 28);
+  const x = UI.arena.x + (UI.arena.w - w) / 2;
+  const y = UI.arena.y + UI.arena.h - 34;
+  roundRect(ctx, x, y, w, 26, 10);
+  ctx.fillStyle = 'rgba(4, 18, 14, 0.88)';
+  ctx.fill();
+  ctx.strokeStyle = '#ffc14a';
+  ctx.stroke();
+  ctx.fillStyle = '#ffe7b8';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + 13);
+}
+
+function buttonLabel() {
+  if (!G.problem) return 'LOCK IN CHOICE';
+  if (G.phase === 'push') return 'WALLS SHIFTING';
+  if (G.phase === 'laser' || G.phase === 'celebrate') {
+    return G.problem.lockMode === 'area' ? 'AREA LOCKED' : 'LASER FENCE LIVE';
+  }
+  if (G.step === 2 && G.problem.lockMode !== 'area') return 'ACTIVATE LASER FENCE';
+  if (G.step === 2) return 'LOCK UNCOVERED AREA';
+  if (G.mode === 'coop') {
+    const owner = stepOwner();
+    if (owner === 0) return 'RED SURVEYOR LOCKS IN';
+    if (owner === 1) return 'BLUE SURVEYOR LOCKS IN';
+    return 'EITHER SURVEYOR LOCKS THE FENCE';
+  }
+  return 'LOCK IN CHOICE';
+}
+
+function drawConsole() {
+  const box = UI.console;
+  roundRect(ctx, box.x, box.y, box.w, box.h, 18);
+  ctx.fillStyle = 'rgba(5, 16, 13, 0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120, 255, 210, 0.18)';
+  ctx.stroke();
+  const step = G.problem.steps[Math.min(G.step, 2)];
+  let kicker = step.kicker;
+  let kickerColor = '#8dffe0';
+  if (G.mode === 'coop') {
+    const owner = stepOwner();
+    if (owner === 0) { kicker += '  ·  RED'; kickerColor = P[0].color; }
+    else if (owner === 1) { kicker += '  ·  BLUE'; kickerColor = P[1].color; }
+    else kicker += '  ·  BOTH';
+  } else if (G.mode === 'versus' && G.step === 2) {
+    kicker += '  ·  FIRST LOCK CLAIMS THE STAR';
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = font(13, 800);
+  ctx.fillStyle = kickerColor;
+  ctx.fillText(kicker, box.x + 18, box.y + 16);
+  ctx.fillStyle = '#f4fff9';
+  const promptSize = step.prompt.length > 92 ? 15 : 17;
+  ctx.font = font(promptSize, 800);
+  const promptLines = wrap(ctx, step.prompt, box.w - 36, promptSize).slice(0, 2);
+  promptLines.forEach(function (line, i) {
+    ctx.fillText(line, box.x + 18, box.y + 40 + i * 18);
+  });
+  const message = G.hint || step.coach;
+  const msgColor = G.hint ? '#ffd78a' : '#9be7ff';
+  ctx.font = font(14, 700);
+  const msgLines = wrap(ctx, message, box.w - 36, 14).slice(0, 2);
+  msgLines.forEach(function (line, i) {
+    ctx.fillStyle = msgColor;
+    ctx.fillText(line, box.x + 18, box.y + 82 + i * 16);
+  });
+
+  step.options.forEach(function (opt, i) {
+    const card = UI.cards[i];
+    const focused = (G.mode === 'solo' && P[0].focus === i) ||
+      (G.mode !== 'solo' && (P[0].focus === i || P[1].focus === i)) ||
+      G.hoverCard === i;
+    const flashing = G.flash && G.flash.index === i && G.flash.until > G.time;
+    roundRect(ctx, card.x, card.y, card.w, card.h, 14);
+    ctx.fillStyle = opt.dead ? '#1a1214' : (flashing ? '#4a1820' : '#10241c');
+    ctx.fill();
+    ctx.lineWidth = focused ? 3 : 1.5;
+    ctx.strokeStyle = flashing ? '#ff5a6a' : (opt.dead ? '#5a3038' : (focused ? '#d9fff2' : 'rgba(140, 255, 210, 0.35)'));
+    ctx.stroke();
+    if (G.mode !== 'solo') {
+      if (P[0].focus === i) cornerBracket(card, P[0].color, 0);
+      if (P[1].focus === i) cornerBracket(card, P[1].color, 1);
+    }
+    ctx.globalAlpha = opt.dead ? 0.45 : 1;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f6fff9';
+    const size = opt.text.length > 16 ? 22 : 28;
+    ctx.font = font(size, 800);
+    ctx.fillText(opt.text, card.x + card.w / 2, card.y + 34);
+    ctx.font = font(13, 700);
+    ctx.fillStyle = '#b7ffe4';
+    ctx.fillText(opt.sub, card.x + card.w / 2, card.y + 62);
+    if (opt.dead) {
+      ctx.strokeStyle = '#ff8d9a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(card.x + 16, card.y + card.h / 2);
+      ctx.lineTo(card.x + card.w - 16, card.y + card.h / 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  });
+
+  const btn = UI.button;
+  const hot = G.step === 2 && G.phase === 'choose';
+  roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 12);
+  ctx.fillStyle = hot ? '#123f34' : '#0d221b';
+  ctx.fill();
+  ctx.strokeStyle = hot ? '#b8ffe8' : 'rgba(140, 255, 210, 0.3)';
+  ctx.lineWidth = hot ? 2.5 : 1.5;
+  ctx.stroke();
+  ctx.fillStyle = hot ? '#f3fff9' : '#c9ffe8';
+  ctx.font = font(16, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(buttonLabel(), btn.x + btn.w / 2, btn.y + btn.h / 2);
+}
+
+function cornerBracket(card, color, which) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  const inset = 6 + which * 4;
+  ctx.beginPath();
+  ctx.moveTo(card.x + inset, card.y + 18);
+  ctx.lineTo(card.x + inset, card.y + inset);
+  ctx.lineTo(card.x + 18, card.y + inset);
+  ctx.stroke();
+}
+
+function drawReticle(x, y, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, Math.PI * 2);
+  ctx.moveTo(x - 18, y);
+  ctx.lineTo(x - 5, y);
+  ctx.moveTo(x + 5, y);
+  ctx.lineTo(x + 18, y);
+  ctx.moveTo(x, y - 18);
+  ctx.lineTo(x, y - 5);
+  ctx.moveTo(x, y + 5);
+  ctx.lineTo(x, y + 18);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawFloaters() {
+  G.particles.forEach(function (p) {
+    const k = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(0, k);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  G.floaters.forEach(function (f) {
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    ctx.fillStyle = f.color;
+    ctx.font = font(18, 800);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(f.text, f.x, f.y);
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+  g.addColorStop(0, '#07140f');
+  g.addColorStop(1, '#040a08');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.strokeStyle = 'rgba(70, 160, 120, 0.05)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < VIEW_W; x += 48) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, VIEW_H);
+    ctx.stroke();
+  }
+  G.pollen.forEach(function (p) {
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#8dffe0';
+  ctx.font = font(14, 800);
+  ctx.fillText('SINGAPORE PRIMARY 4–6  ·  COMPOSITE PERIMETER', VIEW_W / 2, 42);
+  ctx.fillStyle = '#f4fff9';
+  ctx.font = font(54, 800);
+  ctx.fillText('PERIMETER SHIFTER', VIEW_W / 2, 96);
+  ctx.fillStyle = '#ffc14a';
+  ctx.font = font(22, 800);
+  ctx.fillText('THE WALL PUSHER', VIEW_W / 2, 138);
+  ctx.fillStyle = '#c9ffe4';
+  ctx.font = font(16, 700);
+  ctx.fillText('Push indented walls out to the dashed frame. Add only the walls that stay.', VIEW_W / 2, 174);
+
+  const blurbs = [
+    ['SOLO SURVEYOR', 'One garden. Mouse, keyboard, or one 8BitDo.', 'Click cards  ·  WASD or arrows  ·  Space'],
+    ['2P CO-OP TEAM', 'Shared shields and one team score.', 'Red: WASD + F    Blue: arrows + Enter'],
+    ['2P VERSUS', 'Same floorplan. First lock takes the star.', 'Pads: D-pad or stick, then A']
+  ];
+  TITLE_CARDS.forEach(function (card, i) {
+    const on = G.titleFocus === i;
+    roundRect(ctx, card.x, card.y, card.w, card.h, 18);
+    ctx.fillStyle = on ? '#12382c' : '#0c1f19';
+    ctx.fill();
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.strokeStyle = on ? '#d8fff3' : 'rgba(130, 255, 210, 0.3)';
+    ctx.stroke();
+    ctx.fillStyle = i === 1 ? '#9bfff6' : (i === 2 ? '#ffd0d8' : '#ffe08a');
+    ctx.font = font(20, 800);
+    ctx.fillText(blurbs[i][0], card.x + card.w / 2, card.y + 58);
+    ctx.fillStyle = '#e7fff4';
+    ctx.font = font(15, 700);
+    wrap(ctx, blurbs[i][1], card.w - 36, 15).forEach(function (line, li) {
+      ctx.fillText(line, card.x + card.w / 2, card.y + 104 + li * 20);
+    });
+    ctx.fillStyle = '#ffc14a';
+    ctx.font = font(13, 700);
+    wrap(ctx, blurbs[i][2], card.w - 28, 13).forEach(function (line, li) {
+      ctx.fillText(line, card.x + card.w / 2, card.y + 168 + li * 18);
+    });
+  });
+
+  if (demo) {
+    const stage = { x: 180, y: 468, w: 920, h: 210 };
+    roundRect(ctx, stage.x, stage.y, stage.w, stage.h, 16);
+    ctx.fillStyle = '#07140f';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(120, 255, 210, 0.2)';
+    ctx.stroke();
+    const cyc = G.time % 6.2;
+    let push = 0;
+    if (cyc < 1.3) push = ease(cyc / 1.3);
+    else if (cyc < 3.4) push = 1;
+    else if (cyc < 4.6) push = 1 - ease((cyc - 3.4) / 1.2);
+    const scale = Math.min(150 / demo.W, 150 / demo.H);
+    const lay = {
+      scale: scale,
+      ox: stage.x + 70,
+      oy: stage.y + (stage.h - demo.H * scale) / 2
+    };
+    drawShape(ctx, demo, push, lay, 0.9);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e7fff6';
+    ctx.font = font(16, 800);
+    const lines = [
+      'Worked example · 9 cm square garden',
+      'Flower bed 5 × 5 = 25 cm², uncovered 56 cm².',
+      '25 + 56 = 81, so the outer side is 9 cm.',
+      'Push the 5 cm wall out. It completes the side.',
+      'Two 5 cm walls stay: 36 + 5 + 5 = 46 cm.'
+    ];
+    lines.forEach(function (line, i) {
+      ctx.fillStyle = i === 4 ? '#ffd78a' : '#e7fff6';
+      ctx.fillText(line, stage.x + 250, stage.y + 36 + i * 32);
+    });
+  }
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#9adac8';
+  ctx.font = font(13, 700);
+  const best = 'Best solo ' + fmt(G.bestSolo) + '    ·    Best team ' + fmt(G.bestTeam) + '    ·    Pads ' + G.pads;
+  ctx.fillText(best, VIEW_W / 2, 708);
+  ctx.fillText('M mutes  ·  Esc pauses  ·  8BitDo A is the bottom button', VIEW_W / 2, 734);
+}
+
+function drawOverlay(title, body, a, b, labelA, labelB) {
+  ctx.fillStyle = 'rgba(2, 8, 6, 0.72)';
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#f4fff9';
+  ctx.font = font(42, 800);
+  ctx.fillText(title, VIEW_W / 2, 250);
+  ctx.font = font(18, 700);
+  ctx.fillStyle = '#d5fff0';
+  wrap(ctx, body, 760, 18).slice(0, 3).forEach(function (line, i) {
+    ctx.fillText(line, VIEW_W / 2, 310 + i * 26);
+  });
+  [a, b].forEach(function (rect, i) {
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 14);
+    ctx.fillStyle = '#12382c';
+    ctx.fill();
+    ctx.strokeStyle = '#d8fff3';
+    ctx.stroke();
+    ctx.fillStyle = '#f4fff9';
+    ctx.font = font(16, 800);
+    ctx.fillText(i === 0 ? labelA : labelB, rect.x + rect.w / 2, rect.y + rect.h / 2);
+  });
+}
+
+function drawPlay() {
+  drawHud();
+  drawSpec();
+  drawArena();
+  drawConsole();
+  if (G.screen === 'play') {
+    const color = G.mode === 'versus' || G.mode === 'coop' ? P[0].color : '#9bfff6';
+    drawReticle(reticle[0].x, reticle[0].y, color);
+    if (G.mode !== 'solo') drawReticle(reticle[1].x, reticle[1].y, P[1].color);
+  }
+}
+
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#040a08';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const shakeX = G.shake ? (Math.random() - 0.5) * 8 * G.shake : 0;
+  const shakeY = G.shake ? (Math.random() - 0.5) * 6 * G.shake : 0;
+  ctx.setTransform(fit.scale, 0, 0, fit.scale, fit.ox + shakeX, fit.oy + shakeY);
+  drawBackground();
+  if (BOOT_ERROR) {
+    ctx.fillStyle = '#ffe1e6';
+    ctx.font = font(22, 800);
+    ctx.textAlign = 'left';
+    ctx.fillText(BOOT_ERROR.slice(0, 180), 40, 80);
+    return;
+  }
+  if (G.screen === 'title') drawTitle();
+  else if (G.screen === 'play' || G.screen === 'pause') {
+    drawPlay();
+    if (G.screen === 'pause') {
+      drawOverlay('PAUSED', 'The garden holds still. Resume the survey or return to the title.', PAUSE_RESUME, PAUSE_QUIT, 'RESUME', 'QUIT');
+    }
+  } else if (G.screen === 'over') {
+    drawPlay();
+    let body = G.overBody;
+    if (G.mode === 'solo') body += ' Score ' + fmt(G.score) + '. Best ' + fmt(G.bestSolo) + '.';
+    if (G.mode === 'coop') body += ' Team score ' + fmt(G.score) + '. Best ' + fmt(G.bestTeam) + '.';
+    if (G.mode === 'versus') body += '  Red ' + fmt(P[0].score) + '   Blue ' + fmt(P[1].score) + '.';
+    if (G.hint && G.mode !== 'versus') body += ' ' + G.hint;
+    drawOverlay(G.overTitle || 'SURVEY OVER', body, OVER_RETRY, OVER_TITLE, 'SURVEY AGAIN', 'TITLE');
+  }
+  drawSound();
+  drawFloaters();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
+  fit.dpr = dpr;
+  fit.scale = Math.min(canvas.width / VIEW_W, canvas.height / VIEW_H);
+  fit.ox = (canvas.width - VIEW_W * fit.scale) / 2;
+  fit.oy = (canvas.height - VIEW_H * fit.scale) / 2;
+}
+
+function loop(ts) {
+  const now = ts || performance.now();
+  const dt = Math.min(0.05, (now - (loop.prev || now)) / 1000);
+  loop.prev = now;
+  update(dt || 0);
+  render();
+  requestAnimationFrame(loop);
+}
+
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d');
+  muteBtn = document.getElementById('mute');
+  sr = document.getElementById('sr');
+  reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  loadStore();
+  if (muteBtn) {
+    muteBtn.textContent = audio.muted ? 'Sound off' : 'Sound on';
+    muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+    muteBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      toggleMute();
+    });
+  }
+  for (let i = 0; i < 28; i++) {
+    G.pollen.push({
+      x: Math.random() * VIEW_W,
+      y: Math.random() * VIEW_H,
+      r: 1 + Math.random() * 2,
+      s: 12 + Math.random() * 20,
+      ph: Math.random() * 6,
+      color: Math.random() < 0.5 ? '#9dffd2' : '#ffd0ea'
+    });
+  }
+  try {
+    demo = (function () {
+      const notches = [{ side: 'right', offset: 2, mouth: 5, depth: 5, index: 0 }];
+      const walked = walkNotches(9, 9, notches);
+      const beds = walked.beds;
+      beds[0].caption = '5 × 5 cm';
+      beds[0].sub = '25 cm²';
+      plantBeds(beds, 41);
+      return {
+        W: 9, H: 9,
+        edges: walked.edges,
+        beds: beds,
+        speckles: makeSpeckles(walked.edges, 9, 9),
+        showOuter: true,
+        labelExtras: true,
+        labelSlides: true
+      };
+    })();
+  } catch (err) {
+    demo = null;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  canvas.addEventListener('pointermove', function (e) {
+    const p = pointerToView(e);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    G.lastDevice = 'mouse';
+    hoverPointer(p);
+  });
+  canvas.addEventListener('pointerdown', function (e) {
+    canvas.focus();
+    unlock();
+    G.lastDevice = 'mouse';
+    clicks.push(pointerToView(e));
+  });
+  canvas.addEventListener('pointerleave', function () { pointer.inside = false; });
+  window.addEventListener('keydown', function (e) {
+    const k = normKey(e);
+    if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'space', 'enter'].indexOf(k) !== -1) e.preventDefault();
+    if (e.target === muteBtn) return;
+    if (k === 'm') { toggleMute(); return; }
+    if (k === 'escape') { togglePause(); return; }
+    if (e.repeat) return;
+    heldKeys.add(k);
+    justKeys.add(k);
+    G.lastDevice = 'key';
+    unlock();
+  });
+  window.addEventListener('keyup', function (e) { heldKeys.delete(normKey(e)); });
+  canvas.focus();
+  if (BOOT_ERROR) announce();
+  requestAnimationFrame(loop);
+}
+
+try {
+  selfTest();
+} catch (err) {
+  if (typeof document === 'undefined') throw err;
+  BOOT_ERROR = err && err.stack ? err.stack : String(err);
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', boot);
+}
+</script>
+</body>
+</html>

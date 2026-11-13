@@ -1,0 +1,3216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Laser Blueprint: Unit-Edge Tracer</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #071018;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+  }
+  #mute {
+    position: fixed;
+    right: 12px;
+    bottom: 8px;
+    z-index: 3;
+    border: 2px solid #3ef0ff;
+    background: #071820;
+    color: #d8fbff;
+    font: 700 13px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif;
+    border-radius: 999px;
+    padding: 8px 12px;
+    cursor: pointer;
+  }
+  #mute:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  noscript p {
+    color: #d8fbff;
+    font-family: "Trebuchet MS", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" role="application" aria-label="Laser Blueprint, Unit-Edge Tracer. Solve composite area and perimeter by counting unit edges. Solo uses the mouse, arrow keys or W A S D, and Space or Enter. Two-player mode: player 1 uses W A S D and F or Space. Player 2 uses arrow keys and Enter. Gamepads use the stick or D-pad and the A button."></canvas>
+<button id="mute" type="button" aria-pressed="false">Sound on</button>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript><p>This holo-table runs in JavaScript. Enable JavaScript to trace laser blueprints.</p></noscript>
+<script>
+'use strict';
+
+/**
+ * Laser Blueprint: Unit-Edge Tracer
+ * Primary 4–6 composite area and perimeter.
+ * Ratio plans: 1 Length = k Breadths, so a flank of 1u plus a middle of k u
+ *   plus a flank of 1u is the full width. Divide the given side by that many units.
+ * Area plans: identical rectangles are sliced into unit squares, then
+ *   area ÷ square count = one square, and the side is the square root.
+ * Perimeter is only the exposed outer unit-edges. Internal lines stay dark.
+ * Every floorplan is rolled, then rejected unless the arithmetic checks out.
+ */
+
+var STORE = 'laser-blueprint-unit-edge-v1';
+var AB_POOL = [24, 28, 30, 32, 35, 36, 40, 42, 45, 48, 49, 54, 56, 60, 63, 64, 70, 72];
+var MELODY = [69, 72, 76, 74, 72, 69, 67, 64, 67, 72, 74, 76, 79, 76, 74, 72];
+var BASS = [45, 45, 41, 43, 40, 40, 43, 45];
+
+var canvas, ctx, muteBtn, sr;
+var view = { w: 1280, h: 800 };
+var keys = {};
+var just = {};
+var pointer = { x: 0, y: 0, moved: false, down: false };
+var padPrev = [
+  { a: false, start: false, dpx: 0, dpy: 0 },
+  { a: false, start: false, dpx: 0, dpy: 0 }
+];
+var players = [
+  { id: 0, x: 240, y: 640, card: -1, focus: 0, rep: 0, warm: false, color: '#ff4d6a', name: 'P1' },
+  { id: 1, x: 860, y: 640, card: -1, focus: 3, rep: 0, warm: false, color: '#4da3ff', name: 'P2' }
+];
+var UI = null;
+var floorHistory = [];
+var G = {
+  mode: 'title',
+  play: 'solo',
+  phase: 'answer',
+  paused: false,
+  round: 1,
+  step: 0,
+  problem: null,
+  score: 0,
+  combo: 0,
+  shields: 3,
+  bestSolo: 0,
+  bestTeam: 0,
+  pShields: [3, 3],
+  pScore: [0, 0],
+  pStars: [0, 0],
+  hint: '',
+  note: '',
+  noteT: 0,
+  stepTime: 0,
+  lockout: 0,
+  shake: 0,
+  glitch: 0,
+  slice: 0,
+  traceT: 0,
+  gain: 0,
+  bannerT: 0,
+  downT: 0,
+  menu: 0,
+  t: 0,
+  particles: [],
+  floaters: [],
+  fatal: '',
+  live: ''
+};
+
+var audio = {
+  ac: null,
+  master: null,
+  music: null,
+  sfx: null,
+  noise: null,
+  muted: false,
+  next: 0,
+  step: 0,
+  timer: null
+};
+
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+function font(px, weight) {
+  return (weight || 700) + ' ' + Math.round(px) + 'px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif';
+}
+
+function fs(px) {
+  var s = UI && UI.s ? UI.s : 1;
+  return Math.max(11, Math.round(px * s));
+}
+
+function fmt(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+
+function pick(list) { return list[Math.floor(Math.random() * list.length)]; }
+
+function shuffle(list) {
+  var i, j, tmp;
+  for (i = list.length - 1; i > 0; i--) {
+    j = Math.floor(Math.random() * (i + 1));
+    tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
+}
+
+function loadStore() {
+  try {
+    var raw = localStorage.getItem(STORE);
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (data && typeof data.bestSolo === 'number') G.bestSolo = data.bestSolo;
+    if (data && typeof data.bestTeam === 'number') G.bestTeam = data.bestTeam;
+    if (data && data.mute) audio.muted = true;
+  } catch (err) { /* private mode */ }
+}
+
+function saveStore() {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({
+      bestSolo: G.bestSolo,
+      bestTeam: G.bestTeam,
+      mute: audio.muted
+    }));
+  } catch (err) { /* private mode */ }
+}
+
+function announce(text) {
+  G.live = text || '';
+  if (sr) sr.textContent = G.live;
+}
+
+function tierInfo(n) {
+  if (n <= 2) return { name: 'WARM-UP', blurb: 'Length = k Breadths' };
+  if (n <= 4) return { name: 'INTERMEDIATE', blurb: 'Slice into unit squares' };
+  if (n <= 6) return { name: 'ADVANCED', blurb: 'Stepped floorplans' };
+  return { name: 'MASTER', blurb: 'Mixed reverse challenges' };
+}
+
+function kindForRound(round) {
+  if (round <= 2) return 'ratio';
+  if (round <= 4) return 'area';
+  if (round <= 6) return 'stepped';
+  var m = (round - 7) % 3;
+  if (m === 0) return 'ratio';
+  if (m === 1) return 'area';
+  return 'reverse';
+}
+
+function keyOf(c, r) { return c + ',' + r; }
+
+function cellSet(cells) {
+  var set = Object.create(null);
+  var i;
+  for (i = 0; i < cells.length; i++) set[keyOf(cells[i].c, cells[i].r)] = cells[i];
+  return set;
+}
+
+function boundsOf(cells) {
+  var minC = 1e9, minR = 1e9, maxC = -1, maxR = -1, i;
+  for (i = 0; i < cells.length; i++) {
+    var cell = cells[i];
+    if (cell.c < minC) minC = cell.c;
+    if (cell.r < minR) minR = cell.r;
+    if (cell.c > maxC) maxC = cell.c;
+    if (cell.r > maxR) maxR = cell.r;
+  }
+  return { minC: minC, minR: minR, cols: maxC + 1, rows: maxR + 1, w: maxC - minC + 1, h: maxR - minR + 1 };
+}
+
+function isConnected(cells) {
+  if (!cells.length) return false;
+  var set = Object.create(null);
+  var i;
+  for (i = 0; i < cells.length; i++) set[keyOf(cells[i].c, cells[i].r)] = 1;
+  var seen = Object.create(null);
+  var stack = [cells[0]];
+  seen[keyOf(cells[0].c, cells[0].r)] = 1;
+  var n = 0;
+  var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  while (stack.length) {
+    var cur = stack.pop();
+    n++;
+    for (i = 0; i < 4; i++) {
+      var c = cur.c + dirs[i][0];
+      var r = cur.r + dirs[i][1];
+      var k = keyOf(c, r);
+      if (set[k] && !seen[k]) {
+        seen[k] = 1;
+        stack.push({ c: c, r: r });
+      }
+    }
+  }
+  return n === cells.length;
+}
+
+function countOuter(cells) {
+  var set = Object.create(null);
+  var i, n = 0;
+  for (i = 0; i < cells.length; i++) set[keyOf(cells[i].c, cells[i].r)] = 1;
+  for (i = 0; i < cells.length; i++) {
+    var c = cells[i];
+    if (!set[keyOf(c.c + 1, c.r)]) n++;
+    if (!set[keyOf(c.c - 1, c.r)]) n++;
+    if (!set[keyOf(c.c, c.r + 1)]) n++;
+    if (!set[keyOf(c.c, c.r - 1)]) n++;
+  }
+  return n;
+}
+
+function countSeams(cells) {
+  var piece = Object.create(null);
+  var i, n = 0;
+  for (i = 0; i < cells.length; i++) piece[keyOf(cells[i].c, cells[i].r)] = cells[i].piece;
+  for (i = 0; i < cells.length; i++) {
+    var c = cells[i];
+    var right = piece[keyOf(c.c + 1, c.r)];
+    var down = piece[keyOf(c.c, c.r + 1)];
+    if (right !== undefined && right !== c.piece) n++;
+    if (down !== undefined && down !== c.piece) n++;
+  }
+  return n;
+}
+
+function tracePerimeter(cells) {
+  var set = Object.create(null);
+  var minC = 1e9, minR = 1e9, i;
+  for (i = 0; i < cells.length; i++) {
+    var cell = cells[i];
+    set[keyOf(cell.c, cell.r)] = 1;
+    if (cell.r < minR || (cell.r === minR && cell.c < minC)) {
+      minR = cell.r;
+      minC = cell.c;
+    }
+  }
+  function filled(c, r) { return set[keyOf(c, r)] === 1; }
+  function exterior(x, y, dir) {
+    var a, b;
+    if (dir === 0) { a = filled(x, y); b = filled(x, y - 1); }
+    else if (dir === 1) { a = filled(x - 1, y); b = filled(x, y); }
+    else if (dir === 2) { a = filled(x - 1, y - 1); b = filled(x - 1, y); }
+    else { a = filled(x, y - 1); b = filled(x - 1, y - 1); }
+    return a !== b;
+  }
+  var DX = [1, 0, -1, 0];
+  var DY = [0, 1, 0, -1];
+  var x = minC, y = minR, dir = 0;
+  var edges = [];
+  var guard = 0;
+  var limit = cells.length * 4 + 8;
+  if (!exterior(x, y, dir)) return edges;
+  while (guard++ < limit) {
+    edges.push({ x0: x, y0: y, x1: x + DX[dir], y1: y + DY[dir], dir: dir });
+    x += DX[dir];
+    y += DY[dir];
+    var found = -1;
+    var turn = [1, 0, 3, 2];
+    var t;
+    for (t = 0; t < 4; t++) {
+      var nd = (dir + turn[t]) & 3;
+      if (exterior(x, y, nd)) { found = nd; break; }
+    }
+    if (found < 0) break;
+    dir = found;
+    if (x === minC && y === minR && dir === 0) break;
+  }
+  return edges;
+}
+
+function buildCards(correct, candidates) {
+  var used = Object.create(null);
+  var cards = [];
+  var i;
+  used[correct] = 1;
+  for (i = 0; i < candidates.length && cards.length < 3; i++) {
+    var v = candidates[i].value;
+    if (typeof v !== 'number' || !isFinite(v)) continue;
+    v = Math.round(v);
+    if (v <= 0 || v === correct || used[v]) continue;
+    used[v] = 1;
+    cards.push({ value: v, trap: candidates[i].trap, correct: false });
+  }
+  var d = 1;
+  while (cards.length < 3 && d < 48) {
+    var opts = [correct + d, correct - d];
+    var j;
+    for (j = 0; j < opts.length && cards.length < 3; j++) {
+      if (opts[j] > 0 && !used[opts[j]]) {
+        used[opts[j]] = 1;
+        cards.push({ value: opts[j], trap: 'near', correct: false });
+      }
+    }
+    d++;
+  }
+  cards.push({ value: correct, trap: '', correct: true });
+  shuffle(cards);
+  return cards;
+}
+
+function widthExpr(left, k, right) {
+  var parts = [];
+  var i;
+  for (i = 0; i < left; i++) parts.push('1u');
+  parts.push(k + 'u');
+  for (i = 0; i < right; i++) parts.push('1u');
+  return parts.join(' + ');
+}
+
+function equalMsg(p) {
+  if (p.left === 1 && p.right === 1) {
+    return 'Look closely! The middle bar is 1 Length = ' + p.k + ' Breadths (' + p.k + 'u), while each side bar is 1 Breadth (1u) → ' + p.widthExpr + ' = ' + p.widthUnits + 'u total!';
+  }
+  if (p.left + p.right === 1) {
+    return 'Look closely! The vertical bar is 1 Length = ' + p.k + ' Breadths (' + p.k + 'u). Across AB that is ' + p.widthExpr + ' = ' + p.widthUnits + 'u total — not ' + p.sections + ' equal sections.';
+  }
+  return 'Look closely! 1 Length = ' + p.k + ' Breadths. Count every unit across AB: ' + p.widthExpr + ' = ' + p.widthUnits + 'u total!';
+}
+
+function shapesMsg(p) {
+  return 'Each rectangle equals ' + p.spr + ' unit squares! Slice the ' + p.rectCount + ' rectangles first: (' + p.rectCount + ' × ' + p.spr + ') + ' + p.extra + ' = ' + p.totalSquares + ' identical unit squares!';
+}
+
+function fallbackTrap(p, step) {
+  if (p.kind === 'ratio' && step < 2) return 'equal';
+  if (p.kind === 'area' && step === 0) return 'shapes';
+  if (p.kind === 'stepped' && step === 0) return 'box';
+  if ((p.kind === 'area' || p.kind === 'stepped') && step === 1) return 'sqrt';
+  if (p.kind === 'reverse' && step === 0) return 'cells';
+  if (p.kind === 'reverse' && step === 1) return 'half';
+  if (step === 2) return 'internal';
+  return 'generic';
+}
+
+function messageFor(p, step, trap) {
+  if (!trap || trap === 'near') trap = fallbackTrap(p, step);
+  if (trap === 'equal') return equalMsg(p);
+  if (trap === 'shapes') return shapesMsg(p);
+  if (trap === 'internal') return 'Perimeter is ONLY the outer boundary laser fence — never count internal dividing lines!';
+  if (trap === 'sqrt') return 'That number is the area of one square. Divide the total area by the unit-square count, then take the square root to get the side.';
+  if (trap === 'half') return 'You stopped halfway around. The laser fence walks every outer side and returns to the start.';
+  if (trap === 'side') return 'Check the letters on the corners. AB and BC are different sides of the blueprint.';
+  if (trap === 'box') return 'The blank corner is empty space. Count only the unit squares the floorplan actually covers, then divide the area.';
+  if (trap === 'notch') return 'The fence steps inward at the notch. Those inner corner edges belong to the perimeter.';
+  if (trap === 'cells') return 'You counted unit squares inside the plan. This step wants the exposed outer edges of the laser fence.';
+  if (trap === 'peri') return 'That is the distance around the whole fence. The question asks for one side only.';
+  return 'Use the unit tags on the holo-table. Perimeter counts only the outer laser fence.';
+}
+
+function solutionText(p) {
+  if (p.kind === 'ratio') {
+    var s = p.widthUnits + 'u = ' + p.ab + ' cm  →  1u = ' + p.unitCm + ' cm';
+    if (p.targetKind === 'height') s += '  →  BC = ' + p.k + 'u = ' + p.bc + ' cm';
+    else s += '  →  perimeter = ' + p.outerEdges + ' × ' + p.unitCm + ' cm = ' + (p.outerEdges * p.unitCm) + ' cm';
+    return s;
+  }
+  if (p.kind === 'reverse') {
+    return p.outerEdges + ' edges = ' + p.periCm + ' cm  →  1u = ' + p.unitCm + ' cm  →  area = ' + p.totalSquares + ' × ' + (p.unitCm * p.unitCm) + ' = ' + (p.totalSquares * p.unitCm * p.unitCm) + ' cm²';
+  }
+  return p.totalSquares + ' squares = ' + fmt(p.totalArea) + ' cm²  →  1 square = ' + (p.unitCm * p.unitCm) + ' cm²  →  side = ' + p.unitCm + ' cm  →  ' + p.outerEdges + ' × ' + p.unitCm + ' = ' + (p.outerEdges * p.unitCm) + ' cm';
+}
+
+function sealPieces(pieces) {
+  var i, j;
+  for (i = 0; i < pieces.length; i++) {
+    var b = boundsOf(pieces[i].cells);
+    if (pieces[i].cells.length !== b.w * b.h) return false;
+    if (b.minC < 0 || b.minR < 0) return false;
+    pieces[i].box = { c: b.minC, r: b.minR, w: b.w, h: b.h };
+    for (j = 0; j < pieces[i].cells.length; j++) {
+      pieces[i].cells[j].piece = pieces[i].id;
+      pieces[i].cells[j].role = pieces[i].role;
+    }
+  }
+  return true;
+}
+
+function finishShape(cells, pieces) {
+  var edges = tracePerimeter(cells);
+  var outer = countOuter(cells);
+  var box = boundsOf(cells);
+  return {
+    cells: cells,
+    pieces: pieces,
+    edges: edges,
+    outerEdges: edges.length,
+    outerCheck: outer,
+    cols: box.cols,
+    rows: box.rows,
+    minC: box.minC,
+    minR: box.minR,
+    seams: countSeams(cells),
+    totalSquares: cells.length
+  };
+}
+
+function pushStep(steps, ask, correct, unit, candidates) {
+  steps.push({
+    ask: ask,
+    correct: correct,
+    unit: unit,
+    cards: buildCards(correct, candidates)
+  });
+}
+
+function assembleRatio(layout, ab, targetKind) {
+  var left = layout.left, right = layout.right, k = layout.k;
+  var widthUnits = left + k + right;
+  var heightUnits = k;
+  if (widthUnits < 3 || k < 2) return null;
+  if (ab % widthUnits !== 0) return null;
+  var u = ab / widthUnits;
+  if (u < 4 || u > 12) return null;
+  var bc = k * u;
+  var pieces = [];
+  var cells = [];
+  var id = 0;
+  function add(role, list) {
+    pieces.push({ id: id, role: role, cells: list });
+    var i;
+    for (i = 0; i < list.length; i++) cells.push(list[i]);
+    id++;
+  }
+  var i, r, c;
+  for (i = 0; i < left; i++) {
+    var lv = [];
+    for (r = 0; r < k; r++) lv.push({ c: i, r: r });
+    add('vert', lv);
+  }
+  for (r = 0; r < k; r++) {
+    var hz = [];
+    for (c = 0; c < k; c++) hz.push({ c: left + c, r: r });
+    add('horiz', hz);
+  }
+  for (i = 0; i < right; i++) {
+    var rv = [];
+    var col = left + k + i;
+    for (r = 0; r < k; r++) rv.push({ c: col, r: r });
+    add('vert', rv);
+  }
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  if (shape.outerEdges !== 2 * (widthUnits + heightUnits)) return null;
+  var sections = (left > 0 ? 1 : 0) + 1 + (right > 0 ? 1 : 0);
+  var peri = shape.outerEdges * u;
+  var expr = widthExpr(left, k, right);
+  var wrongUnits = [];
+  if (ab % sections === 0 && ab / sections !== u) wrongUnits.push(ab / sections);
+  if (ab % k === 0 && ab / k !== u) wrongUnits.push(ab / k);
+  var step2c = [];
+  var wi;
+  for (wi = 0; wi < wrongUnits.length; wi++) step2c.push({ value: wrongUnits[wi], trap: 'equal' });
+  step2c.push({ value: u + 1, trap: 'near' });
+  step2c.push({ value: u - 1, trap: 'near' });
+  step2c.push({ value: u + 2, trap: 'near' });
+  var steps = [];
+  pushStep(steps, 'How many 1u segments span AB?', widthUnits, 'u', [
+    { value: sections, trap: 'equal' },
+    { value: k, trap: 'equal' },
+    { value: heightUnits, trap: 'side' },
+    { value: left + right, trap: 'equal' },
+    { value: widthUnits + 1, trap: 'near' },
+    { value: widthUnits - 1, trap: 'near' }
+  ]);
+  pushStep(steps, 'What is the length of 1u?', u, 'cm', step2c);
+  if (targetKind === 'height') {
+    var hC = [
+      { value: (k + 1) * u, trap: 'near' },
+      { value: (k - 1) * u, trap: 'near' },
+      { value: ab, trap: 'side' },
+      { value: peri, trap: 'peri' },
+      { value: widthUnits * u, trap: 'side' }
+    ];
+    for (wi = 0; wi < wrongUnits.length; wi++) hC.push({ value: k * wrongUnits[wi], trap: 'equal' });
+    pushStep(steps, 'What is the length of BC?', bc, 'cm', hC);
+  } else {
+    var pC = [
+      { value: (widthUnits + heightUnits) * u, trap: 'half' },
+      { value: (shape.outerEdges + shape.seams) * u, trap: 'internal' },
+      { value: bc, trap: 'side' },
+      { value: ab, trap: 'side' },
+      { value: (shape.outerEdges - 2) * u, trap: 'near' }
+    ];
+    for (wi = 0; wi < wrongUnits.length; wi++) pC.push({ value: shape.outerEdges * wrongUnits[wi], trap: 'equal' });
+    pushStep(steps, 'What is the outer perimeter?', peri, 'cm', pC);
+  }
+  var ask = targetKind === 'height' ? 'Find BC.' : 'Find the outer perimeter.';
+  return {
+    kind: 'ratio',
+    sig: 'ratio:' + left + '-' + k + '-' + right + ':' + ab + ':' + targetKind,
+    kicker: 'LENGTH  ↔  BREADTH',
+    spec: 'Identical rectangles. 1 Length = ' + k + ' Breadths. Given AB = ' + ab + ' cm. ' + ask,
+    chip: 'AB = ' + ab + ' cm',
+    givenName: 'AB',
+    left: left,
+    right: right,
+    k: k,
+    widthUnits: widthUnits,
+    heightUnits: heightUnits,
+    widthExpr: expr,
+    sections: sections,
+    ab: ab,
+    bc: bc,
+    unitCm: u,
+    targetKind: targetKind,
+    periCm: peri,
+    totalArea: widthUnits * heightUnits * u * u,
+    totalSquares: shape.totalSquares,
+    revealGrid: false,
+    letters: true,
+    straight: true,
+    cells: shape.cells,
+    pieces: shape.pieces,
+    edges: shape.edges,
+    outerEdges: shape.outerEdges,
+    cols: shape.cols,
+    rows: shape.rows,
+    seams: shape.seams,
+    steps: steps
+  };
+}
+
+function assembleStrip(spr, rectCount, extraRows, gap, side) {
+  if (spr < 2 || rectCount < 2 || extraRows < 0 || gap < 1) return null;
+  var w = spr + gap;
+  var h = rectCount + extraRows;
+  if (w > 9 || h > 8 || w < 3 || h < 3) return null;
+  var pieces = [];
+  var cells = [];
+  var id = 0;
+  var r, c, n;
+  for (n = 0; n < rectCount; n++) {
+    var list = [];
+    for (c = 0; c < spr; c++) list.push({ c: c, r: n });
+    pieces.push({ id: id, role: 'rect', cells: list });
+    for (c = 0; c < list.length; c++) cells.push(list[c]);
+    id++;
+    for (c = spr; c < w; c++) {
+      var one = [{ c: c, r: n }];
+      pieces.push({ id: id, role: 'square', cells: one });
+      cells.push(one[0]);
+      id++;
+    }
+  }
+  for (r = rectCount; r < h; r++) {
+    for (c = 0; c < w; c++) {
+      var sq = [{ c: c, r: r }];
+      pieces.push({ id: id, role: 'square', cells: sq });
+      cells.push(sq[0]);
+      id++;
+    }
+  }
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  var extra = shape.totalSquares - rectCount * spr;
+  if (extra < 2) return null;
+  if (shape.totalSquares !== w * h) return null;
+  var unitArea = side * side;
+  var totalArea = shape.totalSquares * unitArea;
+  var peri = shape.outerEdges * side;
+  var shapeCount = rectCount + extra;
+  var steps = [];
+  pushStep(steps, 'How many identical unit squares cover the figure?', shape.totalSquares, 'squares', [
+    { value: shapeCount, trap: 'shapes' },
+    { value: rectCount * spr, trap: 'shapes' },
+    { value: extra, trap: 'shapes' },
+    { value: rectCount, trap: 'shapes' },
+    { value: shape.totalSquares - spr, trap: 'near' }
+  ]);
+  pushStep(steps, 'What is the side length of 1 unit square?', side, 'cm', [
+    { value: unitArea, trap: 'sqrt' },
+    { value: totalArea % shapeCount === 0 ? totalArea / shapeCount : side + 2, trap: 'shapes' },
+    { value: side + 1, trap: 'near' },
+    { value: side - 1, trap: 'near' },
+    { value: side * 2, trap: 'near' }
+  ]);
+  pushStep(steps, 'What is the outer perimeter?', peri, 'cm', [
+    { value: (shape.outerEdges + shape.seams) * side, trap: 'internal' },
+    { value: shape.outerEdges * unitArea, trap: 'sqrt' },
+    { value: (shape.outerEdges / 2) * side, trap: 'half' },
+    { value: shapeCount * side, trap: 'shapes' },
+    { value: (shape.outerEdges + 2) * side, trap: 'near' }
+  ]);
+  return {
+    kind: 'area',
+    sig: 'area:' + spr + 'x' + rectCount + '+' + extra + ':' + w + 'x' + h + ':' + side,
+    kicker: 'UNIT-SQUARE SLICE',
+    spec: rectCount + ' identical rectangles (each = ' + spr + ' unit squares) + ' + extra + ' unit squares. Total area = ' + fmt(totalArea) + ' cm². Find the outer perimeter.',
+    chip: 'Area = ' + fmt(totalArea) + ' cm²',
+    spr: spr,
+    rectCount: rectCount,
+    extra: extra,
+    shapeCount: shapeCount,
+    unitCm: side,
+    unitArea: unitArea,
+    totalArea: totalArea,
+    totalSquares: shape.totalSquares,
+    targetKind: 'perimeter',
+    periCm: peri,
+    revealGrid: false,
+    letters: true,
+    straight: true,
+    cells: shape.cells,
+    pieces: shape.pieces,
+    edges: shape.edges,
+    outerEdges: shape.outerEdges,
+    cols: shape.cols,
+    rows: shape.rows,
+    seams: shape.seams,
+    steps: steps
+  };
+}
+
+function addPiece(pieces, cells, id, role, list) {
+  pieces.push({ id: id, role: role, cells: list });
+  var i;
+  for (i = 0; i < list.length; i++) cells.push(list[i]);
+}
+
+function buildL(W, H, cutW, cutH, corner) {
+  var pieces = [];
+  var cells = [];
+  var topH, legW, legC, legR, slabR, id = 0;
+  if (corner === 1) {
+    topH = H - cutH;
+    slabR = 0;
+    legR = topH;
+    legC = 0;
+    legW = W - cutW;
+  } else if (corner === 0) {
+    topH = H - cutH;
+    slabR = cutH;
+    legR = 0;
+    legC = 0;
+    legW = W - cutW;
+  } else if (corner === 2) {
+    topH = H - cutH;
+    slabR = 0;
+    legR = topH;
+    legC = cutW;
+    legW = W - cutW;
+  } else {
+    topH = H - cutH;
+    slabR = cutH;
+    legR = 0;
+    legC = cutW;
+    legW = W - cutW;
+  }
+  if (topH < 1 || legW < 1) return null;
+  var slab = [];
+  var r, c;
+  for (r = 0; r < topH; r++) {
+    for (c = 0; c < W; c++) slab.push({ c: c, r: slabR + r });
+  }
+  addPiece(pieces, cells, id++, 'tier', slab);
+  var leg = [];
+  for (r = 0; r < cutH; r++) {
+    for (c = 0; c < legW; c++) leg.push({ c: legC + c, r: legR + r });
+  }
+  addPiece(pieces, cells, id++, 'tier', leg);
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  shape.pieces = pieces;
+  shape.notch = true;
+  shape.shapeName = 'L-plan';
+  return shape;
+}
+
+function buildU(W, H, mouthW, mouthD, side) {
+  var x0, y0, pieces = [], cells = [], id = 0;
+  var r, c, list;
+  if (side === 0 || side === 1) {
+    x0 = Math.floor((W - mouthW) / 2);
+    if (x0 < 1 || W - x0 - mouthW < 1) return null;
+    if (side === 0) {
+      list = [];
+      for (r = mouthD; r < H; r++) for (c = 0; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = 0; r < mouthD; r++) for (c = 0; c < x0; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = 0; r < mouthD; r++) for (c = x0 + mouthW; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+    } else {
+      list = [];
+      for (r = 0; r < H - mouthD; r++) for (c = 0; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = H - mouthD; r < H; r++) for (c = 0; c < x0; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = H - mouthD; r < H; r++) for (c = x0 + mouthW; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+    }
+  } else {
+    y0 = Math.floor((H - mouthW) / 2);
+    if (y0 < 1 || H - y0 - mouthW < 1) return null;
+    if (side === 2) {
+      list = [];
+      for (r = 0; r < H; r++) for (c = mouthD; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = 0; r < y0; r++) for (c = 0; c < mouthD; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = y0 + mouthW; r < H; r++) for (c = 0; c < mouthD; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+    } else {
+      list = [];
+      for (r = 0; r < H; r++) for (c = 0; c < W - mouthD; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = 0; r < y0; r++) for (c = W - mouthD; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+      list = [];
+      for (r = y0 + mouthW; r < H; r++) for (c = W - mouthD; c < W; c++) list.push({ c: c, r: r });
+      addPiece(pieces, cells, id++, 'tier', list);
+    }
+  }
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  shape.pieces = pieces;
+  shape.notch = true;
+  shape.shapeName = 'Notched bay';
+  return shape;
+}
+
+function buildStairs(widths, heights, align) {
+  var cols = widths[0];
+  var t, i;
+  for (t = 0; t < widths.length; t++) if (widths[t] > cols) cols = widths[t];
+  var pieces = [];
+  var cells = [];
+  var y = 0;
+  var id = 0;
+  for (t = 0; t < widths.length; t++) {
+    var x0 = align === 'right' ? cols - widths[t] : 0;
+    var list = [];
+    var r, c;
+    for (r = 0; r < heights[t]; r++) {
+      for (c = 0; c < widths[t]; c++) list.push({ c: x0 + c, r: y + r });
+    }
+    addPiece(pieces, cells, id++, 'tier', list);
+    y += heights[t];
+  }
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  shape.pieces = pieces;
+  shape.notch = false;
+  shape.shapeName = 'Stepped tiers';
+  return shape;
+}
+
+function attachAreaQuestion(shape, side, sig, spec, chip, kicker) {
+  var unitArea = side * side;
+  var totalArea = shape.totalSquares * unitArea;
+  var peri = shape.outerEdges * side;
+  var boxCells = shape.cols * shape.rows;
+  var boxPeri = 2 * (shape.cols + shape.rows);
+  var steps = [];
+  pushStep(steps, 'How many 1u × 1u squares cover this floorplan?', shape.totalSquares, 'squares', [
+    { value: boxCells, trap: 'box' },
+    { value: shape.totalSquares + shape.cols, trap: 'box' },
+    { value: shape.totalSquares - shape.cols, trap: 'near' },
+    { value: boxCells - shape.totalSquares, trap: 'box' },
+    { value: shape.cols + shape.rows, trap: 'near' }
+  ]);
+  pushStep(steps, 'What is the side length of 1 unit square?', side, 'cm', [
+    { value: unitArea, trap: 'sqrt' },
+    { value: side + 1, trap: 'near' },
+    { value: side - 1, trap: 'near' },
+    { value: side * 2, trap: 'near' },
+    { value: totalArea % boxCells === 0 ? Math.round(Math.sqrt(totalArea / boxCells)) : side + 2, trap: 'box' }
+  ]);
+  var periCands = [
+    { value: (shape.outerEdges + shape.seams) * side, trap: 'internal' },
+    { value: (shape.outerEdges / 2) * side, trap: 'half' },
+    { value: shape.outerEdges * unitArea, trap: 'sqrt' },
+    { value: shape.totalSquares * side, trap: 'cells' },
+    { value: (shape.outerEdges - 2) * side, trap: 'near' }
+  ];
+  if (boxPeri !== shape.outerEdges) periCands.push({ value: boxPeri * side, trap: 'notch' });
+  pushStep(steps, 'What is the outer perimeter?', peri, 'cm', periCands);
+  return {
+    kind: 'stepped',
+    sig: sig,
+    kicker: kicker,
+    spec: spec,
+    chip: chip,
+    shapeName: shape.shapeName,
+    unitCm: side,
+    unitArea: unitArea,
+    totalArea: totalArea,
+    totalSquares: shape.totalSquares,
+    targetKind: 'perimeter',
+    periCm: peri,
+    revealGrid: false,
+    letters: false,
+    straight: false,
+    boxCells: boxCells,
+    boxPeri: boxPeri,
+    cells: shape.cells,
+    pieces: shape.pieces,
+    edges: shape.edges,
+    outerEdges: shape.outerEdges,
+    cols: shape.cols,
+    rows: shape.rows,
+    seams: shape.seams,
+    steps: steps
+  };
+}
+
+function attachReverse(shape, side, sig) {
+  var periCm = shape.outerEdges * side;
+  var unitArea = side * side;
+  var totalArea = shape.totalSquares * unitArea;
+  var halfEdges = shape.outerEdges / 2;
+  var steps = [];
+  pushStep(steps, 'How many outer 1u edges form the laser fence?', shape.outerEdges, 'edges', [
+    { value: shape.totalSquares, trap: 'cells' },
+    { value: halfEdges, trap: 'half' },
+    { value: shape.cols + shape.rows, trap: 'half' },
+    { value: shape.outerEdges - 2, trap: 'near' },
+    { value: shape.outerEdges + 2, trap: 'notch' },
+    { value: 2 * (shape.cols + shape.rows), trap: 'notch' }
+  ]);
+  var uCands = [
+    { value: side + 1, trap: 'near' },
+    { value: side - 1, trap: 'near' },
+    { value: side + 2, trap: 'near' }
+  ];
+  if (halfEdges > 0 && periCm % halfEdges === 0 && periCm / halfEdges !== side) {
+    uCands.push({ value: periCm / halfEdges, trap: 'half' });
+  }
+  if (shape.totalSquares > 0 && periCm % shape.totalSquares === 0 && periCm / shape.totalSquares !== side) {
+    uCands.push({ value: periCm / shape.totalSquares, trap: 'cells' });
+  }
+  pushStep(steps, 'What is the length of 1u?', side, 'cm', uCands);
+  pushStep(steps, 'What is the total area of the blueprint?', totalArea, 'cm²', [
+    { value: shape.totalSquares * side, trap: 'sqrt' },
+    { value: shape.outerEdges * unitArea, trap: 'cells' },
+    { value: shape.totalSquares * (side + 1) * (side + 1), trap: 'near' },
+    { value: shape.totalSquares * (side - 1) * (side - 1), trap: 'near' },
+    { value: periCm * side, trap: 'half' }
+  ]);
+  return {
+    kind: 'reverse',
+    sig: sig,
+    kicker: 'REVERSE  ·  PERIMETER → AREA',
+    spec: 'The outer laser fence is ' + periCm + ' cm. Count the exposed 1u edges, find 1u, then find the total area.',
+    chip: 'Perimeter = ' + periCm + ' cm',
+    unitCm: side,
+    unitArea: unitArea,
+    totalArea: totalArea,
+    totalSquares: shape.totalSquares,
+    targetKind: 'area',
+    periCm: periCm,
+    revealGrid: true,
+    letters: shape.cols * shape.rows === shape.totalSquares,
+    straight: shape.cols * shape.rows === shape.totalSquares,
+    cells: shape.cells,
+    pieces: shape.pieces,
+    edges: shape.edges,
+    outerEdges: shape.outerEdges,
+    cols: shape.cols,
+    rows: shape.rows,
+    seams: shape.seams,
+    steps: steps
+  };
+}
+
+function solidRect(w, h) {
+  var pieces = [];
+  var cells = [];
+  var list = [];
+  var r, c;
+  for (r = 0; r < h; r++) for (c = 0; c < w; c++) list.push({ c: c, r: r });
+  addPiece(pieces, cells, 0, 'block', list);
+  if (!sealPieces(pieces)) return null;
+  var shape = finishShape(cells, pieces);
+  shape.pieces = pieces;
+  shape.shapeName = 'Rectangle';
+  return shape;
+}
+
+function niceSide(cells, round, edges) {
+  var options = round >= 7 ? [4, 5, 6, 7, 8, 9, 10] : [4, 5, 6, 7, 8];
+  shuffle(options);
+  var i, fallback = null;
+  for (i = 0; i < options.length; i++) {
+    var side = options[i];
+    var area = cells * side * side;
+    if (area < 160 || area > 2200) continue;
+    if (edges && edges * side > 420) continue;
+    var nice = (area % 100 === 0) || area === 576 || area === 500 || area === 256 || area === 324 || area === 400 || area === 784 || area === 900;
+    if (!fallback) fallback = side;
+    if (nice) return side;
+  }
+  return fallback;
+}
+
+function rollRatio(round) {
+  var master = round >= 7;
+  var pool = master
+    ? [{ left: 1, right: 1, k: 5 }, { left: 1, right: 0, k: 5 }, { left: 0, right: 1, k: 5 }, { left: 1, right: 1, k: 4 }, { left: 1, right: 1, k: 3 }]
+    : (round <= 1
+      ? [{ left: 1, right: 1, k: 3 }, { left: 1, right: 1, k: 2 }, { left: 1, right: 0, k: 4 }, { left: 0, right: 1, k: 4 }, { left: 1, right: 1, k: 3 }]
+      : [{ left: 1, right: 1, k: 3 }, { left: 1, right: 1, k: 2 }, { left: 1, right: 0, k: 4 }, { left: 0, right: 1, k: 3 }, { left: 1, right: 1, k: 4 }, { left: 1, right: 0, k: 3 }]);
+  var layout = pick(pool);
+  var target = (round === 1 && Math.random() < 0.7) ? 'height' : (Math.random() < 0.5 ? 'height' : 'perimeter');
+  var abs = AB_POOL.slice();
+  shuffle(abs);
+  var widthUnits = layout.left + layout.k + layout.right;
+  var sections = (layout.left > 0 ? 1 : 0) + 1 + (layout.right > 0 ? 1 : 0);
+  var best = null;
+  var i;
+  for (i = 0; i < abs.length; i++) {
+    var ab = abs[i];
+    if (ab % widthUnits !== 0) continue;
+    var u = ab / widthUnits;
+    var bc = layout.k * u;
+    if (u < 4 || u > 12) continue;
+    if (!master && bc > 48) continue;
+    if (master && bc > 80) continue;
+    var quality = 0;
+    if (ab % sections === 0 && ab / sections !== u) quality++;
+    if (ab % layout.k === 0 && ab / layout.k !== u) quality++;
+    var made = assembleRatio(layout, ab, target);
+    if (!made) continue;
+    if (!best || quality > best.quality) best = { quality: quality, problem: made };
+    if (quality > 0 && Math.random() < 0.55) return made;
+  }
+  return best ? best.problem : null;
+}
+
+function rollArea(round) {
+  var master = round >= 7;
+  var patterns = [];
+  var sprs = [2, 3, 4];
+  var s, rc, er, gap;
+  for (s = 0; s < sprs.length; s++) {
+    var spr = sprs[s];
+    var rcMax = master ? 7 : 5;
+    for (rc = 2; rc <= rcMax; rc++) {
+      for (er = 0; er <= (master ? 2 : 1); er++) {
+        for (gap = 1; gap <= (master ? 2 : 1); gap++) {
+          var w = spr + gap;
+          var h = rc + er;
+          var total = w * h;
+          if (w > 8 || h > 8) continue;
+          if (!master && (total < 12 || total > 24)) continue;
+          if (master && (total < 16 || total > 36)) continue;
+          patterns.push({ spr: spr, rectCount: rc, extraRows: er, gap: gap, total: total });
+        }
+      }
+    }
+  }
+  if (!patterns.length) return null;
+  var pat = pick(patterns);
+  var side = niceSide(pat.total, round, 2 * ((pat.spr + pat.gap) + (pat.rectCount + pat.extraRows)));
+  if (!side) return null;
+  return assembleStrip(pat.spr, pat.rectCount, pat.extraRows, pat.gap, side);
+}
+
+function rollStepped(round) {
+  var preferU = round >= 6 ? 0.62 : 0.34;
+  var sideTry, shape = null, guard = 0;
+  while (guard++ < 24 && !shape) {
+    if (Math.random() < preferU) {
+      var W = randInt(6, 8);
+      var H = randInt(5, 7);
+      var mouthW = randInt(2, W - 4);
+      var mouthD = randInt(2, H - 2);
+      shape = buildU(W, H, mouthW, mouthD, randInt(0, 3));
+    } else if (Math.random() < 0.55) {
+      var LW = randInt(5, 8);
+      var LH = randInt(4, 7);
+      var cutW = randInt(2, LW - 2);
+      var cutH = randInt(2, LH - 2);
+      shape = buildL(LW, LH, cutW, cutH, randInt(0, 3));
+    } else {
+      var widths = [randInt(6, 8)];
+      var heights = [randInt(1, 2)];
+      var t;
+      for (t = 0; t < 2; t++) {
+        var next = widths[widths.length - 1] - randInt(1, 2);
+        if (next < 2) next = 2;
+        if (next >= widths[widths.length - 1]) next = widths[widths.length - 1] - 1;
+        if (next < 2) break;
+        widths.push(next);
+        heights.push(randInt(1, 2));
+      }
+      if (widths.length < 3 || widths[0] === widths[widths.length - 1]) shape = null;
+      else shape = buildStairs(widths, heights, Math.random() < 0.5 ? 'left' : 'right');
+    }
+  }
+  if (!shape) return null;
+  if (shape.totalSquares >= shape.cols * shape.rows) return null;
+  if (shape.totalSquares < 12 || shape.totalSquares > 40) return null;
+  sideTry = niceSide(shape.totalSquares, round, shape.outerEdges);
+  if (!sideTry) return null;
+  var spec = shape.shapeName + '. Slice every block into equal 1u × 1u squares. Total area = ' + fmt(shape.totalSquares * sideTry * sideTry) + ' cm². Find the outer perimeter, including inner step corners.';
+  return attachAreaQuestion(
+    shape,
+    sideTry,
+    'step:' + shape.shapeName + ':' + shape.cols + 'x' + shape.rows + ':' + shape.totalSquares + ':' + sideTry + ':' + shape.outerEdges,
+    spec,
+    'Area = ' + fmt(shape.totalSquares * sideTry * sideTry) + ' cm²',
+    'STEPPED FLOORPLAN'
+  );
+}
+
+function rollReverse(round) {
+  var shape = null;
+  var guard = 0;
+  var useU = Math.random() < 0.28;
+  while (guard++ < 20 && !shape) {
+    if (useU) {
+      shape = buildU(randInt(6, 8), randInt(5, 7), randInt(2, 3), randInt(2, 3), randInt(0, 3));
+      if (shape && (shape.outerEdges < 16 || shape.outerEdges > 32)) shape = null;
+    } else {
+      var pairs = [[5, 4], [4, 4], [6, 4], [6, 3], [5, 5], [7, 4], [6, 5], [7, 3], [8, 4]];
+      if (round >= 10) pairs.push([6, 6], [8, 5], [7, 5]);
+      var pair = pick(pairs);
+      shape = solidRect(pair[0], pair[1]);
+      if (shape && (shape.outerEdges < 14 || shape.outerEdges > 30)) shape = null;
+    }
+  }
+  if (!shape) return null;
+  var side = niceSide(shape.totalSquares, round, shape.outerEdges);
+  if (!side) return null;
+  if (shape.outerEdges * side < 48) return null;
+  return attachReverse(shape, side, 'rev:' + shape.cols + 'x' + shape.rows + ':' + shape.totalSquares + ':' + shape.outerEdges + ':' + side + ':' + (useU ? 'u' : 'r'));
+}
+
+function rollForRound(round) {
+  var kind = kindForRound(round);
+  if (kind === 'ratio') return rollRatio(round);
+  if (kind === 'area') return rollArea(round);
+  if (kind === 'stepped') return rollStepped(round);
+  return rollReverse(round);
+}
+
+function verifyProblem(p) {
+  if (!p || !p.steps || p.steps.length !== 3) return 'steps';
+  if (!p.cells || !p.cells.length) return 'cells';
+  if (!isConnected(p.cells)) return 'disconnected';
+  var seen = Object.create(null);
+  var i, s;
+  for (i = 0; i < p.cells.length; i++) {
+    var k = keyOf(p.cells[i].c, p.cells[i].r);
+    if (seen[k]) return 'duplicate cell';
+    seen[k] = 1;
+    if (p.cells[i].c < 0 || p.cells[i].r < 0) return 'negative';
+  }
+  if (p.cols !== boundsOf(p.cells).cols || p.rows !== boundsOf(p.cells).rows) return 'bounds';
+  if (countOuter(p.cells) !== p.outerEdges) return 'outer ' + countOuter(p.cells) + '!=' + p.outerEdges;
+  if (!p.edges || p.edges.length !== p.outerEdges) return 'trace ' + (p.edges ? p.edges.length : 0);
+  var retrace = tracePerimeter(p.cells);
+  if (retrace.length !== p.outerEdges) return 'retrace ' + retrace.length;
+  if (!sealPieces(p.pieces)) return 'pieces';
+  if (p.kind === 'ratio') {
+    if (p.widthUnits * p.unitCm !== p.ab) return 'ab';
+    if (p.heightUnits * p.unitCm !== p.bc) return 'bc';
+    if (p.heightUnits !== p.k) return 'k';
+    if (p.outerEdges !== 2 * (p.widthUnits + p.heightUnits)) return 'ratio peri';
+    if (p.steps[0].correct !== p.widthUnits) return 's1';
+    if (p.steps[1].correct !== p.unitCm) return 's2';
+    var expect = p.targetKind === 'perimeter' ? p.outerEdges * p.unitCm : p.bc;
+    if (p.steps[2].correct !== expect) return 's3';
+  } else if (p.kind === 'area') {
+    if (p.totalSquares !== p.rectCount * p.spr + p.extra) return 'count';
+    if (p.totalArea !== p.totalSquares * p.unitCm * p.unitCm) return 'area';
+    if (p.outerEdges !== 2 * (p.cols + p.rows)) return 'area peri';
+    if (p.steps[0].correct !== p.totalSquares) return 's1';
+    if (p.steps[1].correct !== p.unitCm) return 's2';
+    if (p.steps[2].correct !== p.outerEdges * p.unitCm) return 's3';
+  } else if (p.kind === 'stepped') {
+    if (p.totalSquares >= p.cols * p.rows) return 'no notch';
+    if (p.totalArea !== p.totalSquares * p.unitCm * p.unitCm) return 'area';
+    if (p.steps[0].correct !== p.totalSquares) return 's1';
+    if (p.steps[1].correct !== p.unitCm) return 's2';
+    if (p.steps[2].correct !== p.outerEdges * p.unitCm) return 's3';
+  } else if (p.kind === 'reverse') {
+    if (p.periCm !== p.outerEdges * p.unitCm) return 'peri';
+    if (p.steps[0].correct !== p.outerEdges) return 's1';
+    if (p.steps[1].correct !== p.unitCm) return 's2';
+    if (p.steps[2].correct !== p.totalSquares * p.unitCm * p.unitCm) return 's3';
+    if (p.totalArea !== p.steps[2].correct) return 'area';
+  } else return 'kind';
+  for (s = 0; s < 3; s++) {
+    var cards = p.steps[s].cards;
+    if (!cards || cards.length !== 4) return 'cards ' + s;
+    var ok = 0;
+    var used = Object.create(null);
+    for (i = 0; i < cards.length; i++) {
+      if (used[cards[i].value]) return 'dup ' + s;
+      used[cards[i].value] = 1;
+      if (cards[i].value <= 0 || cards[i].value !== Math.round(cards[i].value)) return 'bad value';
+      if (cards[i].correct) {
+        ok++;
+        if (cards[i].value !== p.steps[s].correct) return 'mismatch';
+      }
+    }
+    if (ok !== 1) return 'correct flags';
+  }
+  return '';
+}
+
+function seenFloor(sig) {
+  var i;
+  for (i = 0; i < floorHistory.length; i++) if (floorHistory[i] === sig) return true;
+  return false;
+}
+
+function pushFloor(sig) {
+  floorHistory.push(sig);
+  if (floorHistory.length > 6) floorHistory.shift();
+}
+
+function generate(round) {
+  var last = 'empty';
+  var i;
+  for (i = 0; i < 70; i++) {
+    var p = rollForRound(round);
+    if (!p) { last = 'null'; continue; }
+    var err = verifyProblem(p);
+    if (err) { last = err; continue; }
+    if (i < 56 && seenFloor(p.sig)) continue;
+    pushFloor(p.sig);
+    return p;
+  }
+  for (i = 0; i < 40; i++) {
+    var p2 = rollForRound(round);
+    if (!p2) continue;
+    var err2 = verifyProblem(p2);
+    if (!err2) {
+      pushFloor(p2.sig);
+      return p2;
+    }
+    last = err2;
+  }
+  throw new Error('Could not mint a verified blueprint (' + last + ')');
+}
+
+function runAudit(n) {
+  var fails = [];
+  var rounds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15];
+  var i, r;
+  for (i = 0; i < n; i++) {
+    for (r = 0; r < rounds.length; r++) {
+      var p = null;
+      try { p = rollForRound(rounds[r]); }
+      catch (e) { fails.push('throw r' + rounds[r] + ' ' + e.message); continue; }
+      if (!p) { fails.push('null r' + rounds[r]); continue; }
+      var err = verifyProblem(p);
+      if (err) fails.push('r' + rounds[r] + ' ' + p.kind + ' ' + err + ' ' + p.sig); 
+    }
+  }
+  var classic = assembleRatio({ left: 1, right: 1, k: 3 }, 30, 'height');
+  var cErr = classic ? verifyProblem(classic) : 'missing';
+  if (cErr || !classic || classic.steps[0].correct !== 5 || classic.steps[1].correct !== 6 || classic.steps[2].correct !== 18) {
+    fails.push('classic ratio ' + cErr + ' ' + (classic ? classic.steps[2].correct : ''));
+  }
+  var area = assembleStrip(4, 3, 1, 1, 5);
+  var aErr = area ? verifyProblem(area) : 'missing';
+  if (aErr || !area || area.totalSquares !== 20 || area.totalArea !== 500 || area.steps[1].correct !== 5 || area.steps[2].correct !== 90 || area.outerEdges !== 18) {
+    fails.push('classic area ' + aErr);
+  }
+  var area2 = assembleStrip(3, 4, 0, 1, 6);
+  if (!area2 || area2.totalSquares !== 16 || area2.totalArea !== 576 || area2.unitCm !== 6) fails.push('576 area');
+  var revShape = solidRect(5, 4);
+  var rev = revShape ? attachReverse(revShape, 6, 'classic-rev') : null;
+  var rErr = rev ? verifyProblem(rev) : 'missing';
+  if (rErr || !rev || rev.outerEdges !== 18 || rev.periCm !== 108 || rev.steps[1].correct !== 6 || rev.steps[2].correct !== 720) {
+    fails.push('classic reverse ' + rErr);
+  }
+  return fails;
+}
+
+function auditHistory() {
+  var saved = floorHistory.slice();
+  floorHistory = [];
+  var sigs = [];
+  var i, j, fail = '';
+  try {
+    for (i = 0; i < 8; i++) {
+      var p = generate(1 + (i % 6));
+      sigs.push(p.sig);
+    }
+    for (i = 0; i < sigs.length; i++) {
+      for (j = Math.max(0, i - 6); j < i; j++) {
+        if (sigs[i] === sigs[j]) fail = 'repeat ' + sigs[i];
+      }
+    }
+  } catch (e) {
+    fail = e.message;
+  }
+  floorHistory = saved;
+  return fail;
+}
+
+function tone(time, freq, dur, type, gain) {
+  if (!audio.ac) return;
+  var osc = audio.ac.createOscillator();
+  var g = audio.ac.createGain();
+  osc.type = type || 'square';
+  osc.frequency.setValueAtTime(freq, time);
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain || 0.04), time + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  osc.connect(g);
+  g.connect(audio.sfx);
+  osc.start(time);
+  osc.stop(time + dur + 0.02);
+}
+
+function makeNoise(ac) {
+  var len = ac.sampleRate * 2;
+  var buffer = ac.createBuffer(1, len, ac.sampleRate);
+  var data = buffer.getChannelData(0);
+  var i;
+  for (i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
+function noiseBurst(time, dur, gain, type, freq) {
+  if (!audio.ac || !audio.noise) return;
+  var src = audio.ac.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ac.createBiquadFilter();
+  filter.type = type || 'highpass';
+  filter.frequency.value = freq || 1800;
+  var g = audio.ac.createGain();
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain || 0.04), time + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(time);
+  src.stop(time + dur + 0.03);
+}
+
+function scheduleMusic(step, time) {
+  if (!audio.ac) return;
+  var lead = audio.ac.createOscillator();
+  var lg = audio.ac.createGain();
+  lead.type = 'square';
+  lead.frequency.setValueAtTime(midi(MELODY[step % MELODY.length]), time);
+  lg.gain.setValueAtTime(0.0001, time);
+  lg.gain.exponentialRampToValueAtTime(0.035, time + 0.02);
+  lg.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
+  lead.connect(lg);
+  lg.connect(audio.music);
+  lead.start(time);
+  lead.stop(time + 0.2);
+  if (step % 2 === 0) {
+    var arp = audio.ac.createOscillator();
+    var ag = audio.ac.createGain();
+    arp.type = 'triangle';
+    arp.frequency.setValueAtTime(midi(MELODY[step % MELODY.length] + 12), time + 0.09);
+    ag.gain.setValueAtTime(0.0001, time + 0.09);
+    ag.gain.exponentialRampToValueAtTime(0.02, time + 0.11);
+    ag.gain.exponentialRampToValueAtTime(0.0001, time + 0.24);
+    arp.connect(ag);
+    ag.connect(audio.music);
+    arp.start(time + 0.09);
+    arp.stop(time + 0.26);
+  }
+  if (step % 2 === 0) {
+    var bass = audio.ac.createOscillator();
+    var bg = audio.ac.createGain();
+    bass.type = 'triangle';
+    bass.frequency.setValueAtTime(midi(BASS[(step / 2) % BASS.length]), time);
+    bg.gain.setValueAtTime(0.0001, time);
+    bg.gain.exponentialRampToValueAtTime(0.07, time + 0.02);
+    bg.gain.exponentialRampToValueAtTime(0.0001, time + 0.28);
+    bass.connect(bg);
+    bg.connect(audio.music);
+    bass.start(time);
+    bass.stop(time + 0.3);
+  }
+  noiseBurst(time, 0.03, step % 4 === 0 ? 0.02 : 0.008, 'highpass', 4200);
+}
+
+audio.ensure = function () {
+  if (audio.ac) {
+    if (audio.ac.state === 'suspended') audio.ac.resume();
+    return;
+  }
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  var ac = new AC();
+  audio.ac = ac;
+  audio.master = ac.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.8;
+  audio.master.connect(ac.destination);
+  audio.music = ac.createGain();
+  audio.music.gain.value = 0.85;
+  audio.sfx = ac.createGain();
+  audio.sfx.gain.value = 1;
+  var filter = ac.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 2600;
+  audio.music.connect(filter);
+  filter.connect(audio.master);
+  audio.sfx.connect(audio.master);
+  audio.noise = makeNoise(ac);
+  audio.next = ac.currentTime + 0.05;
+  audio.step = 0;
+  var tick = function () {
+    if (!audio.ac) return;
+    if (audio.next < ac.currentTime) audio.next = ac.currentTime + 0.05;
+    while (audio.next < ac.currentTime + 0.3) {
+      scheduleMusic(audio.step, audio.next);
+      audio.step = (audio.step + 1) % MELODY.length;
+      audio.next += 0.3;
+    }
+    audio.timer = setTimeout(tick, 70);
+  };
+  tick();
+  if (ac.state === 'suspended') ac.resume();
+};
+
+audio.blip = function () {
+  if (!audio.ac) return;
+  tone(audio.ac.currentTime, 880, 0.04, 'square', 0.03);
+};
+
+audio.snap = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  noiseBurst(t, 0.06, 0.12, 'highpass', 1400);
+  tone(t, 740, 0.07, 'square', 0.04);
+  tone(t + 0.06, 1180, 0.08, 'square', 0.035);
+};
+
+audio.caliper = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  tone(t, 660, 0.09, 'sine', 0.06);
+  tone(t + 0.08, 880, 0.12, 'sine', 0.055);
+  tone(t + 0.08, 1320, 0.1, 'triangle', 0.03);
+};
+
+audio.arc = function (dur) {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  var src = audio.ac.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ac.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.Q.value = 6;
+  filter.frequency.setValueAtTime(480, t);
+  filter.frequency.exponentialRampToValueAtTime(3200, t + Math.max(0.2, dur * 0.55));
+  filter.frequency.exponentialRampToValueAtTime(900, t + dur);
+  var g = audio.ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.16, t + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+  tone(t, 1640, Math.min(0.45, dur), 'sawtooth', 0.018);
+};
+
+audio.triumph = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  tone(t, 523.25, 0.22, 'triangle', 0.06);
+  tone(t, 659.25, 0.22, 'triangle', 0.05);
+  tone(t, 783.99, 0.28, 'triangle', 0.05);
+  tone(t + 0.12, 1046.5, 0.34, 'sine', 0.04);
+  noiseBurst(t, 0.05, 0.05, 'highpass', 3000);
+};
+
+audio.buzz = function () {
+  if (!audio.ac) return;
+  var t = audio.ac.currentTime;
+  tone(t, 92, 0.22, 'square', 0.045);
+  tone(t, 70, 0.24, 'sawtooth', 0.03);
+  noiseBurst(t, 0.12, 0.08, 'lowpass', 420);
+};
+
+function setMuteLabel() {
+  if (!muteBtn) return;
+  muteBtn.textContent = audio.muted ? 'Sound off' : 'Sound on';
+  muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+}
+
+function toggleMute() {
+  audio.ensure();
+  audio.muted = !audio.muted;
+  if (audio.ac && audio.master) {
+    var t = audio.ac.currentTime;
+    audio.master.gain.cancelScheduledValues(t);
+    audio.master.gain.setTargetAtTime(audio.muted ? 0 : 0.8, t, 0.03);
+  }
+  setMuteLabel();
+  saveStore();
+}
+
+function rumble(index, ms, mag) {
+  var pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (err) { pads = []; }
+  var gp = pads && pads[index];
+  if (!gp) return;
+  var actuator = gp.vibrationActuator || (gp.hapticActuators && gp.hapticActuators[0]);
+  if (!actuator) return;
+  try {
+    if (actuator.playEffect) actuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: mag, weakMagnitude: mag * 0.55 });
+    else if (actuator.pulse) actuator.pulse(mag, ms);
+  } catch (err) { /* some pads refuse haptics */ }
+}
+
+function readPad(index) {
+  var list = [];
+  try { list = navigator.getGamepads ? navigator.getGamepads() : []; } catch (err) { return null; }
+  var gp = list && list[index];
+  if (!gp || !gp.connected) return null;
+  var ax = gp.axes || [];
+  var x = ax.length ? ax[0] || 0 : 0;
+  var y = ax.length > 1 ? ax[1] || 0 : 0;
+  if (Math.abs(x) < 0.28) x = 0;
+  if (Math.abs(y) < 0.28) y = 0;
+  function btn(i) {
+    var b = gp.buttons && gp.buttons[i];
+    return !!(b && (b.pressed || b.value > 0.5));
+  }
+  var dpx = 0, dpy = 0;
+  if (btn(14)) dpx = -1;
+  if (btn(15)) dpx = 1;
+  if (btn(12)) dpy = -1;
+  if (btn(13)) dpy = 1;
+  return { x: x, y: y, a: btn(0) || btn(1), start: btn(9), dpx: dpx, dpy: dpy };
+}
+
+function burst(x, y, color, n) {
+  var i;
+  for (i = 0; i < n; i++) {
+    var a = Math.random() * Math.PI * 2;
+    var sp = 40 + Math.random() * 180;
+    G.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.4,
+      max: 0.75,
+      color: color,
+      r: 1.5 + Math.random() * 2.4
+    });
+  }
+  if (G.particles.length > 180) G.particles.splice(0, G.particles.length - 180);
+}
+
+function floater(x, y, text, color) {
+  G.floaters.push({ x: x, y: y, text: text, color: color || '#e8fbff', life: 1.15, max: 1.15 });
+}
+
+function layoutUI() {
+  var w = view.w, h = view.h;
+  var s = clamp(Math.min(w / 1180, h / 760), 0.72, 1.08);
+  var narrow = w < 860;
+  var stack = w < 620;
+  var compact = h < 620;
+  var gutter = compact ? 36 : 44;
+  var gap = compact ? 4 : Math.round(8 * s);
+  var pad = compact ? 6 : Math.round(8 * s);
+  var hudH = compact ? 42 : (narrow ? 68 : Math.round(56 * s));
+  var specH = compact ? 50 : (narrow ? 84 : Math.round(70 * s));
+  var hintH = compact ? 56 : (narrow ? 66 : Math.round(64 * s));
+  var cardH = compact ? 50 : (stack ? 58 : Math.round(82 * s));
+  var cardGap = compact ? 6 : Math.round(10 * s);
+  var footer = compact ? 14 : 18;
+  var rows = stack ? 2 : 1;
+  var consoleH = (compact ? 8 : 12) + rows * cardH + (rows - 1) * cardGap + (stack ? cardGap + cardH : 0) + footer + 6;
+  var chrome = pad + hudH + specH + hintH + consoleH + gutter + gap * 4;
+  var stageH = h - chrome;
+  if (stageH < 100) {
+    var over = 100 - stageH;
+    var take = Math.min(over, Math.max(0, consoleH - (stack ? 132 : 64)));
+    consoleH -= take;
+    over -= take;
+    take = Math.min(over, Math.max(0, specH - 40));
+    specH -= take;
+    over -= take;
+    take = Math.min(over, Math.max(0, hintH - 32));
+    hintH -= take;
+    over -= take;
+    cardH = Math.max(40, cardH - Math.ceil(over / rows));
+    consoleH = (compact ? 8 : 12) + rows * cardH + (rows - 1) * cardGap + (stack ? cardGap + cardH : 0) + footer + 6;
+    stageH = h - (pad + hudH + specH + hintH + consoleH + gutter + gap * 4);
+    if (stageH < 72) stageH = 72;
+  }
+  var y = pad;
+  var hud = { x: pad + 4, y: y, w: w - (pad + 4) * 2, h: hudH };
+  y += hudH + gap;
+  var spec = { x: hud.x, y: y, w: hud.w, h: specH };
+  y += specH + gap;
+  var stage = { x: hud.x, y: y, w: hud.w, h: stageH };
+  y += stageH + gap;
+  var hint = { x: hud.x, y: y, w: hud.w, h: hintH };
+  y += hintH + gap;
+  var consoleY = y;
+  var cards = [];
+  var innerX = hud.x + 8;
+  var innerW = hud.w - 16;
+  var lockW = stack ? innerW : Math.round(Math.min(220, Math.max(150, 190 * s)));
+  var cardW = stack ? Math.floor((innerW - cardGap) / 2) : Math.floor((innerW - lockW - cardGap * 4) / 4);
+  if (!stack && cardW < 96) {
+    stack = true;
+    rows = 2;
+    cardW = Math.floor((innerW - cardGap) / 2);
+    lockW = innerW;
+    consoleH = 8 + rows * cardH + cardGap + cardH + footer + 6;
+  }
+  var groupW = stack ? innerW : (cardW * 4 + cardGap * 3 + cardGap + lockW);
+  var startX = innerX + Math.max(0, Math.round((innerW - groupW) / 2));
+  var cardY = consoleY + (compact ? 6 : 10);
+  var ci;
+  for (ci = 0; ci < 4; ci++) {
+    var col = stack ? (ci % 2) : ci;
+    var row = stack ? Math.floor(ci / 2) : 0;
+    cards.push({
+      x: startX + col * (cardW + cardGap),
+      y: cardY + row * (cardH + cardGap),
+      w: cardW,
+      h: cardH,
+      index: ci
+    });
+  }
+  var lock = stack
+    ? { x: startX, y: cardY + 2 * (cardH + cardGap), w: innerW, h: cardH, index: 4 }
+    : { x: startX + 4 * (cardW + cardGap), y: cardY, w: lockW, h: cardH, index: 4 };
+  var modes = [];
+  var footerH = 70;
+  var headerH = narrow ? 128 : 168;
+  var mw = Math.min(340, Math.round(w * 0.28));
+  var mh = Math.round(108 * s);
+  var mg = Math.round(16 * s);
+  var my = headerH;
+  var totalM = mw * 3 + mg * 2;
+  var mx0 = Math.round((w - totalM) / 2);
+  if (w < 860) {
+    mw = Math.min(440, w - 40);
+    var slot = Math.floor((h - headerH - footerH - 20) / 3);
+    mh = Math.max(58, Math.min(84, slot - 8));
+    my = headerH;
+    mx0 = Math.round((w - mw) / 2);
+    for (ci = 0; ci < 3; ci++) modes.push({ x: mx0, y: my + ci * (mh + 8), w: mw, h: mh, index: ci });
+  } else {
+    var rowTop = Math.max(headerH + 36, Math.round(h * 0.46));
+    if (rowTop + mh > h - footerH) rowTop = h - footerH - mh;
+    for (ci = 0; ci < 3; ci++) modes.push({ x: mx0 + ci * (mw + mg), y: rowTop, w: mw, h: mh, index: ci });
+  }
+  var overBtns = [];
+  var bw = Math.round(180 * s), bh = Math.round(52 * s);
+  overBtns.push({ id: 'retry', x: w / 2 - bw - 10, y: h * 0.62, w: bw, h: bh });
+  overBtns.push({ id: 'title', x: w / 2 + 10, y: h * 0.62, w: bw, h: bh });
+  UI = {
+    s: s,
+    narrow: narrow,
+    compact: compact,
+    stack: stack,
+    hud: hud,
+    spec: spec,
+    stage: stage,
+    hint: hint,
+    console: { x: hud.x, y: consoleY, w: hud.w, h: consoleH },
+    cards: cards,
+    lock: lock,
+    modes: modes,
+    overBtns: overBtns
+  };
+}
+
+function targets() {
+  var list = UI.cards.slice();
+  list.push(UI.lock);
+  return list;
+}
+
+function hitRect(rect, x, y) {
+  return x >= rect.x && y >= rect.y && x <= rect.x + rect.w && y <= rect.y + rect.h;
+}
+
+function hoverAt(x, y) {
+  if (!UI) return null;
+  var i;
+  for (i = 0; i < UI.cards.length; i++) {
+    if (hitRect(UI.cards[i], x, y)) return { kind: 'card', index: i };
+  }
+  if (hitRect(UI.lock, x, y)) return { kind: 'lock', index: 4 };
+  return null;
+}
+
+function stepOwner() {
+  if (G.play !== 'coop') return -1;
+  if (G.step >= 2) return -1;
+  var p1First = G.round % 2 === 1;
+  if (G.step === 0) return p1First ? 0 : 1;
+  return p1First ? 1 : 0;
+}
+
+function actorOk(pid) {
+  if (G.play === 'solo') return pid === 0;
+  if (G.play === 'versus') return G.pShields[pid] > 0;
+  var owner = stepOwner();
+  if (owner < 0) return true;
+  return owner === pid;
+}
+
+function handoffNote() {
+  var owner = stepOwner();
+  if (owner === 0) return 'P1 has the calipers this step. P2, stand by for the next station.';
+  if (owner === 1) return 'P2 has the calipers this step. P1, stand by for the next station.';
+  return 'Both engineers lock this target together.';
+}
+
+function moveFocus(pid, dx, dy) {
+  if (!UI) return;
+  var list = targets();
+  var cur = players[pid].focus;
+  if (cur < 0 || cur >= list.length) cur = 0;
+  var cx = list[cur].x + list[cur].w / 2;
+  var cy = list[cur].y + list[cur].h / 2;
+  var best = -1;
+  var bestScore = 1e9;
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (i === cur) continue;
+    var tx = list[i].x + list[i].w / 2;
+    var ty = list[i].y + list[i].h / 2;
+    var ox = tx - cx;
+    var oy = ty - cy;
+    if (dx && ox * dx <= 12) continue;
+    if (dy && oy * dy <= 12) continue;
+    if (dx && Math.abs(oy) > Math.abs(ox)) continue;
+    if (dy && Math.abs(ox) > Math.abs(oy)) continue;
+    var dist = Math.abs(dx ? ox : oy);
+    if (dist < bestScore) { bestScore = dist; best = i; }
+  }
+  if (best >= 0) {
+    players[pid].focus = best;
+    players[pid].x = list[best].x + list[best].w / 2;
+    players[pid].y = list[best].y + list[best].h / 2;
+  }
+}
+
+function digitalDir(pid) {
+  var left = false, right = false, up = false, down = false;
+  if (G.play === 'solo' || pid === 0) {
+    left = !!(keys.KeyA || (keys.ArrowLeft && G.play === 'solo'));
+    right = !!(keys.KeyD || (keys.ArrowRight && G.play === 'solo'));
+    up = !!(keys.KeyW || (keys.ArrowUp && G.play === 'solo'));
+    down = !!(keys.KeyS || (keys.ArrowDown && G.play === 'solo'));
+  }
+  if (G.play !== 'solo' && pid === 1) {
+    left = !!keys.ArrowLeft;
+    right = !!keys.ArrowRight;
+    up = !!keys.ArrowUp;
+    down = !!keys.ArrowDown;
+  }
+  var pad = readPad(pid);
+  if (pad) {
+    if (pad.dpx < 0) left = true;
+    if (pad.dpx > 0) right = true;
+    if (pad.dpy < 0) up = true;
+    if (pad.dpy > 0) down = true;
+  }
+  var dx = (right ? 1 : 0) - (left ? 1 : 0);
+  var dy = (down ? 1 : 0) - (up ? 1 : 0);
+  return { x: dx, y: dy, pad: pad };
+}
+
+function stickOf(pid) {
+  var pad = readPad(pid);
+  if (!pad) return { x: 0, y: 0 };
+  if (pad.dpx || pad.dpy) return { x: 0, y: 0 };
+  return { x: pad.x, y: pad.y };
+}
+
+function fireEdge(pid) {
+  var fired = false;
+  if (G.play === 'solo' || pid === 0) {
+    if (just.Space || just.KeyF || (G.play === 'solo' && just.Enter)) fired = true;
+  }
+  if (G.play !== 'solo' && pid === 1 && just.Enter) fired = true;
+  var pad = readPad(pid);
+  if (pad && pad.a && !padPrev[pid].a) fired = true;
+  return fired;
+}
+
+function parkReticles() {
+  layoutUI();
+  if (!UI || !UI.cards.length) return;
+  players[0].focus = 0;
+  players[0].x = UI.cards[0].x + UI.cards[0].w / 2;
+  players[0].y = UI.cards[0].y + UI.cards[0].h / 2;
+  players[1].focus = 3;
+  players[1].x = UI.cards[3].x + UI.cards[3].w / 2;
+  players[1].y = UI.cards[3].y + UI.cards[3].h / 2;
+  players[0].card = -1;
+  players[1].card = -1;
+}
+
+function noteBest() {
+  var changed = false;
+  if (G.play === 'solo' && G.score > G.bestSolo) { G.bestSolo = G.score; changed = true; }
+  if (G.play === 'coop' && G.score > G.bestTeam) { G.bestTeam = G.score; changed = true; }
+  if (changed) saveStore();
+}
+
+function goTitle() {
+  G.mode = 'title';
+  G.paused = false;
+  G.phase = 'answer';
+  G.hint = '';
+  G.particles = [];
+  G.floaters = [];
+  noteBest();
+}
+
+function startGame(mode) {
+  audio.ensure();
+  G.mode = 'play';
+  G.play = mode;
+  G.paused = false;
+  G.round = 1;
+  G.step = 0;
+  G.phase = 'answer';
+  G.score = 0;
+  G.combo = 0;
+  G.shields = mode === 'coop' ? 4 : 3;
+  G.pShields = [3, 3];
+  G.pScore = [0, 0];
+  G.pStars = [0, 0];
+  G.hint = '';
+  G.note = '';
+  G.noteT = 0;
+  G.stepTime = 0;
+  G.lockout = 0;
+  G.shake = 0;
+  G.glitch = 0;
+  G.slice = 0;
+  G.traceT = 0;
+  G.gain = 0;
+  G.bannerT = 0;
+  G.fatal = '';
+  G.particles = [];
+  G.floaters = [];
+  try {
+    G.problem = generate(1);
+  } catch (err) {
+    G.fatal = err.message;
+    G.problem = null;
+  }
+  if (G.problem && G.problem.revealGrid) G.slice = 1;
+  parkReticles();
+  if (G.problem) announce(G.problem.spec + ' ' + G.problem.steps[0].ask);
+}
+
+function nextRound() {
+  G.round += 1;
+  G.step = 0;
+  G.phase = 'answer';
+  G.stepTime = 0;
+  G.hint = '';
+  G.note = '';
+  G.slice = 0;
+  G.traceT = 0;
+  G.bannerT = 0;
+  players[0].card = -1;
+  players[1].card = -1;
+  try {
+    G.problem = generate(G.round);
+  } catch (err) {
+    G.fatal = err.message;
+    G.mode = 'over';
+    return;
+  }
+  if (G.problem.revealGrid) G.slice = 1;
+  announce('Round ' + G.round + '. ' + G.problem.spec);
+}
+
+function award(pid, base) {
+  var gain = base;
+  if (G.play === 'versus') {
+    var bonus = Math.max(0, Math.round(170 - G.stepTime * 24));
+    gain = base + bonus;
+    G.pScore[pid] += gain;
+    if (G.step === 2) G.pStars[pid] += 1;
+  } else {
+    G.combo += 1;
+    gain = base + (G.combo - 1) * 30;
+    G.score += gain;
+    noteBest();
+  }
+  G.gain = gain;
+  return gain;
+}
+
+function resolveChoice(pid, choice) {
+  if (!choice) return;
+  if (!choice.correct) {
+    G.combo = 0;
+    if (G.play === 'versus') {
+      G.pShields[pid] = Math.max(0, G.pShields[pid] - 1);
+      rumble(pid, 160, 0.75);
+    } else {
+      G.shields = Math.max(0, G.shields - 1);
+      rumble(0, 160, 0.7);
+      if (G.play === 'coop') rumble(1, 120, 0.45);
+    }
+    G.hint = messageFor(G.problem, G.step, choice.trap);
+    G.shake = 12;
+    G.glitch = 0.45;
+    G.lockout = 0.42;
+    players[pid].card = -1;
+    if (G.play === 'coop') players[1 - pid].card = -1;
+    shuffle(G.problem.steps[G.step].cards);
+    audio.buzz();
+    var stage = UI ? UI.stage : { x: 200, y: 200, w: 400, h: 200 };
+    burst(stage.x + stage.w * 0.5, stage.y + stage.h * 0.45, '#ff4d6a', 28);
+    announce(G.hint);
+    var dead = G.play === 'versus' ? (G.pShields[0] <= 0 || G.pShields[1] <= 0) : G.shields <= 0;
+    if (dead) {
+      G.phase = 'down';
+      G.downT = 1.7;
+    }
+    return;
+  }
+  var base = [120, 160, 350][G.step];
+  var gain = award(pid, base);
+  var px = players[pid].x, py = players[pid].y;
+  floater(px, py - 20, '+' + gain, '#b8ffe0');
+  burst(px, py, '#3ef0ff', 16);
+  players[0].card = -1;
+  players[1].card = -1;
+  if (G.step === 0) {
+    audio.snap();
+    G.step = 1;
+    G.stepTime = 0;
+    G.slice = G.problem.revealGrid ? 1 : 0.01;
+    G.hint = '';
+    shuffle(G.problem.steps[1].cards);
+    announce(G.problem.steps[1].ask);
+  } else if (G.step === 1) {
+    audio.caliper();
+    G.step = 2;
+    G.stepTime = 0;
+    G.hint = '';
+    shuffle(G.problem.steps[2].cards);
+    announce(G.problem.steps[2].ask);
+  } else {
+    var dur = Math.max(0.8, G.problem.edges.length / 8.5);
+    audio.arc(dur);
+    G.phase = 'trace';
+    G.traceT = 0;
+    G.hint = '';
+    announce(solutionText(G.problem));
+  }
+}
+
+function confirm(pid) {
+  if (G.mode === 'title') {
+    startGame(['solo', 'coop', 'versus'][G.menu] || 'solo');
+    return;
+  }
+  if (G.mode === 'over') {
+    startGame(G.play);
+    return;
+  }
+  if (G.mode !== 'play') return;
+  if (G.paused) { G.paused = false; return; }
+  if (G.phase === 'trace' || G.phase === 'banner') { nextRound(); return; }
+  if (G.phase !== 'answer') return;
+  if (G.lockout > 0) return;
+  if (G.play === 'coop' && !actorOk(pid)) {
+    G.note = handoffNote();
+    G.noteT = 2;
+    audio.blip();
+    return;
+  }
+  if (G.play === 'versus' && G.pShields[pid] <= 0) return;
+  var hit = hoverAt(players[pid].x, players[pid].y);
+  if (!hit) return;
+  if (hit.kind === 'card') {
+    if (G.play === 'coop' && G.step === 2) {
+      players[pid].card = hit.index;
+      audio.blip();
+      var other = players[1 - pid].card;
+      if (other === hit.index) resolveChoice(pid, G.problem.steps[2].cards[hit.index]);
+      return;
+    }
+    if (players[pid].card === hit.index) resolveChoice(pid, G.problem.steps[G.step].cards[hit.index]);
+    else {
+      players[pid].card = hit.index;
+      audio.blip();
+    }
+    return;
+  }
+  if (hit.kind === 'lock') {
+    if (G.play === 'coop' && G.step === 2) {
+      var a = players[0].card, b = players[1].card;
+      if (a < 0 || b < 0) {
+        G.note = 'Both engineers must choose the same value.';
+        G.noteT = 1.8;
+        audio.blip();
+        return;
+      }
+      if (a !== b) {
+        G.note = 'P1 and P2 chose different values. Agree, then construct.';
+        G.noteT = 1.8;
+        audio.blip();
+        return;
+      }
+      resolveChoice(pid, G.problem.steps[2].cards[a]);
+      return;
+    }
+    if (players[pid].card < 0) {
+      G.note = 'Select a value, then lock it.';
+      G.noteT = 1.3;
+      audio.blip();
+      return;
+    }
+    resolveChoice(pid, G.problem.steps[G.step].cards[players[pid].card]);
+  }
+}
+
+function updatePlay(dt) {
+  if (G.lockout > 0) G.lockout -= dt;
+  if (G.noteT > 0) G.noteT -= dt;
+  if (G.shake > 0) G.shake *= Math.pow(0.04, dt);
+  if (G.glitch > 0) G.glitch -= dt;
+  G.stepTime += dt;
+  if (G.phase === 'answer' && G.slice > 0 && G.slice < 1 && G.step >= 1) {
+    G.slice = Math.min(1, G.slice + dt * 2.4);
+  }
+  if (G.phase === 'trace' && G.problem) {
+    var prev = G.traceT;
+    G.traceT += dt * 8.6;
+    if (prev < G.problem.edges.length && G.traceT >= G.problem.edges.length) {
+      G.traceT = G.problem.edges.length;
+      G.phase = 'banner';
+      G.bannerT = 0;
+      audio.triumph();
+      if (UI) burst(UI.stage.x + UI.stage.w * 0.5, UI.stage.y + UI.stage.h * 0.5, '#ff3d8a', 36);
+    }
+  } else if (G.phase === 'banner') {
+    G.bannerT += dt;
+    if (G.bannerT > 1.45) nextRound();
+  } else if (G.phase === 'down') {
+    G.downT -= dt;
+    if (G.downT <= 0) {
+      noteBest();
+      G.mode = 'over';
+    }
+  }
+  var count = G.play === 'solo' ? 1 : 2;
+  var p;
+  for (p = 0; p < count; p++) {
+    var stick = stickOf(p);
+    if (Math.abs(stick.x) > 0 || Math.abs(stick.y) > 0) {
+      players[p].x = clamp(players[p].x + stick.x * 520 * dt, 8, view.w - 8);
+      players[p].y = clamp(players[p].y + stick.y * 520 * dt, 8, view.h - 8);
+      var hv = hoverAt(players[p].x, players[p].y);
+      if (hv) players[p].focus = hv.index;
+    } else {
+      var dir = digitalDir(p);
+      if (dir.x || dir.y) {
+        if (players[p].rep <= 0) {
+          moveFocus(p, dir.x, dir.y);
+          players[p].rep = players[p].warm ? 0.15 : 0.36;
+          players[p].warm = true;
+        } else players[p].rep -= dt;
+      } else {
+        players[p].warm = false;
+        players[p].rep = 0;
+      }
+    }
+    if (fireEdge(p)) confirm(p);
+  }
+  if (pointer.moved && G.play !== 'versus') {
+    var mid = 0;
+    players[mid].x = pointer.x;
+    players[mid].y = pointer.y;
+    var hit = hoverAt(pointer.x, pointer.y);
+    if (hit) players[mid].focus = hit.index;
+    pointer.moved = false;
+  } else if (pointer.moved && G.play === 'versus') {
+    players[0].x = pointer.x;
+    players[0].y = pointer.y;
+    pointer.moved = false;
+  }
+}
+
+function updateTitle(dt) {
+  var moved = 0;
+  if (just.ArrowRight || just.KeyD) moved = 1;
+  if (just.ArrowLeft || just.KeyA) moved = -1;
+  var pad = readPad(0);
+  if (pad) {
+    var edgeX = 0;
+    if (pad.dpx && !padPrev[0].dpx) edgeX = pad.dpx;
+    else if (Math.abs(pad.x) > 0.6 && Math.abs(padPrev[0].x || 0) < 0.6) edgeX = pad.x > 0 ? 1 : -1;
+    if (edgeX) moved = edgeX > 0 ? 1 : -1;
+    padPrev[0].x = pad.x;
+  }
+  var nModes = UI && UI.modes ? UI.modes.length : 3;
+  if (UI && UI.narrow) {
+    if (just.ArrowDown || just.KeyS) moved = 1;
+    if (just.ArrowUp || just.KeyW) moved = -1;
+  }
+  if (moved) G.menu = (G.menu + moved + nModes) % nModes;
+  if (just.Digit1) { G.menu = 0; startGame('solo'); return; }
+  if (just.Digit2) { G.menu = 1; startGame('coop'); return; }
+  if (just.Digit3) { G.menu = 2; startGame('versus'); return; }
+  if (just.Enter || just.Space || (pad && ((pad.a && !padPrev[0].a) || (pad.start && !padPrev[0].start)))) {
+    startGame(['solo', 'coop', 'versus'][G.menu]);
+  }
+}
+
+function updateParticles(dt) {
+  var i;
+  for (i = G.particles.length - 1; i >= 0; i--) {
+    var p = G.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 20 * dt;
+    if (p.life <= 0) G.particles.splice(i, 1);
+  }
+  for (i = G.floaters.length - 1; i >= 0; i--) {
+    var f = G.floaters[i];
+    f.life -= dt;
+    f.y -= 28 * dt;
+    if (f.life <= 0) G.floaters.splice(i, 1);
+  }
+}
+
+function update(dt) {
+  G.t += dt;
+  layoutUI();
+  var startEdge = false;
+  var pi;
+  for (pi = 0; pi < 2; pi++) {
+    var pad = readPad(pi);
+    if (pad && pad.start && !padPrev[pi].start) startEdge = true;
+  }
+  if (just.Escape || startEdge) {
+    if (G.mode === 'play' && G.phase !== 'down') G.paused = !G.paused;
+    else if (G.mode === 'over') goTitle();
+  }
+  if (G.mode === 'title') updateTitle(dt);
+  else if (G.mode === 'play' && !G.paused) updatePlay(dt);
+  else if (G.mode === 'over') {
+    if (just.Enter || just.Space) startGame(G.play);
+  }
+  if (!G.paused) updateParticles(dt);
+  for (pi = 0; pi < 2; pi++) {
+    var pad2 = readPad(pi);
+    padPrev[pi].a = !!(pad2 && pad2.a);
+    padPrev[pi].start = !!(pad2 && pad2.start);
+    padPrev[pi].dpx = pad2 ? pad2.dpx : 0;
+    padPrev[pi].dpy = pad2 ? pad2.dpy : 0;
+  }
+  just = {};
+}
+
+function roundRect(x, y, w, h, r) {
+  var rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function panel(rect, fill, stroke) {
+  ctx.fillStyle = fill;
+  roundRect(rect.x, rect.y, rect.w, rect.h, 14);
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+function wrapText(text, x, y, maxW, lineH, maxLines, align) {
+  var words = String(text).split(' ');
+  var line = '';
+  var lines = [];
+  var i;
+  for (i = 0; i < words.length; i++) {
+    var test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    var last = lines[maxLines - 1];
+    while (last.length > 2 && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1);
+    lines[maxLines - 1] = last + '…';
+  }
+  for (i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], x, y + i * lineH);
+  }
+  return lines.length;
+}
+
+function drawBackdrop() {
+  var w = view.w, h = view.h;
+  var g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#07111c');
+  g.addColorStop(0.55, '#0a1c2c');
+  g.addColorStop(1, '#07141c');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.055)';
+  ctx.lineWidth = 1;
+  var gap = 36;
+  var off = (G.t * 14) % gap;
+  var x, y;
+  for (x = -gap + off; x < w; x += gap) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+    ctx.stroke();
+  }
+  for (y = -gap + (off * 0.6); y < h; y += gap) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+  var vg = ctx.createRadialGradient(w * 0.5, h * 0.45, w * 0.2, w * 0.5, h * 0.5, w * 0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+function drawShields(x, y, alive, total, color) {
+  var i;
+  for (i = 0; i < total; i++) {
+    var on = i < alive;
+    ctx.beginPath();
+    var cx = x + i * 18;
+    ctx.moveTo(cx, y - 7);
+    ctx.lineTo(cx + 6, y - 3);
+    ctx.lineTo(cx + 5, y + 5);
+    ctx.lineTo(cx, y + 9);
+    ctx.lineTo(cx - 5, y + 5);
+    ctx.lineTo(cx - 6, y - 3);
+    ctx.closePath();
+    ctx.fillStyle = on ? color : 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    ctx.strokeStyle = on ? '#e8fbff' : 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function drawStar(x, y, r, fill) {
+  ctx.beginPath();
+  var i;
+  for (i = 0; i < 5; i++) {
+    var a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+    var px = x + Math.cos(a) * r;
+    var py = y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    var b = a + Math.PI / 5;
+    ctx.lineTo(x + Math.cos(b) * r * 0.42, y + Math.sin(b) * r * 0.42);
+  }
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function modeLabel() {
+  if (G.play === 'coop') return '2P CO-OP TEAM';
+  if (G.play === 'versus') return '2P VERSUS';
+  return 'SOLO ARCHITECT';
+}
+
+function drawHUD() {
+  var hud = UI.hud;
+  panel(hud, 'rgba(6, 16, 28, 0.88)', 'rgba(62, 240, 255, 0.35)');
+  var tier = tierInfo(G.round);
+  ctx.textBaseline = 'middle';
+  if (UI.compact && G.play !== 'versus') {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(13, 800);
+    ctx.fillText(G.play === 'coop' ? 'CO-OP' : 'SOLO', hud.x + 10, hud.y + hud.h / 2);
+    ctx.fillStyle = '#8eefff';
+    ctx.font = font(12, 700);
+    ctx.fillText('R' + G.round + ' · ' + tier.name, hud.x + 64, hud.y + hud.h / 2);
+    drawShields(hud.x + Math.min(hud.w * 0.52, hud.w - 168), hud.y + hud.h / 2, G.shields, G.play === 'coop' ? 4 : 3, '#3ef0ff');
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(13, 800);
+    ctx.fillText((G.play === 'coop' ? 'TEAM ' : '') + fmt(G.score), hud.x + hud.w - 10, hud.y + hud.h / 2);
+    return;
+  }
+  if (UI.narrow && G.play !== 'versus') {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(15, 800);
+    ctx.fillText(modeLabel(), hud.x + 14, hud.y + 24);
+    ctx.fillStyle = '#8eefff';
+    ctx.font = font(13, 700);
+    ctx.fillText('R' + G.round + ' · ' + tier.name, hud.x + 14, hud.y + 50);
+    var total = G.play === 'coop' ? 4 : 3;
+    drawShields(hud.x + hud.w * 0.46, hud.y + 36, G.shields, total, '#3ef0ff');
+    ctx.textAlign = 'right';
+    if (G.combo > 1) {
+      ctx.fillStyle = '#ffc14d';
+      ctx.font = font(12, 800);
+      ctx.fillText('COMBO ' + G.combo, hud.x + hud.w - 14, hud.y + 22);
+    }
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(15, 800);
+    ctx.fillText((G.play === 'coop' ? 'TEAM ' : '') + fmt(G.score), hud.x + hud.w - 14, hud.y + 50);
+    return;
+  }
+  if (G.play === 'versus') {
+    var y1 = UI.compact ? hud.y + hud.h / 2 : (UI.narrow ? hud.y + 26 : hud.y + hud.h * 0.38);
+    var y2 = UI.compact ? y1 : (UI.narrow ? hud.y + 54 : hud.y + hud.h * 0.72);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ff4d6a';
+    ctx.font = font(13, 800);
+    ctx.fillText('P1', hud.x + 14, y1);
+    drawShields(hud.x + 42, y1, G.pShields[0], 3, '#ff4d6a');
+    drawStar(hud.x + 108, y1, 7, '#ffc14d');
+    ctx.fillStyle = '#ffe7ad';
+    ctx.font = font(14, 700);
+    ctx.fillText(String(G.pStars[0]), hud.x + 120, y1);
+    if (!UI.narrow) {
+      ctx.fillStyle = 'rgba(232,251,255,0.75)';
+      ctx.font = font(12, 700);
+      ctx.fillText(fmt(G.pScore[0]), hud.x + 142, y1);
+    }
+    ctx.textAlign = 'right';
+    if (!UI.narrow) {
+      ctx.fillStyle = 'rgba(232,251,255,0.75)';
+      ctx.font = font(12, 700);
+      ctx.fillText(fmt(G.pScore[1]), hud.x + hud.w - 156, y1);
+    }
+    ctx.fillStyle = '#ffe7ad';
+    ctx.font = font(14, 700);
+    ctx.fillText(String(G.pStars[1]), hud.x + hud.w - 128, y1);
+    drawStar(hud.x + hud.w - 112, y1, 7, '#ffc14d');
+    drawShields(hud.x + hud.w - 98, y1, G.pShields[1], 3, '#4da3ff');
+    ctx.fillStyle = '#4da3ff';
+    ctx.font = font(13, 800);
+    ctx.fillText('P2', hud.x + hud.w - 14, y1);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8eefff';
+    ctx.font = font(12, 700);
+    var centerLabel = UI.compact
+      ? ('R' + G.round + ' · ' + tier.name)
+      : ((UI.narrow ? (fmt(G.pScore[0]) + ' · ') : '') + 'ROUND ' + G.round + ' · ' + tier.name + (UI.narrow ? (' · ' + fmt(G.pScore[1])) : ''));
+    ctx.fillText(centerLabel, hud.x + hud.w / 2, y2);
+    return;
+  }
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(UI.narrow ? 13 : 16), 800);
+  ctx.fillText(UI.narrow && G.play === 'solo' ? 'SOLO' : modeLabel(), hud.x + 16, hud.y + hud.h / 2);
+  ctx.fillStyle = '#8eefff';
+  ctx.font = font(fs(13), 700);
+  var roundLabel = 'R' + G.round + ' · ' + tier.name;
+  ctx.fillText(roundLabel, hud.x + (UI.narrow ? 78 : 210), hud.y + hud.h / 2);
+  var sx = hud.x + (UI.narrow ? 230 : 460);
+  drawShields(sx, hud.y + hud.h / 2, G.shields, G.play === 'coop' ? 4 : 3, '#3ef0ff');
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffc14d';
+  ctx.font = font(fs(13), 800);
+  if (G.combo > 1) ctx.fillText('COMBO ' + G.combo, hud.x + hud.w - (UI.narrow ? 120 : 210), hud.y + hud.h / 2);
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(UI.narrow ? 13 : 16), 800);
+  var scoreName = G.play === 'coop' ? 'TEAM SCORE ' : 'SCORE ';
+  ctx.fillText(scoreName + fmt(G.score), hud.x + hud.w - 16, hud.y + hud.h / 2);
+}
+
+function drawSpec() {
+  var spec = UI.spec;
+  var p = G.problem;
+  panel(spec, 'rgba(8, 22, 36, 0.9)', 'rgba(62, 240, 255, 0.28)');
+  if (!p) return;
+  ctx.save();
+  ctx.beginPath();
+  roundRect(spec.x, spec.y, spec.w, spec.h, 14);
+  ctx.clip();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = '#7f8cff';
+  ctx.font = font(fs(11), 800);
+  ctx.fillText(p.kicker, spec.x + 16, spec.y + 8);
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(15), 700);
+  var sideChip = !UI.narrow || UI.compact;
+  var chipW = sideChip ? Math.min(240, spec.w * 0.34) : Math.max(148, spec.w * 0.42);
+  var textW = sideChip ? spec.w - chipW - 40 : spec.w - 28;
+  wrapText(p.spec, spec.x + 12, spec.y + (UI.compact ? 22 : 26), textW, UI.compact ? 14 : fs(17), UI.compact ? 1 : 2, 'left');
+  var chipX = sideChip ? spec.x + spec.w - chipW - 8 : spec.x + 12;
+  var chipY = sideChip ? spec.y + 8 : spec.y + spec.h - 26;
+  var chipH = sideChip ? spec.h - 16 : 20;
+  if (!UI.narrow) chipW = Math.min(chipW, spec.w * 0.34);
+  roundRect(chipX, chipY, UI.narrow ? textW : chipW, chipH, 10);
+  ctx.fillStyle = 'rgba(62, 240, 255, 0.1)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(UI.narrow ? 12 : 16), 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  var chipLabel = p.chip;
+  var chipDrawW = sideChip ? chipW : textW;
+  while (chipLabel.length > 4 && ctx.measureText(chipLabel).width > chipDrawW - 16) {
+    ctx.font = font(Math.max(11, fs(UI.narrow ? 11 : 14)), 800);
+    break;
+  }
+  ctx.fillText(chipLabel, chipX + chipDrawW / 2, chipY + chipH / 2);
+  ctx.restore();
+}
+
+function firstCell(p) {
+  var best = p.cells[0];
+  var i;
+  for (i = 1; i < p.cells.length; i++) {
+    var cell = p.cells[i];
+    if (cell.r < best.r || (cell.r === best.r && cell.c < best.c)) best = cell;
+  }
+  return best;
+}
+
+function figureGeom(p) {
+  var stage = UI.stage;
+  var top = p.kind === 'ratio' ? Math.min(74, Math.max(58, stage.h * 0.22)) : Math.min(40, Math.max(18, stage.h * 0.08));
+  var side = p.kind === 'ratio' ? Math.min(96, Math.max(stage.w < 700 ? 54 : 72, stage.w * 0.08)) : Math.min(40, Math.max(18, stage.w * 0.05));
+  var bot = p.kind === 'ratio' ? (stage.h < 200 ? 22 : 34) : 20;
+  var availW = stage.w - side * 2;
+  var availH = stage.h - top - bot;
+  var cell = Math.floor(Math.min(availW / p.cols, availH / p.rows));
+  if (cell < 8) cell = 8;
+  var fw = cell * p.cols;
+  var fh = cell * p.rows;
+  var ox = Math.round(stage.x + (stage.w - fw) / 2);
+  var oy = Math.round(stage.y + top + (availH - fh) / 2);
+  return { cell: cell, ox: ox, oy: oy, fw: fw, fh: fh, top: top };
+}
+
+function cellColor(role, pieceId) {
+  if (role === 'vert') return 'rgba(70, 230, 255, 0.30)';
+  if (role === 'horiz') return 'rgba(90, 140, 255, 0.32)';
+  if (role === 'rect') return 'rgba(255, 196, 80, 0.36)';
+  if (role === 'square') return 'rgba(70, 230, 255, 0.24)';
+  if (role === 'block') return 'rgba(90, 220, 255, 0.26)';
+  var palette = ['rgba(70, 230, 255, 0.28)', 'rgba(90, 160, 255, 0.30)', 'rgba(120, 255, 220, 0.24)', 'rgba(255, 196, 80, 0.28)'];
+  return palette[pieceId % palette.length];
+}
+
+function strokeArrow(x1, y1, x2, y2) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  var ang = Math.atan2(y2 - y1, x2 - x1);
+  var ah = 7;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - Math.cos(ang - 0.4) * ah, y2 - Math.sin(ang - 0.4) * ah);
+  ctx.lineTo(x2 - Math.cos(ang + 0.4) * ah, y2 - Math.sin(ang + 0.4) * ah);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x1 + Math.cos(ang - 0.4) * ah, y1 + Math.sin(ang - 0.4) * ah);
+  ctx.lineTo(x1 + Math.cos(ang + 0.4) * ah, y1 + Math.sin(ang + 0.4) * ah);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawFigure(p) {
+  var fg = figureGeom(p);
+  var showGrid = (G.step >= 1 || p.revealGrid) && G.slice > 0.02;
+  var i;
+  for (i = 0; i < p.pieces.length; i++) {
+    var piece = p.pieces[i];
+    var box = piece.box;
+    var x = fg.ox + box.c * fg.cell;
+    var y = fg.oy + box.r * fg.cell;
+    var w = box.w * fg.cell;
+    var h = box.h * fg.cell;
+    ctx.fillStyle = cellColor(piece.role, piece.id);
+    ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+    ctx.strokeStyle = 'rgba(232, 251, 255, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  }
+  if (showGrid) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120, 255, 255,' + (0.25 + 0.55 * Math.min(1, G.slice)) + ')';
+    ctx.lineWidth = 1.25;
+    ctx.setLineDash([4, 4]);
+    ctx.lineDashOffset = -G.t * 18;
+    var set = cellSet(p.cells);
+    for (i = 0; i < p.cells.length; i++) {
+      var cell = p.cells[i];
+      var right = set[keyOf(cell.c + 1, cell.r)];
+      var down = set[keyOf(cell.c, cell.r + 1)];
+      if (right && right.piece === cell.piece) {
+        var x1 = fg.ox + (cell.c + 1) * fg.cell;
+        var y1 = fg.oy + cell.r * fg.cell;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1 + 2);
+        ctx.lineTo(x1, y1 + fg.cell - 2);
+        ctx.stroke();
+      }
+      if (down && down.piece === cell.piece) {
+        var x2 = fg.ox + cell.c * fg.cell;
+        var y2 = fg.oy + (cell.r + 1) * fg.cell;
+        ctx.beginPath();
+        ctx.moveTo(x2 + 2, y2);
+        ctx.lineTo(x2 + fg.cell - 2, y2);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  drawPerimeter(p, fg);
+  drawDimensions(p, fg);
+}
+
+function drawPerimeter(p, fg) {
+  var tracing = G.phase === 'trace' || G.phase === 'banner';
+  var lit = tracing ? Math.min(p.edges.length, G.traceT) : 0;
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = 'rgba(232, 251, 255, 0.92)';
+  ctx.beginPath();
+  var i;
+  for (i = 0; i < p.edges.length; i++) {
+    var e = p.edges[i];
+    var x0 = fg.ox + e.x0 * fg.cell;
+    var y0 = fg.oy + e.y0 * fg.cell;
+    var x1 = fg.ox + e.x1 * fg.cell;
+    var y1 = fg.oy + e.y1 * fg.cell;
+    if (i === 0) ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  if (tracing) {
+    ctx.save();
+    ctx.strokeStyle = '#ff3d8a';
+    ctx.lineWidth = 3.5;
+    ctx.shadowColor = '#ff3d8a';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    var started = false;
+    var full = Math.floor(lit);
+    for (i = 0; i < full && i < p.edges.length; i++) {
+      var e2 = p.edges[i];
+      var ax = fg.ox + e2.x0 * fg.cell;
+      var ay = fg.oy + e2.y0 * fg.cell;
+      var bx = fg.ox + e2.x1 * fg.cell;
+      var by = fg.oy + e2.y1 * fg.cell;
+      if (!started) { ctx.moveTo(ax, ay); started = true; }
+      ctx.lineTo(bx, by);
+    }
+    if (full < p.edges.length && lit > 0) {
+      var e3 = p.edges[full];
+      var f = lit - full;
+      var cx = fg.ox + e3.x0 * fg.cell;
+      var cy = fg.oy + e3.y0 * fg.cell;
+      var dx = fg.ox + e3.x1 * fg.cell;
+      var dy = fg.oy + e3.y1 * fg.cell;
+      if (!started) ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + (dx - cx) * f, cy + (dy - cy) * f);
+    }
+    ctx.stroke();
+    ctx.restore();
+    if (fg.cell >= 12) {
+      var badge = Math.max(5.5, Math.min(8, fg.cell * 0.26));
+      var push = badge + 5;
+      ctx.font = font(Math.max(8, Math.min(12, badge + 4)), 800);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (i = 0; i < full && i < p.edges.length; i++) {
+        var e4 = p.edges[i];
+        var mx = fg.ox + (e4.x0 + e4.x1) * 0.5 * fg.cell;
+        var my = fg.oy + (e4.y0 + e4.y1) * 0.5 * fg.cell;
+        var edx = e4.x1 - e4.x0;
+        var edy = e4.y1 - e4.y0;
+        var lx = mx + edy * push;
+        var ly = my - edx * push;
+        if (lx < UI.stage.x + badge || lx > UI.stage.x + UI.stage.w - badge) continue;
+        if (ly < UI.stage.y + badge || ly > UI.stage.y + UI.stage.h - badge) continue;
+        ctx.fillStyle = 'rgba(8, 10, 18, 0.82)';
+        ctx.beginPath();
+        ctx.arc(lx, ly, badge, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffe4f2';
+        ctx.fillText(String(i + 1), lx, ly);
+      }
+    }
+    if (lit > 0 && lit < p.edges.length + 0.2 && G.phase === 'trace') {
+      var head = Math.min(p.edges.length - 0.001, lit);
+      var hi = Math.floor(head);
+      var hf = head - hi;
+      var he = p.edges[hi];
+      var hx = fg.ox + (he.x0 + (he.x1 - he.x0) * hf) * fg.cell;
+      var hy = fg.oy + (he.y0 + (he.y1 - he.y0) * hf) * fg.cell;
+      ctx.fillStyle = '#fff';
+      ctx.shadowColor = '#ff3d8a';
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+}
+
+function drawCornerLetter(text, x, y) {
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(8, 18, 28, 0.9)';
+  ctx.fill();
+  ctx.strokeStyle = '#3ef0ff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(12, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y + 0.5);
+}
+
+function hasCell(p, c, r) {
+  var i;
+  for (i = 0; i < p.cells.length; i++) if (p.cells[i].c === c && p.cells[i].r === r) return true;
+  return false;
+}
+
+function drawDimensions(p, fg) {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  var fullTop = true;
+  var c;
+  for (c = 0; c < p.cols; c++) if (!hasCell(p, c, 0)) fullTop = false;
+  var fullRight = true;
+  var r;
+  for (r = 0; r < p.rows; r++) if (!hasCell(p, p.cols - 1, r)) fullRight = false;
+  if (p.kind === 'ratio' && fullTop) {
+    var y = fg.oy - 30;
+    ctx.strokeStyle = '#ffc14d';
+    ctx.fillStyle = '#ffc14d';
+    ctx.lineWidth = 1.5;
+    strokeArrow(fg.ox, y, fg.ox + fg.fw, y);
+    ctx.font = font(Math.max(11, fs(12)), 800);
+    ctx.fillStyle = '#ffe7ad';
+    ctx.fillText('AB = ' + p.ab + ' cm', fg.ox + fg.fw / 2, y - 11);
+    var tracingNow = G.phase === 'trace' || G.phase === 'banner';
+    if (G.step >= 1 && !tracingNow) {
+      var groups = [];
+      var i;
+      for (i = 0; i < p.left; i++) groups.push(1);
+      groups.push(p.k);
+      for (i = 0; i < p.right; i++) groups.push(1);
+      var gx = 0;
+      ctx.font = font(12, 800);
+      for (i = 0; i < groups.length; i++) {
+        var gw = groups[i] * fg.cell;
+        ctx.fillStyle = '#9af6ff';
+        ctx.fillText(groups[i] + 'u', fg.ox + gx * fg.cell + gw / 2, fg.oy - 16);
+        if (i > 0) {
+          ctx.strokeStyle = 'rgba(154, 246, 255, 0.85)';
+          ctx.beginPath();
+          ctx.moveTo(fg.ox + gx * fg.cell, fg.oy - 26);
+          ctx.lineTo(fg.ox + gx * fg.cell, fg.oy - 6);
+          ctx.stroke();
+        }
+        gx += groups[i];
+      }
+    }
+    if (fullRight) {
+      var x = fg.ox + fg.fw + 34;
+      ctx.strokeStyle = '#8eefff';
+      ctx.fillStyle = '#8eefff';
+      strokeArrow(x, fg.oy, x, fg.oy + fg.fh);
+      ctx.fillStyle = '#e8fbff';
+      ctx.font = font(Math.max(12, fs(13)), 800);
+      ctx.textAlign = 'left';
+      var bcLabel = 'BC';
+      if (G.phase === 'trace' || G.phase === 'banner') bcLabel = p.bc + ' cm';
+      else if (p.targetKind === 'height') bcLabel = '?';
+      ctx.fillText(bcLabel, x + 10, fg.oy + fg.fh / 2);
+      ctx.textAlign = 'center';
+    }
+  } else if (fullTop && G.step >= 1 && p.kind !== 'reverse' && G.phase !== 'trace' && G.phase !== 'banner') {
+    ctx.fillStyle = '#9af6ff';
+    ctx.font = font(12, 800);
+    ctx.fillText(p.cols + 'u', fg.ox + fg.fw / 2, fg.oy - 14);
+  }
+  if (G.step >= 2) {
+    var anchor = firstCell(p);
+    var sx = fg.ox + anchor.c * fg.cell;
+    var sy = fg.oy + anchor.r * fg.cell;
+    ctx.save();
+    var pulse = 0.55 + 0.45 * Math.sin(G.t * 5);
+    ctx.strokeStyle = 'rgba(93, 255, 168,' + pulse + ')';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx + 3, sy + 3, fg.cell - 6, fg.cell - 6);
+    ctx.fillStyle = '#5dffa8';
+    var stamp = p.unitCm + ' cm';
+    var stampSize = Math.max(11, Math.min(15, fg.cell * 0.34));
+    ctx.font = font(stampSize, 800);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    var stampW = ctx.measureText(stamp).width + 16;
+    var stampH = stampSize + 8;
+    var fitsCorner = stampW <= fg.cell - 4 && stampH <= fg.cell - 4;
+    var tx = fitsCorner ? sx + fg.cell / 2 : fg.ox + fg.fw / 2;
+    var ty = fitsCorner ? sy + fg.cell / 2 : fg.oy + fg.fh / 2;
+    ctx.fillStyle = 'rgba(7, 16, 24, 0.9)';
+    roundRect(tx - stampW / 2, ty - stampH / 2, stampW, stampH, 6);
+    ctx.fill();
+    ctx.fillStyle = '#5dffa8';
+    ctx.fillText(stamp, tx, ty);
+    ctx.restore();
+  }
+  if (G.phase !== 'trace' && G.phase !== 'banner') {
+    if (hasCell(p, 0, 0)) drawCornerLetter('A', fg.ox - 16, fg.oy - 16);
+    if (hasCell(p, p.cols - 1, 0)) drawCornerLetter('B', fg.ox + fg.fw + 16, fg.oy - 16);
+    if (hasCell(p, p.cols - 1, p.rows - 1)) drawCornerLetter('C', fg.ox + fg.fw + 16, fg.oy + fg.fh + 16);
+    if (hasCell(p, 0, p.rows - 1)) drawCornerLetter('D', fg.ox - 16, fg.oy + fg.fh + 16);
+  }
+}
+
+function drawStage() {
+  var stage = UI.stage;
+  panel(stage, 'rgba(5, 14, 24, 0.72)', 'rgba(62, 240, 255, 0.4)');
+  ctx.save();
+  if (G.shake > 0.4) ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+  ctx.beginPath();
+  roundRect(stage.x, stage.y, stage.w, stage.h, 14);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.05)';
+  ctx.lineWidth = 1;
+  var gap = 22;
+  var x, y;
+  for (x = stage.x; x < stage.x + stage.w; x += gap) {
+    ctx.beginPath();
+    ctx.moveTo(x, stage.y);
+    ctx.lineTo(x, stage.y + stage.h);
+    ctx.stroke();
+  }
+  for (y = stage.y; y < stage.y + stage.h; y += gap) {
+    ctx.beginPath();
+    ctx.moveTo(stage.x, y);
+    ctx.lineTo(stage.x + stage.w, y);
+    ctx.stroke();
+  }
+  if (G.glitch > 0) {
+    ctx.fillStyle = 'rgba(255, 60, 90,' + (0.18 * G.glitch) + ')';
+    var i;
+    for (i = 0; i < 5; i++) {
+      var gy = stage.y + Math.random() * stage.h;
+      ctx.fillRect(stage.x, gy, stage.w, 3 + Math.random() * 6);
+    }
+  }
+  if (G.problem) drawFigure(G.problem);
+  ctx.restore();
+}
+
+function cardLabel(step, card) {
+  var unit = step.unit;
+  if (unit === 'squares') return { big: String(card.value), small: card.value === 1 ? 'square' : 'squares' };
+  if (unit === 'edges') return { big: String(card.value), small: card.value === 1 ? 'edge' : 'edges' };
+  if (unit === 'u') return { big: card.value + 'u', small: '' };
+  if (unit === 'cm²') return { big: fmt(card.value), small: 'cm²' };
+  return { big: String(card.value), small: 'cm' };
+}
+
+function drawCards() {
+  if (!G.problem) return;
+  var step = G.problem.steps[Math.min(G.step, 2)];
+  var i;
+  for (i = 0; i < UI.cards.length; i++) {
+    var rect = UI.cards[i];
+    var card = step.cards[i];
+    var hovered = false;
+    var selected = false;
+    var who = '';
+    if (hoverAt(players[0].x, players[0].y) && hoverAt(players[0].x, players[0].y).index === i) hovered = true;
+    if (G.play !== 'solo' && hoverAt(players[1].x, players[1].y) && hoverAt(players[1].x, players[1].y).index === i) hovered = true;
+    if (players[0].card === i) { selected = true; who = G.play === 'solo' ? '' : 'P1'; }
+    if (players[1].card === i && G.play !== 'solo') { selected = true; who = who ? 'P1+P2' : 'P2'; }
+    var hot = selected || hovered;
+    ctx.fillStyle = hot ? 'rgba(20, 50, 68, 0.95)' : 'rgba(8, 20, 32, 0.92)';
+    roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    ctx.fill();
+    ctx.strokeStyle = selected ? '#5dffa8' : (hovered ? '#3ef0ff' : 'rgba(62, 240, 255, 0.28)');
+    ctx.lineWidth = selected ? 2.5 : 1.5;
+    ctx.stroke();
+    if ((G.phase === 'trace' || G.phase === 'banner') && card.correct) {
+      ctx.strokeStyle = '#5dffa8';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+    var label = cardLabel(step, card);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(rect.h < 58 ? (label.small ? 16 : 18) : fs(label.small ? 22 : 26), 800);
+    ctx.fillText(label.big, rect.x + rect.w / 2, rect.y + rect.h / 2 - (label.small ? 8 : 0));
+    if (label.small) {
+      ctx.fillStyle = '#8eefff';
+      ctx.font = font(fs(12), 700);
+      ctx.fillText(label.small, rect.x + rect.w / 2, rect.y + rect.h / 2 + 14);
+    }
+    if (who) {
+      ctx.fillStyle = who.indexOf('2') >= 0 && who.indexOf('1') < 0 ? '#4da3ff' : '#ff4d6a';
+      ctx.font = font(10, 800);
+      ctx.textAlign = 'left';
+      ctx.fillText(who, rect.x + 8, rect.y + 12);
+    }
+  }
+  var lock = UI.lock;
+  var ready = players[0].card >= 0 || (G.play !== 'solo' && players[1].card >= 0);
+  var lockHover = hitRect(lock, players[0].x, players[0].y) || (G.play !== 'solo' && hitRect(lock, players[1].x, players[1].y));
+  ctx.fillStyle = ready ? 'rgba(62, 240, 255, 0.16)' : 'rgba(8, 20, 32, 0.92)';
+  roundRect(lock.x, lock.y, lock.w, lock.h, 12);
+  ctx.fill();
+  ctx.strokeStyle = lockHover || ready ? '#3ef0ff' : 'rgba(62, 240, 255, 0.3)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = ready ? '#e8fbff' : 'rgba(232,251,255,0.55)';
+  ctx.font = font(fs(UI.narrow ? 14 : 15), 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('LOCK & CONSTRUCT', lock.x + lock.w / 2, lock.y + lock.h / 2);
+}
+
+function drawHint() {
+  var hint = UI.hint;
+  panel(hint, 'rgba(8, 18, 30, 0.9)', G.hint ? 'rgba(255, 180, 80, 0.7)' : 'rgba(62, 240, 255, 0.25)');
+  ctx.save();
+  ctx.beginPath();
+  roundRect(hint.x, hint.y, hint.w, hint.h, 14);
+  ctx.clip();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  var banner = 'STEP ' + (Math.min(G.step, 2) + 1) + ' / 3';
+  if (G.phase === 'trace' || G.phase === 'banner') banner = 'LASER TRACE';
+  else if (G.play === 'coop') {
+    var owner = stepOwner();
+    var who = owner === 0 ? 'P1' : (owner === 1 ? 'P2' : 'BOTH');
+    var names = ['UNIT CALIBRATION', 'SOLVE 1u', 'TARGET LOCK'];
+    banner = who + '  ·  ' + banner + '  ·  ' + names[Math.min(G.step, 2)];
+  } else {
+    var names2 = ['UNIT CALIBRATION', 'SOLVE 1u', 'TARGET LOCK'];
+    banner += '  ·  ' + names2[Math.min(G.step, 2)];
+  }
+  ctx.fillStyle = '#7f8cff';
+  ctx.font = font(UI.compact ? 10 : fs(11), 800);
+  ctx.fillText(banner, hint.x + 12, hint.y + (UI.compact ? 4 : 8));
+  ctx.font = font(UI.compact ? 12 : fs(G.hint ? 14 : 16), 700);
+  var msg = G.hint || (G.noteT > 0 && G.note ? G.note : '');
+  if (!msg && G.problem && (G.phase === 'trace' || G.phase === 'banner')) msg = solutionText(G.problem);
+  if (!msg && G.problem) msg = G.problem.steps[Math.min(G.step, 2)].ask;
+  ctx.fillStyle = G.hint ? '#ffd29a' : ((G.phase === 'trace' || G.phase === 'banner') ? '#9dffe0' : '#e8fbff');
+  wrapText(msg, hint.x + 12, hint.y + (UI.compact ? 18 : 28), hint.w - 24, UI.compact ? 13 : fs(18), 2, 'left');
+  ctx.restore();
+}
+
+function drawConsoleFoot() {
+  ctx.save();
+  ctx.beginPath();
+  roundRect(UI.console.x, UI.console.y, UI.console.w, UI.console.h, 14);
+  ctx.clip();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(180, 230, 240, 0.62)';
+  ctx.font = font(UI.narrow ? 10 : 11, 600);
+  var msg = G.play === 'solo'
+    ? 'Mouse, stick, or keys aim the reticle   ·   select a card   ·   LOCK & CONSTRUCT'
+    : 'P1  W A S D + F / Space     ·     P2  Arrows + Enter     ·     8BitDo A';
+  ctx.fillText(msg, UI.console.x + UI.console.w / 2, UI.console.y + UI.console.h - 13);
+  ctx.restore();
+}
+
+function drawReticle(p, color, tag) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 2;
+  var x = p.x, y = p.y, r = 12;
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x - r, y - r + 5); ctx.lineTo(x - r, y - r); ctx.lineTo(x - r + 5, y - r);
+  ctx.moveTo(x + r - 5, y - r); ctx.lineTo(x + r, y - r); ctx.lineTo(x + r, y - r + 5);
+  ctx.moveTo(x - r, y + r - 5); ctx.lineTo(x - r, y + r); ctx.lineTo(x - r + 5, y + r);
+  ctx.moveTo(x + r - 5, y + r); ctx.lineTo(x + r, y + r); ctx.lineTo(x + r, y + r - 5);
+  ctx.stroke();
+  if (tag) {
+    ctx.font = font(10, 800);
+    ctx.textAlign = 'left';
+    ctx.fillText(tag, x + 10, y - 10);
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  var i;
+  for (i = 0; i < G.particles.length; i++) {
+    var p = G.particles[i];
+    ctx.globalAlpha = Math.max(0, p.life / p.max);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.r, p.r);
+  }
+  ctx.globalAlpha = 1;
+  for (i = 0; i < G.floaters.length; i++) {
+    var f = G.floaters[i];
+    ctx.globalAlpha = Math.max(0, f.life / f.max);
+    ctx.fillStyle = f.color;
+    ctx.font = font(fs(18), 800);
+    ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitleFigure(top, bottom) {
+  var room = bottom - top;
+  if (room < 48) return;
+  var cells = [];
+  var r, c;
+  for (r = 0; r < 3; r++) for (c = 0; c < 5; c++) cells.push({ c: c, r: r, piece: 0 });
+  var edges = tracePerimeter(cells);
+  var cell = Math.min(26, Math.floor(room / 3.4), Math.floor(view.w / 18));
+  if (cell < 12) return;
+  var ox = view.w / 2 - cell * 2.5;
+  var oy = top + Math.max(0, (room - cell * 3) / 2);
+  ctx.fillStyle = 'rgba(70, 230, 255, 0.2)';
+  ctx.fillRect(ox, oy, cell * 5, cell * 3);
+  ctx.strokeStyle = 'rgba(232,251,255,0.7)';
+  ctx.strokeRect(ox + cell, oy, cell * 3, cell);
+  ctx.strokeRect(ox + cell, oy + cell, cell * 3, cell);
+  ctx.strokeRect(ox + cell, oy + cell * 2, cell * 3, cell);
+  ctx.strokeRect(ox, oy, cell, cell * 3);
+  ctx.strokeRect(ox + cell * 4, oy, cell, cell * 3);
+  var t = (G.t * 4.2) % edges.length;
+  var full = Math.floor(t);
+  ctx.strokeStyle = '#ff3d8a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  var i, started = false;
+  for (i = 0; i < edges.length; i++) {
+    var e = edges[i];
+    var x0 = ox + e.x0 * cell, y0 = oy + e.y0 * cell;
+    if (!started) { ctx.moveTo(x0, y0); started = true; }
+    if (i < full) ctx.lineTo(ox + e.x1 * cell, oy + e.y1 * cell);
+    else if (i === full) {
+      var f = t - full;
+      ctx.lineTo(x0 + (e.x1 - e.x0) * cell * f, y0 + (e.y1 - e.y0) * cell * f);
+      break;
+    }
+  }
+  ctx.stroke();
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#8eefff';
+  ctx.font = font(fs(13), 800);
+  var kickerY = 28;
+  ctx.fillText('PRIMARY 4–6  ·  AREA & PERIMETER', view.w / 2, kickerY);
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(Math.max(26, Math.min(fs(46), UI.narrow ? 34 : 48)), 800);
+  var titleY = kickerY + (UI.narrow ? 34 : 44);
+  ctx.fillText('LASER BLUEPRINT', view.w / 2, titleY);
+  ctx.fillStyle = '#3ef0ff';
+  ctx.font = font(fs(18), 700);
+  var subY = titleY + (UI.narrow ? 28 : 34);
+  ctx.fillText('Unit-Edge Tracer', view.w / 2, subY);
+  drawTitleFigure(subY + 16, UI.modes[0].y - 8);
+  var names = [
+    ['SOLO ARCHITECT', 'Mouse, keyboard, or one 8BitDo'],
+    ['2P CO-OP TEAM', 'One team score · pads + keys'],
+    ['2P VERSUS', 'First lock takes the star']
+  ];
+  var i;
+  for (i = 0; i < UI.modes.length; i++) {
+    var m = UI.modes[i];
+    var on = i === G.menu;
+    ctx.fillStyle = on ? 'rgba(62, 240, 255, 0.16)' : 'rgba(6, 16, 28, 0.88)';
+    roundRect(m.x, m.y, m.w, m.h, 14);
+    ctx.fill();
+    ctx.strokeStyle = on ? '#3ef0ff' : 'rgba(62, 240, 255, 0.28)';
+    ctx.lineWidth = on ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(fs(16), 800);
+    ctx.fillText(names[i][0], m.x + m.w / 2, m.y + m.h * 0.4);
+    ctx.fillStyle = '#8eefff';
+    ctx.font = font(fs(12), 600);
+    ctx.fillText(names[i][1], m.x + m.w / 2, m.y + m.h * 0.68);
+  }
+  var lastMode = UI.modes[UI.modes.length - 1];
+  var helpY = Math.min(lastMode.y + lastMode.h + 16, view.h - 62);
+  var bestY = Math.min(helpY + 16, view.h - 46);
+  ctx.fillStyle = 'rgba(232,251,255,0.75)';
+  ctx.font = font(UI.narrow ? 11 : fs(13), 600);
+  var help = UI.narrow
+    ? 'P1 WASD+Space   ·   P2 Arrows+Enter   ·   Pad A'
+    : 'P1  W A S D + F / Space     ·     P2  Arrows + Enter     ·     8BitDo D-pad + A';
+  var safeW = view.w - 150;
+  if (ctx.measureText(help).width > safeW) ctx.font = font(11, 600);
+  ctx.fillText(help, (view.w - 120) / 2, helpY);
+  var best = 'Best solo ' + fmt(G.bestSolo);
+  if (G.bestTeam) best += '   ·   Best team ' + fmt(G.bestTeam);
+  ctx.fillText(best, (view.w - 120) / 2, bestY);
+}
+
+function versusResult() {
+  var s0 = G.pStars[0], s1 = G.pStars[1];
+  if (s0 !== s1) return s0 > s1 ? 0 : 1;
+  if (G.pScore[0] !== G.pScore[1]) return G.pScore[0] > G.pScore[1] ? 0 : 1;
+  if (G.pShields[0] !== G.pShields[1]) return G.pShields[0] > G.pShields[1] ? 0 : 1;
+  return -1;
+}
+
+function drawOver() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffb4c4';
+  ctx.font = font(fs(14), 800);
+  ctx.fillText('SHIELDS DEPLETED', view.w / 2, view.h * 0.28);
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(36), 800);
+  if (G.play === 'versus') {
+    var w = versusResult();
+    ctx.fillText(w < 0 ? 'DRAW' : (w === 0 ? 'P1 CLAIMS THE TABLE' : 'P2 CLAIMS THE TABLE'), view.w / 2, view.h * 0.38);
+    ctx.font = font(fs(16), 700);
+    ctx.fillStyle = '#ffc14d';
+    ctx.fillText('Stars  ' + G.pStars[0] + '  –  ' + G.pStars[1] + '      Score  ' + fmt(G.pScore[0]) + '  –  ' + fmt(G.pScore[1]), view.w / 2, view.h * 0.48);
+  } else {
+    ctx.fillText(G.play === 'coop' ? 'TEAM SCORE ' + fmt(G.score) : 'SCORE ' + fmt(G.score), view.w / 2, view.h * 0.38);
+    ctx.font = font(fs(16), 700);
+    ctx.fillStyle = '#8eefff';
+    ctx.fillText('Reached round ' + G.round + '  ·  ' + tierInfo(G.round).name, view.w / 2, view.h * 0.48);
+  }
+  var labels = ['RETRY', 'TITLE'];
+  var i;
+  for (i = 0; i < UI.overBtns.length; i++) {
+    var b = UI.overBtns[i];
+    ctx.fillStyle = 'rgba(62, 240, 255, 0.12)';
+    roundRect(b.x, b.y, b.w, b.h, 12);
+    ctx.fill();
+    ctx.strokeStyle = '#3ef0ff';
+    ctx.stroke();
+    ctx.fillStyle = '#e8fbff';
+    ctx.font = font(fs(16), 800);
+    ctx.fillText(labels[i], b.x + b.w / 2, b.y + b.h / 2);
+  }
+}
+
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 8, 14, 0.55)';
+  ctx.fillRect(0, 0, view.w, view.h);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8fbff';
+  ctx.font = font(fs(32), 800);
+  ctx.fillText('PAUSED', view.w / 2, view.h / 2);
+  ctx.font = font(fs(14), 700);
+  ctx.fillStyle = '#8eefff';
+  ctx.fillText('Esc or Start to resume', view.w / 2, view.h / 2 + 36);
+}
+
+function draw() {
+  if (!ctx) return;
+  layoutUI();
+  drawBackdrop();
+  if (G.mode === 'title') {
+    drawTitle();
+  } else if (G.mode === 'over') {
+    drawOver();
+  } else {
+    drawHUD();
+    drawSpec();
+    drawStage();
+    drawHint();
+    panel(UI.console, 'rgba(5, 12, 20, 0.9)', 'rgba(62, 240, 255, 0.22)');
+    drawCards();
+    drawConsoleFoot();
+    if (G.play === 'solo') drawReticle(players[0], '#3ef0ff', '');
+    else {
+      drawReticle(players[0], players[0].color, 'P1');
+      drawReticle(players[1], players[1].color, 'P2');
+    }
+    if (G.paused) drawPause();
+  }
+  drawParticles();
+  if (G.fatal) {
+    ctx.fillStyle = '#ffb4c4';
+    ctx.font = font(14, 700);
+    ctx.textAlign = 'left';
+    ctx.fillText(G.fatal, 16, view.h - 36);
+  }
+  if (canvas) canvas.style.cursor = G.mode === 'play' && !G.paused ? 'none' : 'default';
+}
+
+function eventPos(e) {
+  var rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function onPointerMove(e) {
+  var p = eventPos(e);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.moved = true;
+  if (G.mode === 'title' && UI) {
+    var i;
+    for (i = 0; i < UI.modes.length; i++) if (hitRect(UI.modes[i], p.x, p.y)) G.menu = i;
+  }
+}
+
+function onPointerDown(e) {
+  var now = (window.performance && performance.now) ? performance.now() : Date.now();
+  if (onPointerDown.last && now - onPointerDown.last < 50) return;
+  onPointerDown.last = now;
+  if (e.button !== undefined && e.button !== 0) return;
+  audio.ensure();
+  canvas.focus();
+  var p = eventPos(e);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.moved = true;
+  if (G.mode === 'title') {
+    layoutUI();
+    var i;
+    for (i = 0; i < UI.modes.length; i++) {
+      if (hitRect(UI.modes[i], p.x, p.y)) {
+        G.menu = i;
+        startGame(['solo', 'coop', 'versus'][i]);
+        return;
+      }
+    }
+    return;
+  }
+  if (G.mode === 'over') {
+    layoutUI();
+    var j;
+    for (j = 0; j < UI.overBtns.length; j++) {
+      if (hitRect(UI.overBtns[j], p.x, p.y)) {
+        if (UI.overBtns[j].id === 'retry') startGame(G.play);
+        else goTitle();
+        return;
+      }
+    }
+    return;
+  }
+  if (G.paused) { G.paused = false; return; }
+  players[0].x = p.x;
+  players[0].y = p.y;
+  confirm(0);
+}
+
+function onKeyDown(e) {
+  if (!keys[e.code]) just[e.code] = true;
+  keys[e.code] = true;
+  var block = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'];
+  if (block.indexOf(e.code) >= 0) e.preventDefault();
+  if (e.code === 'KeyM' && just.KeyM) toggleMute();
+}
+
+function onKeyUp(e) { keys[e.code] = false; }
+
+function resize() {
+  view.w = window.innerWidth;
+  view.h = window.innerHeight;
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(1, Math.round(view.w * dpr));
+  canvas.height = Math.max(1, Math.round(view.h * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  layoutUI();
+}
+
+function boot() {
+  canvas = document.getElementById('c');
+  muteBtn = document.getElementById('mute');
+  sr = document.getElementById('sr');
+  if (!canvas || !canvas.getContext) return;
+  ctx = canvas.getContext('2d');
+  if (!ctx || !ctx.fillRect) return;
+  loadStore();
+  setMuteLabel();
+  resize();
+  canvas.focus();
+  window.addEventListener('resize', resize);
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('mousedown', onPointerDown);
+  muteBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    toggleMute();
+  });
+  var last = 0;
+  function frame(ts) {
+    var dt = Math.min(0.034, last ? (ts - last) / 1000 : 0.016);
+    last = ts;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  announce('Laser Blueprint. Choose Solo Architect, 2P Co-op Team, or 2P Versus.');
+}
+
+boot();
+</script>
+</body>
+</html>
