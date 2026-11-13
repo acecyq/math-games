@@ -53,8 +53,8 @@
 /* Holo-Tile Architect: Cross & Mosaic Lab
    Singapore Primary 5/6.
    Step 1 — drop auxiliary lines, read the shaded fraction in simplest form.
-   Step 2 — count exposed exterior tile-sides of the cluster (not tiles × 4).
-   Step 3 — side AB = perimeter ÷ exposed sides, or total shaded mosaic area.
+   Step 2 — build the perimeter from the parts: 2 × (width + height), plus walls a bite leaves.
+   Step 3 — perimeter = that many AB, or total shaded mosaic area.
    Every puzzle is built from the number domain, checked, and shuffled.
 */
 
@@ -277,12 +277,31 @@ function prepareCluster(raw) {
   const exposed = countEdges(cells);
   const loop = traceLoop(cells);
   if (!loop || loop.length !== exposed) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < cells.length; i++) {
+    minX = Math.min(minX, cells[i][0]);
+    minY = Math.min(minY, cells[i][1]);
+    maxX = Math.max(maxX, cells[i][0]);
+    maxY = Math.max(maxY, cells[i][1]);
+  }
+  const spanW = maxX - minX + 1;
+  const spanH = maxY - minY + 1;
+  const frame = 2 * (spanW + spanH);
+  const extra = exposed - frame;
+  if (extra < 0 || extra % 2 !== 0) return null;
   return {
     name: raw.name,
     cells: cells,
     tiles: cells.length,
     exposed: exposed,
     loop: loop,
+    spanW: spanW,
+    spanH: spanH,
+    frame: frame,
+    extra: extra,
   };
 }
 
@@ -599,7 +618,7 @@ function fracOpt(n, d, correct, trap, hint) {
   };
 }
 
-function numOpt(kind, hundredths, text, unit, correct, trap, hint) {
+function numOpt(kind, hundredths, text, unit, correct, trap, hint, work) {
   return {
     kind: kind,
     hundredths: hundredths,
@@ -608,7 +627,8 @@ function numOpt(kind, hundredths, text, unit, correct, trap, hint) {
     correct: !!correct,
     trap: trap || '',
     hint: hint || '',
-    key: kind + ':' + hundredths + ':' + text,
+    work: work || '',
+    key: kind + ':' + hundredths + ':' + text + ':' + (work || ''),
   };
 }
 
@@ -643,12 +663,9 @@ function simplifyHint() {
   return 'Correct value, but simplify your fraction by dividing top and bottom by their HCF!';
 }
 
-function seamHint(tiles, exposed, shape) {
-  if (tiles === 5 && exposed === 12) {
-    return 'Shared interior seams are hidden inside the cross! Count ONLY the 12 exposed exterior edges around the outer silhouette!';
-  }
-  const where = shape === 'cross' ? 'the cross' : 'the cluster';
-  return 'Shared interior seams are hidden inside ' + where + '! Count ONLY the ' + exposed + ' exposed exterior edges around the outer silhouette!';
+function partFormula(cluster) {
+  const around = '2 x (' + cluster.spanW + ' + ' + cluster.spanH + ')';
+  return cluster.extra ? around + ' + ' + cluster.extra : around;
 }
 
 function buildFracStep(pattern) {
@@ -696,24 +713,59 @@ function buildFracStep(pattern) {
 }
 
 function buildEdgeStep(cluster) {
-  const exposed = cluster.exposed;
+  const w = cluster.spanW;
+  const h = cluster.spanH;
+  const extra = cluster.extra;
   const tiles = cluster.tiles;
+  const parts = cluster.exposed;
+  const around = '2 x (' + w + ' + ' + h + ')';
+  const slide = 'The stepped sides slide onto the straight sides. Width ' + w + ' AB and height ' + h + ' AB already include them, so the perimeter is ' + around + ' = ' + (2 * (w + h)) + ' AB.';
+  const bite = 'The ' + w + ' by ' + h + ' frame is ' + cluster.frame + ' AB. This bite leaves ' + extra + ' walls that cannot slide out, so the perimeter is ' + parts + ' AB.';
   const out = [];
-  uniquePush(out, numOpt('count', exposed, String(exposed), 'sides', true, '', ''));
-  const hintSeam = seamHint(tiles, exposed, cluster.name);
+  uniquePush(out, numOpt('count', parts, String(parts), 'AB', true, '', '', partFormula(cluster)));
   const candidates = [
-    { n: tiles * 4, trap: 'seams', hint: hintSeam },
-    { n: tiles * 2, trap: 'seams', hint: hintSeam },
-    { n: exposed + 2, trap: 'off', hint: 'That is two edges away from the silhouette. Walk the outside once and count ' + exposed + ' exposed sides.' },
-    { n: exposed - 2, trap: 'off', hint: 'Two exterior sides are still missing. The silhouette has ' + exposed + ' exposed tile-sides.' },
-    { n: exposed + 4, trap: 'off', hint: 'Those extra sides are shared seams inside the mosaic. Only ' + exposed + ' sides face outward.' },
-    { n: Math.max(1, exposed - 4), trap: 'off', hint: 'Keep going around the silhouette. ' + exposed + ' tile-sides are exposed.' },
-    { n: tiles, trap: 'off', hint: 'That is the number of tiles, not the number of outside edges. Count ' + exposed + ' exposed sides.' },
+    {
+      n: tiles * 4,
+      trap: 'seams',
+      work: tiles + ' x 4 sides',
+      hint: 'That adds the perimeter of every tile. Sides where two tiles join are inside the figure, so they are not part of the fence.',
+    },
+    {
+      n: w + h,
+      trap: 'half',
+      work: w + ' + ' + h,
+      hint: 'That is the width and the height once. The opposite sides are the same parts again, so go all the way around: ' + around + '.',
+    },
+    {
+      n: cluster.frame,
+      trap: 'frame',
+      work: around,
+      hint: extra ? bite : slide,
+    },
+    {
+      n: cluster.frame + 2,
+      trap: 'extra',
+      work: around + ' + 2',
+      hint: extra === 2 ? bite : 'Those two steps already sit on the width and the height. Do not add them again.',
+    },
+    {
+      n: w * h,
+      trap: 'area',
+      work: w + ' x ' + h + ' tiles',
+      hint: w + ' x ' + h + ' is the tile spaces inside the frame. The perimeter is the edges: ' + around + (extra ? ' + ' + extra : '') + '.',
+    },
+    {
+      n: tiles,
+      trap: 'off',
+      work: tiles + ' tiles',
+      hint: 'That is one side for each tile. Build the perimeter from the width and the height.',
+    },
   ];
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
-    if (c.n <= 0 || c.n === exposed || c.n > 48) continue;
-    uniquePush(out, numOpt('count', c.n, String(c.n), 'sides', false, c.trap, c.hint));
+    if (c.n <= 0 || c.n === parts || c.n > 48) continue;
+    if (out.some(function (o) { return o.hundredths === c.n; })) continue;
+    uniquePush(out, numOpt('count', c.n, String(c.n), 'AB', false, c.trap, c.hint, c.work));
     if (out.length >= 4) break;
   }
   if (out.length < 4) return null;
@@ -722,41 +774,62 @@ function buildEdgeStep(cluster) {
   return shuffle(correct.concat(rest.slice(0, 3)));
 }
 
-function lengthHundredths(perimTenths, divisor) {
-  if (divisor <= 0) return null;
-  if ((perimTenths * 10) % divisor !== 0) return null;
-  const h = (perimTenths * 10) / divisor;
-  if (h <= 0) return null;
-  return h;
-}
-
-function buildLengthStep(perimTenths, sideTenths, cluster) {
-  const correctH = sideTenths * 10;
+function buildLengthStep(sideTenths, cluster) {
+  const side = fmtTenths(sideTenths);
+  const w = cluster.spanW;
+  const h = cluster.spanH;
+  const extra = cluster.extra;
+  const tiles = cluster.tiles;
   const out = [];
-  uniquePush(out, numOpt('len', correctH, fmtTenths(sideTenths), 'm', true, '', ''));
-  const seam = seamHint(cluster.tiles, cluster.exposed, cluster.name);
-  const divisors = [
-    { d: cluster.tiles * 4, trap: 'seams', hint: seam + ' ' + fmtTenths(perimTenths) + ' m / ' + cluster.exposed + ' = ' + fmtTenths(sideTenths) + ' m.' },
-    { d: cluster.tiles * 2, trap: 'seams', hint: seam },
-    { d: cluster.exposed + 2, trap: 'off', hint: 'Check the edge count before you divide. The silhouette has ' + cluster.exposed + ' sides, so AB = ' + fmtTenths(sideTenths) + ' m.' },
-    { d: cluster.exposed - 2, trap: 'off', hint: 'Check the edge count before you divide. The silhouette has ' + cluster.exposed + ' sides, so AB = ' + fmtTenths(sideTenths) + ' m.' },
-    { d: cluster.tiles, trap: 'off', hint: 'Divide the perimeter by the exposed sides (' + cluster.exposed + '), not by the number of tiles.' },
-    { d: cluster.exposed + 4, trap: 'off', hint: 'Hidden seams are not part of the perimeter. Use ' + cluster.exposed + ' exterior sides.' },
-  ];
-  for (let i = 0; i < divisors.length; i++) {
-    const h = lengthHundredths(perimTenths, divisors[i].d);
-    if (h == null || h === correctH) continue;
-    uniquePush(out, numOpt('len', h, fmtHundredths(h), 'm', false, divisors[i].trap, divisors[i].hint));
+  function pushCount(count, correct, trap, work, hint) {
+    if (count <= 0) return;
+    if (out.some(function (o) { return o.hundredths === sideTenths * count * 10; })) return;
+    const hundredths = sideTenths * count * 10;
+    uniquePush(out, numOpt('len', hundredths, fmtHundredths(hundredths), 'm', correct, trap, hint, work));
   }
-  const deltas = [10, -10, 20, -20, 8, -8, 16, -16, 5, -5];
-  for (let i = 0; i < deltas.length && out.length < 4; i++) {
-    const t = sideTenths + deltas[i];
-    if (t <= 0) continue;
-    const h = t * 10;
-    uniquePush(out, numOpt(
-      'len', h, fmtTenths(t), 'm', false, 'off',
-      'AB = ' + fmtTenths(perimTenths) + ' m / ' + cluster.exposed + ' exposed sides = ' + fmtTenths(sideTenths) + ' m.'
-    ));
+  const correctWork = extra
+    ? '2 x (' + w + ' + ' + h + ') x ' + side + ' + ' + extra + ' x ' + side
+    : '2 x (' + w + ' + ' + h + ') x ' + side;
+  const why = extra
+    ? 'The frame is 2 x (' + w + ' + ' + h + ') x ' + side + ' m, and the bite leaves ' + extra + ' more walls of ' + side + ' m.'
+    : 'The steps slide onto the width and the height. Perimeter = 2 x (' + w + ' + ' + h + ') x ' + side + ' m.';
+  pushCount(cluster.exposed, true, '', correctWork, '');
+  const candidates = [
+    {
+      n: tiles * 4,
+      trap: 'seams',
+      work: tiles + ' x 4 x ' + side,
+      hint: 'That is the perimeter of every tile added together. Joins are inside the figure, so drop them and use the width and the height.',
+    },
+    {
+      n: w + h,
+      trap: 'half',
+      work: '(' + w + ' + ' + h + ') x ' + side,
+      hint: 'That travels the width and the height only. The matching sides bring the same parts back: multiply by 2.',
+    },
+    {
+      n: cluster.frame,
+      trap: 'frame',
+      work: '2 x (' + w + ' + ' + h + ') x ' + side,
+      hint: extra ? why : 'Those steps already slid onto the frame. The perimeter is 2 x (' + w + ' + ' + h + ') x ' + side + ' m.',
+    },
+    {
+      n: cluster.frame + 2,
+      trap: 'extra',
+      work: '2 x (' + w + ' + ' + h + ') x ' + side + ' + 2 x ' + side,
+      hint: extra === 2 ? why : 'The two steps are already part of the width and the height. Do not add them again.',
+    },
+    {
+      n: w * h,
+      trap: 'area',
+      work: w + ' x ' + h + ' x ' + side,
+      hint: 'That multiplies the two spans as if they were an area. A perimeter adds the spans, then goes around.',
+    },
+  ];
+  for (let i = 0; i < candidates.length && out.length < 4; i++) {
+    const c = candidates[i];
+    if (c.n === cluster.exposed) continue;
+    pushCount(c.n, false, c.trap, c.work, c.hint);
   }
   if (out.length < 4) return null;
   const correct = out.filter(function (o) { return o.correct; });
@@ -842,17 +915,12 @@ function pickCluster(round) {
 }
 
 function pickSide(tier, exposed, pattern, tiles) {
-  if (tier === 'warm') {
-    const side = pick([4, 5, 6, 7, 8, 9, 10, 12]);
-    return { sideTenths: side * 10, perimTenths: side * 10 * exposed, areaHundredths: 0 };
-  }
-  if (tier === 'mid') {
-    const t = pick([42, 48, 56, 64, 72, 80, 82, 88, 96, 104, 112, 66, 74, 58]);
-    return { sideTenths: t, perimTenths: t * exposed, areaHundredths: 0 };
-  }
-  if (tier === 'adv') {
-    const t = pick([40, 50, 60, 70, 80, 90, 100, 35, 45, 55, 65, 75, 85, 64, 82]);
-    return { sideTenths: t, perimTenths: t * exposed, areaHundredths: 0 };
+  if (tier === 'warm' || tier === 'mid' || tier === 'adv') {
+    const bag = tier === 'warm'
+      ? [40, 50, 60, 70, 80, 90, 100, 120]
+      : [36, 42, 48, 54, 60, 64, 72, 80, 84, 96, 108];
+    const sideTenths = pick(bag);
+    return { sideTenths: sideTenths, perimTenths: sideTenths * exposed, areaHundredths: 0 };
   }
   const sides = shuffle([4, 5, 6, 7, 8, 9, 10, 12]);
   for (let i = 0; i < sides.length; i++) {
@@ -896,14 +964,14 @@ function tryPuzzle(round) {
   steps[1] = buildEdgeStep(cluster);
   steps[2] = master
     ? buildAreaStep(side.sideTenths, pattern, cluster, side.areaHundredths)
-    : buildLengthStep(side.perimTenths, side.sideTenths, cluster);
+    : buildLengthStep(side.sideTenths, cluster);
   if (!steps[0] || !steps[1] || !steps[2]) return null;
   const prompts = [
     'What fraction of tile ABCD is shaded, in simplest form?',
-    'How many exposed exterior tile-sides form the silhouette of Figure 1?',
+    'The width and the height are made of AB. How many AB make the perimeter of Figure 1?',
     master
-      ? 'Side AB = perimeter / exposed sides. What is the total shaded area of the mosaic?'
-      : 'Perimeter / exposed sides. What is the length of side AB?',
+      ? 'Each tile has side AB = ' + fmtTenths(side.sideTenths) + ' m. What is the total shaded area?'
+      : 'Each part AB is ' + fmtTenths(side.sideTenths) + ' m. What is the perimeter of Figure 1?',
   ];
   return {
     key: puzzleKey(pattern, cluster, side.perimTenths, master),
@@ -919,8 +987,8 @@ function tryPuzzle(round) {
     prompts: prompts,
     captions: [
       'of tile ABCD',
-      'exterior sides',
-      master ? 'shaded area' : 'length of AB',
+      'AB around Figure 1',
+      master ? 'shaded area' : 'perimeter',
     ],
   };
 }
@@ -934,6 +1002,7 @@ function validate(p) {
   if (countEdges(cl.cells) !== cl.exposed) return 'edges';
   if (!cl.loop || cl.loop.length !== cl.exposed) return 'loop';
   if (p.sideTenths * cl.exposed !== p.perimTenths) return 'perimeter';
+  if (2 * (cl.spanW + cl.spanH) + cl.extra !== cl.exposed) return 'frame';
   if (pat.shadedCount !== pat.units.filter(function (u) { return u.shaded; }).length) return 'shade-draw';
   for (let s = 0; s < 3; s++) {
     if (!p.steps[s] || p.steps[s].length !== 4) return 'cards-' + s;
@@ -957,8 +1026,8 @@ function validate(p) {
     if (a.hundredths !== p.areaHundredths) return 'area-card';
   } else {
     const len = p.steps[2].filter(function (o) { return o.correct; })[0];
-    if (len.hundredths !== p.sideTenths * 10) return 'len-card';
-    if (len.text !== fmtTenths(p.sideTenths)) return 'len-text';
+    if (len.hundredths !== p.perimTenths * 10) return 'len-card';
+    if (len.text !== fmtTenths(p.perimTenths)) return 'len-text';
   }
   return '';
 }
@@ -1290,7 +1359,11 @@ function cardCenter(i) {
 function workedLine(p) {
   const P = fmtTenths(p.perimTenths);
   const side = fmtTenths(p.sideTenths);
-  if (!p.master) return 'AB = ' + P + ' m / ' + p.cluster.exposed + ' = ' + side + ' m';
+  if (!p.master) {
+    const cl = p.cluster;
+    if (cl.extra) return '2 x (' + cl.spanW + ' + ' + cl.spanH + ') x ' + side + ' + ' + cl.extra + ' x ' + side + ' = ' + P + ' m';
+    return '2 x (' + cl.spanW + ' + ' + cl.spanH + ') x ' + side + ' = ' + P + ' m';
+  }
   const oneH = (p.sideTenths * p.sideTenths * p.pattern.sn) / p.pattern.sd;
   return 'AB = ' + side + ' m · tile ' + side + '×' + side + ' × ' + p.pattern.sn + '/' + p.pattern.sd +
     ' = ' + fmtHundredths(oneH) + ' m² · × ' + p.cluster.tiles + ' tiles = ' + fmtHundredths(p.areaHundredths) + ' m²';
@@ -1319,7 +1392,7 @@ function onCorrect(pi) {
     speak('Mosaic fused. ' + G.hint);
     return;
   }
-  const wait = step === 0 ? 560 : Math.max(980, G.problem.cluster.exposed * 85);
+  const wait = step === 0 ? 560 : 1200;
   G.advanceAt = performance.now() + wait;
 }
 
@@ -1753,7 +1826,7 @@ function drawStar(x, y, r, on) {
 function laserProgress() {
   const p = G.problem;
   if (!p || !G.solved[1]) return 0;
-  const dur = Math.max(0.9, p.cluster.exposed * 0.085);
+  const dur = 1.15;
   return Math.min(1, (performance.now() - G.laserT) / 1000 / dur);
 }
 
@@ -1851,7 +1924,7 @@ function drawSpec() {
   text(p.pattern.note, 34, 112, 20, '#ffe7a3', 'left');
   const fig = 'FIGURE 1  ·  ' + p.cluster.tiles + ' identical tiles  ·  ' + p.cluster.name.toUpperCase();
   text(fig, 34, 134, 13, '#d5f6ff', 'left');
-  const labels = ['1  FRACTION', '2  EDGES', '3  SOLVE'];
+  const labels = ['1  FRACTION', '2  PARTS', '3  SOLVE'];
   for (let i = 0; i < 3; i++) {
     const on = G.step === i;
     const done = G.solved[i];
@@ -1863,8 +1936,8 @@ function drawSpec() {
     ctx.stroke();
     text(labels[i], x + 69, 110, 12, done ? '#3dffb0' : on ? '#e8fbff' : '#8eb4c6', 'center');
   }
-  text('OUTER PERIMETER', 1088, 92, 11, '#8eb4c6', 'center');
-  text(fmtTenths(p.perimTenths) + ' m', 1088, 118, 26, '#7ef6ff', 'center');
+  text('SIDE AB', 1088, 92, 11, '#8eb4c6', 'center');
+  text(fmtTenths(p.sideTenths) + ' m', 1088, 118, 26, '#7ef6ff', 'center');
 }
 
 function inkSeamPolys(pattern) {
@@ -2075,7 +2148,7 @@ function drawCluster(rect) {
   const pat = prob.pattern;
   panel(rect.x, rect.y, rect.w, rect.h, 14, 'rgba(6, 12, 28, 0.78)', 'rgba(255, 196, 74, 0.25)');
   text('FIGURE 1  ·  ' + cl.name.toUpperCase(), rect.x + 18, rect.y + 20, 12, '#8eb4c6', 'left');
-  if (G.solved[1]) text(cl.exposed + ' exposed sides', rect.x + rect.w - 18, rect.y + 20, 13, '#7ef6ff', 'right');
+  if (G.solved[1]) text(partFormula(cl) + ' AB', rect.x + rect.w - 18, rect.y + 20, 13, '#7ef6ff', 'right');
   const lay = clusterLayout(cl, rect);
   const occ = new Set(cl.cells.map(function (c) { return c[0] + ',' + c[1]; }));
   const lit = G.solved[1];
@@ -2132,7 +2205,7 @@ function drawCluster(rect) {
       ctx.stroke();
     }
   }
-  if (lit) drawLaser(cl, lay);
+  if (lit) drawPartFrame(cl, lay);
   if (G.celebrate) {
     ctx.save();
     ctx.globalAlpha = 0.16;
@@ -2145,72 +2218,52 @@ function drawCluster(rect) {
   }
 }
 
-const OUTWARD = [[0, -1], [1, 0], [0, 1], [-1, 0]];
-
-function drawLaser(cluster, lay) {
-  const loop = cluster.loop;
-  const pts = [];
-  for (let i = 0; i < loop.length; i++) {
-    pts.push([lay.ox + loop[i].x0 * lay.s, lay.oy + loop[i].y0 * lay.s]);
+function drawPartFrame(cluster, lay) {
+  let minX = Infinity;
+  let minY = Infinity;
+  for (let i = 0; i < cluster.cells.length; i++) {
+    minX = Math.min(minX, cluster.cells[i][0]);
+    minY = Math.min(minY, cluster.cells[i][1]);
   }
-  pts.push([lay.ox + loop[0].x0 * lay.s, lay.oy + loop[0].y0 * lay.s]);
+  const x = lay.ox + minX * lay.s;
+  const y = lay.oy + minY * lay.s;
+  const w = cluster.spanW * lay.s;
+  const h = cluster.spanH * lay.s;
   const prog = laserProgress();
+  const sides = [
+    [x, y, x + w, y],
+    [x + w, y, x + w, y + h],
+    [x + w, y + h, x, y + h],
+    [x, y + h, x, y],
+  ];
+  const lens = [w, h, w, h];
+  const total = (w + h) * 2 || 1;
+  let drawn = 0;
+  const budget = total * prog;
   ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(126, 246, 255, 0.25)';
-  ctx.beginPath();
-  ctx.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-  ctx.stroke();
+  ctx.lineWidth = 2.5;
   ctx.strokeStyle = '#7ef6ff';
   ctx.shadowColor = '#7ef6ff';
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 8;
+  ctx.setLineDash([7, 5]);
   ctx.beginPath();
-  let drawn = 0;
-  const lens = [];
-  for (let i = 0; i < pts.length - 1; i++) lens.push(Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]));
-  const total = lens.reduce(function (a, b) { return a + b; }, 0) || 1;
-  const budget = total * prog;
-  ctx.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 0; i < lens.length; i++) {
+  for (let i = 0; i < 4; i++) {
     if (drawn >= budget) break;
-    const remain = budget - drawn;
-    if (remain >= lens[i]) {
-      ctx.lineTo(pts[i + 1][0], pts[i + 1][1]);
-      drawn += lens[i];
-    } else {
-      const t = remain / lens[i];
-      ctx.lineTo(pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t);
-      drawn = budget;
-    }
+    const len = lens[i];
+    const t = len ? Math.min(1, (budget - drawn) / len) : 1;
+    ctx.moveTo(sides[i][0], sides[i][1]);
+    ctx.lineTo(
+      sides[i][0] + (sides[i][2] - sides[i][0]) * t,
+      sides[i][1] + (sides[i][3] - sides[i][1]) * t
+    );
+    drawn += len * t;
   }
   ctx.stroke();
+  ctx.setLineDash([]);
   ctx.shadowBlur = 0;
-  let spark = pts[0];
-  let acc = 0;
-  for (let i = 0; i < lens.length; i++) {
-    if (acc + lens[i] >= budget) {
-      const t = lens[i] ? (budget - acc) / lens[i] : 0;
-      spark = [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t];
-      break;
-    }
-    acc += lens[i];
-    spark = pts[i + 1];
-  }
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(spark[0], spark[1], 4.5, 0, Math.PI * 2);
-  ctx.fill();
-  const shown = Math.max(1, Math.round(prog * loop.length));
-  for (let i = 0; i < shown && i < loop.length; i++) {
-    const seg = loop[i];
-    const mx = lay.ox + ((seg.x0 + seg.x1) / 2) * lay.s;
-    const my = lay.oy + ((seg.y0 + seg.y1) / 2) * lay.s;
-    const n = OUTWARD[seg.dir];
-    const pull = Math.min(18, lay.s * 0.28);
-    text(String(i + 1), mx + n[0] * pull, my + n[1] * pull, 12, '#e8fbff', 'center');
+  if (prog > 0.5) {
+    text(cluster.spanW + ' AB', x + w / 2, y + h + Math.min(22, lay.s * 0.36), 14, '#ffd56a', 'center');
+    text(cluster.spanH + ' AB', x - Math.min(34, lay.s * 0.4), y + h / 2, 14, '#ffd56a', 'center');
   }
   ctx.restore();
 }
@@ -2262,7 +2315,10 @@ function drawCards() {
     const opt = step[i];
     const col = '#f4fbff';
     if (opt.kind === 'frac') drawFrac(r.x + r.w / 2, r.y + 42, opt.n, opt.d, 24, col);
-    else {
+    else if (opt.work) {
+      text(opt.text + ' ' + opt.unit, r.x + r.w / 2, r.y + 36, opt.text.length > 5 ? 26 : 32, col, 'center');
+      text(opt.work, r.x + r.w / 2, r.y + 70, 13, '#ffd56a', 'center');
+    } else {
       text(opt.text, r.x + r.w / 2, r.y + 40, opt.text.length > 5 ? 28 : 34, col, 'center');
       text(opt.unit, r.x + r.w / 2, r.y + 68, 13, '#9ad7ea', 'center');
     }
@@ -2358,7 +2414,7 @@ function drawTitle() {
   text('HOLO-TILE ARCHITECT', 640, 62, 42, '#e8fbff', 'center');
   text('CROSS  &  MOSAIC LAB', 640, 102, 16, '#7ef6ff', 'center');
   text('Primary 5 · 6    ·    shaded fractions    ·    cluster perimeter', 640, 132, 14, '#9ad7ea', 'center');
-  text('Drop symmetry lines. Count only the exposed rim. Fuse the mosaic.', 640, 168, 15, '#d7f7ff', 'center');
+  text('Drop symmetry lines. Build the perimeter from the width and the height.', 640, 168, 15, '#d7f7ff', 'center');
   if (G.bestSolo) text('BEST SOLO  ' + G.bestSolo, 48, 200, 13, '#ffc44a', 'left');
   if (G.bestCoop) text('BEST TEAM  ' + G.bestCoop, 1232, 200, 13, '#d7b0ff', 'right');
   const cards = [
@@ -2387,7 +2443,7 @@ function drawTitle() {
     }
   }
   text('W A S D  or  arrows to choose    ·    Space or A to enter    ·    M mutes', 640, 560, 14, '#8eb4c6', 'center');
-  text('Warm-up builds 8 equal units and 3-tile clusters. The cross has 12 exposed sides, never 20.', 640, 598, 14, '#d7f7ff', 'center');
+  text('A staircase slides onto its frame: 2 x (width + height) x AB. A bite leaves walls you still add.', 640, 598, 14, '#d7f7ff', 'center');
   text(G.padNote || 'Plug in 8BitDo pads any time', 640, 640, 13, '#7ef6ff', 'center');
   if (G.audit.length) text('Generator check: ' + G.audit[0], 640, 680, 13, '#ff8aa0', 'center');
   roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 8);
@@ -2456,8 +2512,7 @@ function draw() {
 
 function updateLaserTicks() {
   if (!G.problem || !G.solved[1] || G.phase !== 'play') return;
-  const exposed = G.problem.cluster.exposed;
-  const n = Math.min(exposed - 1, Math.floor(laserProgress() * exposed));
+  const n = Math.min(3, Math.floor(laserProgress() * 4));
   if (n > G.laserHeard) {
     sfxTick(n);
     G.laserHeard = n;
