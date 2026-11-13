@@ -1,0 +1,2242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Crate Packer: The Excess &amp; Shortage Dock</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #05080e;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript { color: #e7f6ff; padding: 24px; font-family: "Trebuchet MS", sans-serif; }
+</style>
+</head>
+<body>
+<noscript>JavaScript and Canvas are required for Crate Packer.</noscript>
+<canvas id="game" aria-label="Crate Packer: The Excess and Shortage Dock. Singapore Primary 4 and 5 multiples with excess and shortage. Player 1: mouse, WASD and F or Space, or gamepad D-pad and A. Player 2: arrow keys and Enter, or a second gamepad."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+
+/* ==========================================================================
+   CRATE PACKER: THE EXCESS & SHORTAGE DOCK
+   Singapore Primary 4–5 · multiples with excess (+) and shortage (−)
+   1. Translate each packing clue into Multiple of N ± offset
+   2. Clamp EVERY common number on the two belts (not just the first)
+   3. Use the third clue to throw out the impostor and launch the real load
+   Solo / Co-op warehouse / Dispatch duel · Web Audio · 8BitDo · keyboard
+   ========================================================================== */
+
+const W = 1280, H = 720;
+const GEO = {
+  hudY: 8, hudH: 36,
+  clueY: 48, clueH: 90,
+  promptY: 148,
+  mainY: 178,
+  beltH: 148,
+  beltGap: 24,
+  beltX: 258,
+  beltW: 1010,
+  leftX: 12,
+  leftW: 236,
+  chuteY: 508,
+  chuteH: 204
+};
+
+const COL = {
+  bg: '#071018', ink: '#eaf6ff', dim: '#8eabc0', muted: '#516779',
+  amber: '#ffc14a', cyan: '#3ef0ff', magenta: '#ff4fd8', green: '#5dff9a',
+  lime: '#d6ff5a', bad: '#ff4d6a', warn: '#ff9a3d',
+  p1: '#ff5a6e', p2: '#3aa8ff', apple: '#ff5148', leaf: '#3ddc6e',
+  panel: 'rgba(6, 14, 24, 0.94)', slot: 'rgba(8, 18, 28, 0.8)'
+};
+
+const PTS = { offset: 80, clamp: 120, fin: 350 };
+const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const live = document.getElementById('live');
+ctx.imageSmoothingEnabled = true;
+
+const held = new Set();
+const sparks = [];
+const floaters = [];
+let hotspots = [];
+
+const pointer = { x: W / 2, y: H / 2, down: false };
+const hatIdle = {};
+
+const G = {
+  mode: 'title',
+  playMode: 'solo',
+  focus: 0,
+  tier: 1,
+  stage: 1,
+  shipment: 0,
+  solved: 0,
+  warehouse: 0,
+  teamStars: 0,
+  problem: null,
+  locked: [false, false],
+  reveal: [0, 0],
+  stamp: [0, 0],
+  tags: {},
+  clamped: [],
+  failed: {},
+  test: null,
+  launch: 0,
+  dropT: 0,
+  fall: 0,
+  popup: null,
+  feedback: '',
+  feedbackT: 0,
+  feedbackKind: 'good',
+  banner: '',
+  bannerT: 0,
+  shake: 0,
+  flash: 0,
+  t: 0,
+  note: 'Plug in an 8BitDo · D-pad moves · A confirms',
+  cursor: { 1: 0, 2: 0, 3: 0 },
+  seen: new Set(),
+  bootErrors: []
+};
+
+const players = [
+  { i: 0, x: 520, y: 280, shields: 3, stars: 0, score: 0, lockedOut: false, color: COL.p1, name: 'P1', gpPrev: {}, dirState: {}, snapLock: 0, padIndex: 0 },
+  { i: 1, x: 760, y: 450, shields: 3, stars: 0, score: 0, lockedOut: false, color: COL.p2, name: 'P2', gpPrev: {}, dirState: {}, snapLock: 0, padIndex: 1 }
+];
+
+const MODES = [
+  { id: 'solo', title: 'SOLO DOCK', sub: 'One foreman runs both belts. Mouse, keys, or one gamepad.' },
+  { id: 'coop', title: 'CO-OP WAREHOUSE', sub: 'P1 runs the top belt. P2 runs the bottom. One team score.' },
+  { id: 'versus', title: 'DISPATCH DUEL', sub: 'Race the same shipment. Stars go to the foreman who locks them in.' }
+];
+
+/* ---------- Utils ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function speak(msg) { if (live) live.textContent = msg; }
+function fmt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function pulse(speed, min, max) { return min + (max - min) * (0.5 + 0.5 * Math.sin(G.t * speed)); }
+
+function gcd(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) { const t = a % b; a = b; b = t; }
+  return a || 1;
+}
+function lcm(a, b) { return (a / gcd(a, b)) * b; }
+
+function toast(msg, kind) {
+  G.feedback = msg;
+  G.feedbackKind = kind || 'warn';
+  G.feedbackT = 3.4;
+  speak(msg);
+}
+function openPopup(title, body) {
+  G.popup = { title, body };
+  speak(title + '. ' + body);
+}
+function dismissPopup() {
+  G.popup = null;
+  audio.select();
+}
+
+/* ---------- Audio ---------- */
+const audio = (() => {
+  let actx = null, muted = false, bgmOn = false, step = 0, timer = null, master = null;
+  function ensure() {
+    if (!actx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      master = actx.createGain();
+      master.gain.value = muted ? 0 : 0.5;
+      master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume();
+    if (!bgmOn) startBgm();
+  }
+  function setMute(m) {
+    muted = m;
+    if (master) master.gain.value = muted ? 0 : 0.5;
+  }
+  function toggle() { setMute(!muted); return !muted; }
+  function tone(freq, dur, type, vol, delay, slide) {
+    if (!actx || muted) return;
+    const t0 = actx.currentTime + (delay || 0);
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(freq, t0);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol || 0.08, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, vol, freq) {
+    if (!actx || muted) return;
+    const n = Math.max(1, Math.floor(actx.sampleRate * dur));
+    const buf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = actx.createBufferSource();
+    const g = actx.createGain();
+    const f = actx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = freq || 800;
+    src.buffer = buf;
+    g.gain.value = vol || 0.06;
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start();
+  }
+  function startBgm() {
+    if (!actx || bgmOn) return;
+    bgmOn = true;
+    const bpm = 124;
+    const beat = 60 / bpm;
+    const bass = [82, 82, 98, 82, 73, 73, 82, 110];
+    const lead = [220, 0, 262, 247, 196, 0, 247, 262, 294, 262, 220, 0, 196, 220, 247, 0];
+    function tick() {
+      if (!actx) return;
+      if (!muted) {
+        const t = actx.currentTime;
+        const bi = step % 8;
+        const li = step % 16;
+        if (step % 2 === 0) {
+          const o = actx.createOscillator(), g = actx.createGain();
+          o.type = 'triangle';
+          o.frequency.setValueAtTime(150, t);
+          o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+          g.gain.setValueAtTime(0.16, t);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+          o.connect(g); g.connect(master);
+          o.start(t); o.stop(t + 0.16);
+        }
+        if (step % 2 === 1) noise(0.025, 0.035, 2400);
+        else noise(0.018, 0.02, 1800);
+        tone(bass[bi], beat * 0.72, 'sawtooth', 0.045);
+        if (lead[li]) tone(lead[li], beat * 0.42, 'square', 0.035);
+      }
+      step++;
+      timer = setTimeout(tick, beat * 1000);
+    }
+    tick();
+  }
+  return {
+    ensure, toggle, isMuted: () => muted,
+    select() { tone(520, 0.04, 'square', 0.04); },
+    snap() {
+      tone(140, 0.12, 'triangle', 0.12, 0, 70);
+      noise(0.1, 0.07, 500);
+      tone(660, 0.08, 'square', 0.06, 0.06);
+      tone(880, 0.1, 'triangle', 0.05, 0.1);
+    },
+    laser() {
+      tone(680, 0.09, 'sine', 0.06, 0, 1400);
+      tone(990, 0.12, 'square', 0.04, 0.04);
+    },
+    chime() {
+      tone(523, 0.1, 'sine', 0.07);
+      tone(659, 0.12, 'sine', 0.06, 0.08);
+      tone(784, 0.18, 'triangle', 0.06, 0.16);
+    },
+    buzz() {
+      tone(110, 0.18, 'sawtooth', 0.08);
+      tone(92, 0.22, 'square', 0.05, 0.04);
+    },
+    rocket() {
+      noise(0.45, 0.1, 400);
+      for (let i = 0; i < 8; i++) tone(160 + i * 45, 0.12, 'sawtooth', 0.05, i * 0.05);
+      tone(523, 0.16, 'square', 0.07, 0.4);
+      tone(659, 0.18, 'square', 0.06, 0.5);
+      tone(784, 0.28, 'triangle', 0.07, 0.6);
+    }
+  };
+})();
+
+/* ---------- Themes & math ---------- */
+const ITEMS = [
+  { item: 'apples', one: 'apple', container: 'bags', pack: 'bags' },
+  { item: 'stickers', one: 'sticker', container: 'sheets', pack: 'albums' },
+  { item: 'oranges', one: 'orange', container: 'trays', pack: 'boxes' },
+  { item: 'mangoes', one: 'mango', container: 'crates', pack: 'cartons' },
+  { item: 'pears', one: 'pear', container: 'trays', pack: 'boxes' },
+  { item: 'buttons', one: 'button', container: 'cards', pack: 'tins' }
+];
+
+function qty(n, th) { return n + ' ' + (n === 1 ? th.one : th.item); }
+
+function clueSentence(c, th, variant) {
+  if (c.sign < 0) {
+    return variant
+      ? `Grouped by ${c.div}, short of ${c.off} ${th.item}.`
+      : `Packed in ${th.container} of ${c.div}, needs ${c.off} more.`;
+  }
+  return variant
+    ? `${qty(c.off, th)} left unpacked from ${th.container} of ${c.div}.`
+    : `Packed in ${th.container} of ${c.div}, ${qty(c.off, th)} left over.`;
+}
+
+function clue3Sentence(c3, th) {
+  if (c3.type === 'range') return `More than ${c3.min} and fewer than ${c3.max} ${th.item}.`;
+  if (c3.adjust < 0) return `Gives ${qty(-c3.adjust, th)} away. The rest pack into ${th.pack} of ${c3.mod}.`;
+  return `Gets ${qty(c3.adjust, th)} more. Then they pack exactly into ${th.pack} of ${c3.mod}.`;
+}
+
+function ruleLabel(div, off, sign) {
+  return 'Multiple of ' + div + (sign < 0 ? ' − ' : ' + ') + off;
+}
+
+function makeOptions(div, off) {
+  return shuffle([
+    { sign: -1, label: ruleLabel(div, off, -1) },
+    { sign: 1, label: ruleLabel(div, off, 1) }
+  ]);
+}
+
+function termsUpTo(div, off, sign, maxN) {
+  const out = [];
+  for (let k = 1; k < 800; k++) {
+    const n = sign > 0 ? div * k + off : div * k - off;
+    if (n <= 0) continue;
+    if (n > maxN) break;
+    out.push(n);
+  }
+  return out;
+}
+
+function passes(n, c3) {
+  if (c3.type === 'range') return n > c3.min && n < c3.max;
+  const v = n + c3.adjust;
+  return v > 0 && v % c3.mod === 0;
+}
+
+function winnersBelow(c1, c2, c3, limit) {
+  const t1 = termsUpTo(c1.div, c1.off, c1.sign, limit - 1);
+  const t2 = new Set(termsUpTo(c2.div, c2.off, c2.sign, limit - 1));
+  const out = [];
+  for (let i = 0; i < t1.length; i++) {
+    const n = t1[i];
+    if (n < limit && t2.has(n) && passes(n, c3)) out.push(n);
+  }
+  return out;
+}
+
+function windowFor(div, off, sign, lo, hi) {
+  const all = termsUpTo(div, off, sign, hi + div * 4 + 2);
+  let start = 0;
+  while (start < all.length && all[start] < lo - div * 2) start++;
+  let slice = all.slice(start);
+  let end = slice.findIndex(n => n > hi);
+  if (end < 0) end = slice.length;
+  else end += 1;
+  slice = slice.slice(0, end);
+  while (slice.length > 8 && slice[0] < lo) slice.shift();
+  return slice;
+}
+
+function shownCommon(seq1, seq2) {
+  const s = new Set(seq2);
+  return seq1.filter((n, i) => s.has(n) && seq1.indexOf(n) === i);
+}
+
+/* Curated shipments. Each one is checked at boot: exactly one number under `cap`
+   survives every clue, and the belts show that answer plus one impostor overlap. */
+const CURATED = [
+  {
+    tier: 1,
+    theme: ITEMS[0],
+    c1: { div: 4, off: 3, sign: 1 },
+    c2: { div: 5, off: 2, sign: 1 },
+    c3: { type: 'range', min: 15, max: 30 },
+    text1: 'Packed in bags of 4, 3 apples left over.',
+    text2: 'Packed in bags of 5, 2 apples left over.',
+    text3: 'More than 15 and fewer than 30 apples.',
+    seq1: [7, 11, 15, 19, 23, 27],
+    seq2: [7, 12, 17, 22, 27],
+    answer: 27,
+    cap: 30
+  },
+  {
+    tier: 1,
+    theme: ITEMS[0],
+    c1: { div: 6, off: 1, sign: -1 },
+    c2: { div: 5, off: 3, sign: 1 },
+    c3: { type: 'range', min: 20, max: 50 },
+    text1: 'Packed in boxes of 6, needs 1 more.',
+    text2: 'Packed in boxes of 5, 3 apples left over.',
+    text3: 'More than 20 and fewer than 50 apples.',
+    seq1: [17, 23, 29, 35, 41, 47, 53, 59],
+    seq2: [18, 23, 28, 33, 38, 43, 48, 53],
+    answer: 23,
+    cap: 50
+  },
+  {
+    tier: 2,
+    theme: ITEMS[0],
+    c1: { div: 6, off: 2, sign: -1 },
+    c2: { div: 8, off: 6, sign: 1 },
+    c3: { type: 'div', adjust: -1, mod: 5 },
+    text1: 'Packed into bags of 6, needs 2 more apples.',
+    text2: 'Packed into bags of 8, 6 apples left unpacked.',
+    text3: 'Gives 1 apple away. The rest pack into bags of 5.',
+    seq1: [4, 10, 16, 22, 28, 34, 40, 46],
+    seq2: [14, 22, 30, 38, 46, 54],
+    answer: 46,
+    cap: 100
+  },
+  {
+    tier: 2,
+    theme: ITEMS[1],
+    c1: { div: 5, off: 2, sign: -1 },
+    c2: { div: 4, off: 3, sign: 1 },
+    c3: { type: 'div', adjust: 2, mod: 9 },
+    text1: 'Groups of 5, short of 2 stickers.',
+    text2: 'Groups of 4, 3 stickers left over.',
+    text3: 'Buys 2 more stickers. They pack equally into albums of 9.',
+    seq1: [13, 18, 23, 28, 33, 38, 43, 48],
+    seq2: [15, 19, 23, 27, 31, 35, 39, 43],
+    answer: 43,
+    cap: 120
+  },
+  {
+    tier: 3,
+    theme: ITEMS[3],
+    c1: { div: 9, off: 4, sign: 1 },
+    c2: { div: 12, off: 5, sign: -1 },
+    c3: { type: 'div', adjust: 2, mod: 5 },
+    text1: 'Packed in trays of 9, 4 mangoes left over.',
+    text2: 'Packed in trays of 12, needs 5 more.',
+    text3: 'Gets 2 more mangoes. The rest pack into boxes of 5.',
+    seq1: [49, 58, 67, 76, 85, 94, 103, 112],
+    seq2: [43, 55, 67, 79, 91, 103, 115],
+    answer: 103,
+    cap: 200
+  },
+  {
+    tier: 3,
+    theme: ITEMS[2],
+    c1: { div: 8, off: 2, sign: -1 },
+    c2: { div: 10, off: 2, sign: 1 },
+    c3: { type: 'div', adjust: 3, mod: 7 },
+    text1: 'Packed in crates of 8, needs 2 more oranges.',
+    text2: 'Packed in crates of 10, 2 oranges left over.',
+    text3: 'Buys 3 more oranges. They pack exactly into cartons of 7.',
+    seq1: [54, 62, 70, 78, 86, 94, 102, 110],
+    seq2: [42, 52, 62, 72, 82, 92, 102, 112],
+    answer: 102,
+    cap: 200
+  },
+  {
+    tier: 3,
+    theme: ITEMS[4],
+    c1: { div: 9, off: 1, sign: 1 },
+    c2: { div: 12, off: 4, sign: 1 },
+    c3: { type: 'div', adjust: -2, mod: 7 },
+    text1: 'Packed in trays of 9, 1 pear left over.',
+    text2: 'Packed in trays of 12, 4 pears left over.',
+    text3: 'Gives 2 pears away. The rest pack into boxes of 7.',
+    seq1: [46, 55, 64, 73, 82, 91, 100, 109],
+    seq2: [40, 52, 64, 76, 88, 100, 112],
+    answer: 100,
+    cap: 200
+  }
+];
+
+function verifyRaw(raw) {
+  const common = shownCommon(raw.seq1, raw.seq2);
+  if (common.length < 2) return 'needs two overlaps';
+  if (!common.includes(raw.answer)) return 'answer not on both belts';
+  const shownW = common.filter(n => passes(n, raw.c3));
+  if (shownW.length !== 1 || shownW[0] !== raw.answer) return 'belt filter is not unique';
+  const below = winnersBelow(raw.c1, raw.c2, raw.c3, raw.cap);
+  if (below.length !== 1 || below[0] !== raw.answer) return 'not a unique solution under the cap';
+  for (let i = 0; i < raw.seq1.length; i++) {
+    const n = raw.seq1[i];
+    const expect = raw.c1.sign > 0 ? (n - raw.c1.off) % raw.c1.div === 0 : (n + raw.c1.off) % raw.c1.div === 0;
+    if (!expect || n <= 0) return 'belt 1 left the formula';
+  }
+  for (let i = 0; i < raw.seq2.length; i++) {
+    const n = raw.seq2[i];
+    const expect = raw.c2.sign > 0 ? (n - raw.c2.off) % raw.c2.div === 0 : (n + raw.c2.off) % raw.c2.div === 0;
+    if (!expect || n <= 0) return 'belt 2 left the formula';
+  }
+  return '';
+}
+
+function hydrate(raw) {
+  const th = raw.theme || ITEMS[0];
+  const c1 = {
+    div: raw.c1.div, off: raw.c1.off, sign: raw.c1.sign,
+    text: raw.text1 || clueSentence(raw.c1, th, 0),
+    options: makeOptions(raw.c1.div, raw.c1.off)
+  };
+  const c2 = {
+    div: raw.c2.div, off: raw.c2.off, sign: raw.c2.sign,
+    text: raw.text2 || clueSentence(raw.c2, th, 1),
+    options: makeOptions(raw.c2.div, raw.c2.off)
+  };
+  const c3 = {
+    type: raw.c3.type,
+    min: raw.c3.min, max: raw.c3.max,
+    adjust: raw.c3.adjust, mod: raw.c3.mod,
+    text: raw.text3 || clue3Sentence(raw.c3, th)
+  };
+  return {
+    tier: raw.tier,
+    theme: th,
+    c1, c2, c3,
+    seq: [raw.seq1.slice(), raw.seq2.slice()],
+    answer: raw.answer,
+    cap: raw.cap,
+    note: raw.c3.type === 'div' ? ('Dock holds fewer than ' + raw.cap + ' ' + th.item + '.') : ''
+  };
+}
+
+function generate(tier) {
+  const divMin = tier === 1 ? 3 : tier === 2 ? 4 : 6;
+  const divMax = tier === 1 ? 8 : tier === 2 ? 9 : 12;
+  const ansMin = tier === 1 ? 18 : tier === 2 ? 34 : 100;
+  const ansMax = tier === 1 ? 48 : tier === 2 ? 96 : 220;
+  for (let attempt = 0; attempt < 250; attempt++) {
+    const d1 = irand(divMin, divMax);
+    const d2 = irand(divMin, divMax);
+    if (d1 === d2) continue;
+    if (gcd(d1, d2) === Math.min(d1, d2)) continue;
+    const L = lcm(d1, d2);
+    if (L > 6 * Math.min(d1, d2)) continue;
+    const o1 = irand(1, d1 - 1);
+    const o2 = irand(1, d2 - 1);
+    const s1 = Math.random() < 0.5 ? 1 : -1;
+    const s2 = Math.random() < 0.5 ? 1 : -1;
+    const c1 = { div: d1, off: o1, sign: s1 };
+    const c2 = { div: d2, off: o2, sign: s2 };
+    let c3 = null;
+    let answer = 0;
+    let decoy = 0;
+    let cap = 0;
+    const scan = tier === 3 ? 700 : 280;
+    const t1 = termsUpTo(d1, o1, s1, scan);
+    const t2 = termsUpTo(d2, o2, s2, scan);
+    const set2 = new Set(t2);
+    const common = t1.filter(n => set2.has(n));
+    if (common.length < 3) continue;
+
+    if (tier === 1) {
+      let found = false;
+      for (let i = 0; i < common.length - 1 && !found; i++) {
+        const a = common[i];
+        const b = common[i + 1];
+        const next = common[i + 2] || (b + L);
+        if (b < ansMin || b > ansMax) continue;
+        if (a < 5) continue;
+        for (let min = Math.ceil((a + 1) / 5) * 5; min < b && !found; min += 5) {
+          for (let max = Math.ceil((b + 1) / 5) * 5; max < next; max += 5) {
+            if (max - min < 12 || max - min > 40) continue;
+            const winners = common.filter(n => n > min && n < max);
+            if (winners.length === 1 && winners[0] === b) {
+              c3 = { type: 'range', min, max };
+              answer = b;
+              decoy = a;
+              cap = max;
+              found = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!found) continue;
+    } else {
+      const mod = irand(4, 9);
+      if (mod === d1 || mod === d2) continue;
+      const mag = irand(1, Math.min(4, mod - 1));
+      const adjust = Math.random() < 0.5 ? -mag : mag;
+      c3 = { type: 'div', adjust, mod };
+      const period = lcm(L, mod);
+      const winners = [];
+      for (let i = 0; i < common.length; i++) {
+        if (passes(common[i], c3)) winners.push(common[i]);
+      }
+      if (!winners.length) continue;
+      answer = winners[0];
+      if (answer < ansMin || answer > ansMax) continue;
+      const next = winners[1] || (answer + period);
+      if (next <= answer) continue;
+      const idx = common.indexOf(answer);
+      if (idx <= 0) continue;
+      decoy = common[idx - 1];
+      if (passes(decoy, c3)) continue;
+      if (decoy < 12) continue;
+      cap = Math.floor((next) / 10) * 10;
+      if (cap <= answer + Math.max(d1, d2)) continue;
+      if (cap > next) cap = next;
+      const below = winners.filter(n => n < cap);
+      if (below.length !== 1 || below[0] !== answer) continue;
+    }
+
+    const lo = Math.min(answer, decoy);
+    const hi = Math.max(answer, decoy);
+    const seq1 = windowFor(d1, o1, s1, lo, hi);
+    const seq2 = windowFor(d2, o2, s2, lo, hi);
+    if (seq1.length < 4 || seq1.length > 8 || seq2.length < 4 || seq2.length > 8) continue;
+    if (!seq1.includes(answer) || !seq1.includes(decoy)) continue;
+    if (!seq2.includes(answer) || !seq2.includes(decoy)) continue;
+    if (seq1[0] < 4 || seq2[0] < 4) continue;
+    const maxShown = Math.max(seq1[seq1.length - 1], seq2[seq2.length - 1]);
+    if (c3.type !== 'range' && maxShown >= cap) continue;
+    const vis = shownCommon(seq1, seq2);
+    if (vis.length !== 2 || !vis.includes(answer) || !vis.includes(decoy)) continue;
+    const raw = { tier, c1, c2, c3, seq1, seq2, answer, cap, theme: ITEMS[irand(0, ITEMS.length - 1)] };
+    if (verifyRaw(raw)) continue;
+    const key = tier + ':' + answer + ':' + d1 + ':' + d2;
+    const ansKey = tier + ':ans:' + answer;
+    if (G.seen.has(key) || G.seen.has(ansKey)) continue;
+    G.seen.add(key);
+    G.seen.add(ansKey);
+    return hydrate(raw);
+  }
+  return null;
+}
+
+function takeProblem(tier) {
+  // A new verified shipment every round. Curated classics are only a fallback,
+  // so a class cannot memorize 27, 23, 46, or 43 by replaying the dock.
+  let made = null;
+  for (let i = 0; i < 24 && !made; i++) made = generate(tier);
+  if (!made) {
+    const prefix = tier + ':';
+    const drop = [];
+    G.seen.forEach(k => { if (String(k).indexOf(prefix) === 0) drop.push(k); });
+    drop.forEach(k => G.seen.delete(k));
+    made = generate(tier);
+  }
+  if (made) return made;
+  const list = shuffle(CURATED.filter(p => p.tier === tier));
+  return hydrate(list[0]);
+}
+
+function bootCheck() {
+  const errors = [];
+  for (let i = 0; i < CURATED.length; i++) {
+    const why = verifyRaw(CURATED[i]);
+    if (why) errors.push('Curated ' + i + ' (' + CURATED[i].answer + '): ' + why);
+  }
+  G.bootErrors = errors;
+  return errors;
+}
+
+function explainWrong(clue) {
+  const right = ruleLabel(clue.div, clue.off, clue.sign);
+  const wrong = ruleLabel(clue.div, clue.off, -clue.sign);
+  if (clue.sign < 0) {
+    return {
+      title: 'SHORTAGE — SUBTRACT',
+      body: '“' + clue.text + '” means you are SHORT of a full group of ' + clue.div +
+        '. Subtract ' + clue.off + ' from multiples of ' + clue.div +
+        '. Choose ' + right + ', not ' + wrong + '.'
+    };
+  }
+  return {
+    title: 'EXCESS — ADD',
+    body: '“' + clue.text + '” means there is an EXCESS of ' + clue.off +
+      ' left over after full groups of ' + clue.div +
+      '. Add ' + clue.off + ' to multiples of ' + clue.div +
+      '. Choose ' + right + ', not ' + wrong + '.'
+  };
+}
+
+function mathRows(n, prob) {
+  const c3 = prob.c3;
+  const th = prob.theme;
+  if (c3.type === 'range') {
+    const above = n > c3.min;
+    const below = n < c3.max;
+    const ok = above && below;
+    return {
+      ok,
+      rows: [
+        above ? (n + ' is more than ' + c3.min) : (n + ' is not more than ' + c3.min),
+        below ? (n + ' is fewer than ' + c3.max) : (n + ' is not fewer than ' + c3.max),
+        ok ? 'Both are true. This is the shipment.' : (above ? 'Too big for this order.' : 'Too small for this order.')
+      ]
+    };
+  }
+  const v = n + c3.adjust;
+  const q = Math.floor(v / c3.mod);
+  const r = v % c3.mod;
+  const step = c3.adjust < 0 ? (n + ' − ' + (-c3.adjust) + ' = ' + v) : (n + ' + ' + c3.adjust + ' = ' + v);
+  const fit = r === 0 && v > 0;
+  const divLine = fit
+    ? (v + ' ÷ ' + c3.mod + ' = ' + q + ' exactly')
+    : (v + ' ÷ ' + c3.mod + ' = ' + q + ' remainder ' + r);
+  const end = fit
+    ? ('Exact fit! ' + q + ' ' + th.pack + ' of ' + c3.mod + '.')
+    : (qty(r, th) + ' left over. Fails Clue 3.');
+  return { ok: fit, rows: [step, divLine, end] };
+}
+
+/* ---------- Flow ---------- */
+function resetPlayers() {
+  players.forEach(p => {
+    p.shields = 3;
+    p.stars = 0;
+    p.score = 0;
+    p.lockedOut = false;
+  });
+}
+
+function toTitle() {
+  G.mode = 'title';
+  G.popup = null;
+  G.bannerT = 0;
+  speak('Title. Choose Solo Dock, Co-op Warehouse, or Dispatch Duel.');
+}
+
+function beginGame(mode) {
+  audio.ensure();
+  G.playMode = mode;
+  G.mode = 'play';
+  G.tier = 1;
+  G.solved = 0;
+  G.shipment = 0;
+  G.warehouse = 0;
+  G.teamStars = 0;
+  G.cursor = { 1: 0, 2: 0, 3: 0 };
+  G.seen = new Set();
+  G.popup = null;
+  G.bannerT = 0;
+  resetPlayers();
+  nextProblem(false);
+  const label = MODES.find(m => m.id === mode).title;
+  speak(label + ' started. Translate clue 1 and clue 2 into a plus or a minus.');
+}
+
+function nextProblem(advanceTier) {
+  if (advanceTier) {
+    G.tier = G.tier % 3 + 1;
+    G.banner = G.tier === 1 ? 'NEW SHIFT — back to two-clue loads' : ('TIER ' + G.tier + ' UNLOCKED');
+    G.bannerT = 1.7;
+  }
+  G.shipment++;
+  G.problem = takeProblem(G.tier);
+  G.stage = 1;
+  G.locked = [false, false];
+  G.reveal = [0, 0];
+  G.stamp = [0, 0];
+  G.tags = {};
+  G.clamped = [];
+  G.failed = {};
+  G.test = null;
+  G.launch = 0;
+  G.dropT = 0;
+  G.fall = 0;
+  G.feedback = '';
+  G.feedbackT = 0;
+  floaters.length = 0;
+  sparks.length = 0;
+  players.forEach(p => { p.shields = 3; p.lockedOut = false; });
+  placeReticles();
+  const p = G.problem;
+  speak('Shipment ' + G.shipment + '. ' + p.c1.text + ' ' + p.c2.text + ' ' + p.c3.text);
+}
+
+function placeReticles() {
+  rebuildHotspots();
+  const h0 = hotspots.find(h => h.type === 'offset' && h.belt === 0);
+  const h1 = hotspots.find(h => h.type === 'offset' && h.belt === 1);
+  if (h0) { players[0].x = h0.cx; players[0].y = h0.cy; }
+  if (h1) { players[1].x = h1.cx; players[1].y = h1.cy; }
+}
+
+function award(pi, pts, stars) {
+  const p = players[pi];
+  if (G.playMode === 'coop') {
+    G.warehouse += pts;
+    G.teamStars += stars;
+  } else {
+    p.score += pts;
+    p.stars += stars;
+  }
+  if (pts) floaters.push({ x: p.x, y: p.y - 28, text: '+' + pts, life: 1.1, color: COL.lime });
+}
+
+function hurt(pi) {
+  const p = players[pi];
+  p.shields -= 1;
+  G.shake = 6;
+  G.flash = 0.28;
+  audio.buzz();
+  if (p.shields > 0) return;
+  if (G.playMode === 'versus' && players[1 - pi].shields > 0) {
+    p.lockedOut = true;
+    p.shields = 0;
+    toast(p.name + ' is out of hardhats for this shipment.', 'bad');
+    return;
+  }
+  p.shields = 1;
+  p.lockedOut = false;
+  openPopup(
+    'EMERGENCY HARDHAT',
+    'The last hardhat is gone, so the dock issues one more. Only clamp a number that is printed on BOTH belts.'
+  );
+}
+
+function activeCount() { return G.playMode === 'solo' ? 1 : 2; }
+
+function tryOffset(pi, belt, sign) {
+  if (G.stage !== 1 || G.locked[belt]) return;
+  const clue = belt === 0 ? G.problem.c1 : G.problem.c2;
+  if (sign !== clue.sign) {
+    audio.buzz();
+    G.shake = 4;
+    const msg = explainWrong(clue);
+    openPopup(msg.title, msg.body);
+    return;
+  }
+  G.locked[belt] = true;
+  G.reveal[belt] = 0;
+  G.stamp[belt] = 0.45;
+  audio.snap();
+  award(pi, PTS.offset, 1);
+  burst(players[pi].x, players[pi].y, COL.green, 16);
+  if (G.locked[0] && G.locked[1]) {
+    G.stage = 2;
+    toast('Both rules are locked. Find EVERY number that sits on both belts.', 'good');
+  } else {
+    toast('Belt ' + (belt + 1) + ' locked: ' + ruleLabel(clue.div, clue.off, clue.sign) + '.', 'good');
+  }
+}
+
+function tryClamp(pi, belt, value) {
+  if (G.stage === 1) {
+    toast('Calibrate the other belt before you clamp.', 'warn');
+    return;
+  }
+  if (G.stage !== 2) return;
+  const common = shownCommon(G.problem.seq[0], G.problem.seq[1]);
+  if (!common.includes(value)) {
+    hurt(pi);
+    G.bad = { belt, value, t: 0.45 };
+    toast(value + ' is not on both belts. Clamp a number printed on the top belt AND the bottom belt.', 'bad');
+    return;
+  }
+  if (!G.tags[value]) G.tags[value] = [false, false];
+  if (G.playMode === 'coop') {
+    if (G.tags[value][belt]) return;
+    G.tags[value][belt] = true;
+    audio.laser();
+    if (G.tags[value][0] && G.tags[value][1]) completeClamp(pi, value, common);
+    else {
+      award(pi, 0, 1);
+      const who = belt === 0 ? 'P2, tag ' + value + ' on the bottom belt.' : 'P1, tag ' + value + ' on the top belt.';
+      toast('Tagged ' + value + '. ' + who, 'good');
+    }
+    return;
+  }
+  if (G.clamped.includes(value)) return;
+  G.tags[value] = [true, true];
+  completeClamp(pi, value, common);
+}
+
+function completeClamp(pi, value, common) {
+  if (!G.clamped.includes(value)) G.clamped.push(value);
+  audio.laser();
+  award(pi, PTS.clamp, 1);
+  burst(players[pi].x, players[pi].y, COL.cyan, 18);
+  if (G.clamped.length >= common.length) {
+    G.dropT = 0.65;
+    toast('All common matches are clamped. Crates dropping to the filter chute.', 'good');
+  } else {
+    toast(value + ' clamped. Keep scanning — there is another common match further along the belts.', 'good');
+  }
+}
+
+function tryChute() {
+  if (G.stage !== 2) return;
+  const common = shownCommon(G.problem.seq[0], G.problem.seq[1]);
+  if (G.clamped.length < common.length) {
+    audio.buzz();
+    toast('Keep scanning the belts — there is another common match further down!', 'warn');
+    return;
+  }
+  enterStage3();
+}
+
+function enterStage3() {
+  G.stage = 3;
+  G.fall = 1;
+  G.dropT = 0;
+  audio.chime();
+  speak('Filter chute ready. Test each candidate against clue 3.');
+}
+
+function tryCandidate(pi, value) {
+  if (G.stage !== 3) return;
+  if (G.test && G.test.t < G.test.hold) return;
+  if (G.failed[value]) {
+    toast(value + ' already failed Clue 3. Test the other crate.', 'warn');
+    return;
+  }
+  const result = mathRows(value, G.problem);
+  G.test = { value, ok: result.ok, rows: result.rows, t: 0, hold: result.ok ? 1.35 : 1.7, pi };
+  if (result.ok) {
+    audio.chime();
+    award(pi, PTS.fin, 1);
+    burst(640, 600, COL.green, 28);
+    speak(value + ' passes clue 3. ' + result.rows[2]);
+  } else {
+    audio.buzz();
+    G.failed[value] = true;
+    G.shake = 3;
+    speak(value + ' fails clue 3. ' + result.rows[2]);
+  }
+}
+
+function finishLaunch() {
+  G.solved++;
+  const up = G.solved % 2 === 0;
+  nextProblem(up);
+}
+
+/* ---------- Geometry & hotspots ---------- */
+function beltGeom(i) {
+  return {
+    x: GEO.beltX,
+    y: GEO.mainY + i * (GEO.beltH + GEO.beltGap),
+    w: GEO.beltW,
+    h: GEO.beltH
+  };
+}
+function crateGeom(i) {
+  const b = beltGeom(i);
+  return { x: GEO.leftX, y: b.y, w: GEO.leftW, h: b.h };
+}
+function tileGeom(i, count) {
+  const b = beltGeom(i);
+  const pad = 16;
+  const gap = 8;
+  const avail = b.w - pad * 2;
+  const tw = Math.min(128, (avail - gap * (count - 1)) / Math.max(1, count));
+  const total = count * tw + gap * (count - 1);
+  const x0 = b.x + (b.w - total) / 2;
+  const y = b.y + 36;
+  const th = 70;
+  const tiles = [];
+  for (let k = 0; k < count; k++) tiles.push({ x: x0 + k * (tw + gap), y, w: tw, h: th });
+  return tiles;
+}
+function choiceGeom(i) {
+  const b = beltGeom(i);
+  const gap = 14;
+  const w = (b.w - 36 - gap) / 2;
+  const y = b.y + 36;
+  const h = 88;
+  return [
+    { x: b.x + 18, y, w, h },
+    { x: b.x + 18 + w + gap, y, w, h }
+  ];
+}
+function candidateGeom(values) {
+  const w = 172, h = 118, gap = 26;
+  const total = values.length * w + Math.max(0, values.length - 1) * gap;
+  const zoneX = 390, zoneW = 640;
+  const x0 = zoneX + (zoneW - total) / 2;
+  const y = GEO.chuteY + 52 - (G.fall || 0) * 28;
+  return values.map((v, i) => ({ x: x0 + i * (w + gap), y, w, h, value: v }));
+}
+function addSpot(hs) {
+  hs.cx = hs.x + hs.w / 2;
+  hs.cy = hs.y + hs.h / 2;
+  hotspots.push(hs);
+}
+function rebuildHotspots() {
+  hotspots = [];
+  if (G.mode !== 'title') {
+    addSpot({ type: 'mute', x: 1048, y: GEO.hudY, w: 108, h: GEO.hudH, owner: null });
+    addSpot({ type: 'menu', x: 1162, y: GEO.hudY, w: 108, h: GEO.hudH, owner: null });
+  }
+  if (G.mode === 'title') {
+    modeCards().forEach(c => addSpot({ type: 'mode', mode: c.id, x: c.x, y: c.y, w: c.w, h: c.h, owner: null }));
+    return;
+  }
+  if (G.mode !== 'play' || !G.problem || G.launch > 0) return;
+  const ownerFor = (belt) => (G.playMode === 'coop' ? belt : null);
+  if (G.stage === 1) {
+    for (let b = 0; b < 2; b++) {
+      if (G.locked[b]) continue;
+      const clue = b === 0 ? G.problem.c1 : G.problem.c2;
+      const boxes = choiceGeom(b);
+      for (let k = 0; k < boxes.length; k++) {
+        addSpot({ type: 'offset', belt: b, sign: clue.options[k].sign, owner: ownerFor(b), x: boxes[k].x, y: boxes[k].y, w: boxes[k].w, h: boxes[k].h });
+      }
+    }
+  }
+  if (G.stage === 1 || G.stage === 2) {
+    for (let b = 0; b < 2; b++) {
+      if (!G.locked[b]) continue;
+      if (G.stage < 2) continue;
+      const seq = G.problem.seq[b];
+      const tiles = tileGeom(b, seq.length);
+      for (let k = 0; k < seq.length; k++) {
+        addSpot({ type: 'tile', belt: b, value: seq[k], owner: ownerFor(b), x: tiles[k].x, y: tiles[k].y, w: tiles[k].w, h: tiles[k].h });
+      }
+    }
+  }
+  if (G.stage === 2) {
+    addSpot({ type: 'chute', x: 560, y: GEO.chuteY + 78, w: 300, h: 64, owner: null });
+  }
+  if (G.stage === 3) {
+    const vals = shownCommon(G.problem.seq[0], G.problem.seq[1]).slice().sort((a, b) => a - b);
+    const boxes = candidateGeom(vals);
+    for (let i = 0; i < boxes.length; i++) {
+      addSpot({ type: 'candidate', value: boxes[i].value, owner: null, x: boxes[i].x, y: boxes[i].y, w: boxes[i].w, h: boxes[i].h });
+    }
+  }
+  if (G.popup) {
+    addSpot({ type: 'dismiss', x: 240, y: 210, w: 800, h: 280, owner: null });
+  }
+}
+
+function hotspotUnder(x, y, pi) {
+  let best = null, bestD = 1e9;
+  for (let i = 0; i < hotspots.length; i++) {
+    const h = hotspots[i];
+    if (h.type === 'mute' || h.type === 'menu' || h.type === 'dismiss') continue;
+    if (pi != null && G.playMode === 'coop' && h.owner != null && h.owner !== pi) continue;
+    const inside = x >= h.x - 8 && x <= h.x + h.w + 8 && y >= h.y - 8 && y <= h.y + h.h + 8;
+    if (!inside) continue;
+    const d = Math.hypot(h.cx - x, h.cy - y);
+    if (d < bestD) { bestD = d; best = h; }
+  }
+  return best;
+}
+
+function pointHits(x, y, h) {
+  return x >= h.x && y >= h.y && x <= h.x + h.w && y <= h.y + h.h;
+}
+
+/* ---------- Input ---------- */
+function snap(pi, dir) {
+  const p = players[pi];
+  let best = null, score = 1e9;
+  for (let i = 0; i < hotspots.length; i++) {
+    const h = hotspots[i];
+    if (h.type === 'mute' || h.type === 'menu' || h.type === 'dismiss') continue;
+    if (G.playMode === 'coop' && h.owner != null && h.owner !== pi) continue;
+    const dx = h.cx - p.x, dy = h.cy - p.y;
+    let ok = false, primary = 0, secondary = 0;
+    if (dir === 'left' && dx < -10) { ok = true; primary = -dx; secondary = Math.abs(dy); }
+    else if (dir === 'right' && dx > 10) { ok = true; primary = dx; secondary = Math.abs(dy); }
+    else if (dir === 'up' && dy < -10) { ok = true; primary = -dy; secondary = Math.abs(dx); }
+    else if (dir === 'down' && dy > 10) { ok = true; primary = dy; secondary = Math.abs(dx); }
+    if (!ok) continue;
+    const s = primary + secondary * 1.75;
+    if (s < score) { score = s; best = h; }
+  }
+  if (!best) return;
+  p.x = best.cx;
+  p.y = best.cy;
+  p.snapLock = 0.14;
+  audio.select();
+}
+
+function activate(pi, hs) {
+  if (!hs) return;
+  if (hs.type === 'mute') {
+    const on = audio.toggle();
+    toast(on ? 'Audio on' : 'Audio muted', 'good');
+    return;
+  }
+  if (hs.type === 'menu') { toTitle(); return; }
+  if (hs.type === 'mode') { beginGame(hs.mode); return; }
+  if (hs.type === 'dismiss') { dismissPopup(); return; }
+  if (G.popup || G.bannerT > 0 || G.launch > 0) return;
+  if (G.mode !== 'play') return;
+  if (players[pi].lockedOut) {
+    toast(players[pi].name + ' is out of hardhats. The other foreman can finish.', 'warn');
+    return;
+  }
+  if (G.playMode === 'coop' && hs.owner != null && hs.owner !== pi) {
+    audio.buzz();
+    toast(hs.owner === 0 ? 'Red foreman (P1) runs the top belt.' : 'Blue foreman (P2) runs the bottom belt. Arrows + Enter.', 'warn');
+    return;
+  }
+  if (hs.type === 'offset') tryOffset(pi, hs.belt, hs.sign);
+  else if (hs.type === 'tile') tryClamp(pi, hs.belt, hs.value);
+  else if (hs.type === 'candidate') tryCandidate(pi, hs.value);
+  else if (hs.type === 'chute') tryChute();
+}
+
+function confirmPlayer(pi) {
+  if (G.popup) { dismissPopup(); return; }
+  if (G.bannerT > 0) { G.bannerT = 0; return; }
+  if (G.launch > 1.15) { finishLaunch(); return; }
+  if (G.mode === 'title') {
+    beginGame(MODES[G.focus].id);
+    return;
+  }
+  const hs = hotspotUnder(players[pi].x, players[pi].y, pi);
+  activate(pi, hs);
+}
+
+function dirFromCode(code, pi) {
+  if (G.playMode === 'solo') {
+    if (code === 'KeyA' || code === 'ArrowLeft') return 'left';
+    if (code === 'KeyD' || code === 'ArrowRight') return 'right';
+    if (code === 'KeyW' || code === 'ArrowUp') return 'up';
+    if (code === 'KeyS' || code === 'ArrowDown') return 'down';
+    return '';
+  }
+  if (pi === 0) {
+    if (code === 'KeyA') return 'left';
+    if (code === 'KeyD') return 'right';
+    if (code === 'KeyW') return 'up';
+    if (code === 'KeyS') return 'down';
+  } else {
+    if (code === 'ArrowLeft') return 'left';
+    if (code === 'ArrowRight') return 'right';
+    if (code === 'ArrowUp') return 'up';
+    if (code === 'ArrowDown') return 'down';
+  }
+  return '';
+}
+
+window.addEventListener('keydown', (e) => {
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  audio.ensure();
+  if (e.code === 'KeyM') {
+    const on = audio.toggle();
+    toast(on ? 'Audio on' : 'Audio muted', 'good');
+    return;
+  }
+  if (e.code === 'Escape') { toTitle(); return; }
+  if (e.repeat) { held.add(e.code); return; }
+  held.add(e.code);
+  if (G.mode === 'title') {
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft') G.focus = (G.focus + MODES.length - 1) % MODES.length;
+    if (e.code === 'KeyD' || e.code === 'ArrowRight') G.focus = (G.focus + 1) % MODES.length;
+    if (e.code === 'Enter' || e.code === 'Space' || e.code === 'KeyF') beginGame(MODES[G.focus].id);
+    audio.select();
+    return;
+  }
+  const fire1 = e.code === 'KeyF' || e.code === 'Space';
+  const fire2 = e.code === 'Enter';
+  if (G.playMode === 'solo') {
+    const d = dirFromCode(e.code, 0);
+    if (d) snap(0, d);
+    if (fire1 || fire2) confirmPlayer(0);
+    return;
+  }
+  const d0 = dirFromCode(e.code, 0);
+  const d1 = dirFromCode(e.code, 1);
+  if (d0) snap(0, d0);
+  if (d1) snap(1, d1);
+  if (fire1) confirmPlayer(0);
+  if (fire2) confirmPlayer(1);
+});
+window.addEventListener('keyup', (e) => held.delete(e.code));
+
+function movingKeys(pi) {
+  const left = G.playMode === 'solo'
+    ? (held.has('KeyA') || held.has('ArrowLeft'))
+    : (pi === 0 ? held.has('KeyA') : held.has('ArrowLeft'));
+  const right = G.playMode === 'solo'
+    ? (held.has('KeyD') || held.has('ArrowRight'))
+    : (pi === 0 ? held.has('KeyD') : held.has('ArrowRight'));
+  const up = G.playMode === 'solo'
+    ? (held.has('KeyW') || held.has('ArrowUp'))
+    : (pi === 0 ? held.has('KeyW') : held.has('ArrowUp'));
+  const down = G.playMode === 'solo'
+    ? (held.has('KeyS') || held.has('ArrowDown'))
+    : (pi === 0 ? held.has('KeyS') : held.has('ArrowDown'));
+  return { left, right, up, down };
+}
+
+function updateReticles(dt) {
+  const n = activeCount();
+  for (let i = 0; i < n; i++) {
+    const p = players[i];
+    if (p.snapLock > 0) p.snapLock -= dt;
+    const k = movingKeys(i);
+    const mx = (k.right ? 1 : 0) - (k.left ? 1 : 0);
+    const my = (k.down ? 1 : 0) - (k.up ? 1 : 0);
+    const keyMove = mx !== 0 || my !== 0;
+    if (p.snapLock > 0) {
+      /* a fresh snap owns this moment */
+    } else if (keyMove) {
+      const len = Math.hypot(mx, my) || 1;
+      p.x = clamp(p.x + (mx / len) * 640 * dt, 16, W - 16);
+      p.y = clamp(p.y + (my / len) * 640 * dt, 16, H - 16);
+    } else if (!p.stickLive) {
+      magnet(p, i);
+    }
+  }
+}
+
+function magnet(p, pi) {
+  let best = null, bestD = 42;
+  for (let i = 0; i < hotspots.length; i++) {
+    const h = hotspots[i];
+    if (h.type === 'mute' || h.type === 'menu' || h.type === 'dismiss') continue;
+    if (G.playMode === 'coop' && h.owner != null && h.owner !== pi) continue;
+    const d = Math.hypot(h.cx - p.x, h.cy - p.y);
+    if (d < bestD) { bestD = d; best = h; }
+  }
+  if (!best) return;
+  p.x = lerp(p.x, best.cx, 0.35);
+  p.y = lerp(p.y, best.cy, 0.35);
+}
+
+function padPressed(gp, i) {
+  const b = gp.buttons && gp.buttons[i];
+  return !!(b && (b.pressed || b.value > 0.5));
+}
+function padDirs(gp) {
+  if (!gp) return { left: false, right: false, up: false, down: false, a: false, start: false, ax: 0, ay: 0 };
+  const axes = gp.axes || [];
+  const ax = axes[0] || 0;
+  const ay = axes[1] || 0;
+  let hatL = false, hatR = false, hatU = false, hatD = false;
+  if (axes.length > 9) {
+    const hat = axes[9];
+    if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+    if (hat != null && Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+  }
+  return {
+    left: padPressed(gp, PAD.LEFT) || hatL,
+    right: padPressed(gp, PAD.RIGHT) || hatR,
+    up: padPressed(gp, PAD.UP) || hatU,
+    down: padPressed(gp, PAD.DOWN) || hatD,
+    a: padPressed(gp, PAD.A),
+    start: padPressed(gp, PAD.START) || padPressed(gp, PAD.START_ALT),
+    ax, ay
+  };
+}
+function axisForce(v) {
+  const a = Math.abs(v);
+  if (a < 0.32) return 0;
+  const s = (a - 0.32) / 0.68;
+  return Math.sign(v) * (0.4 + 0.6 * s);
+}
+function listPads() {
+  try { return navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch (err) { return []; }
+}
+function pollGamepads(dt) {
+  const pads = listPads();
+  const livePads = [];
+  for (let i = 0; i < pads.length; i++) if (pads[i]) livePads.push(i);
+  if (G.mode === 'title') {
+    const gp = livePads.length ? pads[livePads[0]] : null;
+    if (!gp) return;
+    const d = padDirs(gp);
+    const prev = players[0].gpPrev;
+    if ((d.left || d.up) && !(prev.left || prev.up)) G.focus = (G.focus + MODES.length - 1) % MODES.length;
+    if ((d.right || d.down) && !(prev.right || prev.down)) G.focus = (G.focus + 1) % MODES.length;
+    if ((d.a && !prev.a) || (d.start && !prev.start)) beginGame(MODES[G.focus].id);
+    players[0].gpPrev = d;
+    return;
+  }
+  const count = activeCount();
+  for (let i = 0; i < count; i++) {
+    const p = players[i];
+    if (livePads[i] == null) continue;
+    p.padIndex = livePads[i];
+    const d = padDirs(pads[p.padIndex]);
+    const prev = p.gpPrev || {};
+    const dirs = ['left', 'right', 'up', 'down'];
+    if (!p.dirHold) p.dirHold = { left: 0, right: 0, up: 0, down: 0 };
+    let used = false;
+    for (let k = 0; k < dirs.length; k++) {
+      const name = dirs[k];
+      if (d[name]) {
+        p.dirHold[name] += dt;
+        const fresh = !prev[name];
+        const repeat = p.dirHold[name] > 0.42;
+        if (fresh || repeat) {
+          snap(i, name);
+          if (repeat) p.dirHold[name] = 0.26;
+          used = true;
+        }
+      } else p.dirHold[name] = 0;
+    }
+    const fx = used ? 0 : axisForce(d.ax);
+    const fy = used ? 0 : axisForce(d.ay);
+    p.stickLive = !used && (fx !== 0 || fy !== 0);
+    if (p.stickLive && p.snapLock <= 0) {
+      p.x = clamp(p.x + fx * 680 * dt, 16, W - 16);
+      p.y = clamp(p.y + fy * 680 * dt, 16, H - 16);
+    }
+    if (d.a && !prev.a) confirmPlayer(i);
+    p.gpPrev = d;
+  }
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  audio.ensure();
+  syncPointer(e);
+  pointer.down = true;
+  handlePointer();
+});
+canvas.addEventListener('pointermove', (e) => syncPointer(e));
+canvas.addEventListener('pointerup', () => { pointer.down = false; });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+function syncPointer(e) {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = (e.clientX - rect.left) * (W / rect.width);
+  pointer.y = (e.clientY - rect.top) * (H / rect.height);
+}
+function handlePointer() {
+  const mute = hotspots.find(h => h.type === 'mute');
+  const menu = hotspots.find(h => h.type === 'menu');
+  if (mute && pointHits(pointer.x, pointer.y, mute)) { activate(0, mute); return; }
+  if (menu && pointHits(pointer.x, pointer.y, menu)) { activate(0, menu); return; }
+  if (G.popup) { dismissPopup(); return; }
+  if (G.bannerT > 0) { G.bannerT = 0; return; }
+  if (G.launch > 1.15) { finishLaunch(); return; }
+  if (G.mode === 'title') {
+    for (let i = 0; i < hotspots.length; i++) {
+      const h = hotspots[i];
+      if (h.type === 'mode' && pointHits(pointer.x, pointer.y, h)) {
+        G.focus = MODES.findIndex(m => m.id === h.mode);
+        beginGame(h.mode);
+        return;
+      }
+    }
+    return;
+  }
+  players[0].x = pointer.x;
+  players[0].y = pointer.y;
+  const hs = hotspotUnder(pointer.x, pointer.y, 0);
+  if (hs) activate(0, hs);
+}
+
+window.addEventListener('gamepadconnected', (e) => {
+  audio.ensure();
+  G.note = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+  if (G.mode !== 'title') toast(G.note, 'good');
+  speak(G.note);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  G.note = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+  if (G.mode !== 'title') toast(G.note, 'warn');
+});
+
+/* ---------- Resize ---------- */
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = Math.floor(W * scale) + 'px';
+  canvas.style.height = Math.floor(H * scale) + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- Drawing ---------- */
+function pathRound(x, y, w, h, r) {
+  const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+function panel(x, y, w, h, r, fill, stroke) {
+  pathRound(x, y, w, h, r);
+  ctx.fillStyle = fill || COL.panel;
+  ctx.fill();
+  if (stroke) {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+}
+function text(str, x, y, font, color, align) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+function wrap(str, maxW, font) {
+  ctx.font = font;
+  const words = String(str).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    sparks.push({
+      x, y,
+      vx: rand(-160, 160),
+      vy: rand(-220, -30),
+      life: rand(0.35, 0.8),
+      color
+    });
+  }
+}
+function drawApple(x, y, r, color) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color || COL.apple;
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.38)';
+  ctx.beginPath();
+  ctx.arc(x - r * 0.28, y - r * 0.32, r * 0.26, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = COL.leaf;
+  ctx.lineWidth = Math.max(1.4, r * 0.18);
+  ctx.beginPath();
+  ctx.moveTo(x, y - r * 0.8);
+  ctx.quadraticCurveTo(x + r * 0.8, y - r * 1.45, x + r * 0.15, y - r * 0.55);
+  ctx.stroke();
+}
+function drawStar(x, y, r, color) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+function drawHat(x, y, filled, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = filled ? color : 'rgba(255,255,255,0.04)';
+  ctx.strokeStyle = filled ? color : '#9eb4c6';
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.moveTo(-7, 2);
+  ctx.quadraticCurveTo(-8, -8, 0, -9);
+  ctx.quadraticCurveTo(8, -8, 7, 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  pathRound(-11, 2, 22, 4, 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+function drawCheck(x, y, s, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.35, y);
+  ctx.lineTo(x - s * 0.08, y + s * 0.32);
+  ctx.lineTo(x + s * 0.4, y - s * 0.34);
+  ctx.stroke();
+}
+function drawCross(x, y, s, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - s * 0.32, y - s * 0.32);
+  ctx.lineTo(x + s * 0.32, y + s * 0.32);
+  ctx.moveTo(x + s * 0.32, y - s * 0.32);
+  ctx.lineTo(x - s * 0.32, y + s * 0.32);
+  ctx.stroke();
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#102033');
+  g.addColorStop(0.45, '#0b1624');
+  g.addColorStop(1, '#081018');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Distant neon orchard
+  ctx.fillStyle = '#07140f';
+  ctx.beginPath();
+  ctx.moveTo(0, 210);
+  for (let i = 0; i <= 16; i++) {
+    const x = i * 90 - 20;
+    const h = 70 + (i % 3) * 18;
+    ctx.lineTo(x, 210);
+    ctx.lineTo(x + 28, 210 - h);
+    ctx.lineTo(x + 56, 210);
+  }
+  ctx.lineTo(W, 248);
+  ctx.lineTo(0, 248);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(61, 220, 110, 0.28)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Warehouse truss
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.08)';
+  ctx.lineWidth = 1;
+  for (let x = 40; x < W; x += 80) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  // Floor grid under the chute
+  ctx.strokeStyle = 'rgba(255, 193, 74, 0.05)';
+  for (let y = GEO.chuteY; y < H; y += 16) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y + 20);
+    ctx.stroke();
+  }
+  // Neon lamp glow
+  const lamp = ctx.createRadialGradient(W / 2, 40, 10, W / 2, 80, 420);
+  lamp.addColorStop(0, 'rgba(62, 240, 255, 0.08)');
+  lamp.addColorStop(1, 'rgba(62, 240, 255, 0)');
+  ctx.fillStyle = lamp;
+  ctx.fillRect(0, 0, W, 240);
+}
+
+function modeCards() {
+  const w = 320, h = 150, gap = 24;
+  const total = MODES.length * w + (MODES.length - 1) * gap;
+  const x0 = (W - total) / 2;
+  return MODES.map((m, i) => ({ id: m.id, x: x0 + i * (w + gap), y: 360, w, h, i }));
+}
+
+function drawTitle() {
+  drawBackground();
+  text('PRIMARY 4–5  ·  MULTIPLES', W / 2, 78, 'bold 14px Trebuchet MS, sans-serif', COL.cyan, 'center');
+  ctx.save();
+  ctx.shadowColor = COL.magenta;
+  ctx.shadowBlur = 18;
+  text('CRATE PACKER', W / 2, 128, 'bold 64px Trebuchet MS, sans-serif', COL.ink, 'center');
+  ctx.restore();
+  text('The Excess & Shortage Dock', W / 2, 176, '22px Trebuchet MS, sans-serif', COL.amber, 'center');
+
+  const lines = wrap('Turn each packing clue into a shifted multiple. Clamp every number that lands on both belts. Then use the third clue to throw out the impostor.', 760, '16px Trebuchet MS, sans-serif');
+  lines.forEach((ln, i) => text(ln, W / 2, 214 + i * 22, '16px Trebuchet MS, sans-serif', COL.dim, 'center'));
+
+  // Mini dual belt decoration
+  text('SHORTAGE  →  multiple − extra needed', 200, 272, 'bold 14px Trebuchet MS, sans-serif', COL.bad, 'left');
+  text('EXCESS  →  multiple + left over', 1080, 272, 'bold 14px Trebuchet MS, sans-serif', COL.green, 'right');
+  panel(180, 290, 920, 42, 10, 'rgba(8,16,28,0.8)', 'rgba(62,240,255,0.35)');
+  const scroll = (G.t * 40) % 28;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(190, 296, 900, 30);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.45)';
+  ctx.lineWidth = 3;
+  for (let x = 190 - scroll; x < 1100; x += 28) {
+    ctx.beginPath();
+    ctx.moveTo(x, 302);
+    ctx.lineTo(x + 10, 312);
+    ctx.lineTo(x, 322);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const cards = modeCards();
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    const on = i === G.focus;
+    panel(c.x, c.y, c.w, c.h, 12, on ? 'rgba(16, 28, 44, 0.96)' : 'rgba(8, 14, 24, 0.9)', on ? COL.amber : 'rgba(142, 171, 192, 0.35)');
+    if (on) {
+      ctx.save();
+      ctx.shadowColor = COL.amber;
+      ctx.shadowBlur = 16;
+      ctx.strokeStyle = COL.amber;
+      ctx.lineWidth = 2;
+      pathRound(c.x, c.y, c.w, c.h, 12);
+      ctx.stroke();
+      ctx.restore();
+    }
+    text(MODES[i].title, c.x + c.w / 2, c.y + 42, 'bold 18px Trebuchet MS, sans-serif', on ? COL.amber : COL.ink, 'center');
+    const sub = wrap(MODES[i].sub, c.w - 36, '14px Trebuchet MS, sans-serif');
+    sub.forEach((ln, li) => text(ln, c.x + c.w / 2, c.y + 78 + li * 18, '14px Trebuchet MS, sans-serif', COL.dim, 'center'));
+  }
+
+  text('P1   mouse,  WASD + F / Space,  or gamepad D-pad + A', W / 2, 556, '15px Trebuchet MS, sans-serif', COL.p1, 'center');
+  text('P2   arrow keys + Enter,  or a second 8BitDo', W / 2, 582, '15px Trebuchet MS, sans-serif', COL.p2, 'center');
+  text('M mutes the warehouse band     ·     Esc returns here', W / 2, 612, '14px Trebuchet MS, sans-serif', COL.muted, 'center');
+  text(G.note, W / 2, 644, '13px Trebuchet MS, sans-serif', COL.dim, 'center');
+  text(audio.isMuted() ? 'AUDIO MUTED' : 'AUDIO ON', W / 2, 670, 'bold 13px Trebuchet MS, sans-serif', audio.isMuted() ? COL.bad : COL.green, 'center');
+}
+
+function tierName() {
+  if (G.tier === 1) return 'TIER 1 · TWO CLUES';
+  if (G.tier === 2) return 'TIER 2 · FILTER';
+  return 'TIER 3 · BIG LOADS';
+}
+function modeName() {
+  if (G.playMode === 'coop') return 'CO-OP';
+  if (G.playMode === 'versus') return 'DUEL';
+  return 'SOLO';
+}
+
+function drawHUD() {
+  panel(8, GEO.hudY, 236, GEO.hudH, 8, COL.panel, COL.p1);
+  panel(250, GEO.hudY, 128, GEO.hudH, 8, COL.panel, 'rgba(62,240,255,0.45)');
+  panel(384, GEO.hudY, 200, GEO.hudH, 8, COL.panel, COL.amber);
+  panel(590, GEO.hudY, 210, GEO.hudH, 8, COL.panel, COL.lime);
+  panel(806, GEO.hudY, 236, GEO.hudH, 8, COL.panel, G.playMode === 'solo' ? COL.muted : COL.p2);
+  panel(1048, GEO.hudY, 108, GEO.hudH, 8, COL.panel, audio.isMuted() ? COL.bad : COL.green);
+  panel(1162, GEO.hudY, 108, GEO.hudH, 8, COL.panel, COL.dim);
+
+  drawPlayerBadge(players[0], 20, true);
+  text(modeName(), 314, GEO.hudY + 18, 'bold 14px Trebuchet MS, sans-serif', COL.cyan, 'center');
+  text(tierName(), 484, GEO.hudY + 18, 'bold 13px Trebuchet MS, sans-serif', COL.amber, 'center');
+  if (G.playMode === 'versus') {
+    text(players[0].score + ' : ' + players[1].score, 695, GEO.hudY + 18, 'bold 16px Trebuchet MS, sans-serif', COL.ink, 'center');
+  } else if (G.playMode === 'coop') {
+    text('TEAM ' + fmt(G.warehouse) + '   ★ ' + G.teamStars, 695, GEO.hudY + 18, 'bold 14px Trebuchet MS, sans-serif', COL.lime, 'center');
+  } else {
+    text('SCORE ' + fmt(players[0].score), 695, GEO.hudY + 18, 'bold 14px Trebuchet MS, sans-serif', COL.lime, 'center');
+  }
+  drawPlayerBadge(players[1], 818, G.playMode !== 'solo');
+  text(audio.isMuted() ? 'MUTE' : 'SOUND', 1102, GEO.hudY + 18, 'bold 13px Trebuchet MS, sans-serif', audio.isMuted() ? COL.bad : COL.green, 'center');
+  text('TITLE', 1216, GEO.hudY + 18, 'bold 13px Trebuchet MS, sans-serif', COL.dim, 'center');
+}
+
+function drawPlayerBadge(p, x, on) {
+  text(p.name, x, GEO.hudY + 18, 'bold 13px Trebuchet MS, sans-serif', on ? p.color : COL.muted, 'left');
+  for (let i = 0; i < 3; i++) drawHat(x + 46 + i * 24, GEO.hudY + 18, on && i < p.shields, p.color);
+  if (G.playMode === 'coop') return;
+  drawStar(x + 128, GEO.hudY + 18, 7, on ? COL.amber : COL.muted);
+  text(String(p.stars), x + 142, GEO.hudY + 18, 'bold 14px Trebuchet MS, sans-serif', on ? COL.ink : COL.muted, 'left');
+}
+
+function drawClueCard(index, clue, extra) {
+  const gap = 10;
+  const w = (W - 24 - gap * 2) / 3;
+  const x = 12 + index * (w + gap);
+  const y = GEO.clueY;
+  const hot = (index === 2 && G.stage >= 3) || (index < 2 && G.stage === 1 && !G.locked[index]);
+  const stroke = index === 2 ? (hot ? COL.amber : 'rgba(255,193,74,0.35)') : (index === 0 ? 'rgba(255,90,110,0.7)' : 'rgba(58,168,255,0.7)');
+  panel(x, y, w, GEO.clueH, 10, COL.panel, stroke);
+  const badge = index === 0 ? 'CLUE 1 · TOP BELT' : index === 1 ? 'CLUE 2 · BOTTOM BELT' : 'CLUE 3 · FILTER';
+  text(badge, x + 14, y + 16, 'bold 11px Trebuchet MS, sans-serif', index === 2 ? COL.amber : COL.cyan, 'left');
+  if (extra) text(extra, x + w - 14, y + 16, 'bold 12px Trebuchet MS, sans-serif', COL.amber, 'right');
+  const bodyFont = '15px Trebuchet MS, sans-serif';
+  const lines = wrap(clue.text, w - 28, bodyFont).slice(0, 3);
+  lines.forEach((ln, i) => text(ln, x + 14, y + 42 + i * 18, bodyFont, COL.ink, 'left'));
+}
+
+function drawPrompt() {
+  const stages = ['1  TRANSLATE', '2  CLAMP', '3  FILTER'];
+  stages.forEach((label, i) => {
+    const on = G.stage === i + 1 || (G.stage > i + 1);
+    const cur = G.stage === i + 1;
+    const x = 12 + i * 132;
+    panel(x, GEO.promptY, 124, 22, 6, cur ? 'rgba(255,193,74,0.16)' : 'rgba(8,14,24,0.7)', cur ? COL.amber : (on ? COL.green : COL.muted));
+    text(label, x + 62, GEO.promptY + 11, 'bold 11px Trebuchet MS, sans-serif', cur ? COL.amber : (on ? COL.green : COL.muted), 'center');
+  });
+  let msg = 'Read each clue. Shortage subtracts. Excess adds.';
+  let col = COL.ink;
+  if (G.stage === 2) {
+    const common = G.problem ? shownCommon(G.problem.seq[0], G.problem.seq[1]) : [];
+    msg = 'Clamp EVERY shared number. ' + G.clamped.length + ' of ' + common.length + ' locked.';
+  } else if (G.stage === 3) msg = 'Test each crate in the laser chute. Only one survives Clue 3.';
+  else if (G.stage === 4) msg = 'Shipment locked. The rocket has the real count.';
+  if (G.feedbackT > 0 && G.feedback) {
+    msg = G.feedback;
+    col = G.feedbackKind === 'bad' ? COL.bad : G.feedbackKind === 'good' ? COL.green : COL.warn;
+  }
+  text(msg, 420, GEO.promptY + 11, '14px Trebuchet MS, sans-serif', col, 'left');
+}
+
+function drawSlot(x, y, s, empty) {
+  pathRound(x, y, s, s, 4);
+  if (empty) {
+    ctx.fillStyle = 'rgba(255, 60, 90, ' + (0.18 + 0.28 * pulse(5, 0, 1)) + ')';
+    ctx.fill();
+    ctx.strokeStyle = COL.bad;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    text('−', x + s / 2, y + s / 2 + 1, 'bold ' + Math.max(10, Math.floor(s * 0.7)) + 'px Trebuchet MS, sans-serif', COL.bad, 'center');
+  } else {
+    ctx.fillStyle = COL.slot;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(62, 240, 255, 0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    drawApple(x + s / 2, y + s / 2 + 1, s * 0.3);
+  }
+}
+
+function drawCrate(i) {
+  const r = crateGeom(i);
+  const locked = G.locked[i];
+  const clue = i === 0 ? G.problem.c1 : G.problem.c2;
+  panel(r.x, r.y, r.w, r.h, 10, 'rgba(7, 16, 28, 0.92)', i === 0 ? 'rgba(255,90,110,0.55)' : 'rgba(58,168,255,0.55)');
+  text(i === 0 ? 'TOP CRATE BLUEPRINT' : 'BOTTOM CRATE BLUEPRINT', r.x + 12, r.y + 16, 'bold 11px Trebuchet MS, sans-serif', COL.cyan, 'left');
+  drawArm(r.x + r.w - 28, r.y + 28, i);
+
+  if (!locked) {
+    text('Waiting for', r.x + r.w / 2, r.y + 58, '14px Trebuchet MS, sans-serif', COL.dim, 'center');
+    text('+  or  −', r.x + r.w / 2, r.y + 84, 'bold 28px Trebuchet MS, sans-serif', COL.amber, 'center');
+    text('Calibrate this belt', r.x + r.w / 2, r.y + 114, '13px Trebuchet MS, sans-serif', COL.muted, 'center');
+    return;
+  }
+  const div = clue.div;
+  const cols = Math.min(6, div);
+  const rows = Math.ceil(div / cols);
+  const slot = Math.min(22, Math.floor((r.w - 28) / cols) - 3);
+  const gridW = cols * (slot + 3);
+  const gridH = rows * (slot + 3);
+  const gx = r.x + 12;
+  const gy = r.y + 32;
+  for (let s = 0; s < div; s++) {
+    const c = s % cols, rr = Math.floor(s / cols);
+    const empty = clue.sign < 0 && s >= div - clue.off;
+    drawSlot(gx + c * (slot + 3), gy + rr * (slot + 3), slot, empty);
+  }
+  const captionY = r.y + r.h - 30;
+  if (clue.sign > 0) {
+    const loose = clue.off;
+    const ax = r.x + 14;
+    const ay = gy + gridH + 12;
+    for (let s = 0; s < loose; s++) drawApple(ax + s * 16, ay, 6, COL.apple);
+    text('+' + loose, ax + loose * 16 + 6, ay, 'bold 12px Trebuchet MS, sans-serif', COL.green, 'left');
+  }
+  const caption = clue.sign < 0
+    ? ('Short ' + clue.off + '  →  subtract')
+    : ('Extra ' + clue.off + '  →  add');
+  text(caption, r.x + 12, captionY, 'bold 13px Trebuchet MS, sans-serif', clue.sign < 0 ? COL.bad : COL.green, 'left');
+  text(ruleLabel(clue.div, clue.off, clue.sign), r.x + 12, r.y + r.h - 14, '12px Trebuchet MS, sans-serif', COL.ink, 'left');
+}
+
+function drawArm(x, y, belt) {
+  const stamp = G.stamp[belt] || 0;
+  const ang = -0.5 + Math.sin(G.t * 2 + belt) * 0.08 + (stamp > 0 ? (1 - stamp / 0.45) * 0.7 : 0);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = '#b7c6d4';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, 22);
+  ctx.stroke();
+  ctx.translate(0, 22);
+  ctx.rotate(0.7);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, 16);
+  ctx.stroke();
+  ctx.strokeStyle = COL.amber;
+  ctx.beginPath();
+  ctx.moveTo(-5, 16);
+  ctx.lineTo(5, 16);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBelt(i) {
+  const b = beltGeom(i);
+  const clue = i === 0 ? G.problem.c1 : G.problem.c2;
+  panel(b.x, b.y, b.w, b.h, 10, 'rgba(8, 16, 28, 0.92)', i === 0 ? 'rgba(255,90,110,0.65)' : 'rgba(58,168,255,0.65)');
+  const who = i === 0 ? 'TOP BELT' : 'BOTTOM BELT';
+  const whoCol = i === 0 ? COL.p1 : COL.p2;
+  text(who, b.x + 14, b.y + 16, 'bold 12px Trebuchet MS, sans-serif', whoCol, 'left');
+  if (G.playMode === 'coop') {
+    text(i === 0 ? 'P1 CALIBRATES' : 'P2 CALIBRATES', b.x + 110, b.y + 16, 'bold 11px Trebuchet MS, sans-serif', COL.dim, 'left');
+  }
+  if (G.locked[i]) {
+    text(ruleLabel(clue.div, clue.off, clue.sign), b.x + b.w - 14, b.y + 16, 'bold 13px Trebuchet MS, sans-serif', COL.green, 'right');
+  }
+
+  // Rollers
+  const rollY = b.y + b.h - 16;
+  ctx.strokeStyle = 'rgba(142, 171, 192, 0.25)';
+  ctx.lineWidth = 3;
+  const shift = (G.t * 46) % 22;
+  ctx.save();
+  pathRound(b.x + 8, rollY - 6, b.w - 16, 14, 4);
+  ctx.clip();
+  for (let x = b.x - 22 + shift; x < b.x + b.w; x += 22) {
+    ctx.beginPath();
+    ctx.moveTo(x, rollY - 6);
+    ctx.lineTo(x + 8, rollY + 8);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  if (!G.locked[i]) drawChoices(i);
+  else drawTiles(i);
+}
+
+function drawChoices(i) {
+  const clue = i === 0 ? G.problem.c1 : G.problem.c2;
+  const boxes = choiceGeom(i);
+  for (let k = 0; k < 2; k++) {
+    const box = boxes[k];
+    const opt = clue.options[k];
+    const hover = isHover(box);
+    panel(box.x, box.y, box.w, box.h, 10, hover ? 'rgba(20, 32, 48, 0.98)' : 'rgba(10, 18, 30, 0.95)', opt.sign < 0 ? 'rgba(255,77,106,0.8)' : 'rgba(93,255,154,0.75)');
+    text('MULTIPLE OF ' + clue.div, box.x + box.w / 2, box.y + 20, 'bold 14px Trebuchet MS, sans-serif', COL.dim, 'center');
+    const symbol = opt.sign < 0 ? '− ' + clue.off : '+ ' + clue.off;
+    text(symbol, box.x + box.w / 2, box.y + 48, 'bold 30px Trebuchet MS, sans-serif', opt.sign < 0 ? COL.bad : COL.green, 'center');
+    text(opt.sign < 0 ? 'SHORTAGE' : 'EXCESS', box.x + box.w / 2, box.y + 72, 'bold 12px Trebuchet MS, sans-serif', opt.sign < 0 ? COL.bad : COL.green, 'center');
+  }
+}
+
+function isHover(box) {
+  const spots = [pointer];
+  for (let i = 0; i < activeCount(); i++) spots.push(players[i]);
+  for (let i = 0; i < spots.length; i++) {
+    const p = spots[i];
+    if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) return true;
+  }
+  return false;
+}
+
+function drawTiles(i) {
+  const seq = G.problem.seq[i];
+  const tiles = tileGeom(i, seq.length);
+  const other = new Set(G.problem.seq[1 - i]);
+  const reveal = G.reveal[i];
+  for (let k = 0; k < seq.length; k++) {
+    const tile = tiles[k];
+    const value = seq[k];
+    const appear = clamp((reveal * (seq.length + 0.2) - k) / 1.2, 0, 1);
+    if (appear <= 0) continue;
+    const clamped = G.clamped.includes(value);
+    const tagged = G.tags[value] && G.tags[value][i];
+    const bad = G.bad && G.bad.belt === i && G.bad.value === value && G.bad.t > 0;
+    const onBoth = other.has(value);
+    ctx.globalAlpha = appear;
+    let stroke = 'rgba(62, 240, 255, 0.45)';
+    let fill = 'rgba(10, 20, 32, 0.95)';
+    if (bad) { stroke = COL.bad; fill = 'rgba(60, 12, 24, 0.95)'; }
+    else if (clamped) { stroke = COL.green; fill = 'rgba(12, 40, 28, 0.96)'; }
+    else if (tagged) { stroke = COL.amber; fill = 'rgba(40, 32, 10, 0.95)'; }
+    else if (isHover(tile) && onBoth && G.stage === 2) { stroke = COL.amber; }
+    panel(tile.x, tile.y, tile.w, tile.h, 8, fill, stroke);
+    const digits = String(value).length;
+    const fontPx = tile.w < 78 ? 20 : digits > 2 ? 26 : 30;
+    text(String(value), tile.x + tile.w / 2, tile.y + tile.h / 2 + 1, 'bold ' + fontPx + 'px Trebuchet MS, sans-serif', clamped ? COL.green : COL.ink, 'center');
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawLasers() {
+  if (!G.problem || !G.locked[0] || !G.locked[1]) return;
+  const seq0 = G.problem.seq[0], seq1 = G.problem.seq[1];
+  const t0 = tileGeom(0, seq0.length);
+  const t1 = tileGeom(1, seq1.length);
+  const set1 = new Set(seq1);
+  function link(value, style, width, alpha) {
+    const i0 = seq0.indexOf(value);
+    const i1 = seq1.indexOf(value);
+    if (i0 < 0 || i1 < 0) return;
+    const a = t0[i0], b = t1[i1];
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = style;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = style;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(a.x + a.w / 2, a.y + a.h);
+    ctx.lineTo(b.x + b.w / 2, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Hover hint: dashed link when the reticle sits on a real overlap
+  if (G.stage === 2) {
+    const hinted = new Set();
+    const watch = [pointer];
+    for (let i = 0; i < activeCount(); i++) watch.push(players[i]);
+    for (let i = 0; i < watch.length; i++) {
+      const h = hotspotUnder(watch[i].x, watch[i].y, i === 0 ? 0 : (watch[i] === pointer ? 0 : i - 1));
+      if (h && h.type === 'tile' && set1.has(h.value) && seq0.includes(h.value)) hinted.add(h.value);
+    }
+    hinted.forEach(v => {
+      if (!G.clamped.includes(v)) link(v, COL.amber, 2, 0.55);
+    });
+  }
+  G.clamped.forEach(v => link(v, COL.cyan, 3, 0.95));
+}
+
+function drawChute() {
+  panel(12, GEO.chuteY, W - 24, GEO.chuteH, 12, 'rgba(6, 12, 20, 0.94)', 'rgba(255, 193, 74, 0.45)');
+  text('LASER INSPECTION CHUTE', 28, GEO.chuteY + 18, 'bold 12px Trebuchet MS, sans-serif', COL.amber, 'left');
+  drawMachine();
+  drawRocket();
+  if (G.stage < 2) {
+    text('The filter waits until both belts are calibrated.', 700, GEO.chuteY + 100, '16px Trebuchet MS, sans-serif', COL.muted, 'center');
+  } else if (G.stage === 2) {
+    const box = { x: 560, y: GEO.chuteY + 78, w: 300, h: 64 };
+    const hover = isHover(box);
+    panel(box.x, box.y, box.w, box.h, 10, hover ? 'rgba(40, 28, 10, 0.95)' : 'rgba(16, 22, 32, 0.95)', COL.amber);
+    text('SEND TO CHUTE', box.x + box.w / 2, box.y + 24, 'bold 16px Trebuchet MS, sans-serif', COL.amber, 'center');
+    text('Only after every overlap is clamped', box.x + box.w / 2, box.y + 46, '12px Trebuchet MS, sans-serif', COL.dim, 'center');
+  } else if (G.stage === 3 || G.stage === 4) {
+    drawCandidates();
+  }
+}
+
+function drawMachine() {
+  const x = 28, y = GEO.chuteY + 36, w = 340, h = 146;
+  panel(x, y, w, h, 8, 'rgba(4, 10, 16, 0.95)', 'rgba(62, 240, 255, 0.4)');
+  const scanX = x + 8 + ((G.t * 90) % (w - 16));
+  ctx.strokeStyle = 'rgba(62, 240, 255, 0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(scanX, y + 6);
+  ctx.lineTo(Math.min(x + w - 8, scanX + 36), y + 6);
+  ctx.stroke();
+  if (!G.test) {
+    const idle = G.stage >= 3 ? 'Choose a crate to test Clue 3.' : 'Scanner standing by.';
+    const lines = wrap(G.problem ? G.problem.c3.text : '', w - 28, '14px Trebuchet MS, sans-serif');
+    text(idle, x + 14, y + 28, 'bold 13px Trebuchet MS, sans-serif', COL.dim, 'left');
+    lines.slice(0, 3).forEach((ln, i) => text(ln, x + 14, y + 56 + i * 18, '14px Trebuchet MS, sans-serif', COL.ink, 'left'));
+    return;
+  }
+  const show = G.test.t > 0.15 ? 1 : 0;
+  const show2 = G.test.t > 0.55 ? 2 : show;
+  const show3 = G.test.t > 1.0 ? 3 : show2;
+  for (let i = 0; i < show3; i++) {
+    const col = i < 2 ? COL.ink : (G.test.ok ? COL.green : COL.bad);
+    const font = i === 2 ? 'bold 15px Trebuchet MS, sans-serif' : '18px Trebuchet MS, sans-serif';
+    const lines = wrap(G.test.rows[i], w - 24, font);
+    text(lines[0], x + 14, y + 32 + i * 36, font, col, 'left');
+  }
+  if (show3 === 3) {
+    if (G.test.ok) drawCheck(x + w - 36, y + h - 28, 16, COL.green);
+    else drawCross(x + w - 36, y + h - 28, 16, COL.bad);
+  }
+}
+
+function drawCandidates() {
+  const vals = shownCommon(G.problem.seq[0], G.problem.seq[1]).slice().sort((a, b) => a - b);
+  const boxes = candidateGeom(vals);
+  for (let i = 0; i < boxes.length; i++) {
+    const box = boxes[i];
+    const value = box.value;
+    const failed = !!G.failed[value];
+    const passed = G.test && G.test.ok && G.test.value === value;
+    const hover = isHover(box);
+    const stroke = passed ? COL.green : failed ? COL.bad : hover ? COL.amber : 'rgba(62,240,255,0.55)';
+    panel(box.x, box.y, box.w, box.h, 10, 'rgba(8, 16, 28, 0.96)', stroke);
+    text(G.problem.theme.item.toUpperCase(), box.x + box.w / 2, box.y + 22, 'bold 11px Trebuchet MS, sans-serif', COL.dim, 'center');
+    text(String(value), box.x + box.w / 2, box.y + 62, 'bold 40px Trebuchet MS, sans-serif', passed ? COL.green : failed ? COL.bad : COL.ink, 'center');
+    text(passed ? 'EXACT FIT' : failed ? 'FAILS CLUE 3' : 'TEST CLUE 3', box.x + box.w / 2, box.y + 96, 'bold 12px Trebuchet MS, sans-serif', passed ? COL.green : failed ? COL.bad : COL.amber, 'center');
+  }
+}
+
+function drawRocket() {
+  const x = 1088, y = GEO.chuteY + 28;
+  const lift = G.launch > 1 ? (G.launch - 1) * 220 : 0;
+  ctx.save();
+  ctx.translate(0, -lift);
+  // Exhaust
+  if (G.launch > 0.4) {
+    ctx.fillStyle = 'rgba(255, 160, 60, 0.85)';
+    ctx.beginPath();
+    ctx.moveTo(x + 46, y + 132);
+    ctx.lineTo(x + 70, y + 132 + 28 + Math.sin(G.t * 30) * 6);
+    ctx.lineTo(x + 94, y + 132);
+    ctx.fill();
+    ctx.fillStyle = COL.amber;
+    ctx.beginPath();
+    ctx.moveTo(x + 56, y + 132);
+    ctx.lineTo(x + 70, y + 150);
+    ctx.lineTo(x + 84, y + 132);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#d5deea';
+  ctx.beginPath();
+  ctx.moveTo(x + 70, y + 8);
+  ctx.lineTo(x + 96, y + 48);
+  ctx.lineTo(x + 96, y + 118);
+  ctx.lineTo(x + 44, y + 118);
+  ctx.lineTo(x + 44, y + 48);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = COL.p1;
+  ctx.beginPath();
+  ctx.moveTo(x + 44, y + 86);
+  ctx.lineTo(x + 24, y + 124);
+  ctx.lineTo(x + 48, y + 112);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + 96, y + 86);
+  ctx.lineTo(x + 116, y + 124);
+  ctx.lineTo(x + 92, y + 112);
+  ctx.fill();
+  ctx.fillStyle = COL.cyan;
+  ctx.beginPath();
+  ctx.arc(x + 70, y + 70, 12, 0, Math.PI * 2);
+  ctx.fill();
+  if (G.launch > 0 && G.problem) {
+    text(String(G.problem.answer), x + 70, y + 98, 'bold 16px Trebuchet MS, sans-serif', '#102033', 'center');
+  }
+  ctx.restore();
+  if (G.launch > 0.2 && G.launch < 1.3) {
+    text('+' + PTS.fin + ' LOGISTICS', x + 70, GEO.chuteY + 168, 'bold 13px Trebuchet MS, sans-serif', COL.lime, 'center');
+  }
+}
+
+function drawReticle(p) {
+  const h = hotspotUnder(p.x, p.y, p.i);
+  ctx.save();
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 3;
+  ctx.shadowColor = p.color;
+  ctx.shadowBlur = 8;
+  if (h && h.type !== 'mute' && h.type !== 'menu') {
+    const m = 3;
+    const x = h.x - m, y = h.y - m, w = h.w + m * 2, ht = h.h + m * 2;
+    const s = 14;
+    ctx.beginPath();
+    ctx.moveTo(x, y + s); ctx.lineTo(x, y); ctx.lineTo(x + s, y);
+    ctx.moveTo(x + w - s, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + s);
+    ctx.moveTo(x, y + ht - s); ctx.lineTo(x, y + ht); ctx.lineTo(x + s, y + ht);
+    ctx.moveTo(x + w - s, y + ht); ctx.lineTo(x + w, y + ht); ctx.lineTo(x + w, y + ht - s);
+    ctx.stroke();
+    ctx.restore();
+    text(p.name, h.x + 8, h.y + 11, 'bold 10px Trebuchet MS, sans-serif', p.color, 'left');
+    return;
+  }
+  const x = p.x, y = p.y, s = 12;
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.moveTo(x - s, y); ctx.lineTo(x - 4, y);
+  ctx.moveTo(x + 4, y); ctx.lineTo(x + s, y);
+  ctx.moveTo(x, y - s); ctx.lineTo(x, y - 4);
+  ctx.moveTo(x, y + 4); ctx.lineTo(x, y + s);
+  ctx.stroke();
+  ctx.restore();
+  text(p.name, x + 14, y - 14, 'bold 11px Trebuchet MS, sans-serif', p.color, 'left');
+}
+
+function drawPopup() {
+  if (!G.popup) return;
+  ctx.fillStyle = 'rgba(3, 6, 12, 0.62)';
+  ctx.fillRect(0, 0, W, H);
+  panel(240, 200, 800, 280, 14, 'rgba(8, 14, 24, 0.98)', COL.amber);
+  text(G.popup.title, 640, 242, 'bold 26px Trebuchet MS, sans-serif', COL.amber, 'center');
+  const lines = wrap(G.popup.body, 720, '18px Trebuchet MS, sans-serif');
+  lines.forEach((ln, i) => text(ln, 640, 292 + i * 26, '18px Trebuchet MS, sans-serif', COL.ink, 'center'));
+  panel(520, 420, 240, 36, 8, 'rgba(255,193,74,0.15)', COL.amber);
+  text('GOT IT', 640, 438, 'bold 16px Trebuchet MS, sans-serif', COL.amber, 'center');
+}
+
+function drawBanner() {
+  if (G.bannerT <= 0 || !G.banner) return;
+  ctx.fillStyle = 'rgba(3, 8, 14, 0.45)';
+  ctx.fillRect(0, 300, W, 90);
+  text(G.banner, W / 2, 345, 'bold 28px Trebuchet MS, sans-serif', COL.amber, 'center');
+}
+
+function drawFX(dt) {
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.life -= dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vy += 280 * dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    ctx.globalAlpha = clamp(s.life * 2, 0, 1);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(s.x, s.y, 3, 3);
+    ctx.globalAlpha = 1;
+  }
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i];
+    f.life -= dt;
+    f.y -= 28 * dt;
+    if (f.life <= 0) { floaters.splice(i, 1); continue; }
+    ctx.globalAlpha = clamp(f.life, 0, 1);
+    text(f.text, f.x, f.y, 'bold 16px Trebuchet MS, sans-serif', f.color, 'center');
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawPlay() {
+  drawBackground();
+  drawHUD();
+  if (G.problem) {
+    drawClueCard(0, G.problem.c1, G.locked[0] ? ruleLabel(G.problem.c1.div, G.problem.c1.off, G.problem.c1.sign) : 'Choose − or +');
+    drawClueCard(1, G.problem.c2, G.locked[1] ? ruleLabel(G.problem.c2.div, G.problem.c2.off, G.problem.c2.sign) : 'Choose − or +');
+    drawClueCard(2, G.problem.c3, G.problem.note);
+    drawPrompt();
+    drawCrate(0);
+    drawCrate(1);
+    drawBelt(0);
+    drawBelt(1);
+    drawLasers();
+    drawChute();
+  }
+  if (G.bootErrors.length) {
+    text(G.bootErrors[0], W / 2, H - 12, '12px Trebuchet MS, sans-serif', COL.bad, 'center');
+  }
+  for (let i = 0; i < activeCount(); i++) drawReticle(players[i]);
+  drawBanner();
+  drawPopup();
+}
+
+/* ---------- Loop ---------- */
+function update(dt) {
+  if (G.feedbackT > 0) G.feedbackT -= dt;
+  if (G.bannerT > 0) G.bannerT -= dt;
+  if (G.flash > 0) G.flash -= dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 18);
+  if (G.bad && G.bad.t > 0) G.bad.t -= dt;
+  for (let i = 0; i < 2; i++) {
+    if (G.locked[i]) G.reveal[i] = Math.min(1.2, G.reveal[i] + dt * 1.4);
+    if (G.stamp[i] > 0) G.stamp[i] = Math.max(0, G.stamp[i] - dt);
+  }
+  if (G.dropT > 0) {
+    G.dropT -= dt;
+    if (G.dropT <= 0 && G.stage === 2) enterStage3();
+  }
+  if (G.fall > 0) G.fall = Math.max(0, G.fall - dt * 2.2);
+  if (G.test) {
+    G.test.t += dt;
+    if (G.test.ok && G.test.t >= G.test.hold && G.stage === 3) {
+      G.stage = 4;
+      G.launch = 0.01;
+      audio.rocket();
+      burst(1158, 620, COL.amber, 24);
+    }
+  }
+  if (G.launch > 0) {
+    G.launch += dt;
+    if (G.launch > 3.1) finishLaunch();
+  }
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.033, (now - last) / 1000);
+  last = now;
+  G.t += dt;
+  update(dt);
+  if (G.mode === 'play') updateReticles(dt);
+  rebuildHotspots();
+  pollGamepads(dt);
+
+  const sx = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  const sy = G.shake ? (Math.random() - 0.5) * G.shake : 0;
+  ctx.save();
+  ctx.translate(sx, sy);
+  if (G.mode === 'title') drawTitle();
+  else drawPlay();
+  drawFX(dt);
+  if (G.flash > 0) {
+    ctx.fillStyle = 'rgba(255, 50, 80, ' + (G.flash * 0.28) + ')';
+    ctx.fillRect(-10, -10, W + 20, H + 20);
+  }
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+
+function stress(n) {
+  const report = { ok: 0, fail: 0, samples: [] };
+  for (let tier = 1; tier <= 3; tier++) {
+    for (let i = 0; i < (n || 6); i++) {
+      const before = G.seen.size;
+      const p = generate(tier);
+      if (!p) { report.fail++; continue; }
+      const raw = {
+        c1: p.c1, c2: p.c2, c3: p.c3,
+        seq1: p.seq[0], seq2: p.seq[1],
+        answer: p.answer, cap: p.cap
+      };
+      const why = verifyRaw(raw);
+      if (why) report.fail++;
+      else report.ok++;
+      if (report.samples.length < 9) {
+        report.samples.push({
+          tier, answer: p.answer, cap: p.cap,
+          c1: ruleLabel(p.c1.div, p.c1.off, p.c1.sign),
+          c2: ruleLabel(p.c2.div, p.c2.off, p.c2.sign),
+          c3: p.c3.text, seq1: p.seq[0], seq2: p.seq[1], why: why || 'ok'
+        });
+      }
+      if (p && before === G.seen.size) { /* seen set grew inside generate */ }
+    }
+  }
+  return report;
+}
+
+bootCheck();
+window.__crate = {
+  G, players,
+  bootCheck, generate, stress, verifyRaw, shownCommon,
+  get hotspots() { return hotspots; }
+};
+
+requestAnimationFrame(frame);
+speak('Crate Packer ready. Choose Solo Dock, Co-op Warehouse, or Dispatch Duel.');
+</script>
+</body>
+</html>
