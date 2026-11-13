@@ -68,6 +68,7 @@
  * Garden: total = flower area + uncovered area, side × side = total,
  *         edging = outer perimeter + inner perimeter.
  * Traps: border × border, and adding the border on only one side.
+ * Each shift rolls new measurements. Later orders use larger numbers.
  */
 
 var STORE = 'laser-mat-cutter-v1';
@@ -234,8 +235,32 @@ function assertStep(step, label) {
   if (new Set(faces).size !== faces.length) {
     throw new Error('Duplicate card in ' + label + ': ' + faces.join(' / '));
   }
+  var heads = step.options.map(function (o) { return o.line1; });
+  if (new Set(heads).size !== heads.length) {
+    throw new Error('Duplicate sum in ' + label + ': ' + heads.join(' / '));
+  }
+  var answers = step.options.map(function (o) { return o.line2; });
+  if (new Set(answers).size !== answers.length) {
+    throw new Error('Duplicate answer in ' + label + ': ' + answers.join(' / '));
+  }
   var correct = step.options.filter(function (o) { return o.correct; });
   if (correct.length !== 1) throw new Error('Need one correct card in ' + label);
+}
+
+function randInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function attempt(label, make) {
+  var last = 'no candidate';
+  for (var n = 0; n < 80; n++) {
+    try {
+      return make();
+    } catch (err) {
+      last = err && err.message ? err.message : String(err);
+    }
+  }
+  throw new Error(label + ' failed: ' + last);
 }
 
 function frameOrder(spec) {
@@ -403,7 +428,7 @@ function gardenOrder(spec) {
     client: spec.client,
     title: spec.title,
     coach: !!spec.coach,
-    given: 'Flower bed ' + s + ' cm × ' + s + ' cm = ' + inner + ' cm². Uncovered path ' + U + ' cm².',
+    given: 'Flower bed ' + s + ' cm by ' + s + ' cm. Uncovered path ' + U + ' cm².',
     flower: s,
     uncovered: U,
     flowerArea: inner,
@@ -721,7 +746,7 @@ function cornerOrder(spec) {
     client: spec.client,
     title: spec.title,
     coach: !!spec.coach,
-    given: 'Board ' + L + ' cm by ' + B + ' cm. A ' + cL + ' cm by ' + cB + ' cm rectangle is cut from one corner.',
+    given: 'Board ' + L + ' cm by ' + B + ' cm. A rectangle ' + cL + ' cm by ' + cB + ' cm is cut from one corner.',
     oL: L,
     oB: B,
     cutW: cL,
@@ -843,55 +868,241 @@ function notchOrder(spec) {
 }
 
 function buildOrders() {
+  var seen = {};
+  function claim(key) {
+    if (seen[key]) throw new Error('repeat');
+    seen[key] = true;
+  }
+  function distinct(vals) {
+    if (new Set(vals).size !== vals.length) throw new Error('overlap');
+  }
+  function pick(list) {
+    return list[randInt(0, list.length - 1)];
+  }
+
+  // Bands climb through the shift: friendly frames, then new cuts at
+  // workable sizes, then the same ideas again with larger numbers.
+  function pickFrame(band) {
+    var L;
+    var B;
+    var w;
+    var minO;
+    var maxO;
+    if (band === 0) {
+      L = randInt(12, 20);
+      B = randInt(8, 14);
+      if (B >= L) B = L - randInt(2, 4);
+      if (B < 8) throw new Error('shape');
+      w = randInt(2, 4);
+      minO = 160;
+      maxO = 500;
+    } else if (band === 1) {
+      L = randInt(22, 32);
+      B = randInt(12, 18);
+      if (B >= L) throw new Error('shape');
+      w = randInt(2, 4);
+      minO = 750;
+      maxO = 1200;
+    } else {
+      L = randInt(36, 48);
+      B = randInt(22, 34);
+      if (B >= L - 4) throw new Error('shape');
+      w = randInt(4, 7);
+      minO = 1800;
+      maxO = 4200;
+    }
+    var outer = (L + 2 * w) * (B + 2 * w);
+    if (outer < minO || outer > maxO) throw new Error('band');
+    claim('F:' + L + 'x' + B + 'x' + w);
+    return { L: L, B: B, w: w };
+  }
+
+  function pickOffset() {
+    var L = randInt(22, 34);
+    var B = randInt(14, 22);
+    if (B >= L) throw new Error('shape');
+    var whole = L * B;
+    if (whole < 420 || whole > 780) throw new Error('band');
+    var cL = randInt(6, Math.floor(L * 0.42));
+    var cB = randInt(4, Math.floor(B * 0.42));
+    if (cL < 6 || cB < 4 || L - cL < 6 || B - cB < 5) throw new Error('window');
+    var gapL = randInt(2, L - cL - 2);
+    var gapT = randInt(2, B - cB - 2);
+    var gapR = L - gapL - cL;
+    var gapB = B - gapT - cB;
+    if (gapR < 2 || gapB < 2) throw new Error('gap');
+    if (gapL === gapR && gapT === gapB) throw new Error('centred');
+    if (Math.abs(gapL - gapR) < 2 && Math.abs(gapT - gapB) < 2) throw new Error('almost centre');
+    var win = cL * cB;
+    var near = gapL * gapT;
+    var wrong = (gapL + cL) * (gapT + cB);
+    distinct([whole, win, near, wrong, whole - win, whole - near, whole - wrong, whole + win]);
+    claim('O:' + L + 'x' + B + ':' + cL + 'x' + cB + '@' + gapL + ',' + gapT);
+    return { L: L, B: B, cutL: cL, cutB: cB, gapL: gapL, gapT: gapT };
+  }
+
+  function pickElbow() {
+    var L = randInt(18, 30);
+    var B = randInt(12, 18);
+    if (B >= L) throw new Error('shape');
+    var w = randInt(3, 5);
+    var outer = (L + w) * (B + w);
+    if (outer < 650 || outer > 999) throw new Error('band');
+    claim('E:' + L + 'x' + B + 'x' + w);
+    return { L: L, B: B, w: w, seed: randInt(1, 9000) };
+  }
+
+  function pickGarden(hard) {
+    // flower side, then border thickness on each side. Path area stays larger than the bed.
+    var pair = hard
+      ? pick([
+        [12, 3], [12, 4], [12, 5], [12, 6],
+        [14, 3], [14, 4], [14, 5],
+        [16, 4]
+      ])
+      : pick([
+        [5, 2], [5, 3],
+        [6, 2], [6, 3], [6, 4],
+        [7, 2],
+        [8, 2], [8, 3]
+      ]);
+    var s = pair[0];
+    var k = pair[1];
+    var S = s + 2 * k;
+    var inner = s * s;
+    var U = S * S - inner;
+    if (U <= inner) throw new Error('path');
+    claim('G:' + s + '+' + U);
+    return { flower: s, uncovered: U, seed: randInt(1, 9000), S: S };
+  }
+
+  function pickCorner(hard) {
+    var L = hard ? randInt(26, 36) : randInt(20, 28);
+    var B = hard ? randInt(18, 26) : randInt(14, 20);
+    if (B >= L) throw new Error('shape');
+    var whole = L * B;
+    if (hard) {
+      if (whole < 700 || whole > 999) throw new Error('band');
+    } else if (whole < 360 || whole > 620) {
+      throw new Error('band');
+    }
+    var cL = randInt(hard ? 6 : 5, Math.floor(L * 0.42));
+    var cB = randInt(hard ? 5 : 4, Math.floor(B * 0.42));
+    if (cL < 4 || cB < 3 || L - cL < 6 || B - cB < 5) throw new Error('cut');
+    var piece = cL * cB;
+    var shrink = (L - cL) * (B - cB);
+    var left = whole - piece;
+    distinct([
+      whole, piece, shrink, L * cB, cL * B, left, whole + piece
+    ]);
+    claim('C:' + L + 'x' + B + '-' + cL + 'x' + cB);
+    return {
+      L: L,
+      B: B,
+      cutL: cL,
+      cutB: cB,
+      anchor: pick(['tr', 'br', 'bl', 'tl'])
+    };
+  }
+
+  function pickNotch() {
+    var L = randInt(26, 38);
+    var B = randInt(16, 26);
+    if (B >= L) throw new Error('shape');
+    var whole = L * B;
+    if (whole < 640 || whole > 999) throw new Error('band');
+    var depth = randInt(3, Math.min(7, Math.floor(B / 2) - 1));
+    var cL = randInt(6, Math.floor(L * 0.48));
+    if (depth < 3 || cL < 6 || L - cL < 8 || B - depth < 5) throw new Error('bite');
+    var bite = cL * depth;
+    distinct([
+      whole, bite, L * depth, L * (B - depth),
+      whole - bite, whole - cL, whole + bite
+    ]);
+    claim('N:' + L + 'x' + B + '-' + cL + 'd' + depth);
+    return { L: L, B: B, cutL: cL, depth: depth };
+  }
+
   return [
-    frameOrder({
-      id: 'F1', client: "Mira's Gallery", title: 'Picture frame', coach: true,
-      L: 30, B: 16, w: 4,
-      hint0: '30 + 4 + 4 and 16 + 4 + 4. A 4 cm border sits on both sides.',
-      hint1: 'The picture itself is 30 cm by 16 cm. Multiply those two.',
-      hint2: 'Both areas are on the job ticket. Border area = outer area − inner area.'
+    attempt('easy frame', function () {
+      var d = pickFrame(0);
+      return frameOrder({
+        id: 'F1', client: "Mira's Gallery", title: 'Picture frame', coach: true,
+        L: d.L, B: d.B, w: d.w,
+        hint0: 'The border sits on both sides. Add it to the length twice, and to the breadth twice, before you multiply.',
+        hint1: 'The picture itself is ' + d.L + ' cm by ' + d.B + ' cm. Multiply those two.',
+        hint2: 'Both areas are on the job ticket. Border area = outer area − inner area.'
+      });
     }),
-    frameOrder({
-      id: 'F2', client: 'School Portrait Day', title: 'Photo frame',
-      L: 20, B: 12, w: 3
+    attempt('mid frame', function () {
+      var d = pickFrame(1);
+      return frameOrder({
+        id: 'F2', client: 'School Portrait Day', title: 'Photo frame',
+        L: d.L, B: d.B, w: d.w
+      });
     }),
-    offsetOrder({
-      id: 'O1', client: 'Side Window Studio', title: 'Off-centre window', coach: true,
-      L: 20, B: 16, cutL: 8, cutB: 5, gapL: 2, gapT: 3,
-      hint0: 'The mat is 20 cm by 16 cm. The 2 cm and 3 cm only say where the window sits.',
-      hint2: 'Off-centre or centred, the mat left is still the big rectangle minus the small one.'
+    attempt('offset window', function () {
+      var d = pickOffset();
+      return offsetOrder({
+        id: 'O1', client: 'Side Window Studio', title: 'Off-centre window', coach: true,
+        L: d.L, B: d.B, cutL: d.cutL, cutB: d.cutB, gapL: d.gapL, gapT: d.gapT,
+        hint0: 'Use the outside length and breadth. The small gaps only say where the window sits.',
+        hint2: 'Off-centre or centred, the mat left is still the big rectangle minus the small one.'
+      });
     }),
-    elbowOrder({
-      id: 'E1', client: 'L-Path Nursery', title: 'Two-sided path', coach: true,
-      L: 20, B: 14, w: 3, seed: 23,
-      hint0: 'The path is only on two sides. Add 3 cm once to the length and once to the breadth.'
+    attempt('elbow path', function () {
+      var d = pickElbow();
+      return elbowOrder({
+        id: 'E1', client: 'L-Path Nursery', title: 'Two-sided path', coach: true,
+        L: d.L, B: d.B, w: d.w, seed: d.seed,
+        hint0: 'The path is only on two sides. Add ' + d.w + ' cm once to the length and once to the breadth.'
+      });
     }),
-    gardenOrder({
-      id: 'G1', client: 'Botanic Corner', title: 'Garden mat PQRS', coach: true,
-      flower: 5, uncovered: 56, seed: 56,
-      hint0: 'Flower bed 25 cm² plus uncovered path 56 cm². Add them.',
-      hint1: 'Which number × itself equals 81?'
+    attempt('small garden', function () {
+      var d = pickGarden(false);
+      var inner = d.flower * d.flower;
+      return gardenOrder({
+        id: 'G1', client: 'Botanic Corner', title: 'Garden mat PQRS', coach: true,
+        flower: d.flower, uncovered: d.uncovered, seed: d.seed,
+        hint0: 'Find the flower-bed area from its sides, then add the uncovered path.',
+        hint1: 'Which number × itself equals ' + (inner + d.uncovered) + '?'
+      });
     }),
-    cornerOrder({
-      id: 'C1', client: 'Corner Workshop', title: 'Corner cut',
-      L: 16, B: 11, cutL: 6, cutB: 4, anchor: 'tr'
+    attempt('corner', function () {
+      var d = pickCorner(false);
+      return cornerOrder({
+        id: 'C1', client: 'Corner Workshop', title: 'Corner cut',
+        L: d.L, B: d.B, cutL: d.cutL, cutB: d.cutB, anchor: d.anchor
+      });
     }),
-    cornerOrder({
-      id: 'C2', client: 'Sign Shop', title: 'L-shaped sign',
-      L: 18, B: 12, cutL: 7, cutB: 5, anchor: 'br', perimeter: true
+    attempt('corner perimeter', function () {
+      var d = pickCorner(true);
+      return cornerOrder({
+        id: 'C2', client: 'Sign Shop', title: 'L-shaped sign',
+        L: d.L, B: d.B, cutL: d.cutL, cutB: d.cutB, anchor: d.anchor, perimeter: true
+      });
     }),
-    notchOrder({
-      id: 'N1', client: 'Shelf Works', title: 'Side notch',
-      L: 18, B: 10, cutL: 6, depth: 4
+    attempt('notch', function () {
+      var d = pickNotch();
+      return notchOrder({
+        id: 'N1', client: 'Shelf Works', title: 'Side notch',
+        L: d.L, B: d.B, cutL: d.cutL, depth: d.depth
+      });
     }),
-    gardenOrder({
-      id: 'G2', client: 'Courtyard Crew', title: 'Courtyard mat',
-      flower: 4, uncovered: 84, seed: 84
+    attempt('large garden', function () {
+      var d = pickGarden(true);
+      return gardenOrder({
+        id: 'G2', client: 'Courtyard Crew', title: 'Courtyard mat',
+        flower: d.flower, uncovered: d.uncovered, seed: d.seed
+      });
     }),
-    frameOrder({
-      id: 'F5', client: 'Hall Window', title: 'Window mat',
-      L: 36, B: 20, w: 2,
-      hint2: 'The border is only 2 cm, but it still goes on both sides. Outer area minus inner area.'
+    attempt('hard frame', function () {
+      var d = pickFrame(2);
+      return frameOrder({
+        id: 'F3', client: 'Hall Window', title: 'Window mat',
+        L: d.L, B: d.B, w: d.w,
+        hint2: 'The border is ' + d.w + ' cm, and it still goes on both sides. Outer area minus inner area.'
+      });
     })
   ];
 }
@@ -1915,9 +2126,9 @@ function layoutPlay(w, h) {
     };
     slotBox = {
       x: ticket.x + 14,
-      y: ticket.y + 34,
+      y: ticket.y + 54,
       w: ticket.w - 28,
-      h: Math.min(118, Math.max(64, ticket.h * 0.26))
+      h: Math.min(100, Math.max(52, ticket.h * 0.2))
     };
   } else {
     var slotW = short ? 64 : Math.min(132, Math.max(78, table.w * 0.22));
@@ -1985,7 +2196,7 @@ function layoutPlay(w, h) {
       inner = placeCut(order, outer, scale);
     }
     var slot = fitAspect(slotBox, inner.w / inner.h);
-    diagram = { outer: outer, inner: inner, slot: slot, scale: scale, showCaliper: padB >= 70 && outer.w >= 150 };
+    diagram = { outer: outer, inner: inner, slot: slot, scale: scale, showCaliper: padB >= 70 && outer.w >= 150, labelRoom: padB };
   }
   return {
     chips: chips,
@@ -2225,7 +2436,7 @@ function arrowHead(c, x, y, ang) {
   c.fill();
 }
 
-function dimLine(c, x1, y1, x2, y2, text, color, size) {
+function dimLine(c, x1, y1, x2, y2, text, color, size, labelShift) {
   var dx = x2 - x1;
   var dy = y2 - y1;
   var len = Math.hypot(dx, dy);
@@ -2256,10 +2467,10 @@ function dimLine(c, x1, y1, x2, y2, text, color, size) {
   arrowHead(c, x1, y1, ang + Math.PI);
   arrowHead(c, x2, y2, ang);
   if (text && len > 36) {
-    var tw = c.measureText(text).width;
-    var ox = Math.abs(dx) >= Math.abs(dy) ? 0 : Math.min(18, 28);
+    var labelW = c.measureText(text).width;
+    var ox = horizontal ? 0 : (labelShift == null ? 18 : labelShift);
     c.fillStyle = 'rgba(255, 248, 236, 0.92)';
-    pathRound(c, mx + ox - tw / 2 - 4, my - size / 2 - 3, tw + 8, size + 6, 4);
+    pathRound(c, mx + ox - labelW / 2 - 4, my - size / 2 - 3, labelW + 8, size + 6, 4);
     c.fill();
     c.fillStyle = '#1a120c';
     c.textAlign = 'center';
@@ -2287,6 +2498,12 @@ function drawBorderPulse(c, outer, inner, phase) {
   if (phase === 3) c.fillRect(inner.x, inner.y + inner.h, inner.w, Math.max(0, outer.y + outer.h - inner.y - inner.h));
 }
 
+function stepDone(index) {
+  var order = current();
+  var step = order && order.steps[index];
+  return !!(step && step.solved);
+}
+
 function drawFrameDims(c, order, diagram) {
   var outer = diagram.outer;
   var inner = diagram.inner;
@@ -2294,32 +2511,13 @@ function drawFrameDims(c, order, diagram) {
   var half = Math.floor(G.t / 1.2) % 2;
   var phase = showL ? half : 2 + half;
   if (G.stepIndex === 0 && G.phase === 'choose') drawBorderPulse(c, outer, inner, phase);
-  var strip = inner.x - outer.x;
-  if (strip >= 20) {
-    var tag = '+' + order.w;
-    var tags = [
-      { x: (outer.x + inner.x) / 2, y: inner.y + inner.h / 2, on: phase === 0 },
-      { x: inner.x + inner.w + strip / 2, y: inner.y + inner.h / 2, on: phase === 1 },
-      { x: inner.x + inner.w / 2, y: (outer.y + inner.y) / 2, on: phase === 2 },
-      { x: inner.x + inner.w / 2, y: inner.y + inner.h + strip / 2, on: phase === 3 }
-    ];
-    tags.forEach(function (t) {
-      if (t.y < outer.y + 8 || t.y > outer.y + outer.h - 8) return;
-      labelPill(c, tag, t.x, t.y, t.on ? '#ffd23f' : 'rgba(28, 20, 8, 0.72)', t.on ? '#2a2108' : '#fff4cc', strip > 34 ? 13 : 11);
-    });
-  }
+  drawPictureDims(c, order, outer, inner);
+  // Border width stays off the drawing. The outer total appears after it is worked out.
+  if (!stepDone(0)) return;
   var y1 = outer.y + outer.h + 16;
-  var y2 = y1 + 28;
-  extension(c, outer.x, outer.y + outer.h, outer.x, y2 + 4);
-  extension(c, outer.x + outer.w, outer.y + outer.h, outer.x + outer.w, y2 + 4);
-  if (outer.w >= 190) {
-    extension(c, inner.x, outer.y + outer.h, inner.x, y1 + 6);
-    extension(c, inner.x + inner.w, outer.y + outer.h, inner.x + inner.w, y1 + 6);
-    dimLine(c, outer.x, y1, inner.x, y1, '+' + order.w, phase === 0 ? '#ffd23f' : '#f4f7fb', 12);
-    dimLine(c, inner.x, y1, inner.x + inner.w, y1, String(order.L), '#d7e6f5', 12);
-    dimLine(c, inner.x + inner.w, y1, outer.x + outer.w, y1, '+' + order.w, phase === 1 ? '#ffd23f' : '#f4f7fb', 12);
-  }
-  dimLine(c, outer.x, outer.w >= 190 ? y2 : y1, outer.x + outer.w, outer.w >= 190 ? y2 : y1, order.oL + ' cm', '#ffffff', 14);
+  extension(c, outer.x, outer.y + outer.h, outer.x, y1 + 4);
+  extension(c, outer.x + outer.w, outer.y + outer.h, outer.x + outer.w, y1 + 4);
+  dimLine(c, outer.x, y1, outer.x + outer.w, y1, order.oL + ' cm', '#ffffff', 14);
   var xDim = outer.x + outer.w + 18;
   extension(c, outer.x + outer.w, outer.y, xDim + 4, outer.y);
   extension(c, outer.x + outer.w, outer.y + outer.h, xDim + 4, outer.y + outer.h);
@@ -2328,7 +2526,24 @@ function drawFrameDims(c, order, diagram) {
     var lengthSum = order.L + ' + ' + order.w + ' + ' + order.w + ' = ' + order.oL + ' cm';
     var breadthSum = order.B + ' + ' + order.w + ' + ' + order.w + ' = ' + order.oB + ' cm';
     var text = outer.w >= 280 ? lengthSum + '    ·    ' + breadthSum : (showL ? lengthSum : breadthSum);
-    drawCaliper(c, outer.x, (outer.w >= 190 ? y2 : y1) + 14, outer.w, text);
+    drawCaliper(c, outer.x, y1 + 14, outer.w, text);
+  }
+}
+
+function drawPictureDims(c, order, outer, inner) {
+  var borderB = outer.y + outer.h - inner.y - inner.h;
+  var borderL = inner.x - outer.x;
+  var yIn = inner.y + inner.h + Math.max(11, Math.min(borderB * 0.5, 18));
+  if (inner.w > 44) {
+    extension(c, inner.x, inner.y + inner.h, inner.x, yIn + 5);
+    extension(c, inner.x + inner.w, inner.y + inner.h, inner.x + inner.w, yIn + 5);
+    dimLine(c, inner.x, yIn, inner.x + inner.w, yIn, order.L + ' cm', '#2a2118', 13);
+  }
+  var xIn = inner.x - Math.max(12, Math.min(borderL * 0.55, 20));
+  if (inner.h > 44) {
+    extension(c, inner.x, inner.y, xIn - 5, inner.y);
+    extension(c, inner.x, inner.y + inner.h, xIn - 5, inner.y + inner.h);
+    dimLine(c, xIn, inner.y, xIn, inner.y + inner.h, order.B + ' cm', '#2a2118', 13, -16);
   }
 }
 
@@ -2380,7 +2595,6 @@ function drawGardenDims(c, order, diagram) {
   letters.forEach(function (L) { c.fillText(L[0], L[1], L[2]); });
   c.textAlign = 'left';
   c.textBaseline = 'alphabetic';
-  labelPill(c, 'path ' + order.uncovered + ' cm²', outer.x - 8, outer.y + outer.h * 0.5, 'rgba(20, 40, 16, 0.88)', '#e7ffc4', 12);
   if (G.visuals.fuse > 0.02) {
     var a = G.visuals.fuse;
     c.save();
@@ -2544,18 +2758,7 @@ function drawOffsetDims(c, order, diagram) {
     c.fill('evenodd');
     c.restore();
   }
-  var right = outer.x + outer.w - inner.x - inner.w;
-  var bottom = outer.y + outer.h - inner.y - inner.h;
-  var gaps = [
-    { text: order.gapL + ' cm', x: (outer.x + inner.x) / 2, y: inner.y + inner.h / 2, room: inner.x - outer.x },
-    { text: order.gapR + ' cm', x: inner.x + inner.w + right / 2, y: inner.y + inner.h / 2, room: right },
-    { text: order.gapT + ' cm', x: inner.x + inner.w / 2, y: (outer.y + inner.y) / 2, room: inner.y - outer.y },
-    { text: order.gapB + ' cm', x: inner.x + inner.w / 2, y: inner.y + inner.h + bottom / 2, room: bottom }
-  ];
-  gaps.forEach(function (g) {
-    if (g.room < 16) return;
-    labelPill(c, g.text, g.x, g.y, 'rgba(28, 20, 8, 0.78)', '#fff4cc', g.room > 36 ? 12 : 10);
-  });
+  if (!stepDone(0)) return;
   var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
   if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
 }
@@ -2576,9 +2779,7 @@ function drawElbowDims(c, order, diagram) {
   if (bottom >= 16) {
     labelPill(c, '+' + order.w, inner.x + inner.w * 0.45, inner.y + inner.h + bottom / 2, '#17324a', '#d7f1ff', 13);
   }
-  if (inner.w > 70 && G.visuals.lift < 0.35) {
-    labelPill(c, order.pieceLabel, inner.x + inner.w / 2, inner.y + inner.h / 2, 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
-  }
+  if (!stepDone(0)) return;
   var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
   if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
 }
@@ -2606,9 +2807,7 @@ function drawCutDims(c, order, diagram) {
     c.strokeRect(inner.x, inner.y, inner.w, inner.h);
     c.restore();
   }
-  if (G.visuals.lift < 0.35 && inner.w > 28) {
-    labelPill(c, order.pieceLabel, inner.x + inner.w / 2, inner.y + Math.min(inner.h / 2, 16), 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
-  }
+  if (!stepDone(0)) return;
   var y1 = outerDims(c, outer, order.oL + ' cm', order.oB + ' cm');
   if (diagram.showCaliper && order.note) drawCaliper(c, outer.x, y1 + 16, outer.w, order.note);
 }
@@ -2627,9 +2826,6 @@ function drawMat(c) {
   } else if (order.kind === 'garden') {
     drawGardenBed(c, outer, inner);
     drawFlowers(c, inner, order.blooms);
-    if (inner.h > 36) {
-      labelPill(c, order.flower + ' × ' + order.flower + ' = ' + order.flowerArea + ' cm²', inner.x + inner.w / 2, inner.y + inner.h - 16, 'rgba(40, 22, 10, 0.78)', '#fff6e4', 12);
-    }
     drawGardenDims(c, order, diagram);
   } else if (order.kind === 'elbow') {
     drawGardenBed(c, outer, inner);
@@ -2664,9 +2860,6 @@ function drawPieceAndArm(c) {
     c.lineWidth = 2;
     c.strokeRect(piece.x + 1, piece.y + 1, piece.w - 2, piece.h - 2);
   }
-  if (piece.h > 28 && order.pieceLabel) {
-    labelPill(c, order.pieceLabel, piece.x + piece.w / 2, piece.y + piece.h - 12, 'rgba(10, 24, 36, 0.72)', '#e7f6ff', 11);
-  }
   if (lift > 0.02 && lift < 0.985) {
     var railEnd = Math.max(geom.zone.x + geom.zone.w, piece.x + piece.w + 8);
     drawArm(c, piece, geom.table.y + 4, geom.zone.x, Math.min(railEnd, geom.table.x + geom.table.w - 8));
@@ -2680,6 +2873,42 @@ function drawPieceAndArm(c) {
   drawStamp(c, diagram.outer, order.stamp || 'DELIVERED');
 }
 
+function ticketBlocks(c, order, maxW, size) {
+  var blocks = [];
+  c.font = font(size, 800);
+  blocks.push({
+    color: '#3a2616',
+    weight: 800,
+    lines: wrapText(c, order.client, maxW)
+  });
+  c.font = font(size, 700);
+  blocks.push({
+    color: '#3a2616',
+    weight: 700,
+    lines: wrapText(c, order.given, maxW)
+  });
+  order.steps.forEach(function (step, i) {
+    var mark = step.solved ? '✓' : (i === G.stepIndex ? '▸' : '·');
+    var body = step.solved ? step.reveal : step.pending;
+    c.font = font(size, 800);
+    blocks.push({
+      color: step.solved ? '#1f7a43' : (i === G.stepIndex ? '#8a4b12' : '#7a6550'),
+      weight: 800,
+      lines: wrapText(c, mark + ' ' + body, maxW)
+    });
+  });
+  return blocks;
+}
+
+function ticketTextEnd(t, order, blocks, lineH, gap) {
+  var y = order.lift && geom.slotBox ? geom.slotBox.y + geom.slotBox.h + 12 : t.y + 36;
+  blocks.forEach(function (block, i) {
+    if (i === 2) y += 6;
+    y += block.lines.length * lineH;
+  });
+  return y - gap;
+}
+
 function drawTicket(c) {
   var order = current();
   var t = geom.ticket;
@@ -2689,60 +2918,77 @@ function drawTicket(c) {
     c.fillStyle = '#6b4224';
     c.fillRect(t.x + t.w / 2 - 18, t.y - 4, 36, 10);
   }
-  c.fillStyle = '#3a2616';
-  c.font = font(wide ? 13 : 11, 800);
+  c.save();
+  c.beginPath();
+  c.rect(t.x + 8, t.y + 6, Math.max(8, t.w - 16), Math.max(8, t.h - 14));
+  c.clip();
   c.textAlign = 'left';
   c.textBaseline = 'top';
-  var cursorY = t.y + 8;
-  if (wide) {
-    c.fillText('JOB TICKET', t.x + 12, cursorY);
-    cursorY += 18;
-    if (order.lift) {
-      var box = geom.slotBox;
-      c.strokeStyle = '#b08960';
-      c.setLineDash([4, 3]);
-      c.strokeRect(box.x, box.y, box.w, box.h);
-      c.setLineDash([]);
-      c.font = font(11, 700);
-      c.fillStyle = '#8a5a32';
-      c.textAlign = 'center';
-      c.fillText(G.visuals.lift > 0.9 ? (order.bayDone || 'CUT OUT') : (order.bay || 'CUT-OUT BAY'), box.x + box.w / 2, box.y - 6);
-      c.textAlign = 'left';
-      cursorY = box.y + box.h + 8;
-    }
-    c.fillStyle = '#3a2616';
-    c.font = font(13, 800);
-    c.fillText(order.client, t.x + 12, cursorY);
-    cursorY += 16;
-    c.font = font(12, 700);
-    wrapText(c, order.given, t.w - 24).forEach(function (line) {
-      c.fillText(line, t.x + 12, cursorY);
-      cursorY += 15;
+  if (!wide) {
+    var narrow = 15;
+    while (narrow > 11 && 8 + order.steps.length * (narrow + 4) > t.h - 10) narrow -= 1;
+    order.steps.forEach(function (step, i) {
+      var mark = step.solved ? '✓' : (i === G.stepIndex ? '▸' : '·');
+      var y = t.y + 8 + i * (narrow + 4);
+      if (y + narrow > t.y + t.h - 8) return;
+      c.fillStyle = step.solved ? '#1f7a43' : (i === G.stepIndex ? '#8a4b12' : '#7a6550');
+      c.font = font(narrow, 700);
+      var label = mark + ' ' + (step.solved ? step.reveal : step.pending);
+      c.fillText(label.length > 48 ? label.slice(0, 46) + '…' : label, t.x + 10, y);
     });
-    cursorY += 6;
-  }
-  order.steps.forEach(function (step, i) {
-    var mark = step.solved ? '✓' : (i === G.stepIndex ? '▸' : '·');
-    var color = step.solved ? '#1f7a43' : (i === G.stepIndex ? '#8a4b12' : '#7a6550');
-    c.fillStyle = color;
-    c.font = font(wide ? 12 : 11, 700);
-    var label = mark + ' ' + (step.solved ? step.reveal : step.pending);
-    if (!wide) {
-      c.fillText(label.length > 42 ? label.slice(0, 40) + '…' : label, t.x + 8, t.y + 6 + i * 14);
-      return;
+    c.restore();
+    if (order.lift) {
+      var nb = geom.slotBox;
+      c.strokeStyle = '#8a6236';
+      c.setLineDash([3, 3]);
+      c.strokeRect(nb.x, nb.y, nb.w, nb.h);
+      c.setLineDash([]);
     }
-    wrapText(c, label, t.w - 24).slice(0, 2).forEach(function (line) {
-      if (cursorY < t.y + t.h - 8) c.fillText(line, t.x + 12, cursorY);
-      cursorY += 14;
+    return;
+  }
+  var maxW = t.w - 36;
+  var size = 28;
+  var blocks = ticketBlocks(c, order, maxW, size);
+  var gap = Math.max(4, Math.round(size * 0.28));
+  var lineH = size + gap;
+  var bottom = t.y + t.h - 12;
+  while (size > 13 && ticketTextEnd(t, order, blocks, lineH, gap) > bottom) {
+    size -= 1;
+    gap = Math.max(3, Math.round(size * 0.22));
+    lineH = size + gap;
+    blocks = ticketBlocks(c, order, maxW, size);
+  }
+  var cursorY = t.y + 10;
+  c.fillStyle = '#3a2616';
+  c.font = font(Math.min(22, Math.max(15, size - 2)), 800);
+  if (cursorY + 18 <= bottom) c.fillText('JOB TICKET', t.x + 16, cursorY);
+  if (order.lift) {
+    var box = geom.slotBox;
+    c.strokeStyle = '#b08960';
+    c.setLineDash([4, 3]);
+    c.strokeRect(box.x, box.y, box.w, box.h);
+    c.setLineDash([]);
+    c.font = font(13, 700);
+    c.fillStyle = '#8a5a32';
+    c.textAlign = 'center';
+    if (box.y - 4 <= bottom) {
+      c.fillText(G.visuals.lift > 0.9 ? (order.bayDone || 'CUT OUT') : (order.bay || 'CUT-OUT BAY'), box.x + box.w / 2, box.y - 8);
+    }
+    c.textAlign = 'left';
+    cursorY = box.y + box.h + 12;
+  } else {
+    cursorY = t.y + 36;
+  }
+  blocks.forEach(function (block, i) {
+    if (i === 2) cursorY += 6;
+    c.fillStyle = block.color;
+    c.font = font(size, block.weight);
+    block.lines.forEach(function (line) {
+      if (cursorY + size <= bottom) c.fillText(line, t.x + 16, cursorY);
+      cursorY += lineH;
     });
   });
-  if (!wide && order.lift) {
-    var nb = geom.slotBox;
-    c.strokeStyle = '#8a6236';
-    c.setLineDash([3, 3]);
-    c.strokeRect(nb.x, nb.y, nb.w, nb.h);
-    c.setLineDash([]);
-  }
+  c.restore();
 }
 
 function formulaCopy(order) {
