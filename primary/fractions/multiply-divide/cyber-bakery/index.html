@@ -1,0 +1,2830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Cyber-Bakery: The Laser Slicer</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #07040c;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+  }
+  #mute {
+    position: fixed;
+    left: 14px;
+    bottom: 12px;
+    z-index: 4;
+    border: 2px solid #5dfff1;
+    background: #14081f;
+    color: #f4fbff;
+    font: 700 13px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif;
+    border-radius: 999px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  #mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript p {
+    color: #f4fbff;
+    font-family: "Trebuchet MS", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" role="application" aria-label="Cyber-Bakery: The Laser Slicer. Singapore Primary 5 and 6. Division, fraction, and multiplication. Solo: mouse, WASD or arrows, and Space. Two-player co-op and versus: player 1 uses WASD and F or Space, player 2 uses arrow keys and Enter. Gamepads use the D-pad and A button. Co-op has one team score."></canvas>
+<button id="mute" type="button" aria-pressed="false">Sound on</button>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript><p>Cyber-Bakery runs in JavaScript. Enable JavaScript to slice the holographic cakes.</p></noscript>
+<script>
+'use strict';
+
+/* Cyber-Bakery: The Laser Slicer
+   Primary 5/6 Division–Fraction–Multiplication triangle.
+   Share n cakes among d drones → n/d.
+   Multiply k orders of a/b → k×a/b.
+   Pack wholes into a/b boxes → W ÷ a/b.
+   Fit a tray fraction into a smaller box → p/q ÷ r/s.
+   Every round is built from the rule pools below, checked, and shuffled.
+*/
+
+var VW = 1280;
+var VH = 720;
+var BEST_KEY = 'cyber-bakery-laser-slicer-best';
+
+var UI = {
+  margin: 20,
+  hudY: 10,
+  hudH: 46,
+  ticketY: 64,
+  ticketH: 76,
+  stepY: 148,
+  stepH: 26,
+  stageY: 180,
+  stageH: 268,
+  hintY: 454,
+  hintH: 64,
+  cardsY: 526,
+  cardH: 142,
+  cardW: 214,
+  gap: 12
+};
+
+var COL = {
+  ink: '#f4fbff',
+  mute: '#cbbbe2',
+  cyan: '#5dfff1',
+  pink: '#ff4fd8',
+  amber: '#ffc857',
+  lime: '#c6ff4a',
+  red: '#ff3b5c',
+  blue: '#4cc3ff',
+  p1: '#ff4d6d',
+  p2: '#4cc3ff',
+  panel: 'rgba(10, 6, 20, 0.88)',
+  line: 'rgba(93, 255, 241, 0.45)'
+};
+
+var ICING = ['#ff4d8d', '#ffb703', '#3dffe0', '#6aa7ff', '#ff7ad9', '#ffe66d', '#c084fc', '#5eead4'];
+var GROUP = ['#5dfff1', '#ff4fd8', '#ffc857', '#c6ff4a', '#8ab4ff', '#ff8b6a', '#d6a2ff', '#7dffc3'];
+var FLAVORS = ['NEON BERRY', 'HOLO MANGO', 'CIRCUIT CHERRY', 'PLASMA VANILLA', 'ION LEMON', 'BYTE COCOA', 'PIXEL PEACH', 'QUANTUM LIME'];
+
+var TRAP_NAME = {
+  single: 'SINGLE-CAKE TRAP',
+  flip: 'NUMERATOR FLIP',
+  remainder: 'REMAINDER TRAP',
+  unsimplified: 'SIMPLIFY THE HCF',
+  unmixed: 'WRITE A MIXED NUMBER',
+  drop: 'LEFTOVER SLICE',
+  generic: 'OVEN BUZZER'
+};
+
+var canvas, ctx, muteBtn, sr;
+var view = { s: 1, ox: 0, oy: 0 };
+var held = Object.create(null);
+var was = Object.create(null);
+var pointer = { x: 640, y: 500, on: false, moved: false };
+var padWas = [{ a: false }, { a: false }];
+var particles = [];
+var floats = [];
+var dust = [];
+var auditErrors = [];
+
+var players = [
+  { id: 0, name: 'P1', color: COL.p1, x: 180, y: 600, tx: 180, ty: 600, focus: 0, mouse: false, hold: 0, primed: false, shields: 3, stars: 0, score: 0, combo: 1, out: false,
+    left: 'KeyA', right: 'KeyD', up: 'KeyW', down: 'KeyS', action: ['KeyF', 'Space'] },
+  { id: 1, name: 'P2', color: COL.p2, x: 420, y: 600, tx: 420, ty: 600, focus: 1, mouse: false, hold: 0, primed: false, shields: 3, stars: 0, score: 0, combo: 1, out: false,
+    left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown', action: ['Enter'] }
+];
+
+var G = {
+  mode: 'title',
+  playMode: 'solo',
+  titleFocus: 0,
+  overFocus: 0,
+  round: 1,
+  score: 0,
+  best: { solo: 0, coop: 0, versus: 0 },
+  combo: 1,
+  shields: 3,
+  maxShields: 3,
+  history: [],
+  leadIn: 'share',
+  leadMid: 'share',
+  problem: null,
+  step: 0,
+  pick: null,
+  pickP: [null, null],
+  orderClean: true,
+  stepT: 0,
+  anim: null,
+  lock: false,
+  banner: null,
+  flash: null,
+  shake: 0,
+  shakeX: 0,
+  shakeY: 0,
+  ending: false,
+  endTimer: 0,
+  winner: -1,
+  solved: 0,
+  flavor: FLAVORS[0],
+  t: 0,
+  fatal: '',
+  slots: []
+};
+
+var audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  sfx: null,
+  muted: false,
+  next: 0,
+  i: 0,
+  noise: null
+};
+
+var poolCache = {};
+
+/* ---------- math ---------- */
+
+function gcd(a, b) {
+  a = Math.abs(a | 0);
+  b = Math.abs(b | 0);
+  while (b) {
+    var t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function lcm(a, b) {
+  return (a / gcd(a, b)) * b;
+}
+
+function simplify(n, d) {
+  if (!d) return { n: 0, d: 1 };
+  var g = gcd(n, d);
+  return { n: n / g, d: d / g };
+}
+
+function toMixed(n, d) {
+  var s = simplify(n, d);
+  var w = Math.floor(s.n / s.d);
+  var rn = s.n % s.d;
+  return { w: w, n: rn, d: rn === 0 ? 1 : s.d };
+}
+
+function fmtAns(m) {
+  if (!m || m.n === 0) return String(m ? m.w : 0);
+  if (m.w === 0) return m.n + '/' + m.d;
+  return m.w + ' ' + m.n + '/' + m.d;
+}
+
+function fmtEquationResult(n, d) {
+  var ans = fmtAns(toMixed(n, d));
+  var raw = n + '/' + d;
+  if (ans === raw) return ans;
+  if (gcd(n, d) > 1) return raw + ' = ' + ans;
+  return ans;
+}
+
+function sliceWord(den, count) {
+  var one = { 2: 'half', 3: 'third', 4: 'quarter', 5: 'fifth', 6: 'sixth', 8: 'eighth' }[den] || 'slice';
+  if (count === 1) return one;
+  if (one === 'half') return 'halves';
+  return one + 's';
+}
+
+function singleHint(n, d) {
+  return '1/' + d + ' is only the slice from ONE cake! You have ' + n + ' identical cakes to share equally!';
+}
+
+function cakeWord(n) { return n === 1 ? 'cake' : 'cakes'; }
+
+function droneWord(n) { return n === 1 ? 'drone' : 'drones'; }
+
+function flipHint(n, d) {
+  return 'Check numerator vs denominator! ' + n + ' ' + cakeWord(n) + ' ÷ ' + d + ' ' + droneWord(d) + ' = ' + fmtEquationResult(n, d) + ' of a cake each, not ' + d + '/' + n + '!';
+}
+
+function hcfHint(n, d) {
+  var g = gcd(n, d);
+  return 'Simplify ' + n + '/' + d + ' by the HCF ' + g + '. Divide the numerator and the denominator: ' + n + '/' + d + ' = ' + fmtAns(toMixed(n, d)) + '.';
+}
+
+function remainderHint(r, group, unitDen, boxN, boxD, mixedText) {
+  var g = gcd(r, group);
+  var verb = r === 1 ? 'fills' : 'fill';
+  return 'That ' + r + ' leftover ' + sliceWord(unitDen, r) + ' ' + verb + ' ' + (r / g) + '/' + (group / g) + ' of a ' + boxN + '/' + boxD + '-cake box -> ' + mixedText + ' boxes!';
+}
+
+function randInt(a, b) {
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+
+function shuffle(arr) {
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+
+function tierInfo(round) {
+  if (round <= 2) return { id: 1, name: 'WARM-UP', mult: 1 };
+  if (round <= 4) return { id: 2, name: 'INTERMEDIATE', mult: 1 };
+  if (round <= 6) return { id: 3, name: 'ADVANCED', mult: 2 };
+  return { id: 4, name: 'MASTER CHEF', mult: 3 };
+}
+
+function familyFor(round) {
+  if (round <= 2) {
+    var second = G.leadIn === 'share' ? 'mul' : 'share';
+    return round === 1 ? G.leadIn : second;
+  }
+  if (round <= 4) {
+    var secondMid = G.leadMid === 'share' ? 'mul' : 'share';
+    return round === 3 ? G.leadMid : secondMid;
+  }
+  if (round <= 6) return 'wdiv';
+  return 'fdiv';
+}
+
+/* ---------- pools (enumerated from the rules, then picked at random) ---------- */
+
+function shareWarmPool() {
+  var bag = [];
+  var d, n;
+  for (d = 2; d <= 5; d++) {
+    for (n = 1; n < d; n++) {
+      if (gcd(n, d) === 1) bag.push({ n: n, d: d });
+    }
+  }
+  return bag;
+}
+
+function shareMidPool() {
+  var bag = [];
+  var denoms = [3, 4, 5, 6, 8];
+  var i, d, n;
+  for (i = 0; i < denoms.length; i++) {
+    d = denoms[i];
+    for (n = d + 1; n <= Math.min(9, d * 2 + (d - 1)); n++) {
+      if (n % d === 0) continue;
+      bag.push({ n: n, d: d });
+    }
+  }
+  var reds = [[2, 4], [2, 6], [3, 6], [4, 6], [2, 8], [4, 8], [6, 8]];
+  for (i = 0; i < reds.length; i++) bag.push({ n: reds[i][0], d: reds[i][1] });
+  return bag;
+}
+
+function mulWarmPool() {
+  var bag = [];
+  var bs = [2, 3, 4, 5];
+  var bi, b, a, t, k, whole;
+  for (bi = 0; bi < bs.length; bi++) {
+    b = bs[bi];
+    for (a = 1; a < b; a++) {
+      if (gcd(a, b) !== 1) continue;
+      for (t = 1; t <= 2; t++) {
+        k = t * b;
+        if (k < 2 || k > 6) continue;
+        whole = (k * a) / b;
+        if (whole < 2 || whole > 8 || whole !== (whole | 0)) continue;
+        bag.push({ k: k, a: a, b: b });
+      }
+    }
+  }
+  return bag;
+}
+
+function mulMidPool() {
+  var bag = [];
+  var bs = [4, 5, 6, 8];
+  var bi, b, a, k, num;
+  for (bi = 0; bi < bs.length; bi++) {
+    b = bs[bi];
+    for (a = 1; a < b; a++) {
+      if (gcd(a, b) !== 1) continue;
+      for (k = 2; k <= 6; k++) {
+        num = k * a;
+        if (num % b === 0) continue;
+        if (num <= b) continue;
+        if (num / b > 6) continue;
+        bag.push({ k: k, a: a, b: b });
+      }
+    }
+  }
+  return bag;
+}
+
+function wdivPool(exact) {
+  var bag = [];
+  var bs = [3, 4, 5, 6, 8];
+  var bi, b, a, W, total, q, r;
+  for (bi = 0; bi < bs.length; bi++) {
+    b = bs[bi];
+    for (a = 2; a < b; a++) {
+      if (gcd(a, b) !== 1) continue;
+      for (W = 2; W <= 6; W++) {
+        total = W * b;
+        q = Math.floor(total / a);
+        r = total % a;
+        if (q < 1 || q > 8) continue;
+        if (exact && r !== 0) continue;
+        if (!exact && r === 0) continue;
+        bag.push({ W: W, a: a, b: b });
+      }
+    }
+  }
+  return bag;
+}
+
+function fdivPool() {
+  var denoms = [2, 3, 4, 5, 6, 8];
+  var bag = [];
+  var qi, si, q, s, p, r, num, den, g, sn, sd, cd, A, B;
+  for (qi = 0; qi < denoms.length; qi++) {
+    q = denoms[qi];
+    for (si = 0; si < denoms.length; si++) {
+      s = denoms[si];
+      if (s === q) continue;
+      for (p = 1; p < q; p++) {
+        if (gcd(p, q) !== 1) continue;
+        for (r = 1; r < s; r++) {
+          if (gcd(r, s) !== 1) continue;
+          num = p * s;
+          den = q * r;
+          g = gcd(num, den);
+          sn = num / g;
+          sd = den / g;
+          if (sn < sd || sn > 8 * sd || sd > 4) continue;
+          cd = lcm(q, s);
+          if (cd > 24) continue;
+          A = p * (cd / q);
+          B = r * (cd / s);
+          if (A > 18 || B < 1) continue;
+          if (A * sd !== B * sn) continue;
+          bag.push({ p: p, q: q, r: r, s: s });
+        }
+      }
+    }
+  }
+  return bag;
+}
+
+function poolFor(fam, round) {
+  var key = fam + ':' + (fam === 'wdiv' ? (round <= 5 ? 'ex' : 're') : (round <= 2 ? 'w' : 'm'));
+  if (fam === 'fdiv') key = 'fdiv';
+  if (!poolCache[key]) {
+    if (fam === 'share') poolCache[key] = round <= 2 ? shareWarmPool() : shareMidPool();
+    else if (fam === 'mul') poolCache[key] = round <= 2 ? mulWarmPool() : mulMidPool();
+    else if (fam === 'wdiv') poolCache[key] = wdivPool(round <= 5);
+    else poolCache[key] = fdivPool();
+  }
+  return poolCache[key];
+}
+
+function sigOf(fam, item) {
+  if (fam === 'share') return 'share:' + item.n + '/' + item.d;
+  if (fam === 'mul') return 'mul:' + item.k + '*' + item.a + '/' + item.b;
+  if (fam === 'wdiv') return 'wdiv:' + item.W + '÷' + item.a + '/' + item.b;
+  return 'fdiv:' + item.p + '/' + item.q + '÷' + item.r + '/' + item.s;
+}
+
+/* ---------- cards ---------- */
+
+function cardKey(c) {
+  if (c.face === 'cut') return 'cut:' + c.cut;
+  if (c.face === 'whole') return 'whole:' + c.w;
+  if (c.face === 'frac') return 'frac:' + c.n + '/' + c.d;
+  if (c.face === 'mixed') return 'mixed:' + c.w + ':' + c.n + '/' + c.d;
+  if (c.face === 'rem') return 'rem:' + c.q + 'R' + c.r;
+  if (c.face === 'expr') return 'expr:' + c.line;
+  if (c.face === 'tokens') {
+    return 'tok:' + (c.tokens || []).map(function (t) {
+      return t.t === 'f' ? ('f' + t.n + '/' + t.d) : (t.t + t.v);
+    }).join(',');
+  }
+  return 'id:' + c.exprId;
+}
+
+function qty(c) {
+  if (!c) return null;
+  if (c.face === 'whole') return c.w;
+  if (c.face === 'frac') return c.d ? c.n / c.d : null;
+  if (c.face === 'mixed') return c.w + (c.d ? c.n / c.d : 0);
+  return null;
+}
+
+function uniqueCards(correct, cands, fill) {
+  var out = [];
+  var keys = Object.create(null);
+  function tryAdd(src, isCorrect) {
+    var c = {
+      face: src.face,
+      cut: src.cut,
+      w: src.w,
+      n: src.n,
+      d: src.d,
+      q: src.q,
+      r: src.r,
+      tokens: src.tokens,
+      line: src.line,
+      sub: src.sub,
+      exprId: src.exprId,
+      trap: src.trap || null,
+      hint: src.hint || '',
+      correct: !!isCorrect
+    };
+    var k = cardKey(c);
+    if (keys[k]) return false;
+    var qv = qty(c);
+    if (!isCorrect && qv != null && out.length) {
+      var qC = qty(out[0]);
+      var sameC = qC != null && Math.abs(qv - qC) < 1e-8;
+      if (sameC && c.trap !== 'unsimplified' && c.trap !== 'unmixed') return false;
+      for (var i = 1; i < out.length; i++) {
+        var qi = qty(out[i]);
+        if (qi != null && Math.abs(qi - qv) < 1e-8) return false;
+      }
+    }
+    keys[k] = true;
+    out.push(c);
+    return true;
+  }
+  if (!tryAdd(correct, true)) return null;
+  for (var i = 0; i < cands.length && out.length < 4; i++) tryAdd(cands[i], false);
+  var guard = 0;
+  while (out.length < 4 && guard < 40) {
+    guard++;
+    var extra = fill ? fill(guard) : null;
+    if (!extra) break;
+    tryAdd(extra, false);
+  }
+  if (out.length < 4) return null;
+  if (out.filter(function (c) { return c.correct; }).length !== 1) return null;
+  return shuffle(out);
+}
+
+function cutFill(hint) {
+  return function (guard) {
+    return { face: 'cut', cut: guard + 1, trap: 'generic', hint: hint, exprId: 'cutf' + guard };
+  };
+}
+
+function wholeFill(hint) {
+  return function (guard) {
+    return { face: 'whole', w: guard + 1, trap: 'generic', hint: hint, exprId: 'wf' + guard };
+  };
+}
+
+function answerCard(m) {
+  if (m.n === 0) return { face: 'whole', w: m.w, exprId: 'ans' + m.w, hint: '' };
+  if (m.w === 0) return { face: 'frac', n: m.n, d: m.d, exprId: 'ans' + m.n + '/' + m.d, hint: '' };
+  return { face: 'mixed', w: m.w, n: m.n, d: m.d, exprId: 'ans' + fmtAns(m), hint: '' };
+}
+
+function cardMatchesMixed(c, m) {
+  if (m.n === 0) return c.face === 'whole' && c.w === m.w;
+  if (m.w === 0) return c.face === 'frac' && c.n === m.n && c.d === m.d;
+  return c.face === 'mixed' && c.w === m.w && c.n === m.n && c.d === m.d;
+}
+
+/* ---------- problem builders ---------- */
+
+function buildShare(item) {
+  var n = item.n;
+  var d = item.d;
+  var m = toMixed(n, d);
+  var cutHint = 'You have ' + n + ' ' + cakeWord(n) + ' to share among ' + d + ' ' + droneWord(d) + ', so the laser cuts every cake into ' + d + ' equal slices.';
+  var cuts = [n, 2, 3, 4, 5, 6, 8, d + 1, Math.max(2, d - 1)].filter(function (v, i, a) {
+    return v >= 2 && v <= 12 && v !== d && a.indexOf(v) === i;
+  });
+  var step1 = uniqueCards(
+    { face: 'cut', cut: d, exprId: 'cut' + d, hint: '' },
+    cuts.map(function (v) { return { face: 'cut', cut: v, trap: 'generic', hint: cutHint, exprId: 'cut' + v }; }),
+    cutFill(cutHint)
+  );
+  var groupHint = 'Each drone collects 1 slice from each of the ' + n + ' ' + cakeWord(n) + ': ' + n + ' × 1/' + d + '.';
+  var take = function (count, den, trap, hint) {
+    return {
+      face: 'tokens',
+      tokens: [{ t: 'w', v: count }, { t: 'o', v: '×' }, { t: 'f', n: 1, d: den }],
+      exprId: 'take:' + count + ':' + den,
+      trap: trap,
+      hint: hint
+    };
+  };
+  var step2cands = [];
+  if (n !== 1) step2cands.push(take(1, d, 'single', singleHint(n, d)));
+  if (d !== n) step2cands.push(take(d, n, 'flip', flipHint(n, d)));
+  step2cands.push(take(n * d, d, 'generic', 'That is every slice on the counter, not one drone\'s share. ' + groupHint));
+  step2cands.push(take(n + 1, d, 'generic', groupHint));
+  if (d > 2) step2cands.push(take(n, d - 1, 'generic', cutHint));
+  var step2 = uniqueCards(take(n, d, null, ''), step2cands, function (guard) {
+    return take(n + 2 + guard, d, 'generic', groupHint);
+  });
+  var step3cands = [];
+  if (n > 1) step3cands.push({ face: 'frac', n: 1, d: d, trap: 'single', hint: singleHint(n, d), exprId: 'single' });
+  step3cands.push({ face: 'frac', n: d, d: n, trap: 'flip', hint: flipHint(n, d), exprId: 'flip' });
+  var rawWhole = Math.floor(n / d);
+  var rawRem = n % d;
+  if (gcd(n, d) > 1 && rawWhole > 0 && rawRem > 0 && gcd(rawRem, d) > 1) {
+    step3cands.push({
+      face: 'mixed', w: rawWhole, n: rawRem, d: d, trap: 'unsimplified', exprId: 'rawmix',
+      hint: 'Write the fraction in lowest terms. HCF of ' + rawRem + ' and ' + d + ' is ' + gcd(rawRem, d) + ', so ' + rawWhole + ' ' + rawRem + '/' + d + ' = ' + fmtAns(m) + '.'
+    });
+  } else if (gcd(n, d) > 1) {
+    step3cands.push({ face: 'frac', n: n, d: d, trap: 'unsimplified', hint: hcfHint(n, d), exprId: 'rawfrac' });
+  } else if (n > d) {
+    step3cands.push({
+      face: 'frac', n: n, d: d, trap: 'unmixed', exprId: 'improper',
+      hint: n + '/' + d + ' is improper. ' + d + ' slices make 1 whole cake, with ' + (n % d) + ' left: ' + fmtAns(m) + '.'
+    });
+  } else {
+    var nn = n > 1 ? n - 1 : n;
+    var dd = n > 1 ? d : d + 1;
+    step3cands.push({
+      face: 'frac', n: nn, d: dd, trap: 'generic', exprId: 'near',
+      hint: 'Count every cake\'s slice. Each drone\'s share is ' + fmtAns(m) + ', not ' + nn + '/' + dd + '.'
+    });
+  }
+  step3cands.push({
+    face: 'whole', w: d, trap: 'generic', exprId: 'drones',
+    hint: d + ' is the number of drones, not the share of cake. Each drone gets ' + fmtAns(m) + '.'
+  });
+  var finalHint = 'Lock the simplified share: ' + fmtAns(m) + ' of a cake for each drone.';
+  var step3 = uniqueCards(answerCard(m), step3cands, wholeFill(finalHint));
+  if (!step1 || !step2 || !step3) return null;
+  return {
+    sig: sigOf('share', item),
+    raw: { family: 'share', n: n, d: d },
+    ask: 'What fraction of a cake does each drone get?',
+    tokens: [{ t: 'w', v: n }, { t: 'o', v: '÷' }, { t: 'w', v: d }, { t: 'o', v: '=' }, { t: 'o', v: '?' }],
+    steps: [
+      { name: 'LASER', help: 'Choose the equal slice. How should the laser cut every cake before the drones share?', ok: 'Every cake is cut into ' + d + ' so ' + d + ' drones can take a fair wedge.', cards: step1 },
+      { name: 'GROUP', help: 'Each drone takes the same slice from every cake. Which collection is one drone\'s share?', ok: 'One drone collects ' + n + ' ' + (n === 1 ? 'slice' : 'slices') + ' of 1/' + d + '.', cards: step2 },
+      { name: 'LOCK', help: 'Lock one drone\'s share as a simplified fraction or mixed number.', ok: 'Dispatched. Each drone gets ' + fmtAns(m) + ' of a cake.', cards: step3 }
+    ]
+  };
+}
+
+function buildMul(item) {
+  var k = item.k;
+  var a = item.a;
+  var b = item.b;
+  var num = k * a;
+  var m = toMixed(num, b);
+  var unit = sliceWord(b, num);
+  var cutHint = 'Each portion is ' + a + '/' + b + ' of a cake, so the laser cuts in ' + b + 'ths.';
+  var cuts = [a, k, 2, 3, 4, 5, 6, 8, b + 1].filter(function (v, i, arr) {
+    return v >= 2 && v <= 12 && v !== b && arr.indexOf(v) === i;
+  });
+  var step1 = uniqueCards(
+    { face: 'cut', cut: b, exprId: 'cut' + b, hint: '' },
+    cuts.map(function (v) { return { face: 'cut', cut: v, trap: 'generic', hint: cutHint, exprId: 'cut' + v }; }),
+    cutFill(cutHint)
+  );
+  var prod = k * a;
+  var prodHint = k + ' orders × ' + a + ' ' + sliceWord(b, a) + ' = ' + prod + ' ' + unit + '.';
+  function expr(left, right, value, trap, hint, id) {
+    return { face: 'expr', line: left + ' × ' + right + ' = ' + value, sub: sliceWord(b, value), exprId: id, trap: trap, hint: hint };
+  }
+  var wrongs = [
+    expr(k, b, k * b, 'generic', prodHint, 'prod:' + k + 'x' + b),
+    expr(k, a, prod + 1, 'generic', 'Check the multiplication. ' + prodHint, 'prodslip'),
+    expr(a, a, a * a, 'generic', prodHint, 'prodaa'),
+    expr(k, 1, k, 'generic', prodHint, 'prodk')
+  ];
+  var step2 = uniqueCards(expr(k, a, prod, null, '', 'prod:' + k + 'x' + a + '=' + prod), wrongs, function (guard) {
+    return expr(k, a + guard + 1, k * (a + guard + 1), 'generic', prodHint, 'prodf' + guard);
+  });
+  var finalHint = 'Those ' + prod + ' ' + unit + ' pack into ' + fmtAns(m) + ' cakes.';
+  var cands = [
+    { face: 'whole', w: prod, trap: 'generic', hint: 'You counted slices, not cakes. Divide ' + prod + ' by ' + b + ' to get ' + fmtAns(m) + '.', exprId: 'slices' },
+    { face: 'frac', n: a, d: b, trap: 'generic', hint: 'That is one order only. ' + k + ' orders make ' + fmtAns(m) + ' cakes.', exprId: 'oneorder' },
+    { face: 'whole', w: k, trap: 'generic', hint: k + ' is how many orders you have. The cakes they need total ' + fmtAns(m) + '.', exprId: 'orders' }
+  ];
+  if (m.n !== 0) {
+    var offW = m.w + 1;
+    cands.push({ face: 'mixed', w: offW, n: m.n, d: m.d, trap: 'generic', hint: finalHint, exprId: 'offw' });
+  } else {
+    cands.push({ face: 'whole', w: m.w + 1, trap: 'generic', hint: finalHint, exprId: 'offwhole' });
+  }
+  var step3 = uniqueCards(answerCard(m), cands, wholeFill(finalHint));
+  if (!step1 || !step2 || !step3) return null;
+  return {
+    sig: sigOf('mul', item),
+    raw: { family: 'mul', k: k, a: a, b: b },
+    ask: 'How many cakes do the orders need altogether?',
+    tokens: [{ t: 'w', v: k }, { t: 'o', v: '×' }, { t: 'f', n: a, d: b }, { t: 'o', v: '=' }, { t: 'o', v: '?' }],
+    steps: [
+      { name: 'LASER', help: 'Set the laser to the denominator of the portion on the order.', ok: 'Cakes are cut into ' + b + 'ths. Each order uses ' + a + ' of them.', cards: step1 },
+      { name: 'GROUP', help: 'Each order takes that many slices. How many slices is that altogether?', ok: prod + ' ' + unit + ' are on the counter.', cards: step2 },
+      { name: 'LOCK', help: 'Turn the slices into whole cakes and a simplified fraction.', ok: 'Packed ' + fmtAns(m) + ' ' + (m.n === 0 ? cakeWord(m.w) : 'cakes') + '.', cards: step3 }
+    ]
+  };
+}
+
+function buildWdiv(item) {
+  var W = item.W;
+  var a = item.a;
+  var b = item.b;
+  var total = W * b;
+  var q = Math.floor(total / a);
+  var r = total % a;
+  var m = toMixed(total, a);
+  var unit = sliceWord(b, 1);
+  var cutHint = 'Each box is ' + a + '/' + b + ' of a cake, so slice every cake into ' + b + ' equal pieces first.';
+  var cuts = [a, W, 2, 3, 4, 5, 6, 8, b + 1].filter(function (v, i, arr) {
+    return v >= 2 && v <= 12 && v !== b && arr.indexOf(v) === i;
+  });
+  var step1 = uniqueCards(
+    { face: 'cut', cut: b, exprId: 'cut' + b, hint: '' },
+    cuts.map(function (v) { return { face: 'cut', cut: v, trap: 'generic', hint: cutHint, exprId: 'cut' + v }; }),
+    cutFill(cutHint)
+  );
+  var groupHint = 'Each box takes ' + a + ' ' + sliceWord(b, a) + '. Bundle groups of ' + a + '.';
+  function groupCard(size, trap, hint) {
+    return { face: 'expr', line: 'Groups of ' + size, sub: size + ' ' + sliceWord(b, size), exprId: 'group:' + size, trap: trap, hint: hint };
+  }
+  var sizes = [b, 1, a + 1, W, Math.max(2, a - 1), total];
+  var step2 = uniqueCards(groupCard(a, null, ''), sizes.filter(function (v, i, arr) {
+    return v !== a && v > 0 && arr.indexOf(v) === i;
+  }).map(function (v) { return groupCard(v, 'generic', groupHint); }), function (guard) {
+    return groupCard(a + 3 + guard, 'generic', groupHint);
+  });
+  var finalHint = fmtAns(m) + ' boxes. You had ' + total + ' ' + sliceWord(b, total) + ', and each box takes ' + a + '.';
+  var cands = [];
+  if (r > 0) {
+    cands.push({
+      face: 'rem', q: q, r: r, trap: 'remainder', exprId: 'rem' + q + 'R' + r,
+      hint: remainderHint(r, a, b, a, b, fmtAns(m))
+    });
+    cands.push({
+      face: 'whole', w: q, trap: 'drop', exprId: 'drop' + q,
+      hint: 'You still have ' + r + ' leftover ' + sliceWord(b, r) + '. That leftover is part of the next box, so the answer is ' + fmtAns(m) + '.'
+    });
+  } else {
+    cands.push({ face: 'whole', w: q + 1, trap: 'generic', hint: finalHint, exprId: 'qp' });
+    if (q > 1) cands.push({ face: 'whole', w: q - 1, trap: 'generic', hint: finalHint, exprId: 'qm' });
+  }
+  var mul = toMixed(W * a, b);
+  cands.push(Object.assign(answerCard(mul), {
+    trap: 'generic',
+    hint: 'That multiplies by ' + a + '/' + b + '. This order divides: ' + W + ' ÷ ' + a + '/' + b + ' = ' + fmtAns(m) + '.',
+    exprId: 'mulmistake'
+  }));
+  cands.push({ face: 'frac', n: a, d: b, trap: 'generic', hint: 'That is the size of one box, not the number of boxes. The pack is ' + fmtAns(m) + ' boxes.', exprId: 'boxsize' });
+  var step3 = uniqueCards(answerCard(m), cands, wholeFill(finalHint));
+  if (!step1 || !step2 || !step3) return null;
+  return {
+    sig: sigOf('wdiv', item),
+    raw: { family: 'wdiv', W: W, a: a, b: b },
+    ask: 'How many boxes of ' + a + '/' + b + ' can you pack?',
+    tokens: [{ t: 'w', v: W }, { t: 'o', v: '÷' }, { t: 'f', n: a, d: b }, { t: 'o', v: '=' }, { t: 'o', v: '?' }],
+    steps: [
+      { name: 'LASER', help: 'Slice every cake into the denominator of one box.', ok: 'Each cake is in ' + b + ' ' + sliceWord(b, b) + '. You have ' + total + ' slices.', cards: step1 },
+      { name: 'GROUP', help: 'Bundle slices into one box. Which group size matches the numerator?', ok: 'Groups of ' + a + ' make one ' + a + '/' + b + ' box.', cards: step2 },
+      { name: 'LOCK', help: 'How many boxes can you fill? Write a whole number or a mixed number.', ok: 'Packed ' + fmtAns(m) + ' boxes.', cards: step3 }
+    ]
+  };
+}
+
+function buildFdiv(item) {
+  var p = item.p;
+  var q = item.q;
+  var r = item.r;
+  var s = item.s;
+  var cd = lcm(q, s);
+  var A = p * (cd / q);
+  var B = r * (cd / s);
+  var m = toMixed(A, B);
+  var cutHint = p + '/' + q + ' and ' + r + '/' + s + ' need the same slice. The common denominator is ' + cd + '.';
+  var cuts = [q, s, q + s, Math.abs(q - s), q * s, 2, 3, 4, 6, 8, 12, cd + 1].filter(function (v, i, arr) {
+    return v >= 2 && v <= 24 && v !== cd && arr.indexOf(v) === i;
+  });
+  var step1 = uniqueCards(
+    { face: 'cut', cut: cd, exprId: 'cut' + cd, hint: '' },
+    cuts.map(function (v) { return { face: 'cut', cut: v, trap: 'generic', hint: cutHint, exprId: 'cut' + v }; }),
+    cutFill(cutHint)
+  );
+  function tok(n1, d1, op, n2, d2, trap, hint, id) {
+    return {
+      face: 'tokens',
+      tokens: [{ t: 'f', n: n1, d: d1 }, { t: 'o', v: op }, { t: 'f', n: n2, d: d2 }],
+      exprId: id, trap: trap, hint: hint
+    };
+  }
+  var groupHint = 'The tray holds ' + A + ' slices and each box holds ' + B + '. Compute ' + A + ' ÷ ' + B + '.';
+  var step2cands = [
+    tok(A, q, '÷', B, q, 'generic', groupHint, 'divwrongq'),
+    tok(A, s, '÷', B, s, 'generic', groupHint, 'divwrongs'),
+    tok(A, cd, '×', B, cd, 'generic', 'This order divides the tray by the box. ' + groupHint, 'mulcd'),
+    tok(B, cd, '÷', A, cd, 'flip', 'The tray is the dividend. ' + groupHint, 'flipdiv')
+  ];
+  if (A > B) {
+    step2cands.push({
+      face: 'frac', n: A - B, d: cd, trap: 'generic', exprId: 'sub',
+      hint: 'Subtracting leaves a difference, not a count of boxes. ' + groupHint
+    });
+  }
+  var step2 = uniqueCards(tok(A, cd, '÷', B, cd, null, '', 'div:' + A + '/' + cd + '/' + B + '/' + cd), step2cands, function (guard) {
+    return tok(A, cd, '÷', B + guard, cd, 'generic', groupHint, 'divf' + guard);
+  });
+  var finalHint = fmtAns(m) + ' boxes fit in the tray.';
+  var cands = [];
+  var rq = Math.floor(A / B);
+  var rr = A % B;
+  if (rr > 0) {
+    cands.push({
+      face: 'rem', q: rq, r: rr, trap: 'remainder', exprId: 'rem',
+      hint: remainderHint(rr, B, cd, r, s, fmtAns(m))
+    });
+    cands.push({
+      face: 'whole', w: rq, trap: 'drop', exprId: 'drop',
+      hint: 'A box is only partly filled. The full count is ' + fmtAns(m) + ' boxes.'
+    });
+  } else {
+    cands.push({ face: 'whole', w: m.w + 1, trap: 'generic', hint: finalHint, exprId: 'qp' });
+    if (m.w > 1) cands.push({ face: 'whole', w: m.w - 1, trap: 'generic', hint: finalHint, exprId: 'qm' });
+  }
+  var prod = toMixed(p * r, q * s);
+  cands.push(Object.assign(answerCard(prod), {
+    trap: 'generic',
+    hint: 'That multiplies the fractions. Flip the box fraction, then multiply. ' + finalHint,
+    exprId: 'mulmistake'
+  }));
+  var inv = toMixed(B, A);
+  cands.push(Object.assign(answerCard(inv), {
+    trap: 'flip',
+    hint: 'That is the box divided by the tray. The tray is big enough for ' + fmtAns(m) + ' boxes.',
+    exprId: 'inverse'
+  }));
+  var step3 = uniqueCards(answerCard(m), cands, wholeFill(finalHint));
+  if (!step1 || !step2 || !step3) return null;
+  return {
+    sig: sigOf('fdiv', item),
+    raw: { family: 'fdiv', p: p, q: q, r: r, s: s },
+    ask: 'How many boxes of ' + r + '/' + s + ' fit in a tray of ' + p + '/' + q + '?',
+    tokens: [{ t: 'f', n: p, d: q }, { t: 'o', v: '÷' }, { t: 'f', n: r, d: s }, { t: 'o', v: '=' }, { t: 'o', v: '?' }],
+    steps: [
+      { name: 'LASER', help: 'The two fractions use different denominators. Choose their common slice.', ok: 'Both fractions are written in ' + cd + 'ths. Tray ' + A + '/' + cd + ', box ' + B + '/' + cd + '.', cards: step1 },
+      { name: 'GROUP', help: 'Count the tray slices and divide by the slices in one box.', ok: A + ' slices grouped by ' + B + '.', cards: step2 },
+      { name: 'LOCK', help: 'Lock how many boxes fit. Use a mixed number if a box is only partly filled.', ok: 'The tray fills ' + fmtAns(m) + ' boxes.', cards: step3 }
+    ]
+  };
+}
+
+function buildFrom(fam, item) {
+  if (fam === 'share') return buildShare(item);
+  if (fam === 'mul') return buildMul(item);
+  if (fam === 'wdiv') return buildWdiv(item);
+  return buildFdiv(item);
+}
+
+function createProblem(round) {
+  var fam = familyFor(round);
+  var pool = poolFor(fam, round);
+  var order = shuffle(pool);
+  if (fam === 'share' && round <= 2) {
+    var rich = order.filter(function (it) { return it.n > 1; });
+    if (rich.length && Math.random() < 0.85) order = rich;
+  }
+  var fallback = null;
+  for (var i = 0; i < order.length; i++) {
+    var built = buildFrom(fam, order[i]);
+    if (!built) continue;
+    if (!fallback) fallback = built;
+    if (G.history.indexOf(built.sig) === -1) return built;
+  }
+  return fallback;
+}
+
+function auditProblem(p) {
+  if (!p || !p.raw || !p.steps || p.steps.length !== 3) return 'shape';
+  var i, s, goods, keys, c;
+  for (i = 0; i < 3; i++) {
+    s = p.steps[i];
+    if (!s.cards || s.cards.length !== 4) return p.sig + ' step ' + i + ' count';
+    goods = s.cards.filter(function (card) { return card.correct; });
+    if (goods.length !== 1) return p.sig + ' step ' + i + ' correct';
+    keys = Object.create(null);
+    for (c = 0; c < s.cards.length; c++) {
+      var k = cardKey(s.cards[c]);
+      if (keys[k]) return p.sig + ' dup ' + k;
+      keys[k] = true;
+    }
+  }
+  var raw = p.raw;
+  var m, cut, groupId;
+  if (raw.family === 'share') {
+    m = toMixed(raw.n, raw.d);
+    cut = raw.d;
+    groupId = 'take:' + raw.n + ':' + raw.d;
+  } else if (raw.family === 'mul') {
+    m = toMixed(raw.k * raw.a, raw.b);
+    cut = raw.b;
+    groupId = 'prod:' + raw.k + 'x' + raw.a + '=' + (raw.k * raw.a);
+  } else if (raw.family === 'wdiv') {
+    m = toMixed(raw.W * raw.b, raw.a);
+    cut = raw.b;
+    groupId = 'group:' + raw.a;
+  } else {
+    var cd = lcm(raw.q, raw.s);
+    var A = raw.p * (cd / raw.q);
+    var B = raw.r * (cd / raw.s);
+    m = toMixed(A, B);
+    cut = cd;
+    groupId = 'div:' + A + '/' + cd + '/' + B + '/' + cd;
+    if (Math.abs((raw.p / raw.q) / (raw.r / raw.s) - (m.w + m.n / m.d)) > 1e-8) return p.sig + ' value';
+  }
+  var c1 = p.steps[0].cards.filter(function (card) { return card.correct; })[0];
+  var c2 = p.steps[1].cards.filter(function (card) { return card.correct; })[0];
+  var c3 = p.steps[2].cards.filter(function (card) { return card.correct; })[0];
+  if (!c1 || c1.face !== 'cut' || c1.cut !== cut) return p.sig + ' cut';
+  if (!c2 || c2.exprId !== groupId) return p.sig + ' group ' + (c2 && c2.exprId);
+  if (!cardMatchesMixed(c3, m)) return p.sig + ' answer ' + fmtAns(m);
+  if (raw.family === 'share' && raw.n > 1) {
+    if (!p.steps[2].cards.some(function (card) { return card.trap === 'single'; })) return p.sig + ' missing single';
+    if (!p.steps[2].cards.some(function (card) { return card.trap === 'flip'; })) return p.sig + ' missing flip';
+  }
+  if (raw.family === 'wdiv' && (raw.W * raw.b) % raw.a !== 0) {
+    if (!p.steps[2].cards.some(function (card) { return card.trap === 'remainder'; })) return p.sig + ' missing remainder';
+  }
+  return null;
+}
+
+function runAudit() {
+  var errors = [];
+  function checkPool(fam, round) {
+    var pool = poolFor(fam, round);
+    if (!pool.length) errors.push('empty ' + fam + ' r' + round);
+    for (var i = 0; i < pool.length; i++) {
+      var built = buildFrom(fam, pool[i]);
+      var err = built ? auditProblem(built) : 'null ' + sigOf(fam, pool[i]);
+      if (err) errors.push(err);
+      if (errors.length > 8) return;
+    }
+  }
+  checkPool('share', 1);
+  checkPool('share', 3);
+  checkPool('mul', 1);
+  checkPool('mul', 3);
+  checkPool('wdiv', 5);
+  checkPool('wdiv', 6);
+  checkPool('fdiv', 7);
+  function mustHave(fam, round, pred, label) {
+    var pool = poolFor(fam, round);
+    if (!pool.some(pred)) errors.push('missing example ' + label);
+  }
+  mustHave('share', 1, function (it) { return it.n === 2 && it.d === 3; }, '2/3');
+  mustHave('share', 1, function (it) { return it.n === 3 && it.d === 4; }, '3/4');
+  mustHave('share', 3, function (it) { return it.n === 5 && it.d === 3; }, '5/3');
+  mustHave('share', 3, function (it) { return it.n === 7 && it.d === 4; }, '7/4');
+  mustHave('share', 3, function (it) { return it.n === 4 && it.d === 6; }, '4/6');
+  mustHave('share', 3, function (it) { return it.n === 6 && it.d === 8; }, '6/8');
+  mustHave('mul', 1, function (it) { return it.k === 3 && it.a === 2 && it.b === 3; }, '3×2/3');
+  mustHave('mul', 1, function (it) { return it.k === 4 && it.a === 3 && it.b === 4; }, '4×3/4');
+  mustHave('mul', 3, function (it) { return it.k === 5 && it.a === 3 && it.b === 4; }, '5×3/4');
+  mustHave('mul', 3, function (it) { return it.k === 4 && it.a === 2 && it.b === 5; }, '4×2/5');
+  mustHave('wdiv', 5, function (it) { return it.W === 3 && it.a === 3 && it.b === 4; }, '3÷3/4');
+  mustHave('wdiv', 6, function (it) { return it.W === 4 && it.a === 3 && it.b === 4; }, '4÷3/4');
+  mustHave('wdiv', 6, function (it) { return it.W === 5 && it.a === 2 && it.b === 3; }, '5÷2/3');
+  mustHave('fdiv', 7, function (it) { return it.p === 5 && it.q === 6 && it.r === 1 && it.s === 3; }, '5/6÷1/3');
+  mustHave('fdiv', 7, function (it) { return it.p === 3 && it.q === 4 && it.r === 1 && it.s === 8; }, '3/4÷1/8');
+  mustHave('fdiv', 7, function (it) { return it.p === 7 && it.q === 8 && it.r === 1 && it.s === 4; }, '7/8÷1/4');
+  mustHave('fdiv', 7, function (it) { return it.p === 2 && it.q === 3 && it.r === 1 && it.s === 6; }, '2/3÷1/6');
+  var sample = buildWdiv({ W: 4, a: 3, b: 4 });
+  var rem = sample && sample.steps[2].cards.filter(function (c) { return c.trap === 'remainder'; })[0];
+  if (!rem || rem.hint !== 'That 1 leftover quarter fills 1/3 of a 3/4-cake box -> 5 1/3 boxes!') errors.push('remainder wording');
+  var share = buildShare({ n: 3, d: 4 });
+  var single = share && share.steps[2].cards.filter(function (c) { return c.trap === 'single'; })[0];
+  var flip = share && share.steps[2].cards.filter(function (c) { return c.trap === 'flip'; })[0];
+  if (!single || single.hint !== '1/4 is only the slice from ONE cake! You have 3 identical cakes to share equally!') errors.push('single wording');
+  if (!flip || flip.hint !== 'Check numerator vs denominator! 3 cakes ÷ 4 drones = 3/4 of a cake each, not 4/3!') errors.push('flip wording');
+  var slots = Object.create(null);
+  for (var n = 0; n < 24; n++) {
+    var again = buildShare({ n: 3, d: 4 });
+    var idx = again.steps[2].cards.findIndex(function (c) { return c.correct; });
+    slots[idx] = true;
+  }
+  if (Object.keys(slots).length < 2) errors.push('shuffle stuck');
+  G.history = [];
+  G.leadIn = 'share';
+  G.leadMid = 'mul';
+  var seen = [];
+  for (var r = 1; r <= 10; r++) {
+    G.round = r;
+    var prob = createProblem(r);
+    if (!prob) { errors.push('null round ' + r); break; }
+    var bad = auditProblem(prob);
+    if (bad) errors.push(bad);
+    if (seen.slice(-6).indexOf(prob.sig) !== -1) errors.push('repeat ' + prob.sig);
+    seen.push(prob.sig);
+    G.history.push(prob.sig);
+    if (G.history.length > 6) G.history.shift();
+  }
+  G.history = [];
+  G.round = 1;
+  return errors;
+}
+
+/* ---------- audio ---------- */
+
+function ensureAudio() {
+  if (audio.ctx) {
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    return;
+  }
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  var ctxA = new Ctx();
+  audio.ctx = ctxA;
+  audio.master = ctxA.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.9;
+  audio.master.connect(ctxA.destination);
+  audio.music = ctxA.createGain();
+  audio.music.gain.value = 0.2;
+  audio.music.connect(audio.master);
+  audio.sfx = ctxA.createGain();
+  audio.sfx.gain.value = 0.42;
+  audio.sfx.connect(audio.master);
+  var frames = Math.floor(ctxA.sampleRate * 0.4);
+  audio.noise = ctxA.createBuffer(1, frames, ctxA.sampleRate);
+  var data = audio.noise.getChannelData(0);
+  for (var i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+  audio.next = ctxA.currentTime + 0.05;
+}
+
+function toggleMute() {
+  audio.muted = !audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.9;
+  muteBtn.textContent = audio.muted ? 'Muted' : 'Sound on';
+  muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+  if (!audio.muted) ensureAudio();
+}
+
+function tone(time, freq, dur, type, gain, dest) {
+  if (!audio.ctx) return;
+  var o = audio.ctx.createOscillator();
+  var g = audio.ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), time);
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  o.connect(g);
+  g.connect(dest || audio.sfx);
+  o.start(time);
+  o.stop(time + dur + 0.02);
+}
+
+function noiseHit(time, dur, gain, freq) {
+  if (!audio.ctx || !audio.noise) return;
+  var src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq || 1200;
+  var g = audio.ctx.createGain();
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.001, time + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.sfx);
+  src.start(time);
+  src.stop(time + dur);
+}
+
+function sfxLaser() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  var o = audio.ctx.createOscillator();
+  var g = audio.ctx.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(1600, t);
+  o.frequency.exponentialRampToValueAtTime(180, t + 0.18);
+  g.gain.setValueAtTime(0.18, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+  o.connect(g);
+  g.connect(audio.sfx);
+  o.start(t);
+  o.stop(t + 0.22);
+  noiseHit(t, 0.12, 0.12, 2400);
+}
+
+function sfxChime() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(t, 523.25, 0.18, 'triangle', 0.16);
+  tone(t + 0.07, 659.25, 0.2, 'triangle', 0.14);
+  tone(t + 0.14, 783.99, 0.28, 'sine', 0.12);
+}
+
+function sfxWhoosh() {
+  if (!audio.ctx) return;
+  noiseHit(audio.ctx.currentTime, 0.28, 0.2, 700);
+}
+
+function sfxBell() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(t, 880, 0.35, 'sine', 0.16);
+  tone(t, 1320, 0.4, 'sine', 0.08);
+  tone(t + 0.12, 1174, 0.3, 'triangle', 0.08);
+}
+
+function sfxBuzzer() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(t, 140, 0.22, 'square', 0.12);
+  tone(t + 0.08, 98, 0.24, 'sawtooth', 0.08);
+}
+
+function scheduleMusic() {
+  if (!audio.ctx || audio.muted) return;
+  var ctxA = audio.ctx;
+  var step = 60 / 124 / 2;
+  if (!audio.next || audio.next < ctxA.currentTime) audio.next = ctxA.currentTime + 0.05;
+  var bass = [0, 0, 7, 0, 0, 3, 7, 0, 5, 5, 3, 0, 0, -2, 0, 3];
+  var lead = [12, 16, 19, 24, 19, 16, 14, 12, 16, 19, 21, 24, 19, 16, 12, 7];
+  var guard = 0;
+  while (audio.next < ctxA.currentTime + 0.28 && guard++ < 6) {
+    var i = audio.i % 16;
+    var root = 48;
+    tone(audio.next, 440 * Math.pow(2, (root + bass[i] - 69) / 12), step * 0.9, 'square', 0.09, audio.music);
+    if (i % 2 === 0) tone(audio.next, 440 * Math.pow(2, (72 + lead[i] - 69) / 12), step * 1.4, 'triangle', 0.07, audio.music);
+    if (i % 2 === 0) noiseHit(audio.next, 0.03, i % 4 === 0 ? 0.05 : 0.03, 6000);
+    if (i % 4 === 0) {
+      var o = ctxA.createOscillator();
+      var g = ctxA.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(180, audio.next);
+      o.frequency.exponentialRampToValueAtTime(48, audio.next + 0.12);
+      g.gain.setValueAtTime(0.16, audio.next);
+      g.gain.exponentialRampToValueAtTime(0.001, audio.next + 0.14);
+      o.connect(g);
+      g.connect(audio.music);
+      o.start(audio.next);
+      o.stop(audio.next + 0.15);
+    }
+    audio.next += step;
+    audio.i++;
+  }
+}
+
+/* ---------- flow ---------- */
+
+function say(text) {
+  sr.textContent = '';
+  sr.textContent = text;
+}
+
+function layoutSlots() {
+  var slots = [];
+  var x = UI.margin;
+  var i;
+  for (i = 0; i < 4; i++) {
+    slots.push({ x: x, y: UI.cardsY, w: UI.cardW, h: UI.cardH, slot: i, kind: 'card' });
+    x += UI.cardW + UI.gap;
+  }
+  var dx = x + 8;
+  slots.push({ x: dx, y: UI.cardsY, w: VW - UI.margin - dx, h: UI.cardH, slot: 4, kind: 'dispatch' });
+  return slots;
+}
+
+function titleCards() {
+  var w = 360;
+  var h = 248;
+  var gap = 24;
+  var total = 3 * w + 2 * gap;
+  var x = (VW - total) / 2;
+  var y = 292;
+  return [0, 1, 2].map(function (i) {
+    return { x: x + i * (w + gap), y: y, w: w, h: h, slot: i };
+  });
+}
+
+function overButtons() {
+  return [
+    { x: 430, y: 470, w: 190, h: 58, slot: 0, kind: 'retry' },
+    { x: 660, y: 470, w: 190, h: 58, slot: 1, kind: 'menu' }
+  ];
+}
+
+function inside(px, py, r) {
+  return px >= r.x && py >= r.y && px <= r.x + r.w && py <= r.y + r.h;
+}
+
+function setBanner(b) {
+  b.t = 0;
+  G.banner = b;
+  if (!b.soft) say((b.title ? b.title + '. ' : '') + b.text);
+}
+
+function laserPid() {
+  if (G.playMode !== 'coop') return -1;
+  return (G.round % 2 === 1) ? 0 : 1;
+}
+
+function canAct(pid, step) {
+  if (G.playMode === 'versus' && players[pid].out) return false;
+  if (G.playMode !== 'coop') return true;
+  if (step === 2) return true;
+  var laser = laserPid();
+  if (step === 0) return pid === laser;
+  return pid === (laser === 0 ? 1 : 0);
+}
+
+function currentPick(pid) {
+  return G.playMode === 'versus' ? G.pickP[pid] : G.pick;
+}
+
+function setPick(pid, slot) {
+  if (G.playMode === 'versus') G.pickP[pid] = slot;
+  else G.pick = slot;
+}
+
+function spawnFloat(x, y, text, color) {
+  floats.push({ x: x, y: y, text: text, color: color, life: 1.1, age: 0 });
+}
+
+function burst(x, y, color, n) {
+  for (var i = 0; i < n; i++) {
+    var a = Math.random() * Math.PI * 2;
+    var sp = 50 + Math.random() * 220;
+    particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.35,
+      age: 0,
+      color: color,
+      r: 1.5 + Math.random() * 2.4
+    });
+  }
+  if (particles.length > 100) particles.splice(0, particles.length - 100);
+}
+
+function rememberBest() {
+  var mode = G.playMode;
+  var score = mode === 'versus' ? Math.max(players[0].score, players[1].score) : G.score;
+  if (score > (G.best[mode] || 0)) G.best[mode] = score;
+  try { localStorage.setItem(BEST_KEY, JSON.stringify(G.best)); } catch (e) { /* ignore */ }
+}
+
+function loadProblem() {
+  var p = createProblem(G.round);
+  if (!p) throw new Error('The bakery could not build a round.');
+  G.history.push(p.sig);
+  if (G.history.length > 6) G.history.shift();
+  G.problem = p;
+  G.step = 0;
+  G.pick = null;
+  G.pickP = [null, null];
+  G.orderClean = true;
+  G.stepT = performance.now();
+  G.anim = null;
+  G.lock = false;
+  G.flavor = FLAVORS[Math.floor(Math.random() * FLAVORS.length)];
+  var raw = p.raw;
+  var speech = 'Round ' + G.round + '. ';
+  if (raw.family === 'share') speech += raw.n + ' ' + cakeWord(raw.n) + ' shared among ' + raw.d + ' ' + droneWord(raw.d) + '. ';
+  else if (raw.family === 'mul') speech += raw.k + ' times ' + raw.a + ' over ' + raw.b + '. ';
+  else if (raw.family === 'wdiv') speech += raw.W + ' divided by ' + raw.a + ' over ' + raw.b + '. ';
+  else speech += raw.p + ' over ' + raw.q + ' divided by ' + raw.r + ' over ' + raw.s + '. ';
+  speech += p.steps[0].help;
+  say(speech);
+}
+
+function beginGame(mode) {
+  ensureAudio();
+  G.mode = 'play';
+  G.playMode = mode;
+  G.round = 1;
+  G.score = 0;
+  G.combo = 1;
+  G.history = [];
+  G.leadIn = Math.random() < 0.5 ? 'share' : 'mul';
+  G.leadMid = Math.random() < 0.5 ? 'share' : 'mul';
+  G.shields = mode === 'coop' ? 4 : 3;
+  G.maxShields = G.shields;
+  G.ending = false;
+  G.endTimer = 0;
+  G.winner = -1;
+  G.solved = 0;
+  G.banner = null;
+  G.fatal = '';
+  players.forEach(function (p, i) {
+    p.shields = 3;
+    p.stars = 0;
+    p.score = 0;
+    p.combo = 1;
+    p.out = false;
+    p.focus = i;
+    p.primed = false;
+    p.hold = 0;
+    p.mouse = false;
+  });
+  canvas.style.cursor = mode === 'solo' ? 'none' : 'default';
+  pointer.moved = false;
+  var home0 = slotCenter(0);
+  var home1 = slotCenter(1);
+  players[0].x = home0.x;
+  players[0].y = home0.y;
+  players[0].focus = 0;
+  players[0].lastCard = 0;
+  players[0].mouse = false;
+  players[1].x = home1.x;
+  players[1].y = home1.y;
+  players[1].focus = 1;
+  players[1].lastCard = 1;
+  players[1].mouse = false;
+  loadProblem();
+  canvas.focus();
+}
+
+function goTitle() {
+  G.mode = 'title';
+  G.anim = null;
+  G.lock = false;
+  G.ending = false;
+  G.banner = null;
+  canvas.style.cursor = 'crosshair';
+}
+
+function grantPoints(pid) {
+  var mult = tierInfo(G.round).mult;
+  var combo = G.playMode === 'versus' ? players[pid].combo : G.combo;
+  var pts = 350 * combo * mult;
+  if (G.playMode === 'versus') players[pid].score += pts;
+  else G.score += pts;
+  if (G.orderClean) {
+    if (G.playMode === 'versus') players[pid].combo = Math.min(5, players[pid].combo + 1);
+    else G.combo = Math.min(5, G.combo + 1);
+  }
+  rememberBest();
+  return pts;
+}
+
+function onCorrect(pid, slot) {
+  var step = G.step;
+  if (G.playMode === 'versus') {
+    var elapsed = (performance.now() - G.stepT) / 1000;
+    var speed = Math.max(40, Math.round(220 - elapsed * 45));
+    players[pid].score += speed;
+    spawnFloat(players[pid].x, players[pid].y - 20, '+' + speed + ' SPEED', players[pid].color);
+    if (step === 2) players[pid].stars += 1;
+  }
+  if (step === 2) {
+    var pts = grantPoints(pid);
+    sfxWhoosh();
+    sfxBell();
+    spawnFloat(640, 360, '+' + pts, COL.amber);
+  } else if (step === 0) sfxLaser();
+  else sfxChime();
+  var slotRect = layoutSlots()[slot];
+  if (slotRect) burst(slotRect.x + slotRect.w / 2, slotRect.y + 36, COL.lime, 16);
+  G.flash = { slot: slot, ok: true, life: 0.35 };
+  G.anim = { type: ['laser', 'assemble', 'dispatch'][step], p: 0, dur: step === 2 ? 1.15 : 0.68 };
+  G.lock = true;
+  G.banner = null;
+}
+
+function finishMatch() {
+  G.mode = 'over';
+  G.overFocus = 0;
+  canvas.style.cursor = 'crosshair';
+  rememberBest();
+  say('Service ended.');
+}
+
+function onWrong(pid, slot, card) {
+  sfxBuzzer();
+  G.orderClean = false;
+  G.shake = 8;
+  var slotRect = layoutSlots()[slot];
+  if (slotRect) burst(slotRect.x + slotRect.w / 2, slotRect.y + slotRect.h / 2, COL.red, 22);
+  G.flash = { slot: slot, ok: false, life: 0.4 };
+  if (G.playMode === 'versus') {
+    players[pid].shields = Math.max(0, players[pid].shields - 1);
+    players[pid].combo = 1;
+    if (players[pid].shields <= 0) {
+      players[pid].out = true;
+      var alive = players.filter(function (p) { return !p.out; });
+      G.ending = true;
+      G.endTimer = 2.5;
+      G.winner = alive.length === 1 ? alive[0].id : -1;
+    }
+  } else {
+    G.combo = 1;
+    G.shields = Math.max(0, G.shields - 1);
+    if (G.shields <= 0) {
+      G.ending = true;
+      G.endTimer = 2.5;
+    }
+  }
+  setBanner({
+    bad: true,
+    soft: false,
+    title: TRAP_NAME[card.trap] || 'OVEN BUZZER',
+    text: card.hint || 'That choice does not match this order.',
+    life: 2.8
+  });
+}
+
+function submit(pid, slot) {
+  var card = G.problem.steps[G.step].cards[slot];
+  if (!card) return;
+  if (card.correct) onCorrect(pid, slot);
+  else onWrong(pid, slot, card);
+}
+
+function focusedCard(pid) {
+  var p = players[pid];
+  if (p.focus >= 0 && p.focus < 4) return p.focus;
+  if (p.lastCard != null && p.lastCard >= 0 && p.lastCard < 4) return p.lastCard;
+  return null;
+}
+
+function handleActivate(pid, slot) {
+  if (G.mode === 'title') {
+    beginGame(['solo', 'coop', 'versus'][G.titleFocus]);
+    return;
+  }
+  if (G.mode === 'over') {
+    if (G.overFocus === 0) beginGame(G.playMode);
+    else goTitle();
+    return;
+  }
+  if (G.mode !== 'play' || G.lock || G.ending) return;
+  if (!canAct(pid, G.step)) {
+    var laser = laserPid();
+    var who = G.step === 0 ? laser : (laser === 0 ? 1 : 0);
+    var name = who === 0 ? 'Red chef' : 'Blue chef';
+    var job = G.step === 0 ? 'laser' : 'assembler';
+    setBanner({ soft: true, bad: false, title: 'OTHER CHEF', text: name + ' runs the ' + job + ' this order.', life: 1.15 });
+    return;
+  }
+  if (slot == null || slot < 0) return;
+  if (slot === 4) {
+    if (G.step < 2) {
+      setBanner({ soft: true, bad: false, title: 'NOT YET', text: 'Dispatch launches the order once the fraction is locked.', life: 1.05 });
+      return;
+    }
+    var target = focusedCard(pid);
+    if (target == null) {
+      setBanner({ soft: true, bad: false, title: 'CHOOSE A CARD', text: 'Highlight a fraction card, then dispatch the order.', life: 1.1 });
+      return;
+    }
+    submit(pid, target);
+    return;
+  }
+  players[pid].lastCard = slot;
+  players[pid].focus = slot;
+  submit(pid, slot);
+}
+
+function pointerDown(x, y) {
+  ensureAudio();
+  if (G.mode === 'title') {
+    var cards = titleCards();
+    for (var i = 0; i < cards.length; i++) {
+      if (inside(x, y, cards[i])) {
+        G.titleFocus = i;
+        beginGame(['solo', 'coop', 'versus'][i]);
+        return;
+      }
+    }
+    return;
+  }
+  if (G.mode === 'over') {
+    var buttons = overButtons();
+    for (var b = 0; b < buttons.length; b++) {
+      if (inside(x, y, buttons[b])) {
+        G.overFocus = b;
+        handleActivate(0, b);
+        return;
+      }
+    }
+    return;
+  }
+  var slots = layoutSlots();
+  for (var s = 0; s < slots.length; s++) {
+    if (inside(x, y, slots[s])) {
+      players[0].focus = slots[s].slot;
+      players[0].mouse = true;
+      handleActivate(0, slots[s].slot);
+      return;
+    }
+  }
+}
+
+function moveFocus(pid, dir, vert) {
+  var p = players[pid];
+  p.mouse = false;
+  if (G.mode === 'title') {
+    if (dir) G.titleFocus = (G.titleFocus + dir + 3) % 3;
+    else if (vert) G.titleFocus = (G.titleFocus + vert + 3) % 3;
+    return;
+  }
+  if (G.mode === 'over') {
+    if (dir || vert) G.overFocus = G.overFocus ? 0 : 1;
+    return;
+  }
+  if (vert) p.focus = p.focus === 4 ? (p.lastCard || 0) : 4;
+  else if (dir) p.focus = (p.focus + dir + 5) % 5;
+  if (p.focus < 4) p.lastCard = p.focus;
+}
+
+function steer(pid, left, right, up, down, dt) {
+  var p = players[pid];
+  var dir = left && !right ? -1 : (right && !left ? 1 : 0);
+  var vert = up && !down ? -1 : (down && !up ? 1 : 0);
+  if (!dir && !vert) {
+    p.hold = 0;
+    p.primed = false;
+    return;
+  }
+  if (!p.primed) {
+    moveFocus(pid, dir, vert);
+    p.primed = true;
+    p.hold = 0.28;
+    return;
+  }
+  p.hold -= dt;
+  if (p.hold <= 0) {
+    moveFocus(pid, dir, vert);
+    p.hold = 0.13;
+  }
+}
+
+function readPad() {
+  var out = [
+    { on: false, left: false, right: false, up: false, down: false, a: false },
+    { on: false, left: false, right: false, up: false, down: false, a: false }
+  ];
+  var pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (e) { pads = []; }
+  for (var i = 0; i < 2; i++) {
+    var gp = pads[i];
+    if (!gp) continue;
+    var ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    var ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+    var dead = 0.5;
+    var btn = function (n) { return gp.buttons[n] && gp.buttons[n].pressed; };
+    out[i] = {
+      on: true,
+      left: !!btn(14) || ax < -dead,
+      right: !!btn(15) || ax > dead,
+      up: !!btn(12) || ay < -dead,
+      down: !!btn(13) || ay > dead,
+      a: !!btn(0) || !!btn(1)
+    };
+  }
+  return out;
+}
+
+function keyDown(code) { return !!held[code]; }
+function keyEdge(code) { return !!held[code] && !was[code]; }
+
+function keyboardFor(pid) {
+  if (G.playMode === 'solo' || G.mode !== 'play') {
+    if (pid !== 0 && G.mode !== 'play') {
+      return { left: false, right: false, up: false, down: false, act: false };
+    }
+    if (G.playMode === 'solo' || G.mode !== 'play') {
+      return {
+        left: keyDown('KeyA') || keyDown('ArrowLeft'),
+        right: keyDown('KeyD') || keyDown('ArrowRight'),
+        up: keyDown('KeyW') || keyDown('ArrowUp'),
+        down: keyDown('KeyS') || keyDown('ArrowDown'),
+        act: keyEdge('Space') || keyEdge('Enter') || keyEdge('KeyF')
+      };
+    }
+  }
+  var p = players[pid];
+  return {
+    left: keyDown(p.left),
+    right: keyDown(p.right),
+    up: keyDown(p.up),
+    down: keyDown(p.down),
+    act: p.action.some(keyEdge)
+  };
+}
+
+function update(dt) {
+  G.t += dt;
+  if (G.shake > 0) {
+    G.shake *= Math.exp(-7 * dt);
+    G.shakeX = (Math.random() - 0.5) * G.shake;
+    G.shakeY = (Math.random() - 0.5) * G.shake;
+    if (G.shake < 0.35) G.shake = 0;
+  }
+  if (G.banner) {
+    G.banner.t += dt;
+    if (G.banner.t >= G.banner.life) G.banner = null;
+  }
+  if (G.flash) {
+    G.flash.life -= dt;
+    if (G.flash.life <= 0) G.flash = null;
+  }
+  for (var i = particles.length - 1; i >= 0; i--) {
+    var pt = particles[i];
+    pt.age += dt;
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    pt.vy += 18 * dt;
+    if (pt.age >= pt.life) particles.splice(i, 1);
+  }
+  for (var f = floats.length - 1; f >= 0; f--) {
+    floats[f].age += dt;
+    floats[f].y -= 28 * dt;
+    if (floats[f].age >= floats[f].life) floats.splice(f, 1);
+  }
+  if (G.anim) {
+    G.anim.p += dt / G.anim.dur;
+    if (G.anim.p >= 1) {
+      var done = G.anim.type;
+      G.anim = null;
+      G.lock = false;
+      if (done === 'dispatch') {
+        G.solved += 1;
+        G.round += 1;
+        if (!G.ending) loadProblem();
+      } else {
+        G.step += 1;
+        G.pick = null;
+        G.pickP = [null, null];
+        G.stepT = performance.now();
+        say('Step ' + (G.step + 1) + '. ' + G.problem.steps[G.step].help);
+      }
+    }
+  }
+  if (G.ending) {
+    G.endTimer -= dt;
+    if (G.endTimer <= 0 && G.mode === 'play') finishMatch();
+  }
+  var pads = readPad();
+  var count = (G.mode === 'play' && G.playMode !== 'solo') ? 2 : 1;
+  for (var pid = 0; pid < count; pid++) {
+    var kb = keyboardFor(pid);
+    var pad = pads[pid];
+    var aEdge = pad.a && !padWas[pid].a;
+    steer(pid, kb.left || pad.left, kb.right || pad.right, kb.up || pad.up, kb.down || pad.down, dt);
+    if (kb.act || aEdge) {
+      if (kb.act) players[pid].mouse = false;
+      if (G.mode === 'title' && pid === 0) beginGame(['solo', 'coop', 'versus'][G.titleFocus]);
+      else if (G.mode === 'over' && pid === 0) handleActivate(0, G.overFocus);
+      else if (G.mode === 'play') handleActivate(pid, players[pid].focus);
+    }
+  }
+  padWas[0] = { a: pads[0].a };
+  padWas[1] = { a: pads[1].a };
+  if (pointer.moved) {
+    if (G.mode === 'play') {
+      players[0].mouse = true;
+      players[0].x = pointer.x;
+      players[0].y = pointer.y;
+      var hoverSlots = layoutSlots();
+      for (var hs = 0; hs < hoverSlots.length; hs++) {
+        if (inside(pointer.x, pointer.y, hoverSlots[hs])) {
+          players[0].focus = hoverSlots[hs].slot;
+          if (hoverSlots[hs].slot < 4) players[0].lastCard = hoverSlots[hs].slot;
+        }
+      }
+    } else if (G.mode === 'title') {
+      var tc = titleCards();
+      for (var ti = 0; ti < tc.length; ti++) if (inside(pointer.x, pointer.y, tc[ti])) G.titleFocus = ti;
+    } else if (G.mode === 'over') {
+      var ob = overButtons();
+      for (var oi = 0; oi < ob.length; oi++) if (inside(pointer.x, pointer.y, ob[oi])) G.overFocus = oi;
+    }
+    pointer.moved = false;
+  }
+  for (var pi = 0; pi < 2; pi++) {
+    var pl = players[pi];
+    if (pl.mouse && pi === 0 && G.mode === 'play') continue;
+    if (G.mode !== 'play') continue;
+    var center = slotCenter(pl.focus);
+    pl.x += (center.x - pl.x) * Math.min(1, dt * 16);
+    pl.y += (center.y - pl.y) * Math.min(1, dt * 16);
+  }
+  scheduleMusic();
+  for (var k in was) delete was[k];
+  for (var code in held) if (held[code]) was[code] = true;
+}
+
+function slotCenter(index) {
+  var s = layoutSlots()[index] || layoutSlots()[0];
+  return { x: s.x + s.w / 2, y: s.y + s.h / 2 };
+}
+
+function phase() {
+  if (G.anim && G.anim.type === 'dispatch') return 3;
+  if (!G.anim) return G.step;
+  if (G.anim.type === 'laser') return G.anim.p;
+  if (G.anim.type === 'assemble') return 1 + G.anim.p;
+  return G.step;
+}
+
+/* ---------- draw ---------- */
+
+function font(px, weight) {
+  return (weight || 700) + ' ' + px + 'px "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif';
+}
+
+function roundRect(x, y, w, h, r) {
+  var rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function panel(x, y, w, h, stroke, fill) {
+  roundRect(x, y, w, h, 14);
+  ctx.fillStyle = fill || COL.panel;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = stroke || COL.line;
+  ctx.stroke();
+}
+
+function measureStack(n, d, px) {
+  ctx.font = font(px, 800);
+  var w = Math.max(ctx.measureText(String(n)).width, ctx.measureText(String(d)).width) + px * 0.42;
+  return { w: w, h: px * 2.2 };
+}
+
+function drawStack(cx, cy, n, d, px, color) {
+  var m = measureStack(n, d, px);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+  ctx.lineWidth = Math.max(2, px * 0.12);
+  ctx.font = font(px, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeText(String(n), cx, cy - px * 0.62);
+  ctx.fillText(String(n), cx, cy - px * 0.62);
+  ctx.fillRect(cx - m.w / 2, cy - Math.max(1.5, px * 0.07), m.w, Math.max(2, px * 0.09));
+  ctx.strokeText(String(d), cx, cy + px * 0.68);
+  ctx.fillText(String(d), cx, cy + px * 0.68);
+  return m;
+}
+
+function drawMixedAt(cx, cy, w, n, d, px, color) {
+  if (!n) {
+    ctx.fillStyle = color;
+    ctx.font = font(px * 1.45, 800);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(w), cx, cy);
+    return;
+  }
+  if (!w) {
+    drawStack(cx, cy, n, d, px, color);
+    return;
+  }
+  ctx.font = font(px * 1.35, 800);
+  var ww = ctx.measureText(String(w)).width;
+  var st = measureStack(n, d, px);
+  var gap = px * 0.28;
+  var total = ww + gap + st.w;
+  var x = cx - total / 2;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(w), x, cy);
+  drawStack(x + ww + gap + st.w / 2, cy, n, d, px, color);
+}
+
+function drawOp(cx, cy, op, px) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = COL.amber;
+  ctx.fillStyle = COL.amber;
+  ctx.lineWidth = Math.max(2.5, px * 0.09);
+  ctx.lineCap = 'round';
+  var s = px * 0.34;
+  if (op === '×') {
+    ctx.beginPath();
+    ctx.moveTo(-s, -s);
+    ctx.lineTo(s, s);
+    ctx.moveTo(s, -s);
+    ctx.lineTo(-s, s);
+    ctx.stroke();
+  } else if (op === '÷') {
+    ctx.beginPath();
+    ctx.moveTo(-s, 0);
+    ctx.lineTo(s, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, -s * 0.72, Math.max(2, px * 0.07), 0, Math.PI * 2);
+    ctx.arc(0, s * 0.72, Math.max(2, px * 0.07), 0, Math.PI * 2);
+    ctx.fill();
+  } else if (op === '=') {
+    var h = Math.max(2.5, px * 0.08);
+    ctx.fillRect(-s, -h * 1.7, s * 2, h);
+    ctx.fillRect(-s, h * 0.7, s * 2, h);
+  } else {
+    ctx.font = font(px * 1.05, 800);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(op), 0, 2);
+  }
+  ctx.restore();
+}
+
+function tokenWidth(tok, px) {
+  if (tok.t === 'o') return px * 0.95;
+  if (tok.t === 'w') {
+    ctx.font = font(px * 1.05, 800);
+    return ctx.measureText(String(tok.v)).width + px * 0.2;
+  }
+  if (tok.t === 'f') return measureStack(tok.n, tok.d, px * 0.72).w + px * 0.18;
+  return 0;
+}
+
+function drawTokens(tokens, cx, cy, px, color) {
+  var widths = tokens.map(function (tok) { return tokenWidth(tok, px); });
+  var total = widths.reduce(function (a, b) { return a + b; }, 0);
+  var x = cx - total / 2;
+  ctx.textBaseline = 'middle';
+  for (var i = 0; i < tokens.length; i++) {
+    var tok = tokens[i];
+    var mid = x + widths[i] / 2;
+    if (tok.t === 'f') drawStack(mid, cy, tok.n, tok.d, px * 0.72, color);
+    else if (tok.t === 'o') drawOp(mid, cy, tok.v, px);
+    else {
+      ctx.fillStyle = color;
+      ctx.font = font(px * 1.05, 800);
+      ctx.textAlign = 'center';
+      ctx.fillText(String(tok.v), mid, cy);
+    }
+    x += widths[i];
+  }
+}
+
+function drawBackground() {
+  var g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, '#241042');
+  g.addColorStop(0.42, '#3a1760');
+  g.addColorStop(0.7, '#140814');
+  g.addColorStop(1, '#07040c');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.fillStyle = '#100712';
+  var i;
+  for (i = 0; i < 16; i++) {
+    var bh = 36 + ((i * 53) % 110);
+    var bx = 18 + i * 80;
+    ctx.fillRect(bx, 168 - bh, 58, bh);
+    ctx.fillStyle = 'rgba(93,255,241,0.35)';
+    var wy;
+    for (wy = 0; wy < 4; wy++) {
+      if ((i + wy) % 3 === 0) ctx.fillRect(bx + 8, 168 - bh + 8 + wy * 14, 8, 5);
+      if ((i * 2 + wy) % 4 === 0) ctx.fillRect(bx + 24, 168 - bh + 8 + wy * 14, 8, 5);
+    }
+    ctx.fillStyle = '#100712';
+  }
+  var floorY = 430;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, floorY, VW, VH - floorY);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(93, 255, 241, 0.13)';
+  ctx.lineWidth = 1;
+  var off = (G.t * 36) % 48;
+  for (i = -2; i < 30; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, floorY + i * 28 + off * 0.2);
+    ctx.lineTo(VW, floorY + i * 28 + off * 0.2);
+    ctx.stroke();
+  }
+  for (i = 0; i < 18; i++) {
+    ctx.beginPath();
+    ctx.moveTo(VW / 2, floorY);
+    ctx.lineTo(i * 80 - off, VH);
+    ctx.stroke();
+  }
+  ctx.restore();
+  for (i = 0; i < dust.length; i++) {
+    var d = dust[i];
+    var y = (d.y + G.t * d.s * 18) % VH;
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = i % 2 ? COL.pink : COL.cyan;
+    ctx.fillRect(d.x, y, 2, 2);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawPedestal(x, y, r) {
+  ctx.save();
+  ctx.translate(x, y + r * 0.92);
+  ctx.scale(1, 0.32);
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 1.08, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(93,255,241,0.85)';
+  ctx.stroke();
+  ctx.restore();
+  var stem = ctx.createLinearGradient(x - 8, y, x + 8, y + r);
+  stem.addColorStop(0, '#2a3550');
+  stem.addColorStop(1, '#121018');
+  ctx.fillStyle = stem;
+  ctx.fillRect(x - 7, y + r * 0.15, 14, r * 0.78);
+}
+
+function drawCake(cx, cy, r, slices, colorOf, alpha, labels, bare) {
+  if (!bare) drawPedestal(cx, cy, r);
+  ctx.save();
+  ctx.globalAlpha = alpha == null ? 1 : alpha;
+  if (!slices) {
+    var grd = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.35, r * 0.1, cx, cy, r);
+    grd.addColorStop(0, '#ffe1f2');
+    grd.addColorStop(0.45, '#ff6fae');
+    grd.addColorStop(1, '#ff3d8a');
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = '#ff2d55';
+    ctx.beginPath();
+    ctx.arc(cx, cy - r * 0.15, r * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.arc(cx, cy + r * 0.18, r * 0.42, Math.PI * 0.15, Math.PI * 0.85);
+    ctx.stroke();
+  } else {
+    var i;
+    for (i = 0; i < slices; i++) {
+      var a0 = -Math.PI / 2 + (i * Math.PI * 2) / slices;
+      var a1 = a0 + (Math.PI * 2) / slices;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, r * 0.96, a0, a1);
+      ctx.closePath();
+      ctx.fillStyle = colorOf ? colorOf(i) : ICING[i % ICING.length];
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(8,4,16,0.85)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      if (labels && slices <= 8 && r >= 22) {
+        var mid = (a0 + a1) / 2;
+        var lr = r * 0.62;
+        var lx = cx + Math.cos(mid) * lr;
+        var ly = cy + Math.sin(mid) * lr;
+        ctx.font = font(Math.max(10, Math.round(r * 0.2)), 800);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(8, 4, 16, 0.85)';
+        ctx.strokeText('1/' + slices, lx, ly);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('1/' + slices, lx, ly);
+      }
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+  ctx.restore();
+  if (!bare) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 6, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(93,255,241,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+function layoutCakes(count, area) {
+  var n = Math.max(1, count);
+  var maxR = Math.min(62, area.h * 0.3);
+  var gapK = 0.32;
+  var r = Math.min(maxR, (area.w - 16) / (n * 2 + (n - 1) * gapK));
+  r = Math.max(18, r);
+  var gap = r * gapK;
+  var total = n * 2 * r + (n - 1) * gap;
+  var x = area.x + (area.w - total) / 2 + r;
+  var y = area.y + area.h * 0.58;
+  var spots = [];
+  for (var i = 0; i < n; i++) {
+    spots.push({ x: x, y: y, r: r, i: i });
+    x += 2 * r + gap;
+  }
+  return spots;
+}
+
+function cakeArea() {
+  return {
+    x: UI.margin,
+    y: UI.stageY,
+    w: VW - UI.margin * 2 - 262,
+    h: UI.stageH
+  };
+}
+
+function asmRect() {
+  return { x: VW - UI.margin - 246, y: UI.stageY + 8, w: 246, h: UI.stageH - 16 };
+}
+
+function wedgeColor(raw, shown, cakeIndex, wedge, slices) {
+  if (shown < 2) return ICING[wedge % ICING.length];
+  if (raw.family === 'share') return wedge === 0 ? COL.cyan : 'rgba(255,255,255,0.1)';
+  if (raw.family === 'mul') return wedge < raw.a ? COL.amber : 'rgba(255,255,255,0.1)';
+  if (raw.family === 'wdiv') {
+    var id = cakeIndex * raw.b + wedge;
+    var q = Math.floor((raw.W * raw.b) / raw.a);
+    if (id >= q * raw.a) return '#ff5d7a';
+    return GROUP[Math.floor(id / raw.a) % GROUP.length];
+  }
+  return ICING[wedge % ICING.length];
+}
+
+function drawMiniBox(x, y, s, fill) {
+  roundRect(x, y, s, s, 6);
+  ctx.fillStyle = fill || 'rgba(93,255,241,0.2)';
+  ctx.fill();
+  ctx.strokeStyle = COL.cyan;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x + s / 2, y + s / 2, s * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = '#ff8ec5';
+  ctx.fill();
+}
+
+function drawAssembler(raw, shown) {
+  var box = asmRect();
+  panel(box.x, box.y, box.w, box.h, 'rgba(255,79,216,0.7)');
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x + 4, box.y + 4, box.w - 8, box.h - 8);
+  ctx.clip();
+  ctx.fillStyle = COL.pink;
+  ctx.font = font(12, 800);
+  ctx.textAlign = 'center';
+  ctx.fillText('ASSEMBLER RING', box.x + box.w / 2, box.y + 20);
+  var ang = G.t * 1.4;
+  ctx.strokeStyle = 'rgba(93,255,241,0.7)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(box.x + box.w / 2, box.y + 58, 16, ang, ang + 4.2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(box.x + box.w / 2, box.y + 58, 10, -ang, -ang + 3.4);
+  ctx.strokeStyle = 'rgba(255,79,216,0.8)';
+  ctx.stroke();
+  var lift = (G.anim && G.anim.type === 'dispatch') ? G.anim.p * 210 : 0;
+  drawDrone(box.x + 34, box.y + 52 - lift, 0.55, COL.p1, G.t * 18);
+  drawDrone(box.x + box.w - 34, box.y + 52 - lift, 0.55, COL.p2, -G.t * 18);
+  ctx.fillStyle = COL.ink;
+  ctx.font = font(13, 700);
+  ctx.textAlign = 'center';
+  if (shown < 2) {
+    ctx.fillStyle = COL.mute;
+    ctx.fillText(shown < 1 ? 'AWAITING CUT' : 'AWAITING GROUPS', box.x + box.w / 2, box.y + 130);
+  } else {
+    drawPicture(raw, box, shown >= 3);
+  }
+  ctx.restore();
+}
+
+function drawPicture(raw, box, showSymbol) {
+  var cx = box.x + box.w / 2;
+  var top = box.y + 108;
+  ctx.textAlign = 'center';
+  if (raw.family === 'share') {
+    var whole = Math.floor(raw.n / raw.d);
+    var rem = raw.n % raw.d;
+    var cap = gcd(raw.n, raw.d) > 1 ? 'Simplify this picture.' : (raw.n > raw.d ? 'Write the mixed number.' : 'Name this share.');
+    if (showSymbol) {
+      var sm = toMixed(raw.n, raw.d);
+      whole = sm.w;
+      rem = sm.n;
+      cap = fmtAns(sm);
+      drawMixedAt(cx, box.y + box.h - 36, sm.w, sm.n, sm.d, 22, COL.lime);
+    }
+    drawPackIcons(cx, top, whole, rem, showSymbol ? toMixed(raw.n, raw.d).d : raw.d);
+    ctx.fillStyle = COL.mute;
+    ctx.font = font(12, 700);
+    if (!showSymbol) ctx.fillText(cap, cx, box.y + box.h - 18);
+    return;
+  }
+  if (raw.family === 'mul') {
+    var mm = toMixed(raw.k * raw.a, raw.b);
+    drawPackIcons(cx, top, mm.w, mm.n, mm.d);
+    ctx.fillStyle = showSymbol ? COL.lime : COL.mute;
+    ctx.font = font(showSymbol ? 22 : 12, 800);
+    if (showSymbol) drawMixedAt(cx, box.y + box.h - 36, mm.w, mm.n, mm.d, 22, COL.lime);
+    else ctx.fillText('Name the packed cakes.', cx, box.y + box.h - 18);
+    return;
+  }
+  if (raw.family === 'wdiv') {
+    var total = raw.W * raw.b;
+    var q = Math.floor(total / raw.a);
+    var r = total % raw.a;
+    drawBoxesAndLeftovers(cx, top, q, r, raw.b);
+    if (showSymbol) drawMixedAt(cx, box.y + box.h - 36, toMixed(total, raw.a).w, toMixed(total, raw.a).n, toMixed(total, raw.a).d, 22, COL.lime);
+    else {
+      ctx.fillStyle = COL.mute;
+      ctx.font = font(12, 700);
+      ctx.fillText(r ? 'How much of the next box is left?' : 'Count the full boxes.', cx, box.y + box.h - 18);
+    }
+    return;
+  }
+  var cd = lcm(raw.q, raw.s);
+  var A = raw.p * (cd / raw.q);
+  var B = raw.r * (cd / raw.s);
+  var qq = Math.floor(A / B);
+  var rr = A % B;
+  var fm = toMixed(A, B);
+  drawBoxesAndLeftovers(cx, top, qq, rr, cd);
+  if (showSymbol) drawMixedAt(cx, box.y + box.h - 36, fm.w, fm.n, fm.d, 22, COL.lime);
+  else {
+    ctx.fillStyle = COL.mute;
+    ctx.font = font(12, 700);
+    ctx.fillText(rr ? 'How much of the next box is left?' : 'Count the full boxes.', cx, box.y + box.h - 18);
+  }
+}
+
+function drawPackIcons(cx, top, whole, rem, den) {
+  var icons = Math.min(whole, 4);
+  var r = rem > 0 ? 15 : 20;
+  var gap = 8;
+  var rowW = icons * (r * 2 + gap) - (icons ? gap : 0);
+  var x = cx - rowW / 2 + r;
+  var y = top + r + (rem > 0 ? 0 : 10);
+  var i;
+  for (i = 0; i < icons; i++) {
+    drawCake(x, y, r, 0, null, 1, false, true);
+    x += r * 2 + gap;
+  }
+  if (whole > icons) {
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(13, 800);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('+' + (whole - icons), x - r, y);
+  }
+  if (rem > 0 && den > 1) {
+    drawCake(cx, top + (icons ? r * 2 + 36 : 34), 26, den, function (i) { return i < rem ? COL.amber : 'rgba(255,255,255,0.14)'; }, 1, den <= 6, true);
+  }
+}
+
+function drawBoxesAndLeftovers(cx, top, q, r, unit) {
+  var n = Math.min(q, 8);
+  var s = q > 6 ? 18 : 22;
+  var gap = 4;
+  var cols = Math.min(n, 4);
+  var i;
+  for (i = 0; i < n; i++) {
+    var col = i % cols;
+    var row = Math.floor(i / cols);
+    drawMiniBox(cx - (cols * (s + gap)) / 2 + col * (s + gap), top + row * (s + gap), s, 'rgba(93,255,241,0.18)');
+  }
+  if (q > n) {
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(12, 800);
+    ctx.textAlign = 'center';
+    ctx.fillText('+' + (q - n), cx, top + 70);
+  }
+  if (r > 0) {
+    ctx.fillStyle = '#ff8aa0';
+    ctx.font = font(12, 700);
+    ctx.textAlign = 'center';
+    ctx.fillText(r + ' leftover ' + sliceWord(unit, r), cx, top + 92);
+  }
+}
+
+function drawDrone(x, y, scale, color, spin) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(-16, -10, 12, 4, spin, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(16, -10, 12, 4, -spin, 0, Math.PI * 2);
+  ctx.stroke();
+  roundRect(-14, -6, 28, 16, 6);
+  ctx.fillStyle = '#1a1030';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.fillRect(-4, -2, 8, 4);
+  ctx.restore();
+}
+
+function drawStage(shown) {
+  var raw = G.problem.raw;
+  var area = cakeArea();
+  var sliced = shown >= 1 || (G.anim && G.anim.type === 'laser');
+  var alpha = G.anim && G.anim.type === 'laser' ? Math.max(0.2, Math.min(1, G.anim.p + 0.2)) : 1;
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(12, 800);
+  ctx.textAlign = 'left';
+  ctx.fillText(stageCaption(raw), area.x + 8, area.y + 18);
+  if (raw.family === 'fdiv') {
+    var left = { x: area.x, y: area.y, w: area.w / 2, h: area.h };
+    var right = { x: area.x + area.w / 2, y: area.y, w: area.w / 2, h: area.h };
+    var cd = lcm(raw.q, raw.s);
+    var A = raw.p * (cd / raw.q);
+    var B = raw.r * (cd / raw.s);
+    var ls = sliced ? cd : raw.q;
+    var rs = sliced ? cd : raw.s;
+    var lSpots = layoutCakes(1, left);
+    var rSpots = layoutCakes(1, right);
+    drawCake(lSpots[0].x, lSpots[0].y, lSpots[0].r, ls, function (i) {
+      if (!sliced) return i < raw.p ? COL.amber : 'rgba(255,255,255,0.08)';
+      if (shown < 2) return i < A ? COL.amber : 'rgba(255,255,255,0.08)';
+      if (i >= A) return 'rgba(255,255,255,0.08)';
+      if (i >= Math.floor(A / B) * B) return '#ff5d7a';
+      return GROUP[Math.floor(i / B) % GROUP.length];
+    }, alpha, true);
+    drawCake(rSpots[0].x, rSpots[0].y, rSpots[0].r, rs, function (i) {
+      var lit = sliced ? B : raw.r;
+      return i < lit ? COL.cyan : 'rgba(255,255,255,0.08)';
+    }, alpha, true);
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(13, 800);
+    ctx.textAlign = 'center';
+    ctx.fillText('TRAY', lSpots[0].x, lSpots[0].y + lSpots[0].r + 28);
+    ctx.fillText('ONE BOX', rSpots[0].x, rSpots[0].y + rSpots[0].r + 28);
+  } else {
+    var count = raw.family === 'share' ? raw.n : (raw.family === 'mul' ? raw.k : raw.W);
+    var slices = 0;
+    if (sliced) slices = raw.family === 'share' ? raw.d : raw.b;
+    var spots = layoutCakes(count, area);
+    for (var i = 0; i < spots.length; i++) {
+      (function (spot) {
+        drawCake(spot.x, spot.y, spot.r, slices, function (w) {
+          return wedgeColor(raw, shown, spot.i, w, slices);
+        }, alpha, true);
+      })(spots[i]);
+    }
+    if (G.anim && G.anim.type === 'laser') {
+      var ang = -Math.PI / 2 + G.anim.p * Math.PI * 2;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      for (var j = 0; j < spots.length; j++) {
+        ctx.beginPath();
+        ctx.moveTo(spots[j].x, spots[j].y);
+        ctx.lineTo(spots[j].x + Math.cos(ang) * spots[j].r, spots[j].y + Math.sin(ang) * spots[j].r);
+        ctx.stroke();
+      }
+    }
+    if (G.anim && G.anim.type === 'assemble') {
+      var asm = asmRect();
+      var t = G.anim.p;
+      t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      ctx.fillStyle = COL.cyan;
+      for (var s = 0; s < spots.length; s++) {
+        ctx.beginPath();
+        ctx.arc(spots[s].x + (asm.x + asm.w / 2 - spots[s].x) * t, spots[s].y + (asm.y + 120 - spots[s].y) * t, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  drawAssembler(raw, shown);
+}
+
+function stageCaption(raw) {
+  if (raw.family === 'share') return raw.n + ' IDENTICAL CAKES  ·  ' + raw.d + ' DRONES';
+  if (raw.family === 'mul') return raw.k + ' EQUAL ORDERS OF ' + raw.a + '/' + raw.b;
+  if (raw.family === 'wdiv') return raw.W + ' WHOLE CAKES  ·  BOX ' + raw.a + '/' + raw.b;
+  return 'COMMON SLICE, THEN GROUP';
+}
+
+function drawHud() {
+  panel(UI.margin, UI.hudY, VW - UI.margin * 2, UI.hudH, 'rgba(93,255,241,0.45)');
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = font(15, 800);
+  var tier = tierInfo(G.round);
+  var x = UI.margin + 16;
+  var y = UI.hudY + UI.hudH / 2;
+  if (G.playMode === 'solo') {
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText('SOLO CHEF', x, y);
+    x += 118;
+    ctx.fillStyle = COL.ink;
+    ctx.fillText('R' + G.round + '  ' + tier.name, x, y);
+    x += 210;
+    drawShieldRow(x, y, G.shields, G.maxShields, COL.amber);
+    x += 36 * G.maxShields + 8;
+    ctx.fillStyle = COL.lime;
+    ctx.fillText('COMBO ×' + G.combo, x, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(18, 800);
+    ctx.fillText(G.score.toLocaleString() + ' PTS', VW - UI.margin - 16, y);
+  } else if (G.playMode === 'coop') {
+    ctx.fillStyle = COL.pink;
+    ctx.fillText('2P CO-OP TEAM', x, y);
+    x += 160;
+    ctx.fillStyle = COL.ink;
+    ctx.fillText('R' + G.round + '  ' + tier.name, x, y);
+    x += 210;
+    drawShieldRow(x, y, G.shields, G.maxShields, COL.amber);
+    x += 36 * G.maxShields + 8;
+    ctx.fillStyle = COL.lime;
+    ctx.fillText('TEAM COMBO ×' + G.combo, x, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(18, 800);
+    ctx.fillText('TEAM ' + G.score.toLocaleString(), VW - UI.margin - 16, y);
+  } else {
+    ctx.fillStyle = COL.amber;
+    ctx.fillText('2P VERSUS', x, y);
+    x += 130;
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(14, 800);
+    ctx.fillText('R' + G.round + '  ' + tier.name, x, y);
+    drawVersusChip(760, y, players[0]);
+    drawVersusChip(1020, y, players[1]);
+  }
+}
+
+function drawShieldRow(x, y, live, max, color) {
+  for (var i = 0; i < max; i++) {
+    ctx.beginPath();
+    ctx.moveTo(x + i * 28 + 8, y - 10);
+    ctx.lineTo(x + i * 28 + 16, y - 6);
+    ctx.lineTo(x + i * 28 + 16, y + 4);
+    ctx.lineTo(x + i * 28 + 8, y + 12);
+    ctx.lineTo(x + i * 28, y + 4);
+    ctx.lineTo(x + i * 28, y - 6);
+    ctx.closePath();
+    ctx.fillStyle = i < live ? color : 'rgba(255,255,255,0.12)';
+    ctx.fill();
+  }
+}
+
+function drawVersusChip(x, y, p) {
+  ctx.textAlign = 'left';
+  ctx.font = font(13, 800);
+  ctx.fillStyle = p.color;
+  ctx.fillText(p.name, x, y);
+  drawShieldRow(x + 32, y, p.shields, 3, p.color);
+  ctx.fillStyle = p.out ? COL.mute : COL.ink;
+  ctx.fillText('★ ' + p.stars + '  ' + p.score.toLocaleString(), x + 122, y);
+}
+
+function drawTicket() {
+  var p = G.problem;
+  panel(UI.margin, UI.ticketY, VW - UI.margin * 2, UI.ticketH, 'rgba(255,200,87,0.55)');
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = COL.amber;
+  ctx.font = font(12, 800);
+  ctx.fillText('ORDER ' + G.round + '  ·  ' + G.flavor, UI.margin + 16, UI.ticketY + 18);
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(13, 700);
+  ctx.fillText(p.ask, UI.margin + 16, UI.ticketY + 46);
+  drawTokens(p.tokens, 1048, UI.ticketY + UI.ticketH / 2 + 4, 28, COL.ink);
+}
+
+function drawStepBar() {
+  var y = UI.stepY;
+  var names = ['1 LASER', '2 GROUP', '3 LOCK'];
+  var x = UI.margin;
+  ctx.font = font(12, 800);
+  ctx.textBaseline = 'middle';
+  for (var i = 0; i < 3; i++) {
+    var on = G.step === i;
+    roundRect(x, y, 110, UI.stepH, 8);
+    ctx.fillStyle = on ? 'rgba(93,255,241,0.2)' : 'rgba(0,0,0,0.25)';
+    ctx.fill();
+    ctx.fillStyle = on ? COL.cyan : COL.mute;
+    ctx.textAlign = 'center';
+    ctx.fillText(names[i], x + 55, y + UI.stepH / 2);
+    x += 118;
+  }
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COL.ink;
+  ctx.font = font(13, 700);
+  var role = 'YOU RUN EVERY STATION';
+  if (G.playMode === 'coop') {
+    var laser = laserPid();
+    var other = laser === 0 ? 1 : 0;
+    role = (laser === 0 ? 'P1' : 'P2') + ' LASER   ·   ' + (other === 0 ? 'P1' : 'P2') + ' ASSEMBLER   ·   BOTH DISPATCH';
+  } else if (G.playMode === 'versus') role = 'FIRST CORRECT LOCK TAKES THE STEP';
+  ctx.fillText(role, 400, y + UI.stepH / 2);
+}
+
+function drawHint() {
+  var step = G.problem.steps[G.step];
+  var title = 'STEP ' + (G.step + 1);
+  var text = step.help;
+  var stroke = COL.line;
+  if (G.anim) {
+    title = 'LOCKED';
+    text = G.problem.steps[Math.min(2, G.step)].ok;
+    stroke = 'rgba(198,255,74,0.8)';
+  }
+  if (G.banner) {
+    title = G.banner.title;
+    text = G.banner.text;
+    stroke = G.banner.bad ? 'rgba(255,59,92,0.9)' : 'rgba(93,255,241,0.7)';
+  }
+  panel(UI.margin, UI.hintY, VW - UI.margin * 2, UI.hintH, stroke);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = G.banner && G.banner.bad ? COL.red : COL.cyan;
+  ctx.font = font(12, 800);
+  ctx.fillText(title, UI.margin + 16, UI.hintY + 10);
+  ctx.fillStyle = COL.ink;
+  ctx.font = font(15, 700);
+  wrapText(text, UI.margin + 16, UI.hintY + 30, VW - UI.margin * 2 - 32, 18);
+}
+
+function wrapText(text, x, y, maxW, lh) {
+  var words = String(text).split(' ');
+  var line = '';
+  var yy = y;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  for (var i = 0; i < words.length; i++) {
+    var trial = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(trial).width > maxW && line) {
+      ctx.fillText(line, x, yy);
+      line = words[i];
+      yy += lh;
+    } else line = trial;
+  }
+  if (line) ctx.fillText(line, x, yy);
+}
+
+function drawCards() {
+  var slots = layoutSlots();
+  G.slots = slots;
+  var cards = G.problem.steps[G.step].cards;
+  var i;
+  for (i = 0; i < 4; i++) drawChoice(slots[i], cards[i], i);
+  drawDispatch(slots[4]);
+}
+
+function cardHot(slotIndex) {
+  var hot = [false, false];
+  for (var pid = 0; pid < (G.playMode === 'solo' ? 1 : 2); pid++) {
+    var pl = players[pid];
+    if (pl.mouse && pid === 0 && inside(pl.x, pl.y, G.slots[slotIndex])) hot[pid] = true;
+    if (!pl.mouse && pl.focus === slotIndex) hot[pid] = true;
+  }
+  return hot;
+}
+
+function drawChoice(slot, card, index) {
+  var hot = cardHot(index);
+  var picked = currentPick(0) === index || (G.playMode === 'versus' && currentPick(1) === index);
+  var stroke = 'rgba(93,255,241,0.35)';
+  if (hot[0]) stroke = COL.p1;
+  if (hot[1]) stroke = COL.p2;
+  if (picked) stroke = COL.amber;
+  if (G.flash && G.flash.slot === index) stroke = G.flash.ok ? COL.lime : COL.red;
+  panel(slot.x, slot.y, slot.w, slot.h, stroke, 'rgba(12, 8, 24, 0.92)');
+  var cx = slot.x + slot.w / 2;
+  var cy = slot.y + slot.h / 2 + (card.sub ? -8 : 0);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (card.face === 'cut') {
+    drawCake(slot.x + 42, cy, 24, card.cut, function (i) { return ICING[i % ICING.length]; }, 1, false);
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(42, 800);
+    ctx.fillText(String(card.cut), slot.x + 130, cy - 8);
+    ctx.font = font(12, 800);
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText('SLICES', slot.x + 130, cy + 24);
+  } else if (card.face === 'whole') {
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(54, 800);
+    ctx.fillText(String(card.w), cx, cy);
+  } else if (card.face === 'frac') {
+    drawStack(cx, cy, card.n, card.d, 32, COL.ink);
+  } else if (card.face === 'mixed') {
+    drawMixedAt(cx, cy, card.w, card.n, card.d, 30, COL.ink);
+  } else if (card.face === 'rem') {
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(40, 800);
+    ctx.fillText(card.q + ' R ' + card.r, cx, cy);
+  } else if (card.face === 'tokens') {
+    drawTokens(card.tokens, cx, cy, 28, COL.ink);
+  } else {
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(26, 800);
+    var size = 26;
+    while (size > 16 && ctx.measureText(card.line).width > slot.w - 20) {
+      size -= 2;
+      ctx.font = font(size, 800);
+    }
+    ctx.fillText(card.line, cx, cy);
+    if (card.sub) {
+      ctx.font = font(13, 700);
+      ctx.fillStyle = COL.cyan;
+      ctx.fillText(card.sub, cx, cy + 28);
+    }
+  }
+}
+
+function drawDispatch(slot) {
+  var ready = G.step === 2;
+  var hot = cardHot(4);
+  var stroke = ready ? COL.pink : 'rgba(255,255,255,0.15)';
+  if (hot[0] || hot[1]) stroke = COL.cyan;
+  var pulse = ready ? (0.55 + 0.45 * Math.sin(G.t * 5)) : 0.3;
+  panel(slot.x, slot.y, slot.w, slot.h, stroke, ready ? 'rgba(255, 79, 216, ' + (0.16 + pulse * 0.12) + ')' : 'rgba(12,8,24,0.7)');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = ready ? COL.ink : COL.mute;
+  ctx.font = font(18, 800);
+  ctx.fillText(ready ? 'DISPATCH' : 'DISPATCH', slot.x + slot.w / 2, slot.y + slot.h / 2 - 16);
+  ctx.font = font(13, 800);
+  ctx.fillStyle = ready ? COL.amber : COL.mute;
+  ctx.fillText(ready ? 'ORDER' : 'LOCKED', slot.x + slot.w / 2, slot.y + slot.h / 2 + 12);
+  if (G.step === 2) {
+    ctx.font = font(12, 700);
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText('LAUNCH THE LOCKED CARD', slot.x + slot.w / 2, slot.y + slot.h - 22);
+  }
+}
+
+function drawReticles() {
+  var n = G.playMode === 'solo' ? 1 : 2;
+  for (var i = 0; i < n; i++) {
+    var p = players[i];
+    if (G.playMode === 'versus' && p.out) continue;
+    ctx.save();
+    if (G.playMode === 'coop' && !canAct(i, G.step)) ctx.globalAlpha = 0.35;
+    ctx.translate(p.x, p.y);
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-20, 0); ctx.lineTo(-6, 0);
+    ctx.moveTo(6, 0); ctx.lineTo(20, 0);
+    ctx.moveTo(0, -20); ctx.lineTo(0, -6);
+    ctx.moveTo(0, 6); ctx.lineTo(0, 20);
+    ctx.stroke();
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.moveTo(-6, -16);
+    ctx.lineTo(6, -16);
+    ctx.lineTo(4, -22);
+    ctx.lineTo(-4, -22);
+    ctx.closePath();
+    ctx.fill();
+    if (G.playMode !== 'solo') {
+      ctx.font = font(11, 800);
+      ctx.textAlign = 'left';
+      ctx.fillText(p.name, 16, -16);
+    }
+    ctx.restore();
+  }
+}
+
+function drawFloats() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = font(18, 800);
+  for (var i = 0; i < floats.length; i++) {
+    var f = floats[i];
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawParticles() {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = font(18, 800);
+  ctx.fillText('PRIMARY 5–6  ·  DIVISION  ·  FRACTION  ·  MULTIPLICATION', VW / 2, 78);
+  ctx.font = font(64, 800);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('CYBER-BAKERY', VW / 2, 148);
+  ctx.font = font(22, 800);
+  ctx.fillStyle = COL.pink;
+  ctx.fillText('THE LASER SLICER', VW / 2, 184);
+  ctx.font = font(15, 700);
+  ctx.fillStyle = COL.ink;
+  ctx.fillText('Slice the denominator, group the wedges, then lock the simplified fraction.', VW / 2, 224);
+  var cards = titleCards();
+  var copy = [
+    { name: 'SOLO CHEF', lines: ['Mouse, keyboard, or one 8BitDo.', 'You slice, group, and dispatch.', '3 bakery shields.'] },
+    { name: '2P CO-OP TEAM', lines: ['P1: WASD + F / Space, or Pad 1.', 'P2: Arrows + Enter, or Pad 2.', 'Swap stations each order.', 'One team score. 4 shared shields.'] },
+    { name: '2P VERSUS', lines: ['Same controls, head to head.', 'First correct lock takes speed points.', 'Step 3 claims the Master Chef star.'] }
+  ];
+  for (var i = 0; i < 3; i++) {
+    var c = cards[i];
+    var on = G.titleFocus === i;
+    panel(c.x, c.y, c.w, c.h, on ? COL.cyan : 'rgba(255,255,255,0.16)', on ? 'rgba(93,255,241,0.12)' : COL.panel);
+    ctx.fillStyle = on ? COL.cyan : COL.ink;
+    ctx.font = font(22, 800);
+    ctx.fillText(copy[i].name, c.x + c.w / 2, c.y + 48);
+    ctx.font = font(15, 700);
+    ctx.fillStyle = COL.ink;
+    for (var L = 0; L < copy[i].lines.length; L++) {
+      ctx.fillText(copy[i].lines[L], c.x + c.w / 2, c.y + 96 + L * 28);
+    }
+    ctx.fillStyle = COL.amber;
+    ctx.font = font(13, 800);
+    ctx.fillText('BEST ' + (G.best[['solo', 'coop', 'versus'][i]] || 0).toLocaleString(), c.x + c.w / 2, c.y + c.h - 28);
+  }
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(14, 700);
+  ctx.fillText('Move with the D-pad, stick, WASD, or arrows. Confirm with A, Space, or Enter. M mutes.', VW / 2, 640);
+  if (auditErrors.length) {
+    ctx.fillStyle = COL.red;
+    ctx.font = font(14, 800);
+    ctx.fillText('Math check failed: ' + auditErrors[0], VW / 2, 668);
+  }
+  drawCake(110, 150, 42, 4, function (i) { return i < 3 ? COL.amber : 'rgba(255,255,255,0.1)'; }, 1, true);
+  drawCake(1170, 150, 42, 6, function (i) { return ICING[i % ICING.length]; }, 1, false);
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(4, 0, 10, 0.72)';
+  ctx.fillRect(0, 0, VW, VH);
+  panel(340, 150, 600, 410, COL.pink);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.pink;
+  ctx.font = font(16, 800);
+  ctx.fillText('OVEN COLD', VW / 2, 196);
+  ctx.fillStyle = '#fff';
+  ctx.font = font(36, 800);
+  if (G.playMode === 'versus') {
+    var title = G.winner === 0 ? 'RED CHEF WINS' : (G.winner === 1 ? 'BLUE CHEF WINS' : 'DUEL OVER');
+    ctx.fillText(title, VW / 2, 250);
+    ctx.font = font(18, 700);
+    ctx.fillStyle = COL.ink;
+    ctx.fillText('P1  ★ ' + players[0].stars + '    ' + players[0].score.toLocaleString() + ' pts', VW / 2, 310);
+    ctx.fillText('P2  ★ ' + players[1].stars + '    ' + players[1].score.toLocaleString() + ' pts', VW / 2, 344);
+  } else {
+    ctx.fillText(G.playMode === 'coop' ? 'TEAM SERVICE ENDED' : 'SERVICE ENDED', VW / 2, 250);
+    ctx.font = font(28, 800);
+    ctx.fillStyle = COL.amber;
+    var label = G.playMode === 'coop' ? 'TEAM ' : '';
+    ctx.fillText(label + G.score.toLocaleString(), VW / 2, 310);
+    ctx.font = font(16, 700);
+    ctx.fillStyle = COL.mute;
+    ctx.fillText('BEST ' + (G.best[G.playMode] || 0).toLocaleString(), VW / 2, 348);
+  }
+  ctx.font = font(15, 700);
+  ctx.fillStyle = COL.ink;
+  ctx.fillText('Round ' + G.round + '  ·  ' + tierInfo(Math.max(1, G.round)).name, VW / 2, 392);
+  var buttons = overButtons();
+  var labels = ['PLAY AGAIN', 'MENU'];
+  for (var i = 0; i < buttons.length; i++) {
+    var b = buttons[i];
+    panel(b.x, b.y, b.w, b.h, G.overFocus === i ? COL.cyan : COL.line);
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(16, 800);
+    ctx.fillText(labels[i], b.x + b.w / 2, b.y + b.h / 2);
+  }
+}
+
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#07040c';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+  ctx.translate(G.shakeX, G.shakeY);
+  drawBackground();
+  if (G.mode === 'play' || G.mode === 'over') {
+    if (G.problem) drawStage(phase());
+    drawHud();
+    if (G.problem) {
+      drawTicket();
+      drawStepBar();
+      drawHint();
+      drawCards();
+    }
+    drawParticles();
+    drawFloats();
+    if (G.mode === 'play') drawReticles();
+  }
+  if (G.mode === 'title') drawTitle();
+  if (G.mode === 'over') drawOver();
+  if (G.fatal) {
+    ctx.fillStyle = COL.red;
+    ctx.font = font(16, 700);
+    ctx.textAlign = 'left';
+    ctx.fillText(G.fatal, 24, VH - 24);
+  }
+}
+
+function resize() {
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var w = window.innerWidth;
+  var h = window.innerHeight;
+  canvas.width = Math.max(1, Math.floor(w * dpr));
+  canvas.height = Math.max(1, Math.floor(h * dpr));
+  view.s = Math.min(canvas.width / VW, canvas.height / VH);
+  view.ox = (canvas.width - VW * view.s) / 2;
+  view.oy = (canvas.height - VH * view.s) / 2;
+}
+
+function frame(ts) {
+  if (!frame.last) frame.last = ts;
+  var dt = Math.min(0.034, (ts - frame.last) / 1000 || 0.016);
+  frame.last = ts;
+  try {
+    update(dt);
+    render();
+  } catch (err) {
+    console.error(err);
+    G.fatal = err && err.message ? err.message : String(err);
+    try { render(); } catch (e2) { /* keep looping */ }
+  }
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d');
+  muteBtn = document.getElementById('mute');
+  sr = document.getElementById('sr');
+  try {
+    var saved = JSON.parse(localStorage.getItem(BEST_KEY) || '{}');
+    G.best.solo = saved.solo || 0;
+    G.best.coop = saved.coop || 0;
+    G.best.versus = saved.versus || 0;
+  } catch (e) { /* ignore */ }
+  for (var i = 0; i < 28; i++) dust.push({ x: (i * 97) % VW, y: (i * 53) % VH, s: 0.2 + (i % 5) * 0.15 });
+  auditErrors = runAudit();
+  window.__cyberAudit = auditErrors;
+  window.__bakery = G;
+  if (auditErrors.length) console.warn('Cyber-Bakery audit', auditErrors);
+  else console.log('Cyber-Bakery audit ok');
+  muteBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    toggleMute();
+  });
+  window.addEventListener('resize', resize);
+  function tapKey(code) {
+    var solo = G.playMode === 'solo' || G.mode !== 'play';
+    function nudge(pid, dir, vert) {
+      moveFocus(pid, dir, vert);
+      players[pid].primed = true;
+      players[pid].hold = 0.28;
+    }
+    function act(pid) {
+      was[code] = true;
+      players[pid].mouse = false;
+      if (G.mode === 'title') beginGame(['solo', 'coop', 'versus'][G.titleFocus]);
+      else if (G.mode === 'over') handleActivate(0, G.overFocus);
+      else handleActivate(pid, players[pid].focus);
+    }
+    if (solo) {
+      if (code === 'ArrowLeft' || code === 'KeyA') nudge(0, -1, 0);
+      else if (code === 'ArrowRight' || code === 'KeyD') nudge(0, 1, 0);
+      else if (code === 'ArrowUp' || code === 'KeyW') nudge(0, 0, -1);
+      else if (code === 'ArrowDown' || code === 'KeyS') nudge(0, 0, 1);
+      else if (code === 'Space' || code === 'Enter' || code === 'KeyF') act(0);
+      return;
+    }
+    if (code === 'KeyA') nudge(0, -1, 0);
+    else if (code === 'KeyD') nudge(0, 1, 0);
+    else if (code === 'KeyW') nudge(0, 0, -1);
+    else if (code === 'KeyS') nudge(0, 0, 1);
+    else if (code === 'KeyF' || code === 'Space') act(0);
+    else if (code === 'ArrowLeft') nudge(1, -1, 0);
+    else if (code === 'ArrowRight') nudge(1, 1, 0);
+    else if (code === 'ArrowUp') nudge(1, 0, -1);
+    else if (code === 'ArrowDown') nudge(1, 0, 1);
+    else if (code === 'Enter') act(1);
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (e.target === muteBtn) return;
+    if (e.code === 'KeyM' && !e.repeat) toggleMute();
+    if (e.code === 'Escape' && G.mode !== 'title') { goTitle(); return; }
+    var block = ['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (block.indexOf(e.code) !== -1) e.preventDefault();
+    ensureAudio();
+    if (!e.repeat && !held[e.code]) tapKey(e.code);
+    held[e.code] = true;
+  });
+  window.addEventListener('keyup', function (e) { held[e.code] = false; });
+  window.addEventListener('blur', function () {
+    for (var code in held) held[code] = false;
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    var p = toWorld(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.on = true;
+    pointer.moved = true;
+  });
+  canvas.addEventListener('pointerdown', function (e) {
+    canvas.focus();
+    var p = toWorld(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointerDown(p.x, p.y);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!audio.master) return;
+    if (document.hidden) audio.master.gain.value = 0;
+    else if (!audio.muted) audio.master.gain.value = 0.9;
+  });
+  resize();
+  canvas.focus();
+  requestAnimationFrame(frame);
+}
+
+function toWorld(cx, cy) {
+  var rect = canvas.getBoundingClientRect();
+  var x = (cx - rect.left) * (canvas.width / rect.width);
+  var y = (cy - rect.top) * (canvas.height / rect.height);
+  return { x: (x - view.ox) / view.s, y: (y - view.oy) / view.s };
+}
+
+boot();
+</script>
+</body>
+</html>
