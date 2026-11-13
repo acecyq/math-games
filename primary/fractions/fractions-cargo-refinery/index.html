@@ -83,6 +83,7 @@ var COL = {
   amber: '#ffc14a',
   emerald: '#3dffb0',
   magenta: '#ff4ad8',
+  violet: '#c86bff',
   gold: '#ffd56a',
   red: '#ff4d5e',
   blue: '#4c8dff',
@@ -121,6 +122,7 @@ var players = [
 
 var V = {
   main: blankCell(),
+  alpha: blankCell(),
   rem: blankCell(),
   out: blankCell(),
   aux: blankCell(),
@@ -198,11 +200,12 @@ function cell(o) {
   };
 }
 
-function view(live, caption, main, rem, out, aux, extra) {
+function view(live, caption, main, rem, out, aux, extra, alpha) {
   return {
     live: live,
     caption: caption,
     main: main || cell({}),
+    alpha: alpha || cell({}),
     rem: rem || cell({}),
     out: out || cell({}),
     aux: aux || cell({}),
@@ -728,6 +731,8 @@ function forgeSplit(spec) {
     { v: alpha, alarm: 'PRESSURE FAULT', hint: alpha + ' L is Valve A, not the final overflow.' }
   ];
 
+  var alphaEmpty = cell({ fill: 0, gauge: '—' });
+  var alphaFull = cell({ fill: 1, gauge: litre(alpha) });
   var mainOpen = cell({ fill: 1, seg: b, shade: 0, gauge: litre(S), unit: unit1 });
   var mainFull = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unit1, mark: 'ALPHA' });
   var mainSame = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unit1, mark: 'ALPHA', sent: true });
@@ -738,6 +743,9 @@ function forgeSplit(spec) {
   var outGoal = tier === 1
     ? cell({ fill: beta / R, gauge: litre(beta) })
     : cell({ fill: leftover / R, gauge: litre(leftover) });
+  var betaEmpty = cell({ fill: 0, gauge: '—' });
+  var betaFull = cell({ fill: 1, gauge: litre(beta) });
+  var betaShown = tier === 2 ? betaEmpty : null;
 
   var stages = [
     {
@@ -746,8 +754,8 @@ function forgeSplit(spec) {
       answer: alpha,
       seal: a + '/' + b + ' of ' + S + ' L = ' + alpha + ' L to Alpha',
       options: buildOptions(alpha, candsAlpha),
-      before: view('main', 'The Main Tank is split into ' + b + ' equal bands of ' + unit1 + ' L. None have been pumped yet.', mainOpen, remEmpty, outEmpty),
-      after: view('main', 'Alpha bands shaded: ' + alpha + ' L.', mainFull, remEmpty, outEmpty)
+      before: view('alpha', 'Valve A leads from the Main Tank to Reactor Alpha. ' + b + ' equal bands of ' + unit1 + ' L.', mainOpen, remEmpty, outEmpty, null, betaShown, alphaEmpty),
+      after: view('alpha', alpha + ' L pumped through Valve A into Reactor Alpha.', mainFull, remEmpty, outEmpty, null, betaShown, alphaFull)
     },
     {
       title: 'MAIN TANK PARTITION',
@@ -755,8 +763,8 @@ function forgeSplit(spec) {
       answer: R,
       seal: 'Remainder = ' + S + ' − ' + alpha + ' = ' + R + ' L',
       options: buildOptions(R, cands1),
-      before: view('main', 'Shaded bands went to Alpha. Each unshaded band is ' + unit1 + ' L and flows to the Remainder.', mainFull, remEmpty, outEmpty),
-      after: view('rem', 'Remainder Tank locked at ' + R + ' L.', mainSame, cell({ fill: 1, gauge: litre(R) }), outEmpty)
+      before: view('main', 'Shaded bands went through Valve A. Each unshaded band is ' + unit1 + ' L and flows to the Remainder.', mainFull, remEmpty, outEmpty, null, betaShown, alphaFull),
+      after: view('rem', 'Remainder Tank locked at ' + R + ' L.', mainSame, cell({ fill: 1, gauge: litre(R) }), outEmpty, null, betaShown, alphaFull)
     },
     {
       title: tier === 1 ? 'REMAINDER TANK SLICE' : 'COMPLEMENT OF THE REMAINDER',
@@ -766,8 +774,8 @@ function forgeSplit(spec) {
         ? (c + '/' + d + ' of ' + R + ' L = ' + beta + ' L to Beta')
         : ('Unused ' + compParts + '/' + d + ' of ' + R + ' L = ' + leftover + ' L'),
       options: buildOptions(answer2, tier === 1 ? candsBeta : candsLeft),
-      before: view('rem', 'Each Remainder band = ' + unit2 + ' L.', mainSame, remFull, outEmpty),
-      after: view('out', tier === 1 ? (beta + ' L surged to Reactor Beta.') : (leftover + ' L stays in the overflow.'), mainSame, remCut, outGoal)
+      before: view(tier === 2 ? 'extra' : 'rem', tier === 2 ? ('Valve B leads to Reactor Beta. Each Remainder band is ' + unit2 + ' L. What stays behind is unused.') : ('Each Remainder band = ' + unit2 + ' L.'), mainSame, remFull, outEmpty, null, betaShown, alphaFull),
+      after: view('out', tier === 1 ? (beta + ' L surged to Reactor Beta.') : (leftover + ' L stays unused. Valve B sent ' + beta + ' L to Reactor Beta.'), mainSame, remCut, outGoal, null, tier === 2 ? betaFull : null, alphaFull)
     }
   ];
 
@@ -819,18 +827,93 @@ function forgeBack(spec) {
     word(' to Beta, leaving ' + L + ' L in the final overflow tank. What was the STARTING capacity of the Main Tank?')
   ];
 
+  var s0 = [
+    word('Valve B pumped '),
+    F(c, d),
+    word(' of the Remainder to Reactor Beta. What fraction of the Remainder Tank is left in the Final Overflow?')
+  ];
   var s1 = [
     word(L + ' L is '),
     F(comp, d),
     word(' of the Remainder Tank. How many litres were in the Remainder Tank?')
+  ];
+  var sMain = [
+    word('Valve A pumped '),
+    F(a, b),
+    word(' of the Main Tank to Reactor Alpha. What fraction of the Main Tank is the Remainder Tank?')
   ];
   var s2 = [
     word('The Remainder Tank, ' + R + ' L, is '),
     F(b - a, b),
     word(' of the Main Tank. What was the starting capacity?')
   ];
-  var s3 = [word('Lock the rebuilt Main Tank and surge the reading. What was the starting capacity?')];
-
+  function fracKey(n, den) {
+    var g = gcd(n, den);
+    return (n / g) + '/' + (den / g);
+  }
+  function fractionChoices(correct, wrongs, miss) {
+    var opts = [{
+      v: correct.n + '/' + correct.d,
+      ok: true,
+      hint: '',
+      alarm: '',
+      text: correct.n + '/' + correct.d,
+      frac: { n: correct.n, d: correct.d }
+    }];
+    var used = {};
+    used[fracKey(correct.n, correct.d)] = true;
+    for (var i = 0; i < wrongs.length && opts.length < 4; i++) {
+      var w = wrongs[i];
+      if (!w || w.n <= 0 || w.d <= 1 || w.n >= w.d) continue;
+      var id = fracKey(w.n, w.d);
+      if (used[id]) continue;
+      used[id] = true;
+      opts.push({
+        v: w.n + '/' + w.d,
+        ok: false,
+        hint: w.hint,
+        alarm: w.alarm || 'PRESSURE FAULT',
+        text: w.n + '/' + w.d,
+        frac: { n: w.n, d: w.d }
+      });
+    }
+    var n = 1;
+    var extras = [[1, b], [a, d], [c, b], [comp, b], [1, d + 1], [a, d + b]];
+    function pushFrac(pn, pd, hint) {
+      if (opts.length >= 4 || pn <= 0 || pd <= 1 || pn >= pd) return;
+      var id = fracKey(pn, pd);
+      if (used[id]) return;
+      used[id] = true;
+      opts.push({
+        v: pn + '/' + pd,
+        ok: false,
+        hint: hint,
+        alarm: 'PRESSURE FAULT',
+        text: pn + '/' + pd,
+        frac: { n: pn, d: pd }
+      });
+    }
+    var note = miss || function (pn, pd) {
+      return pn + '/' + pd + ' is not the share left behind. Valve B took ' + c + '/' + d + ', so the overflow is ' + comp + '/' + d + '.';
+    };
+    while (opts.length < 4 && n < d) {
+      pushFrac(n, d, note(n, d));
+      n++;
+    }
+    for (var e = 0; e < extras.length; e++) {
+      pushFrac(extras[e][0], extras[e][1], note(extras[e][0], extras[e][1]));
+    }
+    return shuffle(opts);
+  }
+  var cands0 = fractionChoices(
+    { n: comp, d: d },
+    [
+      { n: c, d: d, hint: c + '/' + d + ' is the share Valve B pumped to Reactor Beta. The overflow is what stayed behind: 1 − ' + c + '/' + d + ' = ' + comp + '/' + d + '.' },
+      { n: a, d: b, hint: a + '/' + b + ' is what Valve A took from the Main Tank. The overflow is the part of the Remainder that Valve B did not take.' },
+      { n: 1, d: d, hint: '1/' + d + ' is a single Remainder band. The overflow holds ' + comp + ' of the ' + d + ' bands.' },
+      { n: b - a, d: b, hint: (b - a) + '/' + b + ' compares the Remainder with the Main Tank. First name the overflow as a fraction of the Remainder.' }
+    ]
+  );
   var cands1 = [
     { v: 'add', text: bogus, alarm: 'GAUGE ALARM', hint: alarm },
     { v: L, alarm: 'PRESSURE FAULT', hint: L + ' L is only the final leftover. ' + comp + '/' + d + ' of the Remainder equals ' + L + ' L, so 1 band = ' + L + ' ÷ ' + comp + ' = ' + unitR + ' L.' },
@@ -838,6 +921,18 @@ function forgeBack(spec) {
     { v: timesDen, alarm: 'GAUGE ALARM', hint: 'Multiplying the leftover by the denominator skips the complement. ' + comp + '/' + d + ' of the remainder is ' + L + ' L. ' + alarm },
     { v: S, alarm: 'PRESSURE FAULT', hint: 'That skips ahead to the Main Tank. First rebuild the Remainder Tank from the leftover.' }
   ];
+  var candsMain = fractionChoices(
+    { n: b - a, d: b },
+    [
+      { n: a, d: b, hint: a + '/' + b + ' is the share Valve A pumped to Reactor Alpha. The Remainder is what stayed in the Main Tank: 1 − ' + a + '/' + b + ' = ' + (b - a) + '/' + b + '.' },
+      { n: c, d: d, hint: c + '/' + d + ' is Valve B\'s share of the Remainder, not the Remainder\'s share of the Main Tank.' },
+      { n: comp, d: d, hint: comp + '/' + d + ' is the overflow\'s share of the Remainder. The Remainder itself is the part of the Main Tank Valve A did not take.' },
+      { n: 1, d: b, hint: '1/' + b + ' is a single Main Tank band. The Remainder fills ' + (b - a) + ' of the ' + b + ' bands.' }
+    ],
+    function (pn, pd) {
+      return pn + '/' + pd + ' is not the Remainder\'s share of the Main Tank. Valve A took ' + a + '/' + b + ', so the Remainder is ' + (b - a) + '/' + b + '.';
+    }
+  );
   var cands2 = [
     { v: 'add', text: bogus, alarm: 'GAUGE ALARM', hint: alarm },
     { v: R, alarm: 'PRESSURE FAULT', hint: R + ' L is the Remainder Tank, which is ' + (b - a) + '/' + b + ' of the Main Tank. 1 Main band = ' + R + ' ÷ ' + (b - a) + ' = ' + unitM + ' L.' },
@@ -849,18 +944,41 @@ function forgeBack(spec) {
   var ink = cell({ fill: 0.22, seg: b, gauge: '?? L', ink: true });
   var inkMark = cell({ fill: 0.22, seg: b, shade: a, gauge: '?? L', ink: true, mark: 'ALPHA' });
   var knownOut = cell({ fill: 1, seg: comp, gauge: litre(L), unit: 0 });
-  var remBuilt = cell({ fill: 1, seg: d, gauge: litre(R), unit: unitR });
+  var remBuilt = cell({ fill: 1, seg: d, shade: c, gauge: litre(R), unit: unitR, mark: 'BETA' });
   var mainBuilt = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unitM, mark: 'ALPHA' });
+  var alphaWait = cell({ fill: 0, gauge: '?? L' });
+  var alphaDone = cell({ fill: 1, gauge: litre(unitM * a) });
+  var betaWait = cell({ fill: 0, gauge: '?? L' });
+  var betaDone = cell({ fill: 1, gauge: litre(unitR * c) });
 
+  var overflowOpen = cell({ fill: 1, gauge: litre(L) });
   var stages = [
+    {
+      title: 'OVERFLOW FRACTION',
+      prompt: s0,
+      answer: comp + '/' + d,
+      seal: 'Overflow = 1 − ' + c + '/' + d + ' = ' + comp + '/' + d + ' of the Remainder',
+      options: cands0,
+      before: view('out', 'Valve B leads to Reactor Beta. Name the fraction left in the Final Overflow.', ink, cell({ fill: 0, seg: d, gauge: '—' }), overflowOpen, null, betaWait, alphaWait),
+      after: view('out', 'The overflow is ' + comp + '/' + d + ' of the Remainder.', ink, cell({ fill: 0, seg: d, gauge: '—' }), knownOut, null, betaWait, alphaWait)
+    },
     {
       title: 'REBUILD THE REMAINDER',
       prompt: s1,
       answer: R,
       seal: comp + '/' + d + ' of Remainder = ' + L + ' L → Remainder = ' + R + ' L',
       options: buildOptions(R, cands1),
-      before: view('out', 'The overflow is ' + comp + ' of ' + d + ' equal remainder bands.', ink, cell({ fill: 0, seg: d, gauge: '—' }), knownOut),
-      after: view('rem', 'Remainder Tank rebuilt: ' + R + ' L.', ink, remBuilt, knownOut)
+      before: view('out', 'The overflow is ' + comp + '/' + d + ' of the Remainder. ' + L + ' L fills that share.', ink, cell({ fill: 0, seg: d, gauge: '—' }), knownOut, null, betaWait, alphaWait),
+      after: view('rem', 'Remainder rebuilt: ' + R + ' L. Valve B sent ' + (unitR * c) + ' L to Reactor Beta.', ink, remBuilt, knownOut, null, betaDone, alphaWait)
+    },
+    {
+      title: 'REMAINDER FRACTION',
+      prompt: sMain,
+      answer: (b - a) + '/' + b,
+      seal: 'Remainder = 1 − ' + a + '/' + b + ' = ' + (b - a) + '/' + b + ' of the Main Tank',
+      options: candsMain,
+      before: view('main', 'Shaded bands went to Reactor Alpha. Name the Remainder\'s fraction of the Main Tank.', inkMark, remBuilt, knownOut, null, betaDone, alphaWait),
+      after: view('main', 'The Remainder is ' + (b - a) + '/' + b + ' of the Main Tank.', inkMark, remBuilt, knownOut, null, betaDone, alphaWait)
     },
     {
       title: 'REBUILD THE MAIN TANK',
@@ -868,17 +986,8 @@ function forgeBack(spec) {
       answer: S,
       seal: (b - a) + '/' + b + ' of Main = ' + R + ' L → Main = ' + S + ' L',
       options: buildOptions(S, cands2),
-      before: view('main', 'Unshaded Main Tank bands equal the ' + R + ' L remainder.', inkMark, remBuilt, knownOut),
-      after: view('main', 'Main Tank restored to ' + S + ' L.', mainBuilt, remBuilt, knownOut)
-    },
-    {
-      title: 'PIPELINE SURGE',
-      prompt: s3,
-      answer: S,
-      seal: 'Starting capacity locked: ' + S + ' L',
-      options: buildOptions(S, cands2),
-      before: view('main', 'Verify the starting capacity, then engage.', mainBuilt, remBuilt, knownOut),
-      after: view('main', 'Gauge restored.', mainBuilt, remBuilt, knownOut)
+      before: view('main', 'Unshaded Main Tank bands equal the ' + R + ' L remainder.', inkMark, remBuilt, knownOut, null, betaDone, alphaWait),
+      after: view('main', 'Main Tank restored to ' + S + ' L. Reactor Alpha holds ' + (unitM * a) + ' L.', mainBuilt, remBuilt, knownOut, null, betaDone, alphaDone)
     }
   ];
 
@@ -889,9 +998,9 @@ function forgeBack(spec) {
     storyText: textOf(story),
     introLog: 'Given leftover: ' + litre(L),
     worked: [
+      'Valve B took ' + c + '/' + d + ', so the overflow is 1 − ' + c + '/' + d + ' = ' + comp + '/' + d + ' of the Remainder.',
       comp + '/' + d + ' of the Remainder = ' + L + ' L. 1 band = ' + L + ' ÷ ' + comp + ' = ' + unitR + ' L. Remainder = ' + d + ' × ' + unitR + ' = ' + R + ' L.',
-      (b - a) + '/' + b + ' of the Main Tank = ' + R + ' L. 1 band = ' + R + ' ÷ ' + (b - a) + ' = ' + unitM + ' L. Main Tank = ' + b + ' × ' + unitM + ' = ' + S + ' L.',
-      'Starting capacity = ' + S + ' L.'
+      'Valve A took ' + a + '/' + b + ', so the Remainder is 1 − ' + a + '/' + b + ' = ' + (b - a) + '/' + b + ' of the Main Tank. ' + (b - a) + '/' + b + ' of the Main Tank = ' + R + ' L, so the Main Tank is ' + S + ' L.'
     ],
     layout: { mode: 'cascade', extra: false },
     outTitle: 'FINAL OVERFLOW',
@@ -1143,9 +1252,10 @@ function tryGenerate(tier, heat) {
 }
 
 function validProblem(p) {
-  if (!p || !p.stages || p.stages.length !== 3) return false;
+  var need = p && p.tier === 3 ? 4 : 3;
+  if (!p || !p.stages || p.stages.length !== need) return false;
   if (!p.storyText || !p.worked || p.worked.length < 3) return false;
-  for (var i = 0; i < 3; i++) {
+  for (var i = 0; i < p.stages.length; i++) {
     var s = p.stages[i];
     if (!s.options || s.options.length !== 4) return false;
     if (!s.promptText || !s.before || !s.after) return false;
@@ -1167,7 +1277,7 @@ function validProblem(p) {
     if (p.stages[0].answer + p.stages[1].answer !== tank) return false;
     if (!(p.stages[2].answer > 0 && p.stages[2].answer < p.stages[1].answer)) return false;
   }
-  if (p.tier === 3 && p.stages[2].answer !== p.stages[1].answer) return false;
+  if (p.tier === 3 && !(p.stages[3].answer > p.stages[1].answer)) return false;
   if (p.tier === 4 && !(p.stages[0].answer < p.stages[1].answer && p.stages[1].answer < p.stages[2].answer)) return false;
   return true;
 }
@@ -1200,9 +1310,17 @@ function runAudit() {
   return bad;
 }
 
+function stageCount() {
+  return G.problem && G.problem.stages ? G.problem.stages.length : 3;
+}
+
+function onFinalStage() {
+  return G.stage >= stageCount() - 1;
+}
+
 function stageOwner() {
   if (G.playMode !== 'coop') return 'both';
-  if (G.stage === 2) return 'both';
+  if (onFinalStage()) return 'both';
   var p1First = G.round % 2 === 0;
   if (G.stage === 0) return p1First ? 0 : 1;
   return p1First ? 1 : 0;
@@ -1211,12 +1329,12 @@ function stageOwner() {
 function roleLine() {
   if (G.playMode !== 'coop') return 'ALL VALVES';
   var p1First = G.round % 2 === 0;
-  if (G.stage === 2) return 'BOTH SEAL THE SURGE';
+  if (onFinalStage()) return 'BOTH SEAL THE SURGE';
   return (p1First ? 'P1 MAIN' : 'P2 MAIN') + '  ·  ' + (p1First ? 'P2 REMAINDER' : 'P1 REMAINDER');
 }
 
 function applyView(spec, glide) {
-  var names = ['main', 'rem', 'out', 'aux', 'extra'];
+  var names = ['main', 'alpha', 'rem', 'out', 'aux', 'extra'];
   for (var i = 0; i < names.length; i++) {
     var src = spec[names[i]];
     var dst = V[names[i]];
@@ -1241,6 +1359,7 @@ function enterStage() {
   var stage = G.problem.stages[G.stage];
   G.pick = -1;
   G.locks = [false, false];
+  G.banner = null;
   applyView(stage.before, false);
   sfxValve();
   sfxChime();
@@ -1331,12 +1450,12 @@ function award(base) {
 
 function succeed() {
   var stage = G.problem.stages[G.stage];
-  var base = G.stage === 2 ? 350 : G.stage === 1 ? 150 : 100;
+  var base = onFinalStage() ? 350 : (typeof stage.answer === 'string' ? 100 : 150);
   var pts = award(base);
   applyView(stage.after, true);
   G.flow = 1;
   G.log.push(stage.seal);
-  if (G.stage < 2) {
+  if (!onFinalStage()) {
     sfxChime();
     G.banner = { good: true, title: 'VALVE SEALED', text: stage.seal };
     G.wait = 0.9;
@@ -1714,10 +1833,20 @@ function tankBoxes(problem) {
   var y = 90;
   var h = 214;
   if (!problem || problem.layout.mode === 'cascade') {
+    if (problem && (problem.tier === 2 || problem.tier === 3)) {
+      return {
+        main: { x: 36, y: y, w: 176, h: h, key: 'main' },
+        alpha: { x: 300, y: y, w: 132, h: 126, key: 'alpha' },
+        rem: { x: 520, y: y, w: 176, h: h, key: 'rem' },
+        extra: { x: 784, y: y, w: 132, h: 126, key: 'extra' },
+        out: { x: 1004, y: y, w: 176, h: h, key: 'out' }
+      };
+    }
     return {
-      main: { x: 138, y: y, w: 176, h: h, key: 'main' },
-      rem: { x: 552, y: y, w: 176, h: h, key: 'rem' },
-      out: { x: 966, y: y, w: 176, h: h, key: 'out' }
+      main: { x: 70, y: y, w: 210, h: h, key: 'main' },
+      alpha: { x: 380, y: y, w: 160, h: 126, key: 'alpha' },
+      rem: { x: 650, y: y, w: 210, h: h, key: 'rem' },
+      out: { x: 1000, y: y, w: 210, h: h, key: 'out' }
     };
   }
   if (problem.layout.extra) {
@@ -1759,7 +1888,7 @@ function rebuildSpots() {
   for (var k = 0; k < keys.length; k++) {
     var box = boxes[keys[k]];
     var cellV = V[box.key];
-    var tip = box.key === 'main' ? 'Main Tank' : box.key === 'rem' ? 'Remainder Tank' : box.key === 'out' ? G.problem.outTitle : box.key === 'aux' ? 'Auxiliary overdrive' : 'Extra whole tank';
+    var tip = box.key === 'main' ? 'Main Tank' : box.key === 'alpha' ? 'Reactor Alpha' : box.key === 'rem' ? 'Remainder Tank' : box.key === 'out' ? G.problem.outTitle : box.key === 'aux' ? 'Auxiliary overdrive' : (G.problem && (G.problem.tier === 2 || G.problem.tier === 3) ? 'Reactor Beta' : 'Extra whole tank');
     if (cellV && cellV.gauge) tip += ' · ' + cellV.gauge;
     if (cellV && cellV.seg) tip += ' · ' + cellV.seg + ' equal bands';
     if (cellV && cellV.unit) tip += ' · ' + cellV.unit + ' L each';
@@ -2031,9 +2160,9 @@ function curvePoint(x1, y1, cx, cy, x2, y2, t) {
   };
 }
 
-function drawPipe(x1, y1, x2, y2, color, hot, label) {
-  var cx = (x1 + x2) / 2;
-  var cy = Math.min(y1, y2) - 26;
+function drawPipe(x1, y1, x2, y2, color, hot, label, drop, bow) {
+  var cx = (x1 + x2) / 2 + (bow || 0);
+  var cy = drop ? Math.max(y1, y2) + 30 : Math.min(y1, y2) - 26;
   ctx.save();
   ctx.beginPath();
   ctx.moveTo(x1, y1);
@@ -2077,7 +2206,7 @@ function drawPipe(x1, y1, x2, y2, color, hot, label) {
     ctx.font = font(11, 800);
     ctx.fillStyle = hot ? color : '#7f93b0';
     ctx.textAlign = 'center';
-    ctx.fillText(label, v.x, v.y - 22);
+    ctx.fillText(label, v.x, drop ? v.y + 28 : v.y - 22);
   }
   return { x1: x1, y1: y1, cx: cx, cy: cy, x2: x2, y2: y2, color: color, hot: hot };
 }
@@ -2087,19 +2216,36 @@ function pipeAnchors(problem) {
   var pipes = [];
   if (problem.layout.mode === 'cascade') {
     var main = boxes.main;
+    var alpha = boxes.alpha;
     var rem = boxes.rem;
     var out = boxes.out;
-    var cut = 0.62;
-    if (V.main.seg && V.main.shade) cut = clamp(0.28 + 0.5 * (V.main.shade / V.main.seg), 0.34, 0.78);
-    var y1 = main.y + main.h * cut;
+    var hotA = V.live === 'alpha' || V.alpha.fill > 0.08 || G.surge > 0;
     var hot1 = V.live === 'main' || V.live === 'rem' || G.flow > 0 || G.surge > 0;
     var hot2 = V.live === 'rem' || V.live === 'out' || G.stage > 0 || G.surge > 0;
-    pipes.push(drawPipe(main.x + main.w, y1, rem.x, rem.y + rem.h * 0.42, COL.amber, hot1, 'LEFTOVER ONLY'));
-    pipes.push(drawPipe(rem.x + rem.w, rem.y + rem.h * 0.48, out.x, out.y + out.h * 0.46, problem.outColor, hot2, problem.tier === 1 ? 'VALVE B' : 'OVERFLOW'));
+    var leftX = main.x + main.w;
+    var leftY = main.y + main.h * 0.78;
+    var remIn = rem.y + rem.h * 0.7;
+    var leftBow = ((alpha.x + alpha.w + rem.x) / 2 - (leftX + rem.x) / 2) * 2;
+    pipes.push(drawPipe(leftX, main.y + 52, alpha.x, alpha.y + alpha.h * 0.46, COL.violet, hotA, 'VALVE A'));
+    pipes.push(drawPipe(leftX, leftY, rem.x, remIn, COL.amber, hot1, 'LEFTOVER ONLY', true, leftBow));
+    if (boxes.extra) {
+      var beta = boxes.extra;
+      var asking = onFinalStage() || G.surge > 0 || problem.tier === 3;
+      var hotB = V.live === 'extra' || V.extra.fill > 0.08 || asking;
+      var hotU = V.live === 'out' || V.out.fill > 0.08 || asking;
+      var lowX = rem.x + rem.w;
+      var lowY = rem.y + rem.h * 0.78;
+      var outIn = out.y + out.h * 0.7;
+      var unusedBow = ((beta.x + beta.w + out.x) / 2 - (lowX + out.x) / 2) * 2;
+      pipes.push(drawPipe(lowX, rem.y + 52, beta.x, beta.y + beta.h * 0.46, COL.emerald, hotB, 'VALVE B'));
+      pipes.push(drawPipe(lowX, lowY, out.x, outIn, problem.outColor, hotU, problem.tier === 3 ? 'OVERFLOW' : 'UNUSED', true, unusedBow));
+    } else {
+      pipes.push(drawPipe(rem.x + rem.w, rem.y + rem.h * 0.48, out.x, out.y + out.h * 0.46, problem.outColor, hot2, problem.tier === 1 ? 'VALVE B' : 'OVERFLOW'));
+    }
   } else {
     var a = boxes.main;
     var b = problem.layout.extra ? boxes.extra : boxes.aux;
-    var hot = G.stage === 2 || G.surge > 0 || V.live === 'aux';
+    var hot = onFinalStage() || G.surge > 0 || V.live === 'aux';
     pipes.push(drawPipe(a.x + a.w, a.y + 36, b.x, b.y + 36, COL.gold, hot, 'OVERDRIVE'));
     if (problem.layout.extra) {
       pipes.push(drawPipe(boxes.extra.x + boxes.extra.w, boxes.extra.y + 48, boxes.aux.x, boxes.aux.y + 48, COL.gold, hot, 'FRACTION'));
@@ -2250,7 +2396,7 @@ function drawQuestion() {
   ctx.fillStyle = COL.cyan;
   ctx.font = font(13, 800);
   ctx.textAlign = 'center';
-  ctx.fillText('STAGE ' + (G.stage + 1) + ' / 3', 94, y + 29);
+  ctx.fillText('STAGE ' + (G.stage + 1) + ' / ' + stageCount(), 94, y + 29);
   ctx.textAlign = 'left';
   ctx.fillStyle = COL.gold;
   ctx.font = font(16, 800);
@@ -2306,13 +2452,22 @@ function drawConsole() {
     ctx.font = font(11, 800);
     ctx.textAlign = 'center';
     ctx.fillText(armed ? 'ARMED' : 'VALVE ' + (i + 1), card.x + card.w / 2, card.y + 28);
-    var label = opt.text || litre(opt.v);
-    ctx.fillStyle = '#f4fbff';
-    ctx.font = font(label.length > 12 ? 22 : 36, 800);
-    ctx.fillText(label, card.x + card.w / 2, card.y + 86);
-    ctx.fillStyle = COL.mute;
-    ctx.font = font(12, 700);
-    ctx.fillText(opt.text ? 'NOT LITRES' : 'PLASMA', card.x + card.w / 2, card.y + 122);
+    if (opt.frac) {
+      var fw = fracWidth(opt.frac.n, opt.frac.d, 34);
+      drawFrac(card.x + (card.w - fw) / 2, card.y + 78, opt.frac.n, opt.frac.d, 34, '#f4fbff');
+      ctx.fillStyle = COL.mute;
+      ctx.font = font(12, 700);
+      ctx.textAlign = 'center';
+      ctx.fillText('FRACTION', card.x + card.w / 2, card.y + 122);
+    } else {
+      var label = opt.text || litre(opt.v);
+      ctx.fillStyle = '#f4fbff';
+      ctx.font = font(label.length > 12 ? 22 : 36, 800);
+      ctx.fillText(label, card.x + card.w / 2, card.y + 86);
+      ctx.fillStyle = COL.mute;
+      ctx.font = font(12, 700);
+      ctx.fillText(opt.text ? 'NOT LITRES' : 'PLASMA', card.x + card.w / 2, card.y + 122);
+    }
   }
 
   var e = g.engage;
@@ -2330,11 +2485,11 @@ function drawConsole() {
   ctx.font = font(13, 800);
   var head = 'ENGAGE';
   var sub = 'PIPELINE FLOW';
-  if (G.stage < 2) {
+  if (!onFinalStage()) {
     head = 'LOCK';
     sub = 'THIS READING';
   }
-  if (G.playMode === 'coop' && G.stage === 2) {
+  if (G.playMode === 'coop' && onFinalStage()) {
     head = 'BOTH SEAL';
     sub = 'TO SURGE';
     if (G.locks[0] && !G.locks[1]) sub = 'WAITING P2';
@@ -2344,7 +2499,7 @@ function drawConsole() {
   ctx.font = font(16, 800);
   ctx.fillStyle = '#f4fbff';
   ctx.fillText(sub, e.x + e.w / 2, e.y + 76);
-  if (G.playMode === 'coop' && G.stage === 2) {
+  if (G.playMode === 'coop' && onFinalStage()) {
     sealDot(e.x + 58, e.y + 112, G.locks[0], COL.red, 'P1');
     sealDot(e.x + e.w - 58, e.y + 112, G.locks[1], COL.blue, 'P2');
   } else {
@@ -2436,7 +2591,9 @@ function drawPlay() {
     var boxes = tankBoxes(G.problem);
     if (G.problem.layout.mode === 'cascade') {
       drawTank(boxes.main, V.main, COL.cyan, 'MAIN TANK', V.live === 'main');
+      drawTank(boxes.alpha, V.alpha, COL.violet, 'REACTOR ALPHA', V.live === 'alpha');
       drawTank(boxes.rem, V.rem, COL.amber, 'REMAINDER TANK', V.live === 'rem');
+      if (boxes.extra) drawTank(boxes.extra, V.extra, COL.emerald, 'REACTOR BETA', V.live === 'extra');
       drawTank(boxes.out, V.out, G.problem.outColor, G.problem.outTitle, V.live === 'out');
     } else {
       var orderBit = G.totalShow
@@ -2444,7 +2601,7 @@ function drawPlay() {
         : ('ORDER ' + G.problem.orderLabel);
       drawTank(boxes.main, V.main, COL.cyan, 'MAIN TANK · 1 WHOLE', V.live === 'main');
       if (G.problem.layout.extra) {
-        drawTank(boxes.extra, V.extra, COL.gold, 'AUX WHOLE', G.stage === 2);
+        drawTank(boxes.extra, V.extra, COL.gold, 'AUX WHOLE', onFinalStage());
         drawTank(boxes.aux, V.aux, COL.gold, orderBit, V.live === 'aux');
       } else {
         drawTank(boxes.aux, V.aux, COL.gold, orderBit, V.live === 'aux');
@@ -2637,7 +2794,7 @@ function update(dt) {
   G.surge = Math.max(0, G.surge - dt);
   G.flow = Math.max(0, G.flow - dt);
   G.noteT = Math.max(0, G.noteT - dt);
-  var names = ['main', 'rem', 'out', 'aux', 'extra'];
+  var names = ['main', 'alpha', 'rem', 'out', 'aux', 'extra'];
   var glide = 1 - Math.pow(0.0015, dt);
   for (var i = 0; i < names.length; i++) {
     var tank = V[names[i]];
@@ -2779,7 +2936,7 @@ function boot() {
       for (var i = 0; i < opts.length; i++) if (opts[i].ok) {
         G.pick = i;
         submit(0);
-        if (G.playMode === 'coop' && G.stage === 2) submit(1);
+        if (G.playMode === 'coop' && onFinalStage()) submit(1);
         return i;
       }
       return -1;
