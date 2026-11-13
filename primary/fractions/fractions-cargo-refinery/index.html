@@ -1,0 +1,2815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cargo Refinery: Remainder Splitter</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #05070f;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    outline: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #mute {
+    position: fixed;
+    left: 14px;
+    bottom: 12px;
+    z-index: 4;
+    border: 2px solid #3ee7ff;
+    background: #0b1524;
+    color: #d9fbff;
+    font: 700 13px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif;
+    border-radius: 999px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  #mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  noscript p {
+    color: #d9fbff;
+    font-family: "Trebuchet MS", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" role="application" aria-label="Cargo Refinery Remainder Splitter. Singapore Primary 4 and 5 fraction of a remainder. Solo uses the mouse, WASD or arrows, and Space. Two-player co-op: player 1 uses WASD and F, player 2 uses arrow keys and Enter. Gamepads use the D-pad and A button. One shared team score in co-op."></canvas>
+<button id="mute" type="button" aria-pressed="false">Sound on</button>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript><p>Cargo Refinery runs in JavaScript. Enable JavaScript to split the plasma tanks.</p></noscript>
+<script>
+'use strict';
+
+/**
+ * Cargo Refinery: Remainder Splitter
+ * Primary 4/5 — fraction of a whole, then fraction of the REMAINDER.
+ * Tier 1: known tank → remainder → fraction of that remainder.
+ * Tier 2: known tank → complementary leftover of the remainder.
+ * Tier 3: work backward from the final leftover to the starting tank.
+ * Tier 4: unitary reconstruction, then a mixed-number overdrive of the whole tank.
+ * The second valve never draws from the original tank.
+ */
+
+var W = 1280;
+var H = 800;
+var STORE = 'cargo-refinery-remainder-v1';
+
+var COL = {
+  bg0: '#070b16',
+  bg1: '#10203c',
+  cyan: '#3ee7ff',
+  amber: '#ffc14a',
+  emerald: '#3dffb0',
+  magenta: '#ff4ad8',
+  gold: '#ffd56a',
+  red: '#ff4d5e',
+  blue: '#4c8dff',
+  ink: '#e7f4ff',
+  mute: '#8ea0c8',
+  panel: 'rgba(6, 12, 24, 0.88)'
+};
+
+var TIER_NAME = {
+  1: 'FORWARD SPLIT',
+  2: 'LEFTOVER SCAN',
+  3: 'INK-BLOT REBUILD',
+  4: 'OVERDRIVE SURGE'
+};
+
+var FRACS = [
+  [1, 2], [1, 3], [2, 3], [1, 4], [3, 4], [1, 5], [2, 5], [3, 5], [4, 5],
+  [1, 6], [5, 6], [1, 8], [3, 8], [5, 8], [7, 8], [3, 10], [7, 10], [9, 10]
+];
+var MIXED = [
+  [1, 1, 2], [1, 1, 3], [1, 1, 4], [1, 2, 3], [1, 2, 5], [1, 3, 4], [1, 3, 5], [1, 1, 5],
+  [2, 1, 2], [2, 1, 3], [2, 1, 4], [2, 1, 5]
+];
+
+var canvas, ctx, muteBtn, sr;
+var keysDown = Object.create(null);
+var keyHold = Object.create(null);
+var pointer = { x: 640, y: 500, inside: false, stamp: 0 };
+var hatIdle = {};
+var padPrev = [{}, {}];
+
+var players = [
+  { id: 0, x: 180, y: 650, fx: 180, fy: 650, focus: 0, free: false, color: '#ff445f', name: 'P1' },
+  { id: 1, x: 980, y: 650, fx: 980, fy: 650, focus: 1, free: false, color: '#4c8dff', name: 'P2' }
+];
+
+var V = {
+  main: blankCell(),
+  rem: blankCell(),
+  out: blankCell(),
+  aux: blankCell(),
+  extra: blankCell(),
+  caption: ''
+};
+
+var G = {
+  mode: 'title',
+  playMode: 'solo',
+  focus: 0,
+  tier: 1,
+  tierClears: 0,
+  shields: 3,
+  maxShields: 3,
+  score: 0,
+  best: 0,
+  combo: 1,
+  streak: 0,
+  round: 0,
+  solved: 0,
+  stage: 0,
+  pick: -1,
+  locks: [false, false],
+  problem: null,
+  log: [],
+  banner: null,
+  note: '',
+  noteT: 0,
+  seenFlag: {},
+  bags: { 1: [], 2: [], 3: [], 4: [] },
+  lastKey: '',
+  spots: [],
+  tips: [],
+  floaters: [],
+  particles: [],
+  shake: 0,
+  strobe: 0,
+  surge: 0,
+  flow: 0,
+  wait: 0,
+  pending: null,
+  totalShow: false,
+  t: 0,
+  live: '',
+  fatal: '',
+  pads: 0
+};
+
+var audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  sfx: null,
+  noise: null,
+  muted: false,
+  step: 0,
+  next: 0
+};
+
+function blankCell() {
+  return { fill: 0, fillTo: 0, seg: 0, shade: 0, gauge: '—', unit: 0, ink: false, mark: '', sentAmt: 0, sentTo: 0 };
+}
+
+function cell(o) {
+  return {
+    fill: o.fill || 0,
+    seg: o.seg || 0,
+    shade: o.shade || 0,
+    gauge: o.gauge == null ? '—' : o.gauge,
+    unit: o.unit || 0,
+    ink: !!o.ink,
+    mark: o.mark || '',
+    sent: !!o.sent
+  };
+}
+
+function view(live, caption, main, rem, out, aux, extra) {
+  return {
+    live: live,
+    caption: caption,
+    main: main || cell({}),
+    rem: rem || cell({}),
+    out: out || cell({}),
+    aux: aux || cell({}),
+    extra: extra || cell({})
+  };
+}
+
+function gcd(a, b) {
+  a = Math.abs(a | 0);
+  b = Math.abs(b | 0);
+  while (b) {
+    var t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function isInt(n) {
+  return typeof n === 'number' && isFinite(n) && Math.round(n) === n;
+}
+
+function div(n, d) {
+  if (!d || !isInt(n) || !isInt(d) || n % d !== 0) return null;
+  return n / d;
+}
+
+function clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function rand(a, b) {
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+
+function pick(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function shuffle(list) {
+  for (var i = list.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
+}
+
+function font(px, weight) {
+  return (weight || 700) + ' ' + Math.round(px) + 'px "Avenir Next", "Trebuchet MS", Helvetica, Arial, sans-serif';
+}
+
+function mono(px) {
+  return '700 ' + Math.round(px) + 'px "SF Mono", Menlo, Consolas, monospace';
+}
+
+function fmt(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function litre(n) {
+  return fmt(n) + ' L';
+}
+
+function word(s, c) {
+  return { k: 'w', s: s, c: c || '' };
+}
+
+function F(n, d) {
+  return { k: 'f', n: n, d: d };
+}
+
+function M(w, n, d) {
+  return { k: 'm', w: w, n: n, d: d };
+}
+
+function textOf(tokens) {
+  var s = '';
+  for (var i = 0; i < tokens.length; i++) {
+    var t = tokens[i];
+    if (t.k === 'w' || t.k === 's') s += t.s;
+    else if (t.k === 'f') s += t.n + '/' + t.d;
+    else if (t.k === 'm') s += t.w + ' ' + t.n + '/' + t.d;
+  }
+  return s;
+}
+
+function mixedLabel(w, n, d) {
+  return w + ' ' + n + '/' + d;
+}
+
+function explode(tokens) {
+  var out = [];
+  for (var i = 0; i < tokens.length; i++) {
+    var tok = tokens[i];
+    if (tok.k !== 'w') {
+      out.push(tok);
+      continue;
+    }
+    var parts = tok.s.split(/(\s+)/);
+    for (var p = 0; p < parts.length; p++) {
+      if (!parts[p]) continue;
+      if (/^\s+$/.test(parts[p])) out.push({ k: 's', s: parts[p], c: tok.c || '' });
+      else out.push({ k: 'w', s: parts[p], c: tok.c || '' });
+    }
+  }
+  return out;
+}
+
+function fracWidth(n, d, size) {
+  ctx.font = font(size * 0.62, 800);
+  return Math.max(ctx.measureText(String(n)).width, ctx.measureText(String(d)).width) + 6;
+}
+
+function tokenWidth(tok, size) {
+  if (tok.k === 's' || tok.k === 'w') {
+    ctx.font = font(size, 700);
+    return ctx.measureText(tok.s).width;
+  }
+  if (tok.k === 'f') return fracWidth(tok.n, tok.d, size);
+  if (tok.k === 'm') {
+    ctx.font = font(size, 800);
+    return ctx.measureText(String(tok.w)).width + 4 + fracWidth(tok.n, tok.d, size);
+  }
+  return 0;
+}
+
+function wrapTokens(tokens, maxW, size) {
+  var atoms = explode(tokens);
+  var lines = [[]];
+  var width = 0;
+  for (var i = 0; i < atoms.length; i++) {
+    var tok = atoms[i];
+    var tw = tokenWidth(tok, size);
+    var line = lines[lines.length - 1];
+    if (tok.k === 's' && !line.length) continue;
+    if (line.length && width + tw > maxW) {
+      lines.push([tok.k === 's' ? null : tok].filter(Boolean));
+      width = tok.k === 's' ? 0 : tw;
+    } else {
+      line.push(tok);
+      width += tw;
+    }
+  }
+  return lines.filter(function (ln) { return ln.length; });
+}
+
+function drawFrac(x, y, n, d, size, color) {
+  var w = fracWidth(n, d, size);
+  var h = size * 0.62;
+  ctx.fillStyle = color;
+  ctx.font = font(h, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), x + w / 2, y - h * 0.62);
+  ctx.fillRect(x + 1, y - 1, w - 2, 2);
+  ctx.fillText(String(d), x + w / 2, y + h * 0.72);
+  ctx.textBaseline = 'alphabetic';
+  return w;
+}
+
+function drawTokenLine(tokens, x, y, size, color) {
+  var cursor = x;
+  for (var i = 0; i < tokens.length; i++) {
+    var tok = tokens[i];
+    var c = tok.c || color;
+    if (tok.k === 'w' || tok.k === 's') {
+      ctx.fillStyle = c;
+      ctx.font = font(size, 700);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(tok.s, cursor, y);
+      cursor += ctx.measureText(tok.s).width;
+    } else if (tok.k === 'f') {
+      cursor += drawFrac(cursor, y, tok.n, tok.d, size, c || color);
+    } else if (tok.k === 'm') {
+      ctx.fillStyle = c || color;
+      ctx.font = font(size, 800);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      var label = String(tok.w);
+      ctx.fillText(label, cursor, y);
+      cursor += ctx.measureText(label).width + 4;
+      cursor += drawFrac(cursor, y, tok.n, tok.d, size, c || color);
+    }
+  }
+}
+
+function loadStore() {
+  try {
+    var raw = localStorage.getItem(STORE);
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (data && typeof data.best === 'number') G.best = data.best;
+    if (data && data.mute) audio.muted = true;
+  } catch (err) { /* private mode */ }
+}
+
+function saveStore() {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({ best: G.best, mute: audio.muted }));
+  } catch (err) { /* private mode */ }
+}
+
+function midi(n) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+function unlockAudio() {
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audio.ctx) {
+    audio.ctx = new AC();
+    audio.master = audio.ctx.createGain();
+    audio.master.gain.value = audio.muted ? 0.0001 : 0.85;
+    audio.master.connect(audio.ctx.destination);
+    audio.music = audio.ctx.createGain();
+    audio.music.gain.value = 0.2;
+    audio.music.connect(audio.master);
+    audio.sfx = audio.ctx.createGain();
+    audio.sfx.gain.value = 0.75;
+    audio.sfx.connect(audio.master);
+    var frames = audio.ctx.sampleRate * 2;
+    var buf = audio.ctx.createBuffer(1, frames, audio.ctx.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    audio.noise = buf;
+    audio.next = audio.ctx.currentTime + 0.08;
+  }
+  if (audio.ctx.state === 'suspended') audio.ctx.resume();
+  paintMute();
+}
+
+function paintMute() {
+  if (!muteBtn) return;
+  muteBtn.textContent = audio.muted ? 'Sound off' : 'Sound on';
+  muteBtn.setAttribute('aria-pressed', audio.muted ? 'true' : 'false');
+}
+
+function toggleMute() {
+  audio.muted = !audio.muted;
+  if (audio.ctx && audio.master) {
+    audio.master.gain.setTargetAtTime(audio.muted ? 0.0001 : 0.85, audio.ctx.currentTime, 0.03);
+  }
+  paintMute();
+  saveStore();
+}
+
+function tone(dest, t, freq, dur, type, vol, slide) {
+  if (!audio.ctx) return;
+  var o = audio.ctx.createOscillator();
+  var g = audio.ctx.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.001, vol), t + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.04, dur));
+  o.connect(g);
+  g.connect(dest);
+  o.start(t);
+  o.stop(t + dur + 0.03);
+}
+
+function noiseHit(t, dur, vol, freq, type) {
+  if (!audio.ctx || !audio.noise) return;
+  var src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  var f = audio.ctx.createBiquadFilter();
+  f.type = type || 'bandpass';
+  f.frequency.setValueAtTime(freq, t);
+  var g = audio.ctx.createGain();
+  g.gain.setValueAtTime(Math.max(0.001, vol), t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(audio.sfx);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+function sfxValve() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  noiseHit(t, 0.09, 0.12, 900, 'bandpass');
+  tone(audio.sfx, t, 520, 0.07, 'square', 0.03, 240);
+}
+
+function sfxChime() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(audio.sfx, t, 880, 0.12, 'sine', 0.05);
+  tone(audio.sfx, t + 0.06, 1320, 0.16, 'sine', 0.04);
+  tone(audio.sfx, t, 440, 0.14, 'triangle', 0.03);
+}
+
+function sfxRush() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  noiseHit(t, 0.45, 0.16, 600, 'lowpass');
+  tone(audio.sfx, t, 180, 0.4, 'sawtooth', 0.04, 90);
+  tone(audio.sfx, t + 0.05, 660, 0.25, 'triangle', 0.04, 990);
+}
+
+function sfxFan() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  var notes = [523, 659, 784, 1046];
+  for (var i = 0; i < notes.length; i++) tone(audio.sfx, t + i * 0.09, notes[i], 0.22, 'triangle', 0.05);
+  tone(audio.sfx, t, 196, 0.4, 'sine', 0.04);
+}
+
+function sfxBuzz() {
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(audio.sfx, t, 110, 0.28, 'sawtooth', 0.05, 70);
+  tone(audio.sfx, t, 92, 0.28, 'square', 0.03);
+}
+
+function sfxHiss() {
+  if (!audio.ctx) return;
+  noiseHit(audio.ctx.currentTime, 0.22, 0.14, 2400, 'highpass');
+}
+
+function sfxUi() {
+  if (!audio.ctx) return;
+  tone(audio.sfx, audio.ctx.currentTime, 740, 0.05, 'square', 0.03);
+}
+
+function pumpMusic() {
+  if (!audio.ctx) return;
+  var ac = audio.ctx;
+  if (audio.next < ac.currentTime - 0.05) audio.next = ac.currentTime;
+  if (audio.muted) {
+    audio.next = ac.currentTime + 0.12;
+    return;
+  }
+  var bass = [38, 38, 45, 41, 43, 43, 36, 38];
+  var arp = [62, 65, 69, 74, 69, 65, 64, 60, 62, 69, 72, 69, 65, 64, 60, 57];
+  while (audio.next < ac.currentTime + 0.26) {
+    var i = audio.step % 16;
+    var t = audio.next;
+    if (i % 2 === 0) {
+      tone(audio.music, t, midi(bass[(i / 2) % 8] - 12), 0.32, 'sawtooth', 0.035);
+      tone(audio.music, t, midi(bass[(i / 2) % 8] - 24), 0.32, 'sine', 0.04);
+    }
+    tone(audio.music, t, midi(arp[i]), 0.16, 'triangle', 0.022);
+    if (i % 2 === 0) noiseHit(t, 0.03, 0.025, 6000, 'highpass');
+    if (i % 8 === 4) noiseHit(t, 0.08, 0.04, 1400, 'bandpass');
+    audio.step++;
+    audio.next += 0.214;
+  }
+}
+
+function heatSpan(heat) {
+  var min = Math.min(200, 60 + heat * 14);
+  var max = Math.min(640, 180 + heat * 46);
+  if (max < min + 40) max = min + 40;
+  return { min: min, max: max };
+}
+
+function fracChoices(heat) {
+  var cap = heat < 2 ? 4 : heat < 5 ? 6 : 10;
+  var list = [];
+  for (var i = 0; i < FRACS.length; i++) if (FRACS[i][1] <= cap) list.push(FRACS[i]);
+  return list.length ? list : FRACS;
+}
+
+function heatMultiple(heat) {
+  var hi = Math.min(16, 6 + Math.floor(heat / 2));
+  var lo = heat < 2 ? 2 : heat < 6 ? 3 : 4;
+  if (lo > hi) lo = hi;
+  return rand(lo, hi);
+}
+
+function buildOptions(answer, candidates) {
+  var opts = [{ v: answer, ok: true, hint: '', alarm: '', text: '' }];
+  var used = {};
+  used[String(answer)] = true;
+  for (var i = 0; i < candidates.length && opts.length < 4; i++) {
+    var c = candidates[i];
+    if (!c || c.v == null) continue;
+    if (typeof c.v === 'number' && (!isInt(c.v) || c.v <= 0)) continue;
+    var id = String(c.v);
+    if (used[id]) continue;
+    used[id] = true;
+    opts.push({
+      v: c.v,
+      ok: false,
+      hint: c.hint,
+      alarm: c.alarm || 'PRESSURE FAULT',
+      text: c.text || ''
+    });
+  }
+  var bump = 1;
+  while (opts.length < 4 && bump < 16) {
+    var filler = answer + bump * (bump % 2 ? 4 : 6);
+    if (isInt(filler) && filler > 0 && !used[String(filler)]) {
+      used[String(filler)] = true;
+      opts.push({
+        v: filler,
+        ok: false,
+        hint: filler + ' L does not match the bands on the tank. Multiply the segment size by the numerator you need.',
+        alarm: 'PRESSURE FAULT',
+        text: ''
+      });
+    }
+    bump++;
+  }
+  return shuffle(opts);
+}
+
+function fracTrap(S, c, d, avoid) {
+  var unit = div(S, d);
+  if (unit == null) return null;
+  var t = unit * c;
+  if (!t || t === avoid) return null;
+  return t;
+}
+
+function forgeSplit(spec) {
+  var S = spec.S, a = spec.a, b = spec.b, c = spec.c, d = spec.d;
+  var alpha = div(S * a, b);
+  var R = S - alpha;
+  var unit1 = div(S, b);
+  var unit2 = div(R, d);
+  if (alpha == null || unit1 == null || unit2 == null) return null;
+  var beta = unit2 * c;
+  var leftover = R - beta;
+  if (beta <= 0 || leftover <= 0) return null;
+  var trap = fracTrap(S, c, d, beta);
+  var compParts = d - c;
+  var compTrap = fracTrap(S, compParts, d, leftover);
+  var tier = spec.tier;
+  var answer2 = tier === 1 ? beta : leftover;
+  var trapHint = trap
+    ? (trap + ' L is ' + c + '/' + d + ' of the ' + S + ' L Main Tank! Valve B only draws from the ' + R + ' L REMAINDER Tank!')
+    : '';
+  var compHint = compTrap
+    ? (compTrap + ' L takes the unused fraction of the ' + S + ' L Main Tank. Use the ' + R + ' L REMAINDER Tank.')
+    : '';
+
+  var story = [
+    word('Main Tank holds ' + S + ' L of plasma. Valve A pumps '),
+    F(a, b),
+    word(' to Reactor Alpha. Then Valve B pumps '),
+    F(c, d),
+    word(' of the '),
+    word('REMAINDER', COL.amber),
+    tier === 1
+      ? word(' to Reactor Beta. How much plasma goes to Reactor Beta?')
+      : word(' to Reactor Beta. How much plasma is LEFT UNUSED in the final overflow tank?')
+  ];
+  if (tier === 2) {
+    story = [
+      word('Main Tank holds ' + S + ' L. '),
+      F(a, b),
+      word(' is pumped to Alpha, leaving '),
+      F(b - a, b),
+      word(' in the Remainder Tank. '),
+      F(c, d),
+      word(' of the '),
+      word('REMAINDER', COL.amber),
+      word(' is pumped to Beta. How much plasma is LEFT UNUSED?')
+    ];
+  }
+
+  var sAlpha = [
+    word('Valve A pumps '),
+    F(a, b),
+    word(' of the ' + S + ' L Main Tank to Reactor Alpha. How many litres go to Reactor Alpha?')
+  ];
+  var sRem = [
+    word('Valve A takes '),
+    F(a, b),
+    word(' of the ' + S + ' L Main Tank. How many litres are left in the Remainder Tank?')
+  ];
+  var s2 = tier === 1
+    ? [
+      word('The Remainder Tank holds ' + R + ' L. Slice it into ' + d + ' equal bands. Valve B takes '),
+      F(c, d),
+      word(' of this REMAINDER. How many litres go to Reactor Beta?')
+    ]
+    : [
+      word('Valve B pumps '),
+      F(c, d),
+      word(' of the ' + R + ' L remainder to Beta, so '),
+      F(compParts, d),
+      word(' stays unused. How many litres are left unused?')
+    ];
+  var candsAlpha = [
+    { v: R, alarm: 'PRESSURE FAULT', hint: R + ' L is what stays behind after Valve A. Reactor Alpha receives ' + a + '/' + b + ' of ' + S + ' L = ' + alpha + ' L.' },
+    { v: S, alarm: 'PRESSURE FAULT', hint: S + ' L is the full Main Tank. Valve A only opens ' + a + '/' + b + ' of it.' },
+    { v: unit1, alarm: 'PRESSURE FAULT', hint: unit1 + ' L is a single band. Valve A takes ' + a + ' bands: ' + a + ' × ' + unit1 + ' = ' + alpha + ' L.' },
+    { v: beta, alarm: 'PRESSURE FAULT', hint: 'That volume belongs to Valve B later. First lock how much Valve A sends to Reactor Alpha.' },
+    { v: trap, alarm: 'PIPE OVERFLOW', hint: trap ? (trap + ' L is ' + c + '/' + d + ' of the Main Tank. That fraction belongs to Valve B, and only after the remainder is known. Valve A takes ' + a + '/' + b + '.') : '' }
+  ];
+  var cands1 = [
+    { v: alpha, alarm: 'PRESSURE FAULT', hint: alpha + ' L is the plasma Valve A sent to Reactor Alpha. The Remainder Tank is ' + S + ' − ' + alpha + ' = ' + R + ' L.' },
+    { v: S, alarm: 'PRESSURE FAULT', hint: S + ' L is the full Main Tank. After ' + a + '/' + b + ' is pumped away, only the unshaded portion flows onward.' },
+    { v: unit1, alarm: 'PRESSURE FAULT', hint: unit1 + ' L is a single Main Tank band. The remainder is ' + (b - a) + ' bands: ' + (b - a) + ' × ' + unit1 + ' L.' },
+    { v: beta, alarm: 'PRESSURE FAULT', hint: 'That volume belongs to a later valve. First lock the Remainder Tank.' },
+    { v: trap, alarm: 'PIPE OVERFLOW', hint: trapHint }
+  ];
+  var candsBeta = [
+    { v: trap, alarm: 'PIPE OVERFLOW', hint: trapHint },
+    { v: unit2, alarm: 'PRESSURE FAULT', hint: unit2 + ' L is one Remainder band. Valve B takes ' + c + ' bands: ' + c + ' × ' + unit2 + ' = ' + beta + ' L.' },
+    { v: leftover, alarm: 'PRESSURE FAULT', hint: leftover + ' L is what would stay behind after Valve B. Reactor Beta receives the ' + c + '/' + d + ' that is pumped.' },
+    { v: R, alarm: 'PRESSURE FAULT', hint: R + ' L is the whole Remainder Tank. Valve B only opens ' + c + '/' + d + ' of it.' },
+    { v: alpha, alarm: 'PRESSURE FAULT', hint: alpha + ' L already went to Reactor Alpha through Valve A.' }
+  ];
+  var candsLeft = [
+    { v: beta, alarm: 'PRESSURE FAULT', hint: beta + ' L is the plasma pumped to Reactor Beta (' + c + '/' + d + ' of ' + R + ' L). Unused plasma is the complement ' + compParts + '/' + d + '.' },
+    { v: compTrap, alarm: 'PIPE OVERFLOW', hint: compHint },
+    { v: trap, alarm: 'PIPE OVERFLOW', hint: trap ? (trap + ' L is ' + c + '/' + d + ' of the Main Tank, the amount sent toward Beta from the wrong tank. The leftover is taken from the ' + R + ' L remainder.') : '' },
+    { v: unit2, alarm: 'PRESSURE FAULT', hint: unit2 + ' L is one Remainder band. The unused share is ' + compParts + ' bands: ' + compParts + ' × ' + unit2 + ' = ' + leftover + ' L.' },
+    { v: R, alarm: 'PRESSURE FAULT', hint: R + ' L is the full Remainder Tank before Valve B opens.' },
+    { v: alpha, alarm: 'PRESSURE FAULT', hint: alpha + ' L is Valve A, not the final overflow.' }
+  ];
+
+  var mainOpen = cell({ fill: 1, seg: b, shade: 0, gauge: litre(S), unit: unit1 });
+  var mainFull = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unit1, mark: 'ALPHA' });
+  var mainSame = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unit1, mark: 'ALPHA', sent: true });
+  var remEmpty = cell({ fill: 0, gauge: '—' });
+  var remFull = cell({ fill: 1, gauge: litre(R), seg: d, unit: unit2 });
+  var remCut = cell({ fill: 1, gauge: litre(R), seg: d, shade: c, unit: unit2, mark: 'BETA' });
+  var outEmpty = cell({ fill: 0, gauge: '—' });
+  var outGoal = tier === 1
+    ? cell({ fill: beta / R, gauge: litre(beta) })
+    : cell({ fill: leftover / R, gauge: litre(leftover) });
+
+  var stages = [
+    {
+      title: 'ALPHA DELIVERY',
+      prompt: sAlpha,
+      answer: alpha,
+      seal: a + '/' + b + ' of ' + S + ' L = ' + alpha + ' L to Alpha',
+      options: buildOptions(alpha, candsAlpha),
+      before: view('main', 'The Main Tank is split into ' + b + ' equal bands of ' + unit1 + ' L. None have been pumped yet.', mainOpen, remEmpty, outEmpty),
+      after: view('main', 'Alpha bands shaded: ' + alpha + ' L.', mainFull, remEmpty, outEmpty)
+    },
+    {
+      title: 'MAIN TANK PARTITION',
+      prompt: sRem,
+      answer: R,
+      seal: 'Remainder = ' + S + ' − ' + alpha + ' = ' + R + ' L',
+      options: buildOptions(R, cands1),
+      before: view('main', 'Shaded bands went to Alpha. Each unshaded band is ' + unit1 + ' L and flows to the Remainder.', mainFull, remEmpty, outEmpty),
+      after: view('rem', 'Remainder Tank locked at ' + R + ' L.', mainSame, cell({ fill: 1, gauge: litre(R) }), outEmpty)
+    },
+    {
+      title: tier === 1 ? 'REMAINDER TANK SLICE' : 'COMPLEMENT OF THE REMAINDER',
+      prompt: s2,
+      answer: answer2,
+      seal: tier === 1
+        ? (c + '/' + d + ' of ' + R + ' L = ' + beta + ' L to Beta')
+        : ('Unused ' + compParts + '/' + d + ' of ' + R + ' L = ' + leftover + ' L'),
+      options: buildOptions(answer2, tier === 1 ? candsBeta : candsLeft),
+      before: view('rem', 'Each Remainder band = ' + unit2 + ' L.', mainSame, remFull, outEmpty),
+      after: view('out', tier === 1 ? (beta + ' L surged to Reactor Beta.') : (leftover + ' L stays in the overflow.'), mainSame, remCut, outGoal)
+    }
+  ];
+
+  return {
+    tier: tier,
+    key: tier + '|' + S + '|' + a + '/' + b + '|' + c + '/' + d,
+    story: story,
+    storyText: textOf(story),
+    introLog: 'Main Tank: ' + litre(S),
+    worked: tier === 1
+      ? [
+        a + '/' + b + ' of ' + S + ' L = ' + alpha + ' L to Alpha. Remainder = ' + S + ' − ' + alpha + ' = ' + R + ' L.',
+        R + ' ÷ ' + d + ' = ' + unit2 + ' L per band. ' + c + ' × ' + unit2 + ' = ' + beta + ' L to Beta.',
+        'Reactor Beta receives ' + beta + ' L.' + (trap ? ' Trap: ' + c + '/' + d + ' of ' + S + ' L = ' + trap + ' L.' : '')
+      ]
+      : [
+        a + '/' + b + ' of ' + S + ' L = ' + alpha + ' L. Remainder = ' + R + ' L.',
+        'Unused fraction = 1 − ' + c + '/' + d + ' = ' + compParts + '/' + d + '. ' + compParts + '/' + d + ' of ' + R + ' L = ' + leftover + ' L.',
+        'Final overflow holds ' + leftover + ' L.'
+      ],
+    layout: { mode: 'cascade', extra: false },
+    outTitle: tier === 1 ? 'REACTOR BETA' : 'FINAL OVERFLOW',
+    outColor: tier === 1 ? COL.emerald : COL.magenta,
+    orderLabel: '',
+    stages: stampStages(stages)
+  };
+}
+
+function forgeBack(spec) {
+  var L = spec.L, a = spec.a, b = spec.b, c = spec.c, d = spec.d;
+  var R = spec.R, S = spec.S;
+  var comp = d - c;
+  var unitR = div(R, d);
+  var unitM = div(S, b);
+  if (unitR == null || unitM == null) return null;
+  if (unitR * comp !== L) return null;
+  if (unitM * (b - a) !== R) return null;
+  var bogus = L + ' + ' + a + '/' + b + ' + ' + c + '/' + d;
+  var alarm = 'Fractions represent equal pipe partitions, not litres! Work backward from the ' + L + ' L leftover!';
+  var timesDen = L * d;
+
+  var story = [
+    word('Main Tank gauge is smeared with ink! Valve A pumped '),
+    F(a, b),
+    word(' to Alpha. Valve B pumped '),
+    F(c, d),
+    word(' of the '),
+    word('REMAINDER', COL.amber),
+    word(' to Beta, leaving ' + L + ' L in the final overflow tank. What was the STARTING capacity of the Main Tank?')
+  ];
+
+  var s1 = [
+    word(L + ' L is '),
+    F(comp, d),
+    word(' of the Remainder Tank. How many litres were in the Remainder Tank?')
+  ];
+  var s2 = [
+    word('The Remainder Tank, ' + R + ' L, is '),
+    F(b - a, b),
+    word(' of the Main Tank. What was the starting capacity?')
+  ];
+  var s3 = [word('Lock the rebuilt Main Tank and surge the reading. What was the starting capacity?')];
+
+  var cands1 = [
+    { v: 'add', text: bogus, alarm: 'GAUGE ALARM', hint: alarm },
+    { v: L, alarm: 'PRESSURE FAULT', hint: L + ' L is only the final leftover. ' + comp + '/' + d + ' of the Remainder equals ' + L + ' L, so 1 band = ' + L + ' ÷ ' + comp + ' = ' + unitR + ' L.' },
+    { v: unitR, alarm: 'PRESSURE FAULT', hint: unitR + ' L is one Remainder band. The tank has ' + d + ' bands: ' + d + ' × ' + unitR + ' = ' + R + ' L.' },
+    { v: timesDen, alarm: 'GAUGE ALARM', hint: 'Multiplying the leftover by the denominator skips the complement. ' + comp + '/' + d + ' of the remainder is ' + L + ' L. ' + alarm },
+    { v: S, alarm: 'PRESSURE FAULT', hint: 'That skips ahead to the Main Tank. First rebuild the Remainder Tank from the leftover.' }
+  ];
+  var cands2 = [
+    { v: 'add', text: bogus, alarm: 'GAUGE ALARM', hint: alarm },
+    { v: R, alarm: 'PRESSURE FAULT', hint: R + ' L is the Remainder Tank, which is ' + (b - a) + '/' + b + ' of the Main Tank. 1 Main band = ' + R + ' ÷ ' + (b - a) + ' = ' + unitM + ' L.' },
+    { v: unitM, alarm: 'PRESSURE FAULT', hint: unitM + ' L is one Main Tank band. The full tank has ' + b + ' bands: ' + b + ' × ' + unitM + ' = ' + S + ' L.' },
+    { v: L, alarm: 'PRESSURE FAULT', hint: L + ' L is the overflow leftover, not the starting tank.' },
+    { v: R + L, alarm: 'GAUGE ALARM', hint: 'Do not add the leftover onto the remainder. The remainder is already a fraction of the Main Tank. ' + alarm }
+  ];
+
+  var ink = cell({ fill: 0.22, seg: b, gauge: '?? L', ink: true });
+  var inkMark = cell({ fill: 0.22, seg: b, shade: a, gauge: '?? L', ink: true, mark: 'ALPHA' });
+  var knownOut = cell({ fill: 1, seg: comp, gauge: litre(L), unit: 0 });
+  var remBuilt = cell({ fill: 1, seg: d, gauge: litre(R), unit: unitR });
+  var mainBuilt = cell({ fill: 1, seg: b, shade: a, gauge: litre(S), unit: unitM, mark: 'ALPHA' });
+
+  var stages = [
+    {
+      title: 'REBUILD THE REMAINDER',
+      prompt: s1,
+      answer: R,
+      seal: comp + '/' + d + ' of Remainder = ' + L + ' L → Remainder = ' + R + ' L',
+      options: buildOptions(R, cands1),
+      before: view('out', 'The overflow is ' + comp + ' of ' + d + ' equal remainder bands.', ink, cell({ fill: 0, seg: d, gauge: '—' }), knownOut),
+      after: view('rem', 'Remainder Tank rebuilt: ' + R + ' L.', ink, remBuilt, knownOut)
+    },
+    {
+      title: 'REBUILD THE MAIN TANK',
+      prompt: s2,
+      answer: S,
+      seal: (b - a) + '/' + b + ' of Main = ' + R + ' L → Main = ' + S + ' L',
+      options: buildOptions(S, cands2),
+      before: view('main', 'Unshaded Main Tank bands equal the ' + R + ' L remainder.', inkMark, remBuilt, knownOut),
+      after: view('main', 'Main Tank restored to ' + S + ' L.', mainBuilt, remBuilt, knownOut)
+    },
+    {
+      title: 'PIPELINE SURGE',
+      prompt: s3,
+      answer: S,
+      seal: 'Starting capacity locked: ' + S + ' L',
+      options: buildOptions(S, cands2),
+      before: view('main', 'Verify the starting capacity, then engage.', mainBuilt, remBuilt, knownOut),
+      after: view('main', 'Gauge restored.', mainBuilt, remBuilt, knownOut)
+    }
+  ];
+
+  return {
+    tier: 3,
+    key: '3|' + L + '|' + a + '/' + b + '|' + c + '/' + d,
+    story: story,
+    storyText: textOf(story),
+    introLog: 'Given leftover: ' + litre(L),
+    worked: [
+      comp + '/' + d + ' of the Remainder = ' + L + ' L. 1 band = ' + L + ' ÷ ' + comp + ' = ' + unitR + ' L. Remainder = ' + d + ' × ' + unitR + ' = ' + R + ' L.',
+      (b - a) + '/' + b + ' of the Main Tank = ' + R + ' L. 1 band = ' + R + ' ÷ ' + (b - a) + ' = ' + unitM + ' L. Main Tank = ' + b + ' × ' + unitM + ' = ' + S + ' L.',
+      'Starting capacity = ' + S + ' L.'
+    ],
+    layout: { mode: 'cascade', extra: false },
+    outTitle: 'FINAL OVERFLOW',
+    outColor: COL.magenta,
+    orderLabel: '',
+    stages: stampStages(stages)
+  };
+}
+
+function forgeDrive(spec) {
+  var a = spec.a, b = spec.b, known = spec.known, unit = spec.unit, whole = spec.whole;
+  var w = spec.w, n = spec.n, d = spec.d, total = spec.total;
+  var extra = total - whole;
+  var fracLitres = div(whole * n, d);
+  if (fracLitres == null || known !== a * unit || whole !== b * unit) return null;
+  if (whole * w + fracLitres !== total) return null;
+  var label = mixedLabel(w, n, d);
+  var wholeAlarm = whole + ' L is 1 WHOLE Main Tank! Command ordered an Overdrive Surge of ' + label + ' of the tank (' + whole + ' L + ' + (w - 1) + ' ' + n + '/' + d + ' of ' + whole + ' L)!';
+  if (w === 1) {
+    wholeAlarm = whole + ' L is 1 WHOLE Main Tank! Command ordered an Overdrive Surge of ' + label + ' of the tank (' + whole + ' L + ' + n + '/' + d + ' of ' + whole + ' L)!';
+  }
+  var wholesOnly = whole * w;
+
+  var story = [
+    F(a, b),
+    word(' of the Main Tank holds ' + known + ' L. Reactor Command orders an '),
+    word('Overdrive Surge', COL.gold),
+    word(' of '),
+    M(w, n, d),
+    word(' of the Main Tank\'s capacity! How many litres of plasma are needed in total?')
+  ];
+
+  var s1 = [
+    F(a, b),
+    word(' of the Main Tank holds ' + known + ' L. How many litres are in ONE equal segment?')
+  ];
+  var s2 = [
+    word('One segment is ' + unit + ' L. The Main Tank has ' + b + ' segments. How many litres is 1 WHOLE tank?')
+  ];
+  var s3 = [
+    word('Command wants '),
+    M(w, n, d),
+    word(' of the Main Tank. 1 whole tank is ' + whole + ' L. How many litres in total?')
+  ];
+
+  var cands1 = [
+    { v: known, alarm: 'PRESSURE FAULT', hint: known + ' L is the known portion, ' + a + ' segments together. One segment is ' + known + ' ÷ ' + a + ' = ' + unit + ' L.' },
+    { v: whole, alarm: 'PRESSURE FAULT', hint: 'That is 1 whole tank. First find one segment: ' + known + ' ÷ ' + a + '.' },
+    { v: total, alarm: 'OVERDRIVE LIMIT', hint: 'The overdrive total comes last. First find one segment of the Main Tank.' },
+    { v: div(known, b), alarm: 'PRESSURE FAULT', hint: 'Divide the known litres by the numerator ' + a + ', not by the denominator, unless the numerator is 1.' }
+  ];
+  var cands2 = [
+    { v: unit, alarm: 'PRESSURE FAULT', hint: unit + ' L is one segment. 1 whole tank is ' + b + ' × ' + unit + ' = ' + whole + ' L.' },
+    { v: known, alarm: 'PRESSURE FAULT', hint: known + ' L covers only ' + a + '/' + b + ' of the tank.' },
+    { v: total, alarm: 'OVERDRIVE LIMIT', hint: total + ' L is the overdrive order. First lock 1 whole Main Tank at ' + whole + ' L.' },
+    { v: whole + unit, alarm: 'PRESSURE FAULT', hint: 'That is the whole tank plus one extra band. 1 whole tank is exactly ' + b + ' bands.' }
+  ];
+  var cands3 = [
+    { v: whole, alarm: 'OVERDRIVE LIMIT', hint: wholeAlarm },
+    { v: extra, alarm: 'PRESSURE FAULT', hint: extra + ' L is only the plasma beyond 1 whole tank. Add it to the ' + whole + ' L Main Tank.' },
+    { v: known, alarm: 'PRESSURE FAULT', hint: known + ' L is the given fraction, not the overdrive order.' },
+    { v: wholesOnly === total ? whole + extra : wholesOnly, alarm: 'OVERDRIVE LIMIT', hint: w === 1 ? wholeAlarm : (wholesOnly + ' L covers the whole tanks only. The order is ' + label + ', so add ' + n + '/' + d + ' of ' + whole + ' L as well.') },
+    { v: unit, alarm: 'PRESSURE FAULT', hint: unit + ' L is a single segment, not the surge order.' }
+  ];
+
+  var knownCell = cell({ fill: a / b, seg: b, gauge: litre(known), mark: 'KNOWN' });
+  var unitCell = cell({ fill: a / b, seg: b, gauge: litre(known), unit: unit, mark: 'KNOWN' });
+  var fullCell = cell({ fill: 1, seg: b, gauge: litre(whole), unit: unit });
+  var auxEmpty = cell({ fill: 0, seg: d, gauge: '—' });
+  var auxFullFrac = cell({ fill: n / d, seg: d, gauge: litre(fracLitres), unit: div(whole, d) || 0 });
+  var extraEmpty = cell({ fill: 0, gauge: '—' });
+  var extraFull = cell({ fill: 1, gauge: litre(whole) });
+
+  var stages = [
+    {
+      title: 'FIND ONE TANK UNIT',
+      prompt: s1,
+      answer: unit,
+      seal: '1 segment = ' + known + ' ÷ ' + a + ' = ' + unit + ' L',
+      options: buildOptions(unit, cands1),
+      before: view('main', 'The filled portion is ' + a + ' of ' + b + ' equal bands and holds ' + known + ' L.', knownCell, cell({}), cell({}), auxEmpty, extraEmpty),
+      after: view('main', 'One segment = ' + unit + ' L.', unitCell, cell({}), cell({}), auxEmpty, extraEmpty)
+    },
+    {
+      title: 'REBUILD 1 WHOLE TANK',
+      prompt: s2,
+      answer: whole,
+      seal: '1 whole tank = ' + b + ' × ' + unit + ' = ' + whole + ' L',
+      options: buildOptions(whole, cands2),
+      before: view('main', 'Count all ' + b + ' segments to rebuild 1 whole tank.', unitCell, cell({}), cell({}), auxEmpty, extraEmpty),
+      after: view('main', 'Main Tank filled to 1 whole: ' + whole + ' L.', fullCell, cell({}), cell({}), auxEmpty, extraEmpty)
+    },
+    {
+      title: 'OVERDRIVE MIXED SURGE',
+      prompt: s3,
+      answer: total,
+      seal: label + ' of ' + whole + ' L = ' + total + ' L',
+      options: buildOptions(total, cands3),
+      before: view('aux', '1 whole tank is full. The gold auxiliary tank is the extra plasma.', fullCell, cell({}), cell({}), auxEmpty, extraEmpty),
+      after: view('aux', 'Overdrive total ' + total + ' L.', fullCell, cell({}), cell({}), auxFullFrac, w >= 2 ? extraFull : extraEmpty)
+    }
+  ];
+
+  return {
+    tier: 4,
+    key: '4|' + a + '/' + b + '|' + known + '|' + label,
+    story: story,
+    storyText: textOf(story),
+    introLog: 'Given: ' + a + '/' + b + ' of the tank = ' + litre(known),
+    worked: [
+      a + ' segments = ' + known + ' L. 1 segment = ' + known + ' ÷ ' + a + ' = ' + unit + ' L.',
+      b + ' segments = ' + whole + ' L for 1 whole Main Tank.',
+      label + ' of ' + whole + ' L = ' + whole + ' L × ' + w + ' + ' + n + '/' + d + ' of ' + whole + ' L = ' + total + ' L.'
+    ],
+    layout: { mode: 'overdrive', extra: w >= 2 },
+    outTitle: 'AUX OVERDRIVE',
+    outColor: COL.gold,
+    orderLabel: label,
+    mixedW: w,
+    stages: stampStages(stages)
+  };
+}
+
+function stampStages(stages) {
+  for (var i = 0; i < stages.length; i++) {
+    stages[i].promptText = textOf(stages[i].prompt);
+    var ok = 0;
+    for (var k = 0; k < stages[i].options.length; k++) if (stages[i].options[k].ok) ok++;
+    stages[i]._ok = ok;
+  }
+  return stages;
+}
+
+function curatedSplit(tier) {
+  var rows = tier === 1
+    ? [[120, 1, 3, 3, 5], [150, 2, 5, 2, 3], [200, 1, 4, 4, 5], [180, 2, 5, 3, 4], [96, 1, 4, 2, 3]]
+    : [[180, 1, 6, 3, 5], [240, 3, 8, 7, 10], [120, 1, 4, 2, 3], [200, 1, 5, 3, 4], [160, 3, 8, 3, 5]];
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    var p = forgeSplit({ tier: tier, S: r[0], a: r[1], b: r[2], c: r[3], d: r[4] });
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+function curatedBack() {
+  var specs = [
+    { L: 32, a: 1, b: 3, c: 3, d: 5, R: 80, S: 120 },
+    { L: 45, a: 2, b: 5, c: 1, d: 4, R: 60, S: 100 },
+    { L: 24, a: 1, b: 4, c: 2, d: 3, R: 72, S: 96 },
+    { L: 36, a: 1, b: 3, c: 2, d: 5, R: 60, S: 90 }
+  ];
+  var out = [];
+  for (var i = 0; i < specs.length; i++) {
+    var p = forgeBack(specs[i]);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+function curatedDrive() {
+  var specs = [
+    { a: 2, b: 3, known: 24, unit: 12, whole: 36, w: 1, n: 1, d: 2, total: 54 },
+    { a: 3, b: 4, known: 30, unit: 10, whole: 40, w: 1, n: 2, d: 5, total: 56 },
+    { a: 3, b: 5, known: 27, unit: 9, whole: 45, w: 1, n: 1, d: 3, total: 60 },
+    { a: 3, b: 4, known: 36, unit: 12, whole: 48, w: 2, n: 1, d: 4, total: 108 },
+    { a: 5, b: 6, known: 40, unit: 8, whole: 48, w: 1, n: 1, d: 2, total: 72 }
+  ];
+  var out = [];
+  for (var i = 0; i < specs.length; i++) {
+    var p = forgeDrive(specs[i]);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+function curatedFor(tier) {
+  if (tier === 1 || tier === 2) return curatedSplit(tier);
+  if (tier === 3) return curatedBack();
+  return curatedDrive();
+}
+
+function trySplit(tier, heat) {
+  var span = heatSpan(heat);
+  var pool = fracChoices(heat);
+  var f = pick(pool);
+  var s = pick(pool);
+  var a = f[0], b = f[1], c = s[0], d = s[1];
+  if (a === c && b === d) return null;
+  var g = gcd(b - a, d);
+  var kStep = d / g;
+  var kMin = Math.ceil(span.min / b);
+  var kMax = Math.floor(span.max / b);
+  var k0 = Math.ceil(kMin / kStep) * kStep;
+  if (k0 > kMax || k0 <= 0) return null;
+  var choices = [];
+  for (var k = k0; k <= kMax; k += kStep) choices.push(k);
+  var kk = pick(choices);
+  var S = kk * b;
+  if (tier === 2 && c * 2 === d && Math.random() < 0.65) return null;
+  return forgeSplit({ tier: tier, S: S, a: a, b: b, c: c, d: d });
+}
+
+function tryBack(heat) {
+  var pool = fracChoices(heat);
+  var f = pick(pool);
+  var s = pick(pool);
+  var a = f[0], b = f[1], c = s[0], d = s[1];
+  if (d - c <= 0 || b - a <= 0) return null;
+  var g = gcd(b - a, d);
+  var uStep = (b - a) / g;
+  var m = heatMultiple(heat);
+  var u = uStep * m;
+  var L = (d - c) * u;
+  var R = d * u;
+  var mainUnit = div(R, b - a);
+  if (mainUnit == null) return null;
+  var S = mainUnit * b;
+  if (S < 48 || S > 640 || L < 8 || L >= R) return null;
+  return forgeBack({ L: L, a: a, b: b, c: c, d: d, R: R, S: S });
+}
+
+function tryDrive(heat) {
+  var f = pick(fracChoices(heat));
+  var mix = pick(MIXED);
+  var a = f[0], b = f[1];
+  var w = mix[0], n = mix[1], d = mix[2];
+  if (heat < 4 && w > 1) w = 1;
+  var g = gcd(b, d);
+  var unitStep = d / g;
+  var m = heatMultiple(heat);
+  var unit = unitStep * m;
+  var known = a * unit;
+  var whole = b * unit;
+  var fracLitres = div(whole * n, d);
+  if (fracLitres == null) return null;
+  var total = whole * w + fracLitres;
+  if (known < 12 || whole > 420 || total > 900) return null;
+  return forgeDrive({ a: a, b: b, known: known, unit: unit, whole: whole, w: w, n: n, d: d, total: total });
+}
+
+function tryGenerate(tier, heat) {
+  for (var i = 0; i < 40; i++) {
+    var p = tier <= 2 ? trySplit(tier, heat) : tier === 3 ? tryBack(heat) : tryDrive(heat);
+    if (p && validProblem(p)) return p;
+  }
+  return null;
+}
+
+function validProblem(p) {
+  if (!p || !p.stages || p.stages.length !== 3) return false;
+  if (!p.storyText || !p.worked || p.worked.length < 3) return false;
+  for (var i = 0; i < 3; i++) {
+    var s = p.stages[i];
+    if (!s.options || s.options.length !== 4) return false;
+    if (!s.promptText || !s.before || !s.after) return false;
+    var corrects = [];
+    var seen = {};
+    for (var k = 0; k < s.options.length; k++) {
+      var o = s.options[k];
+      var id = String(o.v);
+      if (seen[id]) return false;
+      seen[id] = true;
+      if (o.ok) corrects.push(o);
+      else if (!o.hint) return false;
+    }
+    if (corrects.length !== 1) return false;
+    if (corrects[0].v !== s.answer) return false;
+  }
+  if (p.tier === 1 || p.tier === 2) {
+    var tank = Number(String(p.key).split('|')[1]);
+    if (p.stages[0].answer + p.stages[1].answer !== tank) return false;
+    if (!(p.stages[2].answer > 0 && p.stages[2].answer < p.stages[1].answer)) return false;
+  }
+  if (p.tier === 3 && p.stages[2].answer !== p.stages[1].answer) return false;
+  if (p.tier === 4 && !(p.stages[0].answer < p.stages[1].answer && p.stages[1].answer < p.stages[2].answer)) return false;
+  return true;
+}
+
+function drawFromBag(tier) {
+  if (!G.bags[tier].length) {
+    var list = curatedFor(tier);
+    for (var i = 0; i < 5; i++) {
+      var made = tryGenerate(tier, G.solved + i);
+      if (made) list.push(made);
+    }
+    G.bags[tier] = shuffle(list);
+  }
+  return G.bags[tier].pop();
+}
+
+function runAudit() {
+  var bad = [];
+  for (var tier = 1; tier <= 4; tier++) {
+    var curated = curatedFor(tier);
+    for (var i = 0; i < curated.length; i++) {
+      if (!validProblem(curated[i])) bad.push('curated ' + tier + ':' + i);
+    }
+    for (var n = 0; n < 24; n++) {
+      var p = tryGenerate(tier, n);
+      if (!p) bad.push('empty ' + tier + ':' + n);
+      else if (!validProblem(p)) bad.push('gen ' + tier + ':' + n + ':' + p.key);
+    }
+  }
+  return bad;
+}
+
+function stageOwner() {
+  if (G.playMode !== 'coop') return 'both';
+  if (G.stage === 2) return 'both';
+  var p1First = G.round % 2 === 0;
+  if (G.stage === 0) return p1First ? 0 : 1;
+  return p1First ? 1 : 0;
+}
+
+function roleLine() {
+  if (G.playMode !== 'coop') return 'ALL VALVES';
+  var p1First = G.round % 2 === 0;
+  if (G.stage === 2) return 'BOTH SEAL THE SURGE';
+  return (p1First ? 'P1 MAIN' : 'P2 MAIN') + '  ·  ' + (p1First ? 'P2 REMAINDER' : 'P1 REMAINDER');
+}
+
+function applyView(spec, glide) {
+  var names = ['main', 'rem', 'out', 'aux', 'extra'];
+  for (var i = 0; i < names.length; i++) {
+    var src = spec[names[i]];
+    var dst = V[names[i]];
+    dst.seg = src.seg;
+    dst.shade = src.shade;
+    dst.gauge = src.gauge;
+    dst.unit = src.unit;
+    dst.ink = src.ink;
+    dst.mark = src.mark;
+    dst.fillTo = src.fill;
+    dst.sentTo = src.sent ? 1 : 0;
+    if (!glide) {
+      dst.fill = src.fill;
+      dst.sentAmt = dst.sentTo;
+    }
+  }
+  V.caption = spec.caption || '';
+  V.live = spec.live;
+}
+
+function enterStage() {
+  var stage = G.problem.stages[G.stage];
+  G.pick = -1;
+  G.locks = [false, false];
+  applyView(stage.before, false);
+  sfxValve();
+  sfxChime();
+  announce();
+}
+
+function startDispatch() {
+  var heat = G.solved;
+  var p = null;
+  var guard = 0;
+  while (guard < 6) {
+    var made = tryGenerate(G.tier, heat);
+    if (made && made.key !== G.lastKey) {
+      p = made;
+      break;
+    }
+    guard++;
+  }
+  if (!p) {
+    var list = shuffle(curatedFor(G.tier).slice());
+    p = list[0];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key !== G.lastKey) {
+        p = list[i];
+        break;
+      }
+    }
+  }
+  if (!p || !validProblem(p)) p = curatedFor(G.tier)[0];
+  G.problem = p;
+  G.lastKey = p.key;
+  G.stage = 0;
+  G.totalShow = false;
+  G.log = p.introLog ? [p.introLog] : [];
+  G.banner = null;
+  G.particles = [];
+  enterStage();
+}
+
+function beginGame(mode) {
+  G.mode = 'play';
+  G.playMode = mode;
+  G.tier = 1;
+  G.tierClears = 0;
+  G.maxShields = mode === 'coop' ? 4 : 3;
+  G.shields = G.maxShields;
+  G.score = 0;
+  G.combo = 1;
+  G.streak = 0;
+  G.round = 0;
+  G.solved = 0;
+  G.seenFlag = {};
+  G.bags = { 1: [], 2: [], 3: [], 4: [] };
+  G.lastKey = '';
+  G.floaters = [];
+  G.particles = [];
+  G.shake = 0;
+  G.strobe = 0;
+  G.surge = 0;
+  G.flow = 0;
+  G.wait = 0;
+  G.pending = null;
+  G.note = '';
+  G.banner = null;
+  players[0].focus = 0;
+  players[1].focus = 2;
+  players[0].free = false;
+  players[1].free = false;
+  startDispatch();
+}
+
+function spawnFloater(text, color) {
+  G.floaters.push({ x: 1080, y: 46, text: text, life: 1.1, color: color || COL.gold });
+}
+
+function award(base) {
+  var pts = base * G.combo;
+  G.score += pts;
+  G.streak++;
+  if (G.score > G.best) {
+    G.best = G.score;
+    saveStore();
+  }
+  spawnFloater('+' + fmt(pts), COL.emerald);
+  G.combo = Math.min(4, G.combo + 1);
+  return pts;
+}
+
+function succeed() {
+  var stage = G.problem.stages[G.stage];
+  var base = G.stage === 2 ? 350 : G.stage === 1 ? 150 : 100;
+  var pts = award(base);
+  applyView(stage.after, true);
+  G.flow = 1;
+  G.log.push(stage.seal);
+  if (G.stage < 2) {
+    sfxChime();
+    G.banner = { good: true, title: 'VALVE SEALED', text: stage.seal };
+    G.wait = 0.9;
+    G.pending = function () {
+      G.stage++;
+      enterStage();
+    };
+  } else {
+    sfxRush();
+    sfxFan();
+    rumble(0, 160, 0.45);
+    rumble(1, 160, 0.35);
+    G.surge = 1.5;
+    G.totalShow = true;
+    G.banner = { good: true, title: 'PIPELINE SURGE', text: 'Dispatch locked. +' + fmt(pts) + ' refinery points.' };
+    G.wait = 1.75;
+    G.pending = function () {
+      G.solved++;
+      G.tierClears++;
+      var leveled = false;
+      if (G.tier < 4 && G.tierClears >= 2) {
+        G.tier++;
+        G.tierClears = 0;
+        leveled = true;
+        if (G.shields < G.maxShields) {
+          G.shields++;
+          spawnFloater('SHIELD RESTORED', COL.cyan);
+        }
+        spawnFloater('TIER ' + G.tier, COL.gold);
+      }
+      G.round++;
+      startDispatch();
+      if (leveled) G.noteT = 1.2;
+    };
+  }
+}
+
+function fail(opt) {
+  G.shields = Math.max(0, G.shields - 1);
+  G.combo = 1;
+  G.streak = 0;
+  G.shake = 1;
+  G.strobe = 1;
+  G.locks = [false, false];
+  G.banner = { good: false, title: opt.alarm || 'PRESSURE FAULT', text: opt.hint };
+  sfxBuzz();
+  sfxHiss();
+  rumble(0, 120, 0.6);
+  announce();
+  if (G.shields <= 0) {
+    G.wait = 1.35;
+    G.pending = function () {
+      G.mode = 'over';
+      if (G.score > G.best) {
+        G.best = G.score;
+        saveStore();
+      }
+      announce();
+    };
+  }
+}
+
+function deny(pi, text) {
+  G.note = text;
+  G.noteT = 1.5;
+  sfxUi();
+}
+
+function selectCard(i, pi) {
+  if (G.mode !== 'play' || G.wait > 0) return;
+  var owner = stageOwner();
+  if (G.playMode === 'coop' && owner !== 'both' && owner !== pi) {
+    deny(pi, (pi === 0 ? 'P1' : 'P2') + ', the other engineer has this valve.');
+    return;
+  }
+  if (i < 0 || !G.problem || i >= G.problem.stages[G.stage].options.length) return;
+  G.pick = i;
+  G.locks = [false, false];
+  sfxValve();
+  var spot = null;
+  for (var s = 0; s < G.spots.length; s++) if (G.spots[s].kind === 'card' && G.spots[s].i === i) spot = G.spots[s];
+  if (spot) {
+    players[pi].focus = sOf(spot);
+    players[pi].free = false;
+    players[pi].fx = spot.x + spot.w / 2;
+    players[pi].fy = spot.y + spot.h / 2;
+  }
+}
+
+function sOf(spot) {
+  for (var i = 0; i < G.spots.length; i++) if (G.spots[i] === spot) return i;
+  return 0;
+}
+
+function submit(pi) {
+  if (G.mode !== 'play' || G.wait > 0 || !G.problem) return;
+  var owner = stageOwner();
+  if (G.playMode === 'coop' && owner !== 'both' && owner !== pi) {
+    deny(pi, (pi === 0 ? 'P1' : 'P2') + ', the other engineer has this valve.');
+    return;
+  }
+  if (G.pick < 0) {
+    G.banner = { good: false, title: 'NO READING', text: 'Select a valve card, then lock it in. No shield lost.' };
+    sfxUi();
+    return;
+  }
+  var opt = G.problem.stages[G.stage].options[G.pick];
+  if (!opt.ok) {
+    fail(opt);
+    return;
+  }
+  if (G.playMode === 'coop' && owner === 'both') {
+    G.locks[pi] = true;
+    sfxValve();
+    if (G.locks[0] && G.locks[1]) succeed();
+    else {
+      G.banner = {
+        good: true,
+        title: 'SEAL SET',
+        text: (pi === 0 ? 'P1' : 'P2') + ' sealed the surge. Both engineers must engage.'
+      };
+    }
+    return;
+  }
+  succeed();
+}
+
+function activate(pi) {
+  var spot = currentSpot(pi);
+  if (!spot) return;
+  if (spot.kind === 'card') selectCard(spot.i, pi);
+  else if (spot.kind === 'engage') submit(pi);
+  else if (spot.kind === 'mode') beginGame(spot.mode);
+  else if (spot.kind === 'again') beginGame(G.playMode);
+  else if (spot.kind === 'title') {
+    G.mode = 'title';
+    announce();
+  }
+}
+
+function currentSpot(pi) {
+  var p = players[pi];
+  if (p.free) return hitTest(p.x, p.y);
+  if (!G.spots.length) return null;
+  return G.spots[clamp(p.focus, 0, G.spots.length - 1)] || null;
+}
+
+function nudge(pi, dir) {
+  var p = players[pi];
+  var n = G.spots.length;
+  if (!n) return;
+  p.focus = clamp(p.focus, 0, n - 1);
+  if (dir === 'left') p.focus = (p.focus + n - 1) % n;
+  if (dir === 'right') p.focus = (p.focus + 1) % n;
+  if (dir === 'down') p.focus = n - 1;
+  if (dir === 'up') p.focus = Math.max(0, n - 2);
+  p.free = false;
+  var s = G.spots[p.focus];
+  p.fx = s.x + s.w / 2;
+  p.fy = s.y + s.h / 2;
+}
+
+function dirOf(code) {
+  if (code === 'ArrowLeft' || code === 'KeyA') return 'left';
+  if (code === 'ArrowRight' || code === 'KeyD') return 'right';
+  if (code === 'ArrowUp' || code === 'KeyW') return 'up';
+  if (code === 'ArrowDown' || code === 'KeyS') return 'down';
+  return '';
+}
+
+function onControl(code) {
+  unlockAudio();
+  if (code === 'KeyM') {
+    toggleMute();
+    return;
+  }
+  if (code === 'Escape') {
+    if (G.mode !== 'title') {
+      G.mode = 'title';
+      announce();
+    }
+    return;
+  }
+  if (G.mode === 'title') {
+    if (code === 'ArrowLeft' || code === 'KeyA' || code === 'ArrowUp' || code === 'KeyW') G.focus = 0;
+    if (code === 'ArrowRight' || code === 'KeyD' || code === 'ArrowDown' || code === 'KeyS') G.focus = 1;
+    if (code === 'Digit1') beginGame('solo');
+    if (code === 'Digit2') beginGame('coop');
+    if (code === 'Enter' || code === 'Space' || code === 'KeyF') beginGame(G.focus === 0 ? 'solo' : 'coop');
+    return;
+  }
+  if (G.mode === 'over') {
+    if (code === 'Enter' || code === 'Space' || code === 'KeyF') beginGame(G.playMode);
+    return;
+  }
+  if (G.wait > 0) return;
+  var solo = G.playMode !== 'coop';
+  if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3' || code === 'Digit4') {
+    var owner = stageOwner();
+    var who = solo ? 0 : owner === 'both' ? 0 : owner;
+    selectCard(Number(code.charAt(5)) - 1, who);
+    return;
+  }
+  var dir = dirOf(code);
+  if (solo) {
+    if (dir) nudge(0, dir);
+    if (code === 'Space' || code === 'Enter' || code === 'KeyF') activate(0);
+    return;
+  }
+  if (code === 'KeyA' || code === 'KeyD' || code === 'KeyW' || code === 'KeyS') nudge(0, dir);
+  if (code === 'KeyF' || code === 'Space') activate(0);
+  if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'ArrowUp' || code === 'ArrowDown') nudge(1, dir);
+  if (code === 'Enter') activate(1);
+}
+
+function pollKeyboard(dt) {
+  var codes = [
+    'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+    'KeyA', 'KeyD', 'KeyW', 'KeyS'
+  ];
+  for (var i = 0; i < codes.length; i++) {
+    var code = codes[i];
+    var held = !!keysDown[code];
+    var st = keyHold[code] || { on: false, t: 0 };
+    if (held && st.on && dirOf(code)) {
+      st.t += dt;
+      if (st.t > 0.28) {
+        st.t = 0.12;
+        onControl(code);
+      }
+    }
+    keyHold[code] = st;
+  }
+}
+
+function btnDown(gp, i) {
+  var b = gp.buttons && gp.buttons[i];
+  return !!(b && (b.pressed || b.value > 0.5));
+}
+
+function padDirs(gp) {
+  var blank = { left: false, right: false, up: false, down: false, a: false, start: false, ax: 0, ay: 0 };
+  if (!gp) return blank;
+  var axes = gp.axes || [];
+  var ax = axes[0] || 0;
+  var ay = axes[1] || 0;
+  var hatL = false, hatR = false, hatU = false, hatD = false;
+  if (axes.length > 9 && axes[9] != null && isFinite(axes[9])) {
+    var hat = axes[9];
+    if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+    if (Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+  }
+  return {
+    left: btnDown(gp, 14) || hatL,
+    right: btnDown(gp, 15) || hatR,
+    up: btnDown(gp, 12) || hatU,
+    down: btnDown(gp, 13) || hatD,
+    a: btnDown(gp, 0),
+    start: btnDown(gp, 9),
+    ax: ax,
+    ay: ay
+  };
+}
+
+function listPads() {
+  try {
+    return navigator.getGamepads ? navigator.getGamepads() : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function rumble(index, ms, mag) {
+  var pads = listPads();
+  var gp = pads && pads[index];
+  if (!gp) return;
+  var actuator = gp.vibrationActuator || (gp.hapticActuators && gp.hapticActuators[0]);
+  if (!actuator) return;
+  try {
+    if (actuator.playEffect) actuator.playEffect('dual-rumble', { duration: ms, strongMagnitude: mag, weakMagnitude: mag * 0.55 });
+    else if (actuator.pulse) actuator.pulse(mag, ms);
+  } catch (err) { /* some pads refuse */ }
+}
+
+function pollPads(dt) {
+  var pads = listPads();
+  var live = [];
+  for (var i = 0; i < pads.length; i++) if (pads[i] && pads[i].connected) live.push(i);
+  G.pads = live.length;
+  if (G.mode === 'title' || G.mode === 'over') {
+    var gp0 = live.length ? pads[live[0]] : null;
+    var d0 = padDirs(gp0);
+    var prev0 = padPrev[0] || {};
+    if ((d0.left || d0.up) && !(prev0.left || prev0.up) && G.mode === 'title') G.focus = 0;
+    if ((d0.right || d0.down) && !(prev0.right || prev0.down) && G.mode === 'title') G.focus = 1;
+    if ((d0.a && !prev0.a) || (d0.start && !prev0.start)) {
+      unlockAudio();
+      if (G.mode === 'title') beginGame(G.focus === 0 ? 'solo' : 'coop');
+      else beginGame(G.playMode);
+    }
+    padPrev[0] = d0;
+    return;
+  }
+  var count = G.playMode === 'solo' ? 1 : 2;
+  for (var p = 0; p < count; p++) {
+    if (live[p] == null) continue;
+    var d = padDirs(pads[live[p]]);
+    var prev = padPrev[p] || {};
+    var dirs = ['left', 'right', 'up', 'down'];
+    var snapped = false;
+    for (var k = 0; k < dirs.length; k++) {
+      var name = dirs[k];
+      if (!players[p].hold) players[p].hold = {};
+      if (d[name]) {
+        players[p].hold[name] = (players[p].hold[name] || 0) + dt;
+        var fresh = !prev[name];
+        if (fresh || players[p].hold[name] > 0.28) {
+          nudge(p, name);
+          if (!fresh) players[p].hold[name] = 0.12;
+          snapped = true;
+        }
+      } else players[p].hold[name] = 0;
+    }
+    var ax = Math.abs(d.ax) < 0.32 ? 0 : d.ax;
+    var ay = Math.abs(d.ay) < 0.32 ? 0 : d.ay;
+    if (!snapped && (ax || ay)) {
+      players[p].free = true;
+      players[p].fx = clamp(players[p].fx + ax * 640 * dt, 24, W - 24);
+      players[p].fy = clamp(players[p].fy + ay * 640 * dt, 24, H - 24);
+    }
+    if (d.a && !prev.a) {
+      unlockAudio();
+      activate(p);
+    }
+    padPrev[p] = d;
+  }
+}
+
+function hitTest(x, y) {
+  for (var i = G.spots.length - 1; i >= 0; i--) {
+    var s = G.spots[i];
+    if (x >= s.x && y >= s.y && x <= s.x + s.w && y <= s.y + s.h) return s;
+  }
+  for (var t = 0; t < G.tips.length; t++) {
+    var tip = G.tips[t];
+    if (x >= tip.x && y >= tip.y && x <= tip.x + tip.w && y <= tip.y + tip.h) return tip;
+  }
+  return null;
+}
+
+function geomConsole() {
+  var y = 572;
+  var h = 152;
+  var left = 24;
+  var gap = 10;
+  var engageW = 206;
+  var engageX = W - 24 - engageW;
+  var cardsW = engageX - gap - left;
+  var cw = (cardsW - gap * 3) / 4;
+  var cards = [];
+  for (var i = 0; i < 4; i++) {
+    cards.push({ x: left + i * (cw + gap), y: y, w: cw, h: h, kind: 'card', i: i });
+  }
+  return { cards: cards, engage: { x: engageX, y: y, w: engageW, h: h, kind: 'engage' }, y: y, h: h };
+}
+
+function tankBoxes(problem) {
+  var y = 90;
+  var h = 214;
+  if (!problem || problem.layout.mode === 'cascade') {
+    return {
+      main: { x: 138, y: y, w: 176, h: h, key: 'main' },
+      rem: { x: 552, y: y, w: 176, h: h, key: 'rem' },
+      out: { x: 966, y: y, w: 176, h: h, key: 'out' }
+    };
+  }
+  if (problem.layout.extra) {
+    return {
+      main: { x: 138, y: y, w: 176, h: h, key: 'main' },
+      extra: { x: 552, y: y, w: 176, h: h, key: 'extra' },
+      aux: { x: 966, y: y, w: 176, h: h, key: 'aux' }
+    };
+  }
+  return {
+    main: { x: 250, y: 90, w: 210, h: 214, key: 'main' },
+    aux: { x: 820, y: 90, w: 210, h: 214, key: 'aux' }
+  };
+}
+
+function rebuildSpots() {
+  G.spots = [];
+  G.tips = [];
+  if (G.mode === 'title') {
+    G.spots = [
+      { x: 250, y: 236, w: 360, h: 176, kind: 'mode', mode: 'solo' },
+      { x: 670, y: 236, w: 360, h: 176, kind: 'mode', mode: 'coop' }
+    ];
+    return;
+  }
+  if (G.mode === 'over') {
+    G.spots = [
+      { x: 390, y: 560, w: 280, h: 64, kind: 'again' },
+      { x: 690, y: 560, w: 200, h: 64, kind: 'title' }
+    ];
+    return;
+  }
+  var g = geomConsole();
+  for (var i = 0; i < g.cards.length; i++) G.spots.push(g.cards[i]);
+  G.spots.push(g.engage);
+  if (!G.problem) return;
+  var boxes = tankBoxes(G.problem);
+  var keys = Object.keys(boxes);
+  for (var k = 0; k < keys.length; k++) {
+    var box = boxes[keys[k]];
+    var cellV = V[box.key];
+    var tip = box.key === 'main' ? 'Main Tank' : box.key === 'rem' ? 'Remainder Tank' : box.key === 'out' ? G.problem.outTitle : box.key === 'aux' ? 'Auxiliary overdrive' : 'Extra whole tank';
+    if (cellV && cellV.gauge) tip += ' · ' + cellV.gauge;
+    if (cellV && cellV.seg) tip += ' · ' + cellV.seg + ' equal bands';
+    if (cellV && cellV.unit) tip += ' · ' + cellV.unit + ' L each';
+    G.tips.push({ x: box.x, y: box.y, w: box.w, h: box.h, kind: 'tank', key: box.key, tip: tip });
+  }
+}
+
+function speak(text) {
+  if (!sr || !text || text === G.live) return;
+  G.live = text;
+  sr.textContent = text;
+}
+
+function announce() {
+  if (G.fatal) {
+    speak(G.fatal);
+    return;
+  }
+  if (G.mode === 'title') {
+    speak('Cargo Refinery Remainder Splitter. Choose Solo Engineer or 2 player co-op. Take the second fraction from the remainder tank, never from the original tank. Best score ' + fmt(G.best) + '.');
+    return;
+  }
+  if (G.mode === 'over') {
+    speak('Shields down. Score ' + fmt(G.score) + '. Best ' + fmt(G.best) + '. ' + (G.problem ? G.problem.worked.join(' ') : '') + ' Press Enter to run another shift.');
+    return;
+  }
+  if (!G.problem) return;
+  var stage = G.problem.stages[G.stage];
+  var cards = stage.options.map(function (o, i) {
+    return (i + 1) + '. ' + (o.text || (o.v + ' litres'));
+  }).join(', ');
+  var banner = G.banner ? (G.banner.title + '. ' + G.banner.text) : '';
+  speak('Tier ' + G.tier + ' ' + TIER_NAME[G.tier] + '. ' + G.problem.storyText + ' Stage ' + (G.stage + 1) + '. ' + stage.promptText + ' Choices: ' + cards + '. ' + banner);
+}
+
+function roundRect(x, y, w, h, r) {
+  var rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+
+function cylinderPath(x, y, w, h) {
+  var ry = Math.min(18, w * 0.14);
+  ctx.beginPath();
+  ctx.moveTo(x, y + ry);
+  ctx.ellipse(x + w / 2, y + ry, w / 2, ry, 0, Math.PI, 0);
+  ctx.lineTo(x + w, y + h - ry);
+  ctx.ellipse(x + w / 2, y + h - ry, w / 2, ry, 0, 0, Math.PI);
+  ctx.closePath();
+}
+
+function drawBackground() {
+  var g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#07101f');
+  g.addColorStop(0.55, '#0c1a33');
+  g.addColorStop(1, '#071018');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.strokeStyle = '#1d4e78';
+  ctx.lineWidth = 1;
+  for (var x = 40; x < W; x += 48) {
+    ctx.beginPath();
+    ctx.moveTo(x, 150);
+    ctx.lineTo(x, 760);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = '#102033';
+  for (var i = 0; i < 7; i++) {
+    var bx = 70 + i * 180;
+    ctx.globalAlpha = 0.35;
+    ctx.fillRect(bx, 120, 46, 70);
+    ctx.fillStyle = i % 2 ? '#123' : '#102033';
+    ctx.fillRect(bx + 60, 100, 28, 90);
+    ctx.fillStyle = '#102033';
+  }
+  ctx.globalAlpha = 1;
+  var vg = ctx.createRadialGradient(W / 2, H * 0.45, 80, W / 2, H * 0.5, 760);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.38)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+  var pulse = 0.08 + Math.sin(G.t * 2) * 0.02;
+  ctx.fillStyle = 'rgba(62, 231, 255, ' + pulse + ')';
+  ctx.beginPath();
+  ctx.ellipse(W / 2, 760, 520, 36, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawTank(box, data, color, title, live) {
+  var x = box.x, y = box.y, w = box.w, h = box.h;
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.font = font(14, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.shadowColor = '#02060c';
+  ctx.shadowBlur = 4;
+  ctx.fillText(title, x + w / 2, y - 12);
+  ctx.restore();
+
+  ctx.save();
+  cylinderPath(x, y, w, h);
+  ctx.fillStyle = 'rgba(8, 16, 32, 0.92)';
+  ctx.fill();
+  ctx.clip();
+
+  var ry = Math.min(18, w * 0.14);
+  var innerTop = y + ry + 8;
+  var innerBot = y + h - ry - 8;
+  var innerH = innerBot - innerTop;
+  var shown = Math.max(data.fill, 0.04);
+  var fillH = innerH * clamp(shown, 0, 1);
+  var surface = innerBot - fillH;
+  if (data.fill > 0.02) {
+    ctx.beginPath();
+    ctx.moveTo(x, innerBot + 8);
+    for (var px = 0; px <= w; px += 6) {
+      var wy = surface + Math.sin(px * 0.08 + G.t * 3.4 + x * 0.01) * 3.2;
+      ctx.lineTo(x + px, wy);
+    }
+    ctx.lineTo(x + w, y + h + 4);
+    ctx.lineTo(x, y + h + 4);
+    ctx.closePath();
+    var lg = ctx.createLinearGradient(x, surface, x, innerBot);
+    lg.addColorStop(0, '#ffffff');
+    lg.addColorStop(0.08, color);
+    lg.addColorStop(1, '#062033');
+    ctx.fillStyle = lg;
+    ctx.globalAlpha = 0.92;
+    ctx.fill();
+    ctx.globalAlpha = 0.45;
+    for (var b = 0; b < 5; b++) {
+      var u = (G.t * 0.22 + b * 0.19) % 1;
+      var bx = x + 18 + ((b * 53 + Math.floor(x)) % Math.max(8, w - 36));
+      var by = innerBot - u * fillH;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(bx, by, 2 + (b % 3), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  var sentAmt = data.sentAmt || 0;
+  var sentCut = data.seg > 0 ? innerTop + innerH * (data.shade / data.seg) : innerTop;
+  if (sentAmt > 0.02 && data.seg > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, sentCut, w, innerBot - sentCut + 24);
+    ctx.clip();
+    ctx.globalAlpha = Math.min(1, sentAmt);
+    ctx.fillStyle = '#081020';
+    ctx.fillRect(x, sentCut, w, innerBot - sentCut + 24);
+    ctx.globalAlpha = sentAmt * 0.55;
+    ctx.strokeStyle = 'rgba(186, 214, 232, 0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    var span = innerBot - sentCut;
+    for (var hx = x - span; hx < x + w; hx += 12) {
+      ctx.moveTo(hx, sentCut);
+      ctx.lineTo(hx + span, innerBot);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (data.seg > 1) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = 1.5;
+    for (var s = 1; s < data.seg; s++) {
+      var sy = innerTop + innerH * s / data.seg;
+      ctx.beginPath();
+      ctx.moveTo(x + 8, sy);
+      ctx.lineTo(x + w - 8, sy);
+      ctx.stroke();
+    }
+    if (data.shade > 0) {
+      var sh = innerH * data.shade / data.seg;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+      ctx.fillRect(x + 4, innerTop, w - 8, sh);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      for (var hx = x; hx < x + w; hx += 10) {
+        ctx.moveTo(hx, innerTop);
+        ctx.lineTo(hx + sh, innerTop + sh);
+      }
+      ctx.stroke();
+      if (data.mark && sh > 18) {
+        ctx.fillStyle = '#fff';
+        ctx.font = font(12, 800);
+        ctx.textAlign = 'center';
+        ctx.fillText(data.mark, x + w / 2, innerTop + Math.min(sh, innerH / data.seg) * 0.55);
+      }
+    }
+    if (data.unit && innerH / data.seg > 16) {
+      ctx.font = font(12, 800);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#041018';
+      for (var band = 0; band < data.seg; band++) {
+        if (band < data.shade) continue;
+        if (sentAmt > 0.55) continue;
+        var mid = innerTop + innerH * (band + 0.5) / data.seg;
+        if (shown > 0.08 && mid > surface + 6 && mid < innerBot - 6) {
+          ctx.fillText(data.unit + ' L', x + w / 2, mid + 4);
+        }
+      }
+    }
+  }
+
+  if (data.ink) {
+    ctx.strokeStyle = 'rgba(40, 18, 64, 0.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x + 20, y + 50);
+    ctx.bezierCurveTo(x + 80, y + 20, x + w - 20, y + 90, x + 30, y + h * 0.55);
+    ctx.bezierCurveTo(x + 90, y + h * 0.7, x + w - 30, y + 40, x + w - 24, y + h * 0.48);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(28, 10, 48, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(x + w / 2, y + h * 0.42, w * 0.28, 36, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  cylinderPath(x, y, w, h);
+  ctx.lineWidth = live ? 3.5 : 2;
+  ctx.strokeStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = live ? 16 : 6;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(x + w * 0.38, y + 18, 10, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  var gw = Math.min(118, w - 24);
+  var gx = x + (w - gw) / 2;
+  var gy = y + h - 18;
+  roundRect(gx, gy, gw, 28, 6);
+  ctx.fillStyle = '#061018';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.fillStyle = data.ink ? '#d38bff' : color;
+  ctx.font = mono(data.ink ? 16 : 15);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(data.ink ? '?? L' : data.gauge, x + w / 2, gy + 15);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function curvePoint(x1, y1, cx, cy, x2, y2, t) {
+  var u = 1 - t;
+  return {
+    x: u * u * x1 + 2 * u * t * cx + t * t * x2,
+    y: u * u * y1 + 2 * u * t * cy + t * t * y2
+  };
+}
+
+function drawPipe(x1, y1, x2, y2, color, hot, label) {
+  var cx = (x1 + x2) / 2;
+  var cy = Math.min(y1, y2) - 26;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.quadraticCurveTo(cx, cy, x2, y2);
+  ctx.lineWidth = 16;
+  ctx.strokeStyle = '#061018';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = hot ? color : '#1a3a52';
+  ctx.shadowColor = hot ? color : 'transparent';
+  ctx.shadowBlur = hot ? 12 : 0;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  if (hot) {
+    ctx.setLineDash([8, 12]);
+    ctx.lineDashOffset = -G.t * (G.surge > 0 ? 140 : 70);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = '#f7feff';
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  var v = curvePoint(x1, y1, cx, cy, x2, y2, 0.5);
+  ctx.beginPath();
+  ctx.arc(v.x, v.y, 13, 0, Math.PI * 2);
+  ctx.fillStyle = '#08131f';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = hot ? color : '#3d5d78';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.translate(v.x, v.y);
+  ctx.rotate(G.t * (hot ? 2.4 : 0.3));
+  ctx.moveTo(-9, 0);
+  ctx.lineTo(9, 0);
+  ctx.moveTo(0, -9);
+  ctx.lineTo(0, 9);
+  ctx.stroke();
+  ctx.restore();
+  if (label) {
+    ctx.font = font(11, 800);
+    ctx.fillStyle = hot ? color : '#7f93b0';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, v.x, v.y - 22);
+  }
+  return { x1: x1, y1: y1, cx: cx, cy: cy, x2: x2, y2: y2, color: color, hot: hot };
+}
+
+function pipeAnchors(problem) {
+  var boxes = tankBoxes(problem);
+  var pipes = [];
+  if (problem.layout.mode === 'cascade') {
+    var main = boxes.main;
+    var rem = boxes.rem;
+    var out = boxes.out;
+    var cut = 0.62;
+    if (V.main.seg && V.main.shade) cut = clamp(0.28 + 0.5 * (V.main.shade / V.main.seg), 0.34, 0.78);
+    var y1 = main.y + main.h * cut;
+    var hot1 = V.live === 'main' || V.live === 'rem' || G.flow > 0 || G.surge > 0;
+    var hot2 = V.live === 'rem' || V.live === 'out' || G.stage > 0 || G.surge > 0;
+    pipes.push(drawPipe(main.x + main.w, y1, rem.x, rem.y + rem.h * 0.42, COL.amber, hot1, 'LEFTOVER ONLY'));
+    pipes.push(drawPipe(rem.x + rem.w, rem.y + rem.h * 0.48, out.x, out.y + out.h * 0.46, problem.outColor, hot2, problem.tier === 1 ? 'VALVE B' : 'OVERFLOW'));
+  } else {
+    var a = boxes.main;
+    var b = problem.layout.extra ? boxes.extra : boxes.aux;
+    var hot = G.stage === 2 || G.surge > 0 || V.live === 'aux';
+    pipes.push(drawPipe(a.x + a.w, a.y + 36, b.x, b.y + 36, COL.gold, hot, 'OVERDRIVE'));
+    if (problem.layout.extra) {
+      pipes.push(drawPipe(boxes.extra.x + boxes.extra.w, boxes.extra.y + 48, boxes.aux.x, boxes.aux.y + 48, COL.gold, hot, 'FRACTION'));
+    }
+  }
+  return pipes;
+}
+
+function spawnFlow(pipes) {
+  if (G.flow <= 0 && G.surge <= 0) return;
+  if (G.particles.length > 90) return;
+  for (var i = 0; i < pipes.length; i++) {
+    if (!pipes[i].hot) continue;
+    if (Math.random() > 0.6) continue;
+    var t = Math.random();
+    var p = curvePoint(pipes[i].x1, pipes[i].y1, pipes[i].cx, pipes[i].cy, pipes[i].x2, pipes[i].y2, t);
+    G.particles.push({
+      x: p.x,
+      y: p.y,
+      vx: (Math.random() - 0.5) * 20,
+      vy: -20 - Math.random() * 30,
+      life: 0.6 + Math.random() * 0.4,
+      max: 0.8,
+      color: pipes[i].color,
+      r: 2 + Math.random() * 2
+    });
+  }
+}
+
+function drawHUD() {
+  roundRect(16, 10, W - 32, 52, 12);
+  ctx.fillStyle = COL.panel;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62,231,255,0.35)';
+  ctx.stroke();
+  var mode = G.playMode === 'coop' ? '2P CO-OP TEAM' : 'SOLO ENGINEER';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = G.playMode === 'coop' ? COL.gold : COL.cyan;
+  ctx.font = font(16, 800);
+  ctx.fillText(mode, 32, 32);
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(11, 700);
+  ctx.fillText(roleLine(), 32, 50);
+
+  ctx.fillStyle = COL.ink;
+  ctx.font = font(15, 800);
+  ctx.fillText('TIER ' + G.tier + '  ·  ' + TIER_NAME[G.tier], 280, 32);
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(11, 700);
+  ctx.fillText('DISPATCH ' + (G.solved + 1), 280, 50);
+
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(11, 800);
+  ctx.fillText(G.playMode === 'coop' ? 'TEAM SHIELDS' : 'SHIELDS', 620, 26);
+  for (var i = 0; i < G.maxShields; i++) {
+    var sx = 620 + i * 28;
+    hex(sx, 46, 10, i < G.shields ? COL.cyan : '#1c2c44');
+  }
+
+  ctx.fillStyle = G.combo > 1 ? COL.gold : COL.mute;
+  ctx.font = font(12, 800);
+  ctx.fillText(G.playMode === 'coop' ? 'TEAM COMBO' : 'COMBO', 860, 28);
+  ctx.font = font(20, 800);
+  ctx.fillStyle = COL.gold;
+  ctx.fillText('x' + G.combo, 860, 50);
+
+  var scoreLabel = G.playMode === 'coop' ? 'TEAM SCORE' : 'SOLO SCORE';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(11, 800);
+  ctx.fillText(scoreLabel, 1244, 26);
+  ctx.fillStyle = '#f4fbff';
+  ctx.font = mono(22);
+  ctx.fillText(fmt(G.score), 1244, 50);
+  ctx.textAlign = 'left';
+}
+
+function hex(x, y, r, color) {
+  ctx.beginPath();
+  for (var i = 0; i < 6; i++) {
+    var a = Math.PI / 6 + i * Math.PI / 3;
+    var px = x + Math.cos(a) * r;
+    var py = y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function drawStatus() {
+  var y = 316;
+  var h = 58;
+  var banner = G.banner;
+  roundRect(16, y, W - 32, h, 10);
+  if (banner) {
+    ctx.fillStyle = banner.good ? 'rgba(10, 42, 36, 0.94)' : 'rgba(58, 12, 22, 0.94)';
+    ctx.fill();
+    ctx.strokeStyle = banner.good ? COL.emerald : COL.red;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = banner.good ? COL.emerald : '#ffb4c0';
+    ctx.font = font(13, 800);
+    ctx.fillText(banner.title, 28, y + 18);
+    ctx.fillStyle = '#f7fbff';
+    ctx.font = font(16, 700);
+    var body = wrapPlain(banner.text, 1220, 16);
+    ctx.fillText(body[0] || '', 28, y + 38);
+    if (body[1]) ctx.fillText(body[1], 28, y + 54);
+    return;
+  }
+  ctx.fillStyle = 'rgba(8, 18, 32, 0.88)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.stroke();
+  ctx.font = font(14, 700);
+  ctx.textAlign = 'left';
+  var x = 28;
+  var bits = G.log.length ? G.log.slice(-3) : ['Refinery log standing by'];
+  for (var i = 0; i < bits.length; i++) {
+    ctx.fillStyle = i === bits.length - 1 ? COL.cyan : COL.mute;
+    ctx.fillText(bits[i], x, y + 22);
+    x += ctx.measureText(bits[i]).width + 22;
+    if (x > 1100) break;
+  }
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(14, 700);
+  var cap = wrapPlain(V.caption || 'Choose a valve reading.', 1220, 14);
+  ctx.fillText(cap[0] || '', 28, y + 44);
+}
+
+function drawQuestion() {
+  var y = 382;
+  var h = 178;
+  roundRect(16, y, W - 32, h, 12);
+  ctx.fillStyle = 'rgba(7, 16, 32, 0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 193, 74, 0.35)';
+  ctx.stroke();
+  if (!G.problem) return;
+  var stage = G.problem.stages[G.stage];
+  roundRect(28, y + 12, 132, 24, 8);
+  ctx.fillStyle = '#10283a';
+  ctx.fill();
+  ctx.fillStyle = COL.cyan;
+  ctx.font = font(13, 800);
+  ctx.textAlign = 'center';
+  ctx.fillText('STAGE ' + (G.stage + 1) + ' / 3', 94, y + 29);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COL.gold;
+  ctx.font = font(16, 800);
+  ctx.fillText(stage.title, 172, y + 30);
+
+  var cursor = y + 62;
+  var storyLines = wrapTokens(G.problem.story, 1210, 18).slice(0, 2);
+  for (var i = 0; i < storyLines.length; i++) {
+    drawTokenLine(storyLines[i], 28, cursor, 18, COL.ink);
+    cursor += 28;
+  }
+  cursor += 6;
+  var promptLines = wrapTokens(stage.prompt, 1210, 24).slice(0, 2);
+  for (var p = 0; p < promptLines.length; p++) {
+    if (cursor > y + h - 18) break;
+    drawTokenLine(promptLines[p], 28, cursor, 24, COL.amber);
+    cursor += 34;
+  }
+}
+
+function wrapPlain(str, maxW, size) {
+  ctx.font = font(size, 700);
+  var words = String(str).split(' ');
+  var lines = [];
+  var line = '';
+  for (var i = 0; i < words.length; i++) {
+    var test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawConsole() {
+  if (!G.problem) return;
+  var g = geomConsole();
+  var stage = G.problem.stages[G.stage];
+  for (var i = 0; i < g.cards.length; i++) {
+    var card = g.cards[i];
+    var opt = stage.options[i];
+    var armed = G.pick === i;
+    roundRect(card.x, card.y, card.w, card.h, 12);
+    ctx.fillStyle = armed ? 'rgba(18, 48, 68, 0.96)' : 'rgba(10, 18, 32, 0.94)';
+    ctx.fill();
+    ctx.lineWidth = armed ? 3 : 1.5;
+    ctx.strokeStyle = armed ? COL.cyan : 'rgba(120, 170, 210, 0.35)';
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.fillStyle = COL.mute;
+    ctx.font = font(11, 800);
+    ctx.textAlign = 'center';
+    ctx.fillText(armed ? 'ARMED' : 'VALVE ' + (i + 1), card.x + card.w / 2, card.y + 28);
+    var label = opt.text || litre(opt.v);
+    ctx.fillStyle = '#f4fbff';
+    ctx.font = font(label.length > 12 ? 22 : 36, 800);
+    ctx.fillText(label, card.x + card.w / 2, card.y + 86);
+    ctx.fillStyle = COL.mute;
+    ctx.font = font(12, 700);
+    ctx.fillText(opt.text ? 'NOT LITRES' : 'PLASMA', card.x + card.w / 2, card.y + 122);
+  }
+
+  var e = g.engage;
+  var ready = G.pick >= 0;
+  roundRect(e.x, e.y, e.w, e.h, 12);
+  var pulse = ready ? 0.55 + Math.sin(G.t * 5) * 0.15 : 0.2;
+  ctx.fillStyle = ready ? 'rgba(18, 64, 58, 0.96)' : 'rgba(12, 22, 32, 0.94)';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = ready ? 'rgba(61,255,176,' + (0.7 + pulse * 0.3) + ')' : '#245';
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = ready ? COL.emerald : COL.mute;
+  ctx.font = font(13, 800);
+  var head = 'ENGAGE';
+  var sub = 'PIPELINE FLOW';
+  if (G.stage < 2) {
+    head = 'LOCK';
+    sub = 'THIS READING';
+  }
+  if (G.playMode === 'coop' && G.stage === 2) {
+    head = 'BOTH SEAL';
+    sub = 'TO SURGE';
+    if (G.locks[0] && !G.locks[1]) sub = 'WAITING P2';
+    if (G.locks[1] && !G.locks[0]) sub = 'WAITING P1';
+  }
+  ctx.fillText(head, e.x + e.w / 2, e.y + 48);
+  ctx.font = font(16, 800);
+  ctx.fillStyle = '#f4fbff';
+  ctx.fillText(sub, e.x + e.w / 2, e.y + 76);
+  if (G.playMode === 'coop' && G.stage === 2) {
+    sealDot(e.x + 58, e.y + 112, G.locks[0], COL.red, 'P1');
+    sealDot(e.x + e.w - 58, e.y + 112, G.locks[1], COL.blue, 'P2');
+  } else {
+    ctx.fillStyle = COL.mute;
+    ctx.font = font(11, 700);
+    ctx.fillText(ready ? 'A  ·  SPACE  ·  CLICK' : 'CHOOSE A CARD', e.x + e.w / 2, e.y + 112);
+  }
+  ctx.textAlign = 'left';
+}
+
+function sealDot(x, y, on, color, label) {
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = on ? color : '#1c2a3c';
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.font = font(11, 800);
+  ctx.textAlign = 'center';
+  ctx.fillText(label, x, y + 22);
+  ctx.textAlign = 'left';
+}
+
+function drawBrackets(rect, color, pad) {
+  var x = rect.x - pad, y = rect.y - pad, w = rect.w + pad * 2, h = rect.h + pad * 2;
+  var m = 16;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x, y + m); ctx.lineTo(x, y); ctx.lineTo(x + m, y);
+  ctx.moveTo(x + w - m, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + m);
+  ctx.moveTo(x, y + h - m); ctx.lineTo(x, y + h); ctx.lineTo(x + m, y + h);
+  ctx.moveTo(x + w - m, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - m);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawReticleAt(p, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = p.color;
+  ctx.fillStyle = p.color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-18, 0); ctx.lineTo(-6, 0);
+  ctx.moveTo(6, 0); ctx.lineTo(18, 0);
+  ctx.moveTo(0, -18); ctx.lineTo(0, -6);
+  ctx.moveTo(0, 6); ctx.lineTo(0, 18);
+  ctx.stroke();
+  ctx.font = font(11, 800);
+  ctx.textAlign = 'left';
+  ctx.fillText(p.name, 14, -12);
+  ctx.restore();
+}
+
+function drawFloaters() {
+  for (var i = 0; i < G.floaters.length; i++) {
+    var f = G.floaters[i];
+    ctx.globalAlpha = clamp(f.life, 0, 1);
+    ctx.fillStyle = f.color;
+    ctx.font = font(18, 800);
+    ctx.textAlign = 'right';
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawParticles() {
+  for (var i = 0; i < G.particles.length; i++) {
+    var p = G.particles[i];
+    ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawPlay() {
+  var pipes = [];
+  if (G.problem) {
+    pipes = pipeAnchors(G.problem);
+    var boxes = tankBoxes(G.problem);
+    if (G.problem.layout.mode === 'cascade') {
+      drawTank(boxes.main, V.main, COL.cyan, 'MAIN TANK', V.live === 'main');
+      drawTank(boxes.rem, V.rem, COL.amber, 'REMAINDER TANK', V.live === 'rem');
+      drawTank(boxes.out, V.out, G.problem.outColor, G.problem.outTitle, V.live === 'out');
+    } else {
+      var orderBit = G.totalShow
+        ? ('TOTAL ' + litre(G.problem.stages[2].answer))
+        : ('ORDER ' + G.problem.orderLabel);
+      drawTank(boxes.main, V.main, COL.cyan, 'MAIN TANK · 1 WHOLE', V.live === 'main');
+      if (G.problem.layout.extra) {
+        drawTank(boxes.extra, V.extra, COL.gold, 'AUX WHOLE', G.stage === 2);
+        drawTank(boxes.aux, V.aux, COL.gold, orderBit, V.live === 'aux');
+      } else {
+        drawTank(boxes.aux, V.aux, COL.gold, orderBit, V.live === 'aux');
+      }
+    }
+  }
+  spawnFlow(pipes);
+  drawParticles();
+  if (G.strobe > 0) {
+    ctx.fillStyle = 'rgba(255, 40, 70, ' + (G.strobe * 0.18) + ')';
+    ctx.fillRect(0, 170, W, 320);
+  }
+  drawHUD();
+  drawStatus();
+  drawQuestion();
+  drawConsole();
+  if (G.noteT > 0 && G.note) {
+    ctx.font = font(13, 800);
+    ctx.fillStyle = COL.gold;
+    ctx.textAlign = 'left';
+    ctx.fillText(G.note, 280, 50);
+  }
+  var count = G.playMode === 'coop' ? 2 : 1;
+  for (var i = 0; i < count; i++) {
+    var p = players[i];
+    var aim = { x: p.x, y: p.y };
+    if (!p.free && G.spots[p.focus]) {
+      drawBrackets(G.spots[p.focus], p.color, i === 0 ? 3 : 7);
+      var spot = G.spots[p.focus];
+      if (spot.kind === 'card' || spot.kind === 'engage') {
+        aim = { x: spot.x + 16 + i * 18, y: spot.y + 16 };
+      }
+    }
+    drawReticleAt(p, aim.x, aim.y);
+  }
+  var hover = pointer.inside ? hitTest(pointer.x, pointer.y) : null;
+  if (hover && hover.kind === 'tank') {
+    ctx.font = font(12, 800);
+    var tw = ctx.measureText(hover.tip).width + 16;
+    var tx = clamp(pointer.x + 14, 12, W - tw - 12);
+    var ty = clamp(pointer.y - 28, 90, 300);
+    roundRect(tx, ty, tw, 22, 6);
+    ctx.fillStyle = '#061018';
+    ctx.fill();
+    ctx.strokeStyle = COL.cyan;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.fillText(hover.tip, tx + 8, ty + 15);
+  }
+  drawFloaters();
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = font(18, 800);
+  ctx.fillText('PRIMARY 4  ·  PRIMARY 5', W / 2, 78);
+  ctx.fillStyle = '#f4fbff';
+  ctx.font = font(54, 800);
+  ctx.fillText('CARGO REFINERY', W / 2, 132);
+  ctx.fillStyle = COL.amber;
+  ctx.font = font(22, 800);
+  ctx.fillText('REMAINDER SPLITTER', W / 2, 166);
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(16, 700);
+  ctx.fillText('The second valve draws from the REMAINDER tank, never the starting tank.', W / 2, 206);
+
+  var cards = [
+    { t: 'SOLO ENGINEER', d1: 'Mouse, keyboard, or one 8BitDo.', d2: 'You run every valve. 3 shields.', mode: 'solo' },
+    { t: '2P CO-OP TEAM', d1: 'Two 8BitDo pads, one screen.', d2: '4 shared shields. One team score.', mode: 'coop' }
+  ];
+  for (var i = 0; i < cards.length; i++) {
+    var spot = G.spots[i];
+    var on = G.focus === i;
+    roundRect(spot.x, spot.y, spot.w, spot.h, 16);
+    ctx.fillStyle = on ? 'rgba(16, 40, 64, 0.96)' : 'rgba(8, 16, 30, 0.92)';
+    ctx.fill();
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.strokeStyle = i === 0 ? (on ? COL.cyan : '#246') : (on ? COL.gold : '#564');
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.fillStyle = i === 0 ? COL.cyan : COL.gold;
+    ctx.font = font(22, 800);
+    ctx.fillText(cards[i].t, spot.x + spot.w / 2, spot.y + 48);
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(15, 700);
+    ctx.fillText(cards[i].d1, spot.x + spot.w / 2, spot.y + 86);
+    ctx.fillStyle = COL.mute;
+    ctx.fillText(cards[i].d2, spot.x + spot.w / 2, spot.y + 112);
+    ctx.font = font(13, 800);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(on ? 'PRESS A  /  ENTER' : 'SELECT', spot.x + spot.w / 2, spot.y + 144);
+  }
+
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(14, 700);
+  ctx.fillText('P1   WASD + F / Space    ·    Pad 1 D-pad + A', W / 2, 470);
+  ctx.fillStyle = COL.blue;
+  ctx.fillText('P2   Arrow keys + Enter    ·    Pad 2 D-pad + A', W / 2, 498);
+  ctx.fillStyle = COL.ink;
+  ctx.fillText('Co-op swaps the Main Valve and the Remainder Valve every dispatch. Both players seal the surge.', W / 2, 534);
+  ctx.fillStyle = COL.gold;
+  ctx.font = font(16, 800);
+  ctx.fillText(G.best ? ('BEST SHIFT   ' + fmt(G.best)) : 'NO BEST SHIFT YET', W / 2, 590);
+  ctx.fillStyle = '#6e829f';
+  ctx.font = font(13, 700);
+  var padNote = G.pads ? (G.pads + ' gamepad' + (G.pads > 1 ? 's' : '') + ' linked') : 'Press a pad button once so the browser can see the 8BitDo';
+  ctx.fillText(padNote + '   ·   M mutes   ·   1 Solo   ·   2 Co-op', W / 2, 628);
+  ctx.textAlign = 'left';
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.72)';
+  ctx.fillRect(0, 0, W, H);
+  roundRect(180, 70, 920, 660, 18);
+  ctx.fillStyle = '#0b1524';
+  ctx.fill();
+  ctx.strokeStyle = COL.red;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.red;
+  ctx.font = font(16, 800);
+  ctx.fillText('REFINERY SHIELDS DOWN', W / 2, 120);
+  ctx.fillStyle = '#fff';
+  ctx.font = font(36, 800);
+  ctx.fillText(fmt(G.score), W / 2, 170);
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(16, 700);
+  ctx.fillText((G.playMode === 'coop' ? 'TEAM SCORE' : 'SOLO SCORE') + '    ·    BEST ' + fmt(G.best) + '    ·    DISPATCHES ' + G.solved, W / 2, 202);
+
+  if (G.problem) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COL.gold;
+    ctx.font = font(14, 800);
+    ctx.fillText('WORKED DISPATCH', 220, 250);
+    var story = wrapPlain(G.problem.storyText, 820, 15);
+    ctx.fillStyle = COL.ink;
+    ctx.font = font(15, 700);
+    for (var i = 0; i < Math.min(3, story.length); i++) ctx.fillText(story[i], 220, 278 + i * 20);
+    for (var s = 0; s < G.problem.worked.length; s++) {
+      var lines = wrapPlain((s + 1) + '.  ' + G.problem.worked[s], 820, 16);
+      ctx.fillStyle = s === 2 ? COL.emerald : COL.cyan;
+      ctx.font = font(16, 700);
+      for (var ln = 0; ln < lines.length; ln++) ctx.fillText(lines[ln], 220, 360 + s * 52 + ln * 20);
+    }
+  }
+
+  for (var b = 0; b < G.spots.length; b++) {
+    var spot = G.spots[b];
+    roundRect(spot.x, spot.y, spot.w, spot.h, 12);
+    ctx.fillStyle = spot.kind === 'again' ? '#12382e' : '#1a2436';
+    ctx.fill();
+    ctx.strokeStyle = spot.kind === 'again' ? COL.emerald : COL.mute;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = font(16, 800);
+    ctx.textAlign = 'center';
+    ctx.fillText(spot.kind === 'again' ? 'RUN ANOTHER SHIFT' : 'TITLE', spot.x + spot.w / 2, spot.y + 38);
+  }
+  ctx.fillStyle = COL.mute;
+  ctx.font = font(13, 700);
+  ctx.fillText('Enter runs another shift    ·    Esc returns to the title', W / 2, 660);
+  ctx.textAlign = 'left';
+}
+
+function render() {
+  var shake = G.shake * 7;
+  ctx.save();
+  if (shake) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  drawBackground();
+  if (G.mode === 'title') drawTitle();
+  else if (G.mode === 'over') {
+    drawPlay();
+    drawOver();
+  } else drawPlay();
+  if (G.fatal) {
+    ctx.fillStyle = '#ff8b9a';
+    ctx.font = font(14, 700);
+    ctx.fillText(G.fatal, 24, 790);
+  }
+  ctx.restore();
+}
+
+function update(dt) {
+  G.shake = Math.max(0, G.shake - dt * 1.8);
+  G.strobe = Math.max(0, G.strobe - dt * 1.4);
+  G.surge = Math.max(0, G.surge - dt);
+  G.flow = Math.max(0, G.flow - dt);
+  G.noteT = Math.max(0, G.noteT - dt);
+  var names = ['main', 'rem', 'out', 'aux', 'extra'];
+  var glide = 1 - Math.pow(0.0015, dt);
+  for (var i = 0; i < names.length; i++) {
+    var tank = V[names[i]];
+    tank.fill = lerp(tank.fill, tank.fillTo, glide);
+    tank.sentAmt = lerp(tank.sentAmt || 0, tank.sentTo || 0, glide);
+  }
+  for (var f = G.floaters.length - 1; f >= 0; f--) {
+    G.floaters[f].life -= dt;
+    G.floaters[f].y -= 28 * dt;
+    if (G.floaters[f].life <= 0) G.floaters.splice(f, 1);
+  }
+  for (var p = G.particles.length - 1; p >= 0; p--) {
+    var bit = G.particles[p];
+    bit.life -= dt;
+    bit.x += bit.vx * dt;
+    bit.y += bit.vy * dt;
+    if (bit.life <= 0) G.particles.splice(p, 1);
+  }
+  var follow = 1 - Math.pow(0.001, dt);
+  var count = G.mode === 'play' && G.playMode === 'coop' ? 2 : 1;
+  for (var n = 0; n < count; n++) {
+    var pl = players[n];
+    if (!pl.free && G.spots[pl.focus]) {
+      pl.fx = G.spots[pl.focus].x + G.spots[pl.focus].w / 2;
+      pl.fy = G.spots[pl.focus].y + G.spots[pl.focus].h / 2;
+    }
+    pl.x = lerp(pl.x, pl.fx, follow);
+    pl.y = lerp(pl.y, pl.fy, follow);
+  }
+  if (G.wait > 0) {
+    G.wait -= dt;
+    if (G.wait <= 0) {
+      var fn = G.pending;
+      G.pending = null;
+      G.wait = 0;
+      if (fn) fn();
+    }
+  }
+}
+
+function pointerPos(e) {
+  var rect = canvas.getBoundingClientRect();
+  pointer.x = (e.clientX - rect.left) * (W / rect.width);
+  pointer.y = (e.clientY - rect.top) * (H / rect.height);
+  pointer.inside = true;
+  pointer.stamp = G.t;
+}
+
+function resize() {
+  var dpr = Math.min(2, window.devicePixelRatio || 1);
+  var scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = Math.floor(W * scale) + 'px';
+  canvas.style.height = Math.floor(H * scale) + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+}
+
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d');
+  muteBtn = document.getElementById('mute');
+  sr = document.getElementById('sr');
+  loadStore();
+  paintMute();
+  resize();
+  window.addEventListener('resize', resize);
+  muteBtn.addEventListener('click', function () {
+    unlockAudio();
+    toggleMute();
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    pointerPos(e);
+    if (G.mode === 'play') {
+      players[0].free = true;
+      players[0].fx = pointer.x;
+      players[0].fy = pointer.y;
+    } else if (G.mode === 'title') {
+      var h = hitTest(pointer.x, pointer.y);
+      if (h && h.kind === 'mode') G.focus = h.mode === 'solo' ? 0 : 1;
+    }
+  });
+  canvas.addEventListener('pointerdown', function (e) {
+    unlockAudio();
+    pointerPos(e);
+    canvas.focus();
+    var h = hitTest(pointer.x, pointer.y);
+    if (!h) return;
+    if (h.kind === 'mode') beginGame(h.mode);
+    else if (h.kind === 'card') selectCard(h.i, 0);
+    else if (h.kind === 'engage') submit(0);
+    else if (h.kind === 'again') beginGame(G.playMode);
+    else if (h.kind === 'title') {
+      G.mode = 'title';
+      announce();
+    }
+  });
+  canvas.addEventListener('pointerleave', function () { pointer.inside = false; });
+  window.addEventListener('keydown', function (e) {
+    var block = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (block.indexOf(e.code) >= 0) e.preventDefault();
+    if (e.repeat) return;
+    if (!e.code) return;
+    keysDown[e.code] = true;
+    keyHold[e.code] = { on: true, t: 0 };
+    unlockAudio();
+    onControl(e.code);
+  });
+  window.addEventListener('keyup', function (e) {
+    delete keysDown[e.code];
+    if (keyHold[e.code]) keyHold[e.code].on = false;
+  });
+  window.addEventListener('blur', function () {
+    for (var k in keysDown) delete keysDown[k];
+  });
+  window.addEventListener('gamepadconnected', function (e) {
+    G.note = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+    G.noteT = 2.4;
+  });
+  window.addEventListener('gamepaddisconnected', function (e) {
+    G.note = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+    G.noteT = 2;
+  });
+  var audit = runAudit();
+  if (audit.length) console.warn('Cargo Refinery audit', audit);
+  window.__CR = {
+    audit: runAudit,
+    get state() { return G; },
+    forceTier: function (n) {
+      if (G.mode !== 'play') beginGame(G.playMode || 'solo');
+      G.tier = clamp(n, 1, 4);
+      G.seenFlag[G.tier] = false;
+      startDispatch();
+    },
+    foci: function () { return [players[0].focus, players[1].focus]; },
+    pickCorrect: function () {
+      var opts = G.problem.stages[G.stage].options;
+      for (var i = 0; i < opts.length; i++) if (opts[i].ok) {
+        G.pick = i;
+        submit(0);
+        if (G.playMode === 'coop' && G.stage === 2) submit(1);
+        return i;
+      }
+      return -1;
+    }
+  };
+  announce();
+  requestAnimationFrame(frame);
+}
+
+var last = 0;
+function frame(ts) {
+  var dt = Math.min(0.034, last ? (ts - last) / 1000 : 0.016);
+  last = ts;
+  G.t += dt;
+  try {
+    rebuildSpots();
+    pollKeyboard(dt);
+    pollPads(dt);
+    update(dt);
+    pumpMusic();
+    render();
+  } catch (err) {
+    console.error(err);
+    G.fatal = err && err.message ? err.message : 'Frame fault';
+    try { render(); } catch (e2) { /* leave the last frame */ }
+  }
+  requestAnimationFrame(frame);
+}
+
+boot();
+</script>
+</body>
+</html>

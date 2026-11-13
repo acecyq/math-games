@@ -1,0 +1,2715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Squadron Splitter: Fleet Commander</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070b16;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  canvas {
+    display: block;
+    background: #070b16;
+    touch-action: none;
+    outline: none;
+    cursor: crosshair;
+  }
+  #mute {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 4;
+    border: 2px solid #3ee0ff;
+    background: #10182a;
+    color: #d8fbff;
+    font: 700 13px "Trebuchet MS", "Segoe UI", sans-serif;
+    letter-spacing: 0.08em;
+    border-radius: 999px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  #mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript p { color: #e8f7ff; padding: 24px; }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" role="application" aria-label="Squadron Splitter: Fleet Commander. Singapore Primary 4 and 5 fractions of whole numbers. Solo uses the mouse, WASD or arrows, Space, or an 8BitDo pad. Two-player duel: Red Wing uses WASD and F or Space, or gamepad 0. Blue Wing uses arrow keys and Enter, or gamepad 1."></canvas>
+<button id="mute" type="button" aria-pressed="false">SOUND ON</button>
+<div id="live" class="sr" aria-live="polite"></div>
+<noscript><p>Squadron Splitter needs JavaScript and a canvas-capable browser.</p></noscript>
+<script>
+'use strict';
+
+/* ==========================================================================
+   SQUADRON SPLITTER: FLEET COMMANDER
+   Singapore Primary 4–5 · fractions of whole numbers
+   Tier 1 equal squadrons · Tier 2 simplify a part · Tier 3 cloaked / remainder
+   Tier 4 mixed-number overdrive
+   Solo mouse / keyboard / 8BitDo · 2P versus · Web Audio · one file
+   ========================================================================== */
+
+const W = 1280, H = 720;
+const COL = {
+  bg: '#070b16', ink: '#eaf6ff', dim: '#8ea6bf', muted: '#5d7390',
+  cyan: '#3ee0ff', cyanDeep: '#147c96', gold: '#ffc14a', goldDeep: '#a56a12',
+  green: '#5dff9a', red: '#ff4d6a', p1: '#ff5a6e', p2: '#4aa3ff',
+  nebula: '#b06bff', amber: '#ffb020', deck: '#10182c', white: '#f7fbff',
+  scout: '#7eecff', cruiser: '#ffd56a', fighter: '#ff7b93', bomber: '#c6f27c'
+};
+const UI = {
+  cardX: 16, cardY: 540, cardW: 246, cardH: 164, cardGap: 10,
+  launch: { x: 1042, y: 540, w: 222, h: 164 },
+  hangar: { x: 16, y: 150, w: 1248, h: 318 },
+  hud: { x: 16, y: 10, w: 1248, h: 50 },
+  brief: { x: 16, y: 66, w: 1248, h: 76 },
+  prompt: { x: 16, y: 476, w: 1248, h: 56 }
+};
+const BASE_PTS = [120, 180, 350];
+const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+const AXIS_DEAD = 0.45;
+const STORE_KEY = 'squadron-splitter-best';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const live = document.getElementById('live');
+const muteBtn = document.getElementById('mute');
+
+const pressed = new Set();
+const sparks = [];
+const stars = [];
+const hatIdle = {};
+const pointer = { x: W * 0.5, y: H * 0.72, down: false, using: false };
+
+/* ---------- Utils ---------- */
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function moveTo(a, b, maxStep) {
+  if (Math.abs(b - a) <= maxStep) return b;
+  return a + Math.sign(b - a) * maxStep;
+}
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function gcd(a, b) {
+  a = Math.abs(Math.round(a));
+  b = Math.abs(Math.round(b));
+  while (b) {
+    const t = b;
+    b = a % b;
+    a = t;
+  }
+  return a || 1;
+}
+function speak(msg) {
+  if (live) live.textContent = msg;
+}
+function pulse(t, speed, min, max) {
+  return min + (max - min) * (0.5 + 0.5 * Math.sin(t * speed));
+}
+function mixedLabel(w, n, d) { return w + ' ' + n + '/' + d; }
+function expansionPhrase(base, eW, eN, eD) {
+  if (eW === 1 && eN === 1 && eD === 2) return base + ' + half of ' + base;
+  if (eW === 1) return base + ' + ' + eN + '/' + eD + ' of ' + base;
+  return (eW + ' × ' + base) + ' + ' + eN + '/' + eD + ' of ' + base;
+}
+
+/* ---------- Audio ---------- */
+const audio = (() => {
+  let actx = null, muted = false, bgmOn = false, step = 0, timer = null, master = null;
+  function ensure() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      master = actx.createGain();
+      master.gain.value = muted ? 0 : 0.5;
+      master.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume();
+    if (!bgmOn) startBgm();
+  }
+  function toggle() {
+    ensure();
+    muted = !muted;
+    if (master) master.gain.value = muted ? 0 : 0.5;
+    return muted;
+  }
+  function tone(freq, dur, type, vol, delay) {
+    if (!actx || muted) return;
+    const t0 = actx.currentTime + (delay || 0);
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol || 0.08), t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.03);
+  }
+  function noise(dur, vol, freq) {
+    if (!actx || muted) return;
+    const n = Math.max(1, Math.floor(actx.sampleRate * dur));
+    const buf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = actx.createBufferSource();
+    const g = actx.createGain();
+    const f = actx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.value = freq || 900;
+    src.buffer = buf;
+    g.gain.value = vol || 0.08;
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start();
+  }
+  function startBgm() {
+    if (!actx || bgmOn) return;
+    bgmOn = true;
+    const beat = 60 / 128;
+    const bass = [130.81, 130.81, 98, 130.81, 110, 110, 146.83, 164.81];
+    const lead = [523.25, 0, 659.25, 783.99, 659.25, 523.25, 440, 0, 392, 523.25, 659.25, 783.99, 880, 783.99, 659.25, 0];
+    function tick() {
+      if (!actx) return;
+      if (!muted) {
+        const t = actx.currentTime;
+        const bi = step % 8;
+        const li = step % 16;
+        if (step % 2 === 0) {
+          const o = actx.createOscillator();
+          const g = actx.createGain();
+          o.type = 'triangle';
+          o.frequency.setValueAtTime(150, t);
+          o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+          g.gain.setValueAtTime(0.16, t);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+          o.connect(g); g.connect(master);
+          o.start(t); o.stop(t + 0.16);
+        }
+        noise(0.03, step % 2 ? 0.035 : 0.018, 2400);
+        tone(bass[bi], beat * 0.72, 'sawtooth', 0.055);
+        if (lead[li]) tone(lead[li], beat * 0.42, 'square', 0.04);
+        if (step % 8 === 4) tone(lead[li] ? lead[li] / 2 : 196, beat * 0.5, 'triangle', 0.03);
+      }
+      step++;
+      timer = setTimeout(tick, beat * 1000);
+    }
+    tick();
+  }
+  return {
+    ensure, toggle, isMuted: () => muted,
+    select() { tone(520, 0.04, 'square', 0.045); },
+    slice() {
+      tone(220, 0.09, 'sawtooth', 0.05);
+      tone(660, 0.12, 'sine', 0.06, 0.04);
+      tone(990, 0.14, 'triangle', 0.045, 0.1);
+    },
+    lock() { tone(680, 0.05, 'square', 0.06); tone(1020, 0.08, 'square', 0.05, 0.05); },
+    roar() {
+      noise(0.45, 0.11, 420);
+      for (let i = 0; i < 7; i++) tone(120 + i * 46, 0.16, 'sawtooth', 0.045, i * 0.045);
+    },
+    fanfare() {
+      tone(523, 0.14, 'square', 0.07, 0.12);
+      tone(659, 0.14, 'square', 0.07, 0.24);
+      tone(784, 0.16, 'square', 0.07, 0.36);
+      tone(1046, 0.32, 'triangle', 0.08, 0.5);
+    },
+    buzz() { tone(92, 0.2, 'sawtooth', 0.11); tone(70, 0.24, 'square', 0.08, 0.04); },
+    ok() { tone(660, 0.06, 'square', 0.06); tone(880, 0.09, 'triangle', 0.05, 0.05); }
+  };
+})();
+
+/* ---------- Curriculum banks ---------- */
+const BANK = {
+  t1: [
+    { n: 36, num: 5, den: 6 },
+    { n: 48, num: 3, den: 8 },
+    { n: 45, num: 4, den: 9 },
+    { n: 42, num: 5, den: 6 },
+    { n: 56, num: 3, den: 7 },
+    { n: 40, num: 3, den: 4 },
+    { n: 32, num: 5, den: 8 },
+    { n: 54, num: 2, den: 9 },
+    { n: 63, num: 4, den: 7 },
+    { n: 24, num: 3, den: 4 },
+    { n: 72, num: 5, den: 8 },
+    { n: 28, num: 3, den: 7 },
+    { n: 64, num: 3, den: 8 },
+    { n: 81, num: 2, den: 9 }
+  ],
+  t2: [
+    { names: ['Scouts', 'Cruisers', 'Heavy Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [12, 18, 15], ask: 1 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [14, 21, 7], ask: 2 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [16, 20, 24], ask: 1 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [15, 25, 10], ask: 0 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [18, 12, 6], ask: 2 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [24, 16, 8], ask: 1 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [21, 14, 28], ask: 0 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [20, 15, 25], ask: 2 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [9, 12, 15], ask: 1 },
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'], counts: [18, 30, 12], ask: 1 }
+  ],
+  ink: [
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [30, 36, 32], hidden: [3, 10] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [16, 24, 20], hidden: [1, 6] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [21, 28, 14], hidden: [2, 9] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [25, 15, 20], hidden: [2, 5] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [18, 27, 9], hidden: [1, 4] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [22, 33, 11], hidden: [1, 7] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [24, 36, 12], hidden: [1, 4] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [16, 32, 24], hidden: [1, 10] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [27, 18, 36], hidden: [1, 10] },
+    { names: ['Scouts', 'Cruisers', 'Fighters'], kinds: ['scout', 'cruiser', 'fighter'], counts: [15, 25, 20], hidden: [1, 5] }
+  ],
+  rem: [
+    { total: 120, a: [1, 3], b: [3, 5] },
+    { total: 90, a: [1, 3], b: [2, 5] },
+    { total: 80, a: [1, 4], b: [3, 5] },
+    { total: 96, a: [1, 4], b: [2, 3] },
+    { total: 100, a: [1, 5], b: [3, 4] },
+    { total: 84, a: [1, 3], b: [3, 4] },
+    { total: 72, a: [1, 4], b: [2, 3] },
+    { total: 150, a: [1, 5], b: [3, 5] },
+    { total: 64, a: [1, 4], b: [3, 4] },
+    { total: 108, a: [1, 3], b: [3, 4] }
+  ],
+  t4: [
+    { gN: 2, gD: 3, ships: 24, eW: 1, eN: 1, eD: 2 },
+    { gN: 3, gD: 4, ships: 30, eW: 1, eN: 2, eD: 5 },
+    { gN: 3, gD: 5, ships: 27, eW: 1, eN: 1, eD: 3 },
+    { gN: 2, gD: 5, ships: 16, eW: 1, eN: 1, eD: 2 },
+    { gN: 3, gD: 8, ships: 21, eW: 1, eN: 1, eD: 4 },
+    { gN: 4, gD: 5, ships: 32, eW: 1, eN: 2, eD: 5 },
+    { gN: 5, gD: 6, ships: 25, eW: 1, eN: 1, eD: 3 },
+    { gN: 2, gD: 3, ships: 18, eW: 1, eN: 2, eD: 3 },
+    { gN: 3, gD: 4, ships: 36, eW: 1, eN: 1, eD: 2 },
+    { gN: 5, gD: 8, ships: 35, eW: 1, eN: 1, eD: 2 },
+    { gN: 4, gD: 9, ships: 20, eW: 1, eN: 1, eD: 3 },
+    { gN: 3, gD: 4, ships: 24, eW: 2, eN: 1, eD: 4 }
+  ]
+};
+
+const SCRIPT = [
+  ['t1', 0], ['t2', 0], ['ink', 0], ['t4', 0],
+  ['t1', 1], ['t2', 1], ['rem', 0], ['t4', 1],
+  ['t1', 2], ['t2', 2], ['ink', 1], ['t4', 2]
+];
+
+function takeChoices(correct, candidates) {
+  const choices = [{
+    label: String(correct.label),
+    caption: correct.caption || '',
+    tag: 'ok',
+    alert: false,
+    msg: ''
+  }];
+  const seen = new Set([choices[0].label]);
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (!c || c.label == null) continue;
+    const label = String(c.label);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    choices.push({
+      label,
+      caption: c.caption || '',
+      tag: c.tag || 'pad',
+      alert: !!c.alert,
+      msg: c.msg || 'That is not the split this order needs.'
+    });
+    if (choices.length === 4) break;
+  }
+  let padN = 2;
+  while (choices.length < 4 && padN < 14) {
+    const label = 'no ' + padN;
+    padN++;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    choices.push({
+      label,
+      caption: 'not this split',
+      tag: 'pad',
+      alert: false,
+      msg: 'That is not a step in this fleet order. Use the fraction the briefing names.'
+    });
+  }
+  return shuffle(choices);
+}
+
+function buildT1(spec) {
+  const n = spec.n, num = spec.num, den = spec.den;
+  const unit = n / den;
+  const ans = unit * num;
+  const frac = num + '/' + den;
+  const shortOf = (Math.max(1, num - 1) * unit);
+  const longOf = (num + 1) * unit;
+  return {
+    tier: 1,
+    tierName: 'EQUAL SQUADRONS',
+    kind: 'collection',
+    brief: 'Hangar holds ' + n + ' starfighters. Deploy ' + frac + ' of the fleet!',
+    chips: [
+      n + ' ÷ ' + den + ' = ' + unit,
+      'highlight ' + num + ' squadrons',
+      num + ' × ' + unit + ' = ' + ans
+    ],
+    visual: { n, num, den, unit, ans, kind: 'fighter' },
+    steps: [
+      {
+        kicker: 'STEP 1 OF 3  ·  SLICE THE HANGAR',
+        prompt: 'How many ships are in ONE equal squadron?',
+        success: n + ' ÷ ' + den + ' = ' + unit + ' ships in each squadron.',
+        choices: takeChoices(
+          { label: String(unit), caption: 'ships in 1 squadron' },
+          [
+            { label: n + ' + ' + frac, caption: 'add the fraction', tag: 'add', alert: true,
+              msg: 'A fraction of a fleet divides the ships into equal squadrons first — divide ' + n + ' by the denominator ' + den + '!' },
+            { label: String(n), caption: 'whole hangar', tag: 'whole',
+              msg: n + ' is the entire hangar. Split it into ' + den + ' equal squadrons first.' },
+            { label: String(ans), caption: 'final launch count', tag: 'early',
+              msg: ans + ' is the final launch (' + num + ' squadrons). First find one squadron: ' + n + ' ÷ ' + den + '.' },
+            { label: String(num), caption: 'numerator only', tag: 'numer',
+              msg: num + ' is how many squadrons you will launch, not how many ships are in each.' },
+            { label: String(unit + den), caption: 'added the parts', tag: 'pad',
+              msg: 'Adding the denominator does not slice the hangar. Divide ' + n + ' by ' + den + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 2 OF 3  ·  HIGHLIGHT THE NUMERATOR',
+        prompt: 'The order is ' + frac + '. How many squadrons do we highlight?',
+        success: 'Highlight ' + num + ' squadrons — the numerator of ' + frac + '.',
+        choices: takeChoices(
+          { label: num + ' squadrons', caption: 'numerator groups' },
+          [
+            { label: den + ' squadrons', caption: 'every squadron', tag: 'den',
+              msg: den + ' is the denominator — that is ALL the squadrons. ' + frac + ' means highlight ' + num + ' of them.' },
+            { label: unit + ' ships', caption: 'one squadron', tag: 'unit',
+              msg: unit + ' is the ships inside one squadron, not the number of squadrons to highlight.' },
+            { label: ans + ' ships', caption: 'ship count', tag: 'early',
+              msg: ans + ' is a ship count. This step asks how many SQUADRONS to highlight. The numerator is ' + num + '.' },
+            { label: n + ' ships', caption: 'whole fleet', tag: 'whole',
+              msg: 'That is the whole hangar. Highlight only the numerator: ' + num + ' squadrons.' },
+            { label: (num + 1) + ' squadrons', caption: 'one too many', tag: 'pad',
+              msg: 'The top number of ' + frac + ' is ' + num + '. Highlight ' + num + ' squadrons.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 3 OF 3  ·  LAUNCH COUNT',
+        prompt: 'Arm the launch count, then hit LAUNCH SQUADRON.',
+        success: 'Launch ' + ans + ' starfighters — ' + frac + ' of ' + n + '!',
+        launch: true,
+        choices: takeChoices(
+          { label: ans + ' ships', caption: num + ' × ' + unit },
+          [
+            { label: n + ' ships', caption: 'whole fleet', tag: 'whole',
+              msg: n + ' launches the entire hangar. You only need ' + num + ' of the ' + den + ' squadrons.' },
+            { label: unit + ' ships', caption: 'one squadron', tag: 'unit',
+              msg: unit + ' is a single squadron. ' + num + ' × ' + unit + ' = ' + ans + ' ships.' },
+            { label: n + ' + ' + frac, caption: 'add the fraction', tag: 'add', alert: true,
+              msg: 'A fraction of a fleet divides the ships into equal squadrons first — divide ' + n + ' by the denominator ' + den + '!' },
+            { label: shortOf + ' ships', caption: 'one squadron short', tag: 'off',
+              msg: 'That misses a squadron. ' + num + ' groups of ' + unit + ' make ' + ans + ' ships.' },
+            { label: longOf + ' ships', caption: 'one squadron extra', tag: 'off',
+              msg: 'That is one squadron too many. Stop at ' + num + ' × ' + unit + ' = ' + ans + '.' }
+          ]
+        )
+      }
+    ]
+  };
+}
+
+function buildT2(spec) {
+  const names = spec.names, counts = spec.counts, kinds = spec.kinds, ask = spec.ask;
+  const total = counts[0] + counts[1] + counts[2];
+  const part = counts[ask];
+  const g = gcd(part, total);
+  const sn = part / g, sd = total / g;
+  const raw = part + '/' + total;
+  const simple = sn + '/' + sd;
+  const askName = names[ask];
+  const others = [0, 1, 2].filter(i => i !== ask);
+  const partial = counts[others[0]] + counts[ask];
+  const otherSimpleN = counts[others[0]] / gcd(counts[others[0]], total);
+  const otherSimpleD = total / gcd(counts[others[0]], total);
+  const otherLabel = otherSimpleN + '/' + otherSimpleD;
+  const invert = sd + '/' + sn;
+  let low = 0;
+  for (let k = g - 1; k >= 2; k--) {
+    if (part % k === 0 && total % k === 0) { low = k; break; }
+  }
+  const step2 = [];
+  if (low) {
+    step2.push({ label: String(low), caption: 'a smaller factor', tag: 'low',
+      msg: low + ' divides both ' + part + ' and ' + total + ', but the Simplifier Laser uses the highest common factor, ' + g + '.' });
+  }
+  if (part !== g) {
+    step2.push({ label: String(part), caption: 'the numerator', tag: 'num',
+      msg: part + ' is the numerator. Find the biggest number that divides BOTH ' + part + ' and ' + total + '.' });
+  }
+  if (total !== g) {
+    step2.push({ label: String(total), caption: 'the fleet total', tag: 'den',
+      msg: total + ' is the whole fleet. It is the denominator, not the factor you divide by.' });
+  }
+  const diff = Math.abs(total - part);
+  step2.push({ label: String(diff), caption: 'the difference', tag: 'diff',
+    msg: 'Subtracting does not simplify a fraction. The highest common factor of ' + part + ' and ' + total + ' is ' + g + '.' });
+  for (let k = 2; k < Math.min(total, 40); k++) {
+    const dividesPart = part % k === 0;
+    const dividesTotal = total % k === 0;
+    if (dividesPart !== dividesTotal && k !== g && k !== part && k !== diff) {
+      step2.push({ label: String(k), caption: 'not a common factor', tag: 'one',
+        msg: k + ' does not divide both ' + part + ' and ' + total + '. The highest common factor is ' + g + '.' });
+      break;
+    }
+  }
+  const listText = counts.map((c, i) => c + ' ' + names[i]).join(', ');
+  return {
+    tier: 2,
+    tierName: 'COLLECTIVE FRACTION',
+    kind: 'portion',
+    brief: 'Mixed fleet docked: ' + listText + '. What fraction of the ENTIRE fleet are ' + askName + '?',
+    chips: [
+      counts.join(' + ') + ' = ' + total,
+      'HCF of ' + part + ' and ' + total + ' = ' + g,
+      raw + ' = ' + simple
+    ],
+    visual: { names, counts, kinds, ask, total, part, g, sn, sd },
+    steps: [
+      {
+        kicker: 'STEP 1 OF 3  ·  SUM THE FLEET',
+        prompt: 'How many ships are in the ENTIRE mixed fleet?',
+        success: counts.join(' + ') + ' = ' + total + ' ships in the fleet.',
+        choices: takeChoices(
+          { label: String(total), caption: 'all three wings' },
+          [
+            { label: String(part), caption: 'only ' + askName, tag: 'part',
+              msg: part + ' is only the ' + askName + '. Add every wing: ' + counts.join(' + ') + '.' },
+            { label: String(counts[others[0]]), caption: 'only ' + names[others[0]], tag: 'part',
+              msg: counts[others[0]] + ' is only the ' + names[others[0]] + '. The whole fleet is ' + counts.join(' + ') + '.' },
+            { label: String(counts[others[1]]), caption: 'only ' + names[others[1]], tag: 'part',
+              msg: counts[others[1]] + ' is only the ' + names[others[1]] + '. Add all three wings.' },
+            { label: String(partial), caption: 'two wings only', tag: 'partial',
+              msg: partial + ' leaves a wing out. Add every ship: ' + counts.join(' + ') + ' = ' + total + '.' },
+            { label: String(part * 2), caption: 'doubled one wing', tag: 'pad',
+              msg: 'The fleet total is a sum of the three wings, not a double of one wing.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 2 OF 3  ·  SIMPLIFIER LASER',
+        prompt: 'The unsimplified fraction is ' + raw + '. What is the highest common factor?',
+        success: 'Highest common factor of ' + part + ' and ' + total + ' is ' + g + '.',
+        choices: takeChoices(
+          { label: String(g), caption: 'highest common factor' },
+          step2
+        )
+      },
+      {
+        kicker: 'STEP 3 OF 3  ·  LOCK THE FRACTION',
+        prompt: 'What fraction of the fleet are ' + askName + ', in simplest form?',
+        success: raw + ' ÷ ' + g + ' = ' + simple + ' of the fleet are ' + askName + '.',
+        launch: true,
+        choices: takeChoices(
+          { label: simple, caption: 'simplest form' },
+          [
+            { label: raw, caption: 'not simplified', tag: 'raw',
+              msg: raw + ' is correct but not simplified. Divide the numerator and the denominator by ' + g + ' to get ' + simple + '.' },
+            { label: invert, caption: 'flipped fraction', tag: 'invert',
+              msg: 'The ' + askName + ' are the numerator. ' + simple + ' means ' + sn + ' out of ' + sd + ', not ' + invert + '.' },
+            { label: otherLabel, caption: names[others[0]], tag: 'other',
+              msg: otherLabel + ' belongs to the ' + names[others[0]] + '. ' + askName + ' simplify to ' + simple + '.' },
+            { label: counts[others[1]] + '/' + total, caption: names[others[1]], tag: 'other',
+              msg: 'That fraction is a different wing. ' + askName + ' are ' + part + ' out of ' + total + ', which simplifies to ' + simple + '.' }
+          ]
+        )
+      }
+    ]
+  };
+}
+
+function buildInk(spec) {
+  const names = spec.names, counts = spec.counts, kinds = spec.kinds;
+  const hN = spec.hidden[0], den = spec.hidden[1];
+  const visN = den - hN;
+  const vis = counts[0] + counts[1] + counts[2];
+  const unit = vis / visN;
+  const total = unit * den;
+  const cloaked = unit * hN;
+  const listText = counts.map((c, i) => c + ' ' + names[i]).join(', ');
+  return {
+    tier: 3,
+    tierName: 'CLOAKED NEBULA',
+    kind: 'ink',
+    brief: 'Visible squadrons: ' + listText + '. ' + hN + '/' + den + ' of the entire armada is cloaked in the nebula! How many ships are in the TOTAL armada?',
+    chips: [
+      'visible ' + visN + '/' + den + ' = ' + vis,
+      vis + ' ÷ ' + visN + ' = ' + unit,
+      den + ' × ' + unit + ' = ' + total
+    ],
+    visual: { names, counts, kinds, hN, den, visN, vis, unit, total, cloaked },
+    steps: [
+      {
+        kicker: 'STEP 1 OF 3  ·  NAME THE VISIBLE FRACTION',
+        prompt: 'What fraction of the WHOLE armada is visible?',
+        success: '1 − ' + hN + '/' + den + ' = ' + visN + '/' + den + '. The ' + vis + ' visible ships are ' + visN + ' equal units.',
+        choices: takeChoices(
+          { label: visN + '/' + den, caption: 'visible fraction' },
+          [
+            { label: vis + ' + ' + hN + '/' + den, caption: 'add the cloaked fraction', tag: 'add', alert: true,
+              msg: hN + '/' + den + ' is ' + hN + ' out of ' + den + ' equal squadrons of the whole armada, not ' + hN + '/' + den + ' of a ship! The ' + vis + ' visible ships make up the remaining ' + visN + '/' + den + '!' },
+            { label: hN + '/' + den, caption: 'cloaked fraction', tag: 'hidden',
+              msg: hN + '/' + den + ' is the CLOAKED part. The visible ships are the other ' + visN + '/' + den + '.' },
+            { label: den + '/' + visN, caption: 'flipped fraction', tag: 'invert',
+              msg: 'The denominator is how many equal units are in the WHOLE armada. Visible is ' + visN + '/' + den + ', not ' + den + '/' + visN + '.' },
+            { label: '1/' + den, caption: 'one unit only', tag: 'one',
+              msg: '1/' + den + ' is a single unit. ' + hN + '/' + den + ' is cloaked, so the visible share is ' + visN + '/' + den + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 2 OF 3  ·  ONE UNIT',
+        prompt: visN + ' visible units equal ' + vis + ' ships. How many ships are in 1 unit?',
+        success: vis + ' ÷ ' + visN + ' = ' + unit + ' ships in 1 unit.',
+        choices: takeChoices(
+          { label: String(unit), caption: 'ships in 1 unit' },
+          [
+            { label: String(vis), caption: 'all visible ships', tag: 'vis',
+              msg: vis + ' is the whole visible fleet, and that is ' + visN + ' units — not 1 unit. Divide ' + vis + ' by ' + visN + '.' },
+            { label: String(den), caption: 'units in the armada', tag: 'den',
+              msg: den + ' is how many units the full armada has, not the ships in one unit.' },
+            { label: String(visN), caption: 'visible units', tag: 'count',
+              msg: visN + ' is how many units you can see. Divide ' + vis + ' by ' + visN + ' to find the ships in one unit.' },
+            { label: String(hN), caption: 'cloaked units', tag: 'cloak',
+              msg: 'Divide the ' + vis + ' visible ships by the ' + visN + ' visible units, not by the ' + hN + ' cloaked units.' },
+            { label: String(unit * 2), caption: 'two units', tag: 'pad',
+              msg: 'That is two units. One unit is ' + vis + ' ÷ ' + visN + ' = ' + unit + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 3 OF 3  ·  DECLOAK THE ARMADA',
+        prompt: 'Arm the total, then LAUNCH to decloak the full armada.',
+        success: den + ' × ' + unit + ' = ' + total + ' ships in the full armada.',
+        launch: true,
+        choices: takeChoices(
+          { label: String(total), caption: den + ' × ' + unit },
+          [
+            { label: String(vis), caption: 'visible ships only', tag: 'vis',
+              msg: vis + ' is only the part you can see. Decloak all ' + den + ' units: ' + den + ' × ' + unit + ' = ' + total + '.' },
+            { label: String(vis + hN), caption: 'add the numerator', tag: 'add',
+              msg: 'Do not add the cloaked numerator to the visible ships. Each unit is ' + unit + ' ships, and the armada has ' + den + ' units.' },
+            { label: String(cloaked), caption: 'cloaked ships only', tag: 'cloak',
+              msg: cloaked + ' is only the cloaked ' + hN + ' units. The total armada is ' + den + ' × ' + unit + ' = ' + total + '.' },
+            { label: String(unit * (den - 1)), caption: 'one unit short', tag: 'off',
+              msg: 'That leaves a unit in the nebula. ' + den + ' units × ' + unit + ' ships = ' + total + '.' }
+          ]
+        )
+      }
+    ]
+  };
+}
+
+function buildRem(spec) {
+  const total = spec.total;
+  const aN = spec.a[0], aD = spec.a[1];
+  const bN = spec.b[0], bD = spec.b[1];
+  const alpha = total / aD * aN;
+  const rem = total - alpha;
+  const unit = rem / bD;
+  const beta = unit * bN;
+  const ofTotal = (total % bD === 0) ? (total / bD * bN) : null;
+  const step3 = [
+    { label: String(rem), caption: 'the whole remainder', tag: 'rem',
+      msg: rem + ' is the entire remainder. Patrol Beta takes only ' + bN + '/' + bD + ' of it: ' + beta + ' ships.' },
+    { label: String(alpha), caption: 'Patrol Alpha', tag: 'alpha',
+      msg: alpha + ' ships already left for Patrol Alpha. Beta is ' + bN + '/' + bD + ' of the ' + rem + ' that stayed.' },
+    { label: String(total), caption: 'starting armada', tag: 'whole',
+      msg: total + ' is the starting armada. Beta does not take the ships that already left.' }
+  ];
+  if (ofTotal != null) {
+    step3.unshift({
+      label: String(ofTotal), caption: bN + '/' + bD + ' of ' + total, tag: 'ofTotal', alert: true,
+      msg: 'Patrol Beta takes ' + bN + '/' + bD + ' of the ' + rem + '-ship REMAINDER, not the ' + total + '-ship starting fleet!'
+    });
+  }
+  step3.push({
+    label: String(unit * Math.max(1, bN - 1)), caption: 'one part short', tag: 'off',
+    msg: 'Beta takes ' + bN + ' of the ' + bD + ' equal parts. ' + bN + ' × ' + unit + ' = ' + beta + '.'
+  });
+  return {
+    tier: 3,
+    tierName: 'REMAINDER RECON',
+    kind: 'remainder',
+    brief: 'An armada of ' + total + ' ships sends ' + aN + '/' + aD + ' to Patrol Alpha. Then ' + bN + '/' + bD + ' of the REMAINDER is sent to Patrol Beta. How many ships go to Patrol Beta?',
+    chips: [
+      total + ' − ' + alpha + ' = ' + rem,
+      rem + ' ÷ ' + bD + ' = ' + unit,
+      bN + ' × ' + unit + ' = ' + beta
+    ],
+    visual: { total, aN, aD, bN, bD, alpha, rem, unit, beta },
+    steps: [
+      {
+        kicker: 'STEP 1 OF 3  ·  FIND THE REMAINDER',
+        prompt: 'How many ships are LEFT after Patrol Alpha departs?',
+        success: total + ' − ' + alpha + ' = ' + rem + ' ships remain. Patrol Alpha took ' + aN + '/' + aD + '.',
+        choices: takeChoices(
+          { label: String(rem), caption: 'ships that stayed' },
+          [
+            { label: String(alpha), caption: 'Patrol Alpha', tag: 'alpha',
+              msg: alpha + ' ships already left for Patrol Alpha. The remainder is ' + total + ' − ' + alpha + ' = ' + rem + '.' },
+            { label: String(total), caption: 'starting armada', tag: 'whole',
+              msg: 'The full armada has not all stayed. Subtract Patrol Alpha first: ' + total + ' − ' + alpha + '.' },
+            { label: String(total / aD), caption: 'one equal part', tag: 'unit',
+              msg: (total / aD) + ' is one part of the starting fleet. Alpha takes ' + aN + ' of those parts, so the remainder is ' + rem + '.' },
+            { label: String(alpha + bN), caption: 'added the numerator', tag: 'pad',
+              msg: 'A numerator is not a ship count you add. ' + aN + '/' + aD + ' of ' + total + ' is ' + alpha + ', so ' + rem + ' ships stay.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 2 OF 3  ·  SLICE THE REMAINDER',
+        prompt: 'Split the ' + rem + '-ship remainder into ' + bD + ' equal parts. How many ships in ONE part?',
+        success: rem + ' ÷ ' + bD + ' = ' + unit + ' ships in one part of the remainder.',
+        choices: takeChoices(
+          { label: String(unit), caption: 'one part of the remainder' },
+          [
+            { label: String(total / bD), caption: 'one part of the start', tag: 'ofTotal',
+              msg: 'That divides the original ' + total + ', not the remainder. Split ' + rem + ' by ' + bD + '.' },
+            { label: String(rem), caption: 'the whole remainder', tag: 'rem',
+              msg: rem + ' is the whole remainder. This step wants ONE of the ' + bD + ' equal parts: ' + rem + ' ÷ ' + bD + '.' },
+            { label: String(alpha), caption: 'Patrol Alpha', tag: 'alpha',
+              msg: 'Those ships already left with Patrol Alpha. Stay with the ' + rem + '-ship remainder.' },
+            { label: String(bD), caption: 'the denominator', tag: 'den',
+              msg: bD + ' is how many parts you cut, not how many ships are in a part.' },
+            { label: String(unit * bN), caption: 'all of Beta', tag: 'early',
+              msg: 'That jumps to Patrol Beta’s full take. First find one part: ' + rem + ' ÷ ' + bD + ' = ' + unit + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 3 OF 3  ·  PATROL BETA',
+        prompt: 'Arm how many ships go to Patrol Beta, then LAUNCH.',
+        success: bN + ' × ' + unit + ' = ' + beta + ' ships go to Patrol Beta.',
+        launch: true,
+        choices: takeChoices(
+          { label: String(beta), caption: bN + ' × ' + unit },
+          step3
+        )
+      }
+    ]
+  };
+}
+
+function buildT4(spec) {
+  if (!spec) return null;
+  const gN = spec.gN, gD = spec.gD, ships = spec.ships;
+  const eW = spec.eW, eN = spec.eN, eD = spec.eD;
+  if (gN <= 0 || ships % gN !== 0) return null;
+  const unit = ships / gN;
+  const base = unit * gD;
+  if (eD <= 0 || base % eD !== 0) return null;
+  const fracExtra = base / eD * eN;
+  const extra = fracExtra + (eW - 1) * base;
+  const total = base * eW + fracExtra;
+  if (![unit, base, extra, total, fracExtra].every(Number.isInteger)) return null;
+  const given = gN + '/' + gD;
+  const mixed = mixedLabel(eW, eN, eD);
+  const phrase = expansionPhrase(base, eW, eN, eD);
+  const halfTrap = (eN === 1 && eD === 2) ? base + unit : base + fracExtra / 2;
+  return {
+    tier: 4,
+    tierName: 'OVERDRIVE MIXED',
+    kind: 'overdrive',
+    brief: given + ' of the base fleet is ' + ships + ' ships. Command orders an expansion to ' + mixed + ' of the base fleet! How many ships total?',
+    chips: [
+      ships + ' ÷ ' + gN + ' = ' + unit,
+      gD + ' × ' + unit + ' = ' + base,
+      mixed + ' of ' + base + ' = ' + total
+    ],
+    visual: { gN, gD, ships, unit, base, eW, eN, eD, extra, fracExtra, total, mixed, given },
+    steps: [
+      {
+        kicker: 'STEP 1 OF 3  ·  FIND 1 UNIT',
+        prompt: given + ' of the base fleet is ' + ships + ' ships. How many ships are in 1 unit?',
+        success: ships + ' ÷ ' + gN + ' = ' + unit + ' ships in 1 unit.',
+        choices: takeChoices(
+          { label: String(unit), caption: 'ships in 1 unit' },
+          [
+            { label: String(ships), caption: 'the given ships', tag: 'ships',
+              msg: ships + ' is ' + gN + ' units together. One unit is ' + ships + ' ÷ ' + gN + '.' },
+            { label: String(gD), caption: 'denominator', tag: 'den',
+              msg: gD + ' is how many units make the base fleet, not the ships in one unit.' },
+            { label: String(gN), caption: 'numerator', tag: 'num',
+              msg: gN + ' is how many units you already know. Divide ' + ships + ' by ' + gN + '.' },
+            (ships % gD === 0 ? { label: String(ships / gD), caption: 'divided by the denominator', tag: 'byDen',
+              msg: 'The ' + ships + ' ships cover ' + gN + ' units, not ' + gD + '. Divide by the numerator ' + gN + '.' } : null),
+            { label: String(unit * gD), caption: 'the whole base', tag: 'early',
+              msg: 'That is the whole base fleet. This step only asks for 1 unit: ' + ships + ' ÷ ' + gN + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 2 OF 3  ·  BUILD 1 WHOLE',
+        prompt: 'How many ships are in 1 WHOLE base fleet?',
+        success: gD + ' × ' + unit + ' = ' + base + ' ships in the base fleet.',
+        choices: takeChoices(
+          { label: String(base), caption: gD + ' × ' + unit },
+          [
+            { label: String(unit), caption: 'one unit', tag: 'unit',
+              msg: unit + ' is only 1 unit. The base fleet is ' + gD + ' units: ' + gD + ' × ' + unit + ' = ' + base + '.' },
+            { label: String(ships), caption: 'the given fraction', tag: 'ships',
+              msg: ships + ' is only ' + given + ' of the base, not the whole base.' },
+            { label: String(fracExtra), caption: 'the extra piece', tag: 'extra',
+              msg: fracExtra + ' is part of the later expansion. First build 1 whole: ' + gD + ' × ' + unit + ' = ' + base + '.' },
+            { label: String(unit * (gD - 1)), caption: 'one unit short', tag: 'off',
+              msg: 'A whole base is ' + gD + ' units, not ' + (gD - 1) + '. ' + gD + ' × ' + unit + ' = ' + base + '.' }
+          ]
+        )
+      },
+      {
+        kicker: 'STEP 3 OF 3  ·  OVERDRIVE SCALE',
+        prompt: 'Command wants ' + mixed + ' of the base. Arm the expanded total, then LAUNCH.',
+        success: mixed + ' of ' + base + ' = ' + phrase + ' = ' + total + ' ships.',
+        launch: true,
+        choices: takeChoices(
+          { label: String(total), caption: phrase },
+          [
+            { label: String(base), caption: '1 whole base fleet', tag: 'base', alert: true,
+              msg: base + ' is 1 WHOLE base fleet! Command ordered ' + mixed + ' of the fleet (' + phrase + ')!' },
+            { label: String(fracExtra), caption: 'only the extra fraction', tag: 'extra',
+              msg: fracExtra + ' is only the expansion piece. Add it to the ' + base + '-ship base fleet.' },
+            { label: String(ships), caption: 'the original fraction', tag: 'ships',
+              msg: ships + ' is the original ' + given + ', not the expanded ' + mixed + ' fleet.' },
+            { label: String(extra), caption: 'overflow only', tag: 'overflow',
+              msg: extra + ' is only what warps into the overflow deck. The expanded fleet is the base plus that overflow: ' + total + '.' },
+            { label: String(Number.isInteger(halfTrap) ? halfTrap : total + unit), caption: 'wrong mixed split', tag: 'off',
+              msg: mixed + ' of ' + base + ' is ' + phrase + ' = ' + total + '.' }
+          ]
+        )
+      }
+    ]
+  };
+}
+
+function randomT1() {
+  const dens = [4, 5, 6, 7, 8, 9];
+  const den = dens[irand(0, dens.length - 1)];
+  const opts = [];
+  for (let n = 2; n < den; n++) if (gcd(n, den) === 1) opts.push(n);
+  if (!opts.length) return null;
+  const num = opts[irand(0, opts.length - 1)];
+  const unit = irand(4, 9);
+  return { n: unit * den, num, den };
+}
+function randomT4() {
+  const givens = [[2, 3], [3, 4], [3, 5], [2, 5], [4, 5], [5, 6], [3, 8], [5, 8], [2, 7], [4, 7], [5, 9], [2, 9]];
+  const exps = [[1, 1, 2], [1, 1, 3], [1, 2, 3], [1, 1, 4], [1, 3, 4], [1, 2, 5], [1, 3, 5], [1, 1, 6], [2, 1, 2], [2, 1, 3], [2, 1, 4], [1, 3, 8]];
+  const g = givens[irand(0, givens.length - 1)];
+  const e = exps[irand(0, exps.length - 1)];
+  const unit = irand(4, 12);
+  const base = unit * g[1];
+  if (base % e[2] !== 0 || base < 24 || base > 120) return null;
+  return { gN: g[0], gD: g[1], ships: unit * g[0], eW: e[0], eN: e[1], eD: e[2] };
+}
+
+function assertMission(m) {
+  const errs = [];
+  if (!m || !m.steps || m.steps.length !== 3) {
+    errs.push((m && m.kind) + ' step count');
+    return errs;
+  }
+  for (let i = 0; i < 3; i++) {
+    const s = m.steps[i];
+    if (!s.choices || s.choices.length !== 4) errs.push(m.kind + ' s' + i + ' choices ' + (s.choices && s.choices.length));
+    const oks = (s.choices || []).filter(c => c.tag === 'ok');
+    if (oks.length !== 1) errs.push(m.kind + ' s' + i + ' oks ' + oks.length);
+    const labels = (s.choices || []).map(c => c.label);
+    if (new Set(labels).size !== labels.length) errs.push(m.kind + ' s' + i + ' dup ' + labels.join(' | '));
+    (s.choices || []).forEach(c => {
+      if (c.tag !== 'ok' && !c.msg) errs.push(m.kind + ' s' + i + ' silent ' + c.label);
+    });
+    if (!s.success || !s.prompt) errs.push(m.kind + ' s' + i + ' copy');
+  }
+  if (m.steps[2] && !m.steps[2].launch) errs.push(m.kind + ' missing launch');
+  return errs;
+}
+
+function validateBanks() {
+  const errs = [];
+  BANK.t1.forEach(s => {
+    if (s.n % s.den !== 0) errs.push('t1 div ' + s.n);
+    const unit = s.n / s.den;
+    if (gcd(s.num, s.den) !== 1) errs.push('t1 gcd ' + s.num + '/' + s.den);
+    errs.push(...assertMission(buildT1(s)));
+    if (unit * s.num <= 0) errs.push('t1 ans');
+  });
+  BANK.t2.forEach(s => {
+    const total = s.counts[0] + s.counts[1] + s.counts[2];
+    if (gcd(s.counts[s.ask], total) <= 1) errs.push('t2 hcf ' + total);
+    errs.push(...assertMission(buildT2(s)));
+  });
+  BANK.ink.forEach(s => {
+    const vis = s.counts[0] + s.counts[1] + s.counts[2];
+    const visN = s.hidden[1] - s.hidden[0];
+    if (vis % visN !== 0) errs.push('ink ' + vis + '/' + visN);
+    errs.push(...assertMission(buildInk(s)));
+  });
+  BANK.rem.forEach(s => {
+    if (s.total % s.a[1] !== 0) errs.push('rem a ' + s.total);
+    const alpha = s.total / s.a[1] * s.a[0];
+    const rem = s.total - alpha;
+    if (rem % s.b[1] !== 0) errs.push('rem b ' + rem);
+    errs.push(...assertMission(buildRem(s)));
+  });
+  BANK.t4.forEach(s => {
+    if (s.ships % s.gN !== 0) errs.push('t4 unit');
+    const base = (s.ships / s.gN) * s.gD;
+    if (base % s.eD !== 0) errs.push('t4 extra ' + base);
+    const m = buildT4(s);
+    errs.push(...assertMission(m));
+    if (!m || m.visual.total !== m.visual.base * s.eW + m.visual.fracExtra) errs.push('t4 total');
+  });
+  let genOk = 0;
+  for (let i = 0; i < 24; i++) {
+    const a = buildT1(randomT1());
+    const b = buildT4(randomT4());
+    if (a && assertMission(a).length === 0) genOk++;
+    if (b && assertMission(b).length === 0) genOk++;
+  }
+  if (genOk < 20) errs.push('generator thin ' + genOk);
+  return errs;
+}
+
+function makeFromScript(pair) {
+  const kind = pair[0], idx = pair[1];
+  if (kind === 't1') return buildT1(BANK.t1[idx]);
+  if (kind === 't2') return buildT2(BANK.t2[idx]);
+  if (kind === 'ink') return buildInk(BANK.ink[idx]);
+  if (kind === 'rem') return buildRem(BANK.rem[idx]);
+  return buildT4(BANK.t4[idx]);
+}
+
+function safeGenerated(kind) {
+  for (let i = 0; i < 30; i++) {
+    const m = kind === 't1' ? buildT1(randomT1()) : buildT4(randomT4());
+    if (m && assertMission(m).length === 0) return m;
+  }
+  return null;
+}
+
+/* ---------- State ---------- */
+function loadBest() {
+  try { return +(localStorage.getItem(STORE_KEY) || 0) || 0; }
+  catch (err) { return 0; }
+}
+function saveBest(score) {
+  if (score > G.best) {
+    G.best = score;
+    try { localStorage.setItem(STORE_KEY, String(G.best)); } catch (err) { /* private mode */ }
+  }
+}
+function makePlayer(id) {
+  return {
+    id,
+    name: id === 0 ? 'RED WING' : 'BLUE WING',
+    short: id === 0 ? 'P1' : 'P2',
+    color: id === 0 ? COL.p1 : COL.p2,
+    x: 140 + id * 260,
+    y: 610,
+    focus: id,
+    shields: 3,
+    score: 0,
+    stars: 0,
+    combo: 0,
+    stun: 0,
+    armed: -1,
+    gpPrev: { l: false, r: false, u: false, d: false, a: false, b: false, start: false }
+  };
+}
+
+const bootErrors = validateBanks();
+const players = [makePlayer(0), makePlayer(1)];
+const G = {
+  mode: 'title',
+  playMode: 'solo',
+  titleFocus: 0,
+  run: 0,
+  sortie: [],
+  missionIndex: 0,
+  mission: null,
+  step: 0,
+  phase: 0,
+  slice: 0,
+  mark: 0,
+  finale: 0,
+  feedback: '',
+  feedbackTitle: '',
+  feedbackGood: false,
+  feedbackT: 0,
+  lockT: 0,
+  strobe: 0,
+  shake: 0,
+  launchT: 0,
+  endT: 0,
+  ending: '',
+  paused: false,
+  t: 0,
+  best: loadBest(),
+  padNote: 'Plug in 8BitDo pads any time · D-pad or stick · A confirms',
+  spots: [],
+  flyers: [],
+  floaters: [],
+  bootErrors,
+  fatal: ''
+};
+
+for (let i = 0; i < 90; i++) {
+  stars.push({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    z: Math.random(),
+    s: rand(0.6, 1.8)
+  });
+}
+
+/* ---------- Flow ---------- */
+function activeCount() { return G.playMode === 'versus' ? 2 : 1; }
+function topScore() {
+  let s = 0;
+  for (let i = 0; i < activeCount(); i++) s = Math.max(s, players[i].score);
+  return s;
+}
+function livingCount() {
+  let n = 0;
+  for (let i = 0; i < activeCount(); i++) if (players[i].shields > 0) n++;
+  return n;
+}
+function resetPlayers() {
+  for (let i = 0; i < 2; i++) {
+    const p = players[i];
+    p.shields = 3;
+    p.score = 0;
+    p.stars = 0;
+    p.combo = 0;
+    p.stun = 0;
+    p.armed = -1;
+    p.focus = i % 4;
+  }
+}
+function beginGame(mode) {
+  audio.ensure();
+  G.playMode = mode;
+  G.run = G.run || 0;
+  resetPlayers();
+  G.sortie = buildSortie(G.run);
+  G.missionIndex = 0;
+  G.ending = '';
+  G.paused = false;
+  loadMission(0);
+  speak(mode === 'versus' ? 'Versus duel. First correct lock scores the step.' : 'Solo commander. Slice the fleet.');
+}
+function buildSortie(run) {
+  const start = (run * 4) % SCRIPT.length;
+  const list = [];
+  for (let i = 0; i < 8; i++) list.push(makeFromScript(SCRIPT[(start + i) % SCRIPT.length]));
+  if (run > 0) {
+    const g1 = safeGenerated('t1');
+    const g4 = safeGenerated('t4');
+    if (g1) list[1] = g1;
+    if (g4) list[5] = g4;
+  }
+  return list;
+}
+function loadMission(index) {
+  G.missionIndex = index;
+  G.mission = G.sortie[index];
+  G.step = 0;
+  G.phase = 0;
+  G.slice = 0;
+  G.mark = 0;
+  G.finale = 0;
+  G.mode = 'play';
+  G.lockT = 0.28;
+  G.launchT = 0;
+  G.flyers = [];
+  G.feedbackT = 0;
+  for (let i = 0; i < activeCount(); i++) {
+    players[i].armed = -1;
+    players[i].stun = 0;
+    const spot = cardSpot(i % 4);
+    players[i].focus = i % 4;
+    players[i].x = spot.x + spot.w / 2;
+    players[i].y = spot.y + spot.h / 2;
+  }
+  const m = G.mission;
+  speak('Mission ' + (index + 1) + '. ' + m.brief + ' ' + m.steps[0].prompt);
+}
+function cardSpot(i) {
+  return {
+    id: 'card',
+    index: i,
+    x: UI.cardX + i * (UI.cardW + UI.cardGap),
+    y: UI.cardY,
+    w: UI.cardW,
+    h: UI.cardH
+  };
+}
+function layoutSpots() {
+  if (G.mode === 'title') {
+    G.spots = [
+      { id: 'solo', x: 148, y: 300, w: 460, h: 214 },
+      { id: 'versus', x: 672, y: 300, w: 460, h: 214 }
+    ];
+    return;
+  }
+  if (G.mode === 'victory' || G.mode === 'gameover') {
+    G.spots = [
+      { id: 'again', x: 330, y: 500, w: 290, h: 70 },
+      { id: 'title', x: 660, y: 500, w: 290, h: 70 }
+    ];
+    return;
+  }
+  if (G.paused) {
+    G.spots = [
+      { id: 'resume', x: 390, y: 318, w: 500, h: 68 },
+      { id: 'quit', x: 390, y: 406, w: 500, h: 68 }
+    ];
+    return;
+  }
+  const spots = [];
+  for (let i = 0; i < 4; i++) spots.push(cardSpot(i));
+  spots.push({ id: 'launch', index: -1, x: UI.launch.x, y: UI.launch.y, w: UI.launch.w, h: UI.launch.h });
+  G.spots = spots;
+}
+function setFeedback(title, msg, good) {
+  G.feedbackTitle = title;
+  G.feedback = msg;
+  G.feedbackGood = good;
+  G.feedbackT = good ? 1.7 : 3.2;
+  speak(title + '. ' + msg);
+}
+function award(pi) {
+  const p = players[pi];
+  p.combo = Math.min(6, p.combo + 1);
+  let pts = BASE_PTS[G.step] * p.combo;
+  let speed = 0;
+  if (G.playMode === 'versus') speed = 80;
+  pts += speed;
+  p.score += pts;
+  if (G.step === 2) p.stars += 1;
+  G.lastAward = { base: BASE_PTS[G.step], combo: p.combo, speed: speed, total: pts, name: p.name };
+  const label = '+' + pts + ' FCP' + (p.combo > 1 ? '  ×' + p.combo : '') + (speed ? '  SPEED +' + speed : '');
+  G.floaters.push({ x: p.x, y: p.y - 24, text: label, life: 1.3, color: p.color });
+  return pts;
+}
+function finishSortieSoon() {
+  G.sortieDone = true;
+}
+function hullCheck() {
+  if (livingCount() <= 0) {
+    G.ending = 'gameover';
+    G.endT = 2.5;
+    saveBest(topScore());
+  }
+}
+function submit(pi, ci) {
+  if (G.mode !== 'play' || G.paused || G.lockT > 0) return;
+  const p = players[pi];
+  if (!p || p.stun > 0 || p.shields <= 0) return;
+  const step = G.mission.steps[G.step];
+  const choice = step.choices[ci];
+  if (!choice) return;
+  if (choice.tag === 'ok') {
+    const pts = award(pi);
+    G.phase = G.step + 1;
+    if (G.step === 0) audio.slice();
+    else audio.ok();
+    setFeedback((G.playMode === 'versus' ? p.name + ' LOCKED' : 'VECTOR LOCKED') + '   +' + pts + ' FCP', step.success, true);
+    for (let i = 0; i < activeCount(); i++) players[i].armed = -1;
+    if (G.step >= 2) {
+      audio.roar();
+      audio.fanfare();
+      spawnFlyby();
+      G.mode = 'launch';
+      G.launchT = 2.15;
+      G.lockT = 2.15;
+      if (G.missionIndex + 1 >= G.sortie.length) finishSortieSoon();
+    } else {
+      G.step += 1;
+      G.lockT = 0.32;
+    }
+    return;
+  }
+  audio.buzz();
+  p.combo = 0;
+  p.shields -= 1;
+  p.stun = G.playMode === 'versus' ? 1.5 : 0.45;
+  p.armed = -1;
+  G.strobe = 1;
+  G.shake = 7;
+  const title = choice.alert ? 'TACTICAL WARNING' : (G.playMode === 'versus' ? p.name + ' STUNNED' : 'HANGAR WARNING');
+  let msg = choice.msg;
+  if (p.shields <= 0 && G.playMode === 'versus' && livingCount() > 0) {
+    msg += ' Hull breach — the other wing has the deck.';
+  }
+  setFeedback(title, msg, false);
+  hullCheck();
+}
+function activateSpot(pi, spot) {
+  if (!spot) return;
+  const p = players[pi];
+  if (G.mode === 'title') {
+    if (spot.id === 'solo' || spot.id === 'versus') beginGame(spot.id);
+    return;
+  }
+  if (G.mode === 'victory' || G.mode === 'gameover') {
+    if (spot.id === 'again') {
+      G.run += 1;
+      beginGame(G.playMode);
+    } else if (spot.id === 'title') {
+      saveBest(topScore());
+      G.mode = 'title';
+      G.paused = false;
+    }
+    return;
+  }
+  if (G.paused) {
+    if (spot.id === 'resume') G.paused = false;
+    if (spot.id === 'quit') {
+      saveBest(topScore());
+      G.paused = false;
+      G.mode = 'title';
+    }
+    return;
+  }
+  if (G.mode !== 'play') return;
+  if (p.stun > 0 || p.shields <= 0) return;
+  if (spot.id === 'launch') {
+    const step = G.mission.steps[G.step];
+    if (!step.launch) {
+      audio.buzz();
+      setFeedback('THRUSTERS COLD', 'Lock this step on a tactic card. LAUNCH SQUADRON arms on the final step.', false);
+      G.feedbackT = 1.6;
+      return;
+    }
+    if (p.armed < 0) {
+      audio.buzz();
+      setFeedback('ARM A CARD', 'Choose the final count on a tactic card, then hit LAUNCH SQUADRON.', false);
+      G.feedbackT = 1.5;
+      return;
+    }
+    submit(pi, p.armed);
+    return;
+  }
+  if (spot.id === 'card') {
+    const step = G.mission.steps[G.step];
+    if (step.launch) {
+      p.armed = spot.index;
+      audio.lock();
+      setFeedback('CARD ARMED', 'Hit LAUNCH SQUADRON to fire ' + step.choices[spot.index].label + '.', true);
+      G.feedbackGood = 'neutral';
+      G.feedbackT = 1.25;
+      if (!pointer.using) focusLaunch(p);
+      return;
+    }
+    submit(pi, spot.index);
+  }
+}
+function focusLaunch(p) {
+  const idx = G.spots.findIndex(s => s.id === 'launch');
+  if (idx < 0) return;
+  const s = G.spots[idx];
+  p.focus = idx;
+  p.x = s.x + s.w / 2;
+  p.y = s.y + s.h / 2;
+}
+function spotUnder(x, y) {
+  for (let i = 0; i < G.spots.length; i++) {
+    const s = G.spots[i];
+    if (x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) return { spot: s, index: i };
+  }
+  return null;
+}
+function nearestSpot(x, y, maxDist) {
+  let best = null, bestD = maxDist;
+  for (let i = 0; i < G.spots.length; i++) {
+    const s = G.spots[i];
+    const d = Math.hypot(x - (s.x + s.w / 2), y - (s.y + s.h / 2));
+    if (d < bestD) { bestD = d; best = { spot: s, index: i }; }
+  }
+  return best;
+}
+function nudgeFocus(p, dx, dy) {
+  const cur = G.spots[p.focus] || G.spots[0];
+  if (!cur) return;
+  const cx = cur.x + cur.w / 2, cy = cur.y + cur.h / 2;
+  let best = -1, bestScore = 1e9;
+  for (let i = 0; i < G.spots.length; i++) {
+    if (i === p.focus) continue;
+    const s = G.spots[i];
+    const sx = s.x + s.w / 2 - cx;
+    const sy = s.y + s.h / 2 - cy;
+    if (dx && Math.sign(sx) !== dx) continue;
+    if (dy && Math.sign(sy) !== dy) continue;
+    const primary = dx ? Math.abs(sx) : Math.abs(sy);
+    const secondary = dx ? Math.abs(sy) : Math.abs(sx);
+    if (primary < 6) continue;
+    const score = primary + secondary * 1.8;
+    if (score < bestScore) { bestScore = score; best = i; }
+  }
+  if (best >= 0) {
+    p.focus = best;
+    p.x = G.spots[best].x + G.spots[best].w / 2;
+    p.y = G.spots[best].y + G.spots[best].h / 2;
+    audio.select();
+  }
+}
+function confirmPlayer(pi) {
+  const p = players[pi];
+  const under = spotUnder(p.x, p.y) || nearestSpot(p.x, p.y, 86);
+  if (!under) return;
+  p.focus = under.index;
+  activateSpot(pi, under.spot);
+}
+function spawnFlyby() {
+  G.flyers = [];
+  const kinds = ['fighter', 'scout', 'cruiser', 'fighter', 'scout', 'cruiser', 'fighter'];
+  for (let i = 0; i < kinds.length; i++) {
+    G.flyers.push({
+      x: -90 - i * 78,
+      y: 168 + (i % 2) * 18,
+      v: 760,
+      kind: kinds[i],
+      scale: 1.15
+    });
+  }
+}
+function openPause() {
+  if ((G.mode !== 'play' && G.mode !== 'launch') || G.paused) return;
+  G.paused = true;
+  G.spots = [
+    { id: 'resume', x: 390, y: 318, w: 500, h: 68 },
+    { id: 'quit', x: 390, y: 406, w: 500, h: 68 }
+  ];
+  for (let i = 0; i < activeCount(); i++) {
+    players[i].focus = 0;
+    players[i].x = G.spots[0].x + G.spots[0].w / 2;
+    players[i].y = G.spots[0].y + 34;
+  }
+}
+function shipRect() {
+  const h = UI.hangar;
+  return { x: h.x + 18, y: h.y + 30, w: h.w - 36, h: h.h - 78 };
+}
+
+/* ---------- Input ---------- */
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  const cssW = Math.max(1, Math.floor(W * scale));
+  const cssH = Math.max(1, Math.floor(H * scale));
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function syncPointer(e) {
+  const rect = canvas.getBoundingClientRect();
+  pointer.x = ((e.clientX - rect.left) / rect.width) * W;
+  pointer.y = ((e.clientY - rect.top) / rect.height) * H;
+  pointer.using = true;
+}
+canvas.addEventListener('pointerdown', (e) => {
+  audio.ensure();
+  canvas.focus();
+  syncPointer(e);
+  pointer.down = true;
+  players[0].x = pointer.x;
+  players[0].y = pointer.y;
+  const under = spotUnder(pointer.x, pointer.y);
+  if (under) {
+    players[0].focus = under.index;
+    activateSpot(0, under.spot);
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  syncPointer(e);
+  if (G.mode === 'title') {
+    const under = spotUnder(pointer.x, pointer.y);
+    if (under) G.titleFocus = under.index;
+    return;
+  }
+  players[0].x = pointer.x;
+  players[0].y = pointer.y;
+  const under = spotUnder(pointer.x, pointer.y);
+  if (under) players[0].focus = under.index;
+});
+canvas.addEventListener('pointerup', () => { pointer.down = false; });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('resize', resize);
+
+window.addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  pressed.add(k);
+  if (k === 'arrowleft' || k === 'arrowright' || k === 'arrowup' || k === 'arrowdown' || k === ' ') e.preventDefault();
+  audio.ensure();
+  pointer.using = false;
+  if (k === 'm') {
+    const muted = audio.toggle();
+    syncMute(muted);
+  }
+  if (k === 'escape' || k === 'p') {
+    if (G.paused) G.paused = false;
+    else openPause();
+  }
+});
+window.addEventListener('keyup', (e) => pressed.delete(e.key.toLowerCase()));
+
+function syncMute(muted) {
+  muteBtn.textContent = muted ? 'MUTED' : 'SOUND ON';
+  muteBtn.setAttribute('aria-pressed', muted ? 'true' : 'false');
+}
+muteBtn.addEventListener('click', () => {
+  const muted = audio.toggle();
+  syncMute(muted);
+});
+
+function padPressed(gp, i) {
+  return !!(gp.buttons && gp.buttons[i] && gp.buttons[i].pressed);
+}
+function readPad(gp) {
+  const axes = gp.axes || [];
+  const ax = axes[0] || 0;
+  const ay = axes[1] || 0;
+  let hatL = false, hatR = false, hatU = false, hatD = false;
+  if (axes.length > 9) {
+    const hat = axes[9];
+    if (hatIdle[gp.index] == null) hatIdle[gp.index] = hat;
+    if (hat != null && Math.abs(hat - hatIdle[gp.index]) > 0.22) {
+      if (hat < -0.7 || hat > 0.9) hatU = true;
+      else if (hat < -0.3) { hatU = true; hatR = true; }
+      else if (hat < 0.1) hatR = true;
+      else if (hat < 0.4) { hatR = true; hatD = true; }
+      else if (hat < 0.7) hatD = true;
+      else { hatL = true; hatD = true; }
+    }
+  }
+  return {
+    left: padPressed(gp, PAD.LEFT) || hatL,
+    right: padPressed(gp, PAD.RIGHT) || hatR,
+    up: padPressed(gp, PAD.UP) || hatU,
+    down: padPressed(gp, PAD.DOWN) || hatD,
+    ax: Math.abs(ax) > AXIS_DEAD ? ax : 0,
+    ay: Math.abs(ay) > AXIS_DEAD ? ay : 0,
+    a: padPressed(gp, PAD.A),
+    b: padPressed(gp, PAD.B),
+    start: padPressed(gp, PAD.START) || padPressed(gp, PAD.START_ALT)
+  };
+}
+function listPads() {
+  try { return navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch (err) { return []; }
+}
+function pollGamepads(dt) {
+  const pads = listPads();
+  const liveIdx = [];
+  for (let i = 0; i < pads.length; i++) if (pads[i]) liveIdx.push(i);
+  if (G.mode === 'title') {
+    const gp = liveIdx.length ? pads[liveIdx[0]] : null;
+    if (!gp) return;
+    const d = readPad(gp);
+    const prev = players[0].gpPrev;
+    if ((d.left && !prev.l) || (d.up && !prev.u)) {
+      G.titleFocus = (G.titleFocus + 1) % 2;
+      audio.select();
+    } else if ((d.right && !prev.r) || (d.down && !prev.d)) {
+      G.titleFocus = (G.titleFocus + 1) % 2;
+      audio.select();
+    }
+    if ((d.a && !prev.a) || (d.start && !prev.start)) {
+      beginGame(G.titleFocus === 0 ? 'solo' : 'versus');
+    }
+    players[0].gpPrev = { l: d.left, r: d.right, u: d.up, d: d.down, a: d.a, b: d.b, start: d.start };
+    return;
+  }
+  const count = activeCount();
+  for (let i = 0; i < count; i++) {
+    if (liveIdx[i] == null) continue;
+    const gp = pads[liveIdx[i]];
+    const p = players[i];
+    const d = readPad(gp);
+    const prev = p.gpPrev;
+    if (d.ax || d.ay) {
+      pointer.using = false;
+      p.x = clamp(p.x + d.ax * 720 * dt, 16, W - 16);
+      p.y = clamp(p.y + d.ay * 720 * dt, 16, H - 16);
+      const under = spotUnder(p.x, p.y);
+      if (under) p.focus = under.index;
+    }
+    if (d.left && !prev.l) nudgeFocus(p, -1, 0);
+    else if (d.right && !prev.r) nudgeFocus(p, 1, 0);
+    else if (d.up && !prev.u) nudgeFocus(p, 0, -1);
+    else if (d.down && !prev.d) nudgeFocus(p, 0, 1);
+    if (d.a && !prev.a) confirmPlayer(i);
+    if ((d.start && !prev.start) || (d.b && !prev.b && (G.mode === 'victory' || G.mode === 'gameover'))) {
+      if (G.mode === 'play' || G.mode === 'launch') {
+        if (G.paused) G.paused = false;
+        else openPause();
+      }
+    }
+    p.gpPrev = { l: d.left, r: d.right, u: d.up, d: d.down, a: d.a, b: d.b, start: d.start };
+  }
+}
+function pollKeys() {
+  if (G.mode === 'title') {
+    if (pressed.has('a') || pressed.has('arrowleft')) {
+      G.titleFocus = (G.titleFocus + 1) % 2;
+      audio.select();
+    } else if (pressed.has('d') || pressed.has('arrowright')) {
+      G.titleFocus = (G.titleFocus + 1) % 2;
+      audio.select();
+    }
+    if (pressed.has('enter') || pressed.has(' ') || pressed.has('f')) {
+      beginGame(G.titleFocus === 0 ? 'solo' : 'versus');
+    }
+    return;
+  }
+  const schemes = G.playMode === 'versus'
+    ? [
+        { left: 'a', right: 'd', up: 'w', down: 's', fire: ['f', ' '] },
+        { left: 'arrowleft', right: 'arrowright', up: 'arrowup', down: 'arrowdown', fire: ['enter'] }
+      ]
+    : [
+        { left: null, right: null, up: null, down: null,
+          anyLeft: ['a', 'arrowleft'], anyRight: ['d', 'arrowright'],
+          anyUp: ['w', 'arrowup'], anyDown: ['s', 'arrowdown'],
+          fire: ['f', ' ', 'enter'] }
+      ];
+  const count = G.playMode === 'versus' ? 2 : 1;
+  for (let i = 0; i < count; i++) {
+    const map = schemes[i];
+    const p = players[i];
+    const hit = (k) => k && pressed.has(k);
+    const hitAny = (list) => list && list.some(k => pressed.has(k));
+    if (map.anyLeft) {
+      if (hitAny(map.anyLeft)) nudgeFocus(p, -1, 0);
+      else if (hitAny(map.anyRight)) nudgeFocus(p, 1, 0);
+      else if (hitAny(map.anyUp)) nudgeFocus(p, 0, -1);
+      else if (hitAny(map.anyDown)) nudgeFocus(p, 0, 1);
+    } else {
+      if (hit(map.left)) nudgeFocus(p, -1, 0);
+      else if (hit(map.right)) nudgeFocus(p, 1, 0);
+      else if (hit(map.up)) nudgeFocus(p, 0, -1);
+      else if (hit(map.down)) nudgeFocus(p, 0, 1);
+    }
+    if (hitAny(map.fire)) confirmPlayer(i);
+  }
+}
+
+window.addEventListener('gamepadconnected', (e) => {
+  audio.ensure();
+  G.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+  speak(G.padNote);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  G.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+});
+
+/* ---------- Update ---------- */
+function update(dt) {
+  G.t += dt;
+  layoutSpots();
+  for (let i = 0; i < activeCount(); i++) {
+    if (players[i].focus >= G.spots.length) players[i].focus = 0;
+  }
+  pollKeys();
+  pollGamepads(dt);
+  pressed.clear();
+
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    s.y += (12 + s.z * 36) * dt;
+    if (s.y > H) { s.y = -4; s.x = Math.random() * W; }
+  }
+  if (G.paused) return;
+
+  G.feedbackT = Math.max(0, G.feedbackT - dt);
+  G.lockT = Math.max(0, G.lockT - dt);
+  G.strobe = Math.max(0, G.strobe - dt * 1.4);
+  G.shake = Math.max(0, G.shake - dt * 28);
+  for (let i = 0; i < activeCount(); i++) players[i].stun = Math.max(0, players[i].stun - dt);
+
+  if (G.mission && (G.mode === 'play' || G.mode === 'launch')) {
+    const ph = G.phase;
+    G.slice = moveTo(G.slice, ph >= 1 ? 1 : 0, dt * 2.4);
+    G.mark = moveTo(G.mark, ph >= 2 ? 1 : 0, dt * 2.4);
+    G.finale = moveTo(G.finale, ph >= 3 ? 1 : 0, dt * 2.2);
+  }
+  if (G.mode === 'launch') {
+    G.launchT -= dt;
+    if (G.launchT <= 0 && G.ending !== 'gameover') {
+      if (G.sortieDone || G.missionIndex + 1 >= G.sortie.length) {
+        G.mode = 'victory';
+        G.sortieDone = false;
+        saveBest(topScore());
+        speak('Sortie complete.');
+      } else {
+        loadMission(G.missionIndex + 1);
+      }
+    }
+  }
+  layoutSpots();
+  if (G.ending) {
+    G.endT -= dt;
+    if (G.endT <= 0) {
+      G.mode = G.ending;
+      G.ending = '';
+      if (G.mode === 'gameover') speak('Carrier shields are down.');
+    }
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.life -= dt;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+  for (let i = 0; i < G.flyers.length; i++) {
+    const f = G.flyers[i];
+    f.x += f.v * dt;
+    if (sparks.length < 160 && Math.random() < 0.7) {
+      sparks.push({
+        x: f.x - 18, y: f.y + 8,
+        vx: -rand(80, 240), vy: rand(-36, 36),
+        life: rand(0.18, 0.45),
+        color: Math.random() < 0.5 ? '#ffb15a' : '#7ee7ff',
+        size: rand(1.4, 2.6)
+      });
+    }
+  }
+  for (let i = G.floaters.length - 1; i >= 0; i--) {
+    G.floaters[i].y -= 28 * dt;
+    G.floaters[i].life -= dt;
+    if (G.floaters[i].life <= 0) G.floaters.splice(i, 1);
+  }
+}
+
+/* ---------- Draw helpers ---------- */
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function wrapText(text, maxW) {
+  const words = String(text).split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (ctx.measureText(next).width > maxW && cur) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function drawShip(x, y, kind, scale, angle) {
+  const color = COL[kind] || COL.fighter;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle || 0);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (kind === 'scout') {
+    ctx.moveTo(0, -12);
+    ctx.lineTo(7, 9);
+    ctx.lineTo(0, 4);
+    ctx.lineTo(-7, 9);
+  } else if (kind === 'cruiser') {
+    ctx.moveTo(0, -14);
+    ctx.lineTo(5, -6);
+    ctx.lineTo(5, 8);
+    ctx.lineTo(0, 12);
+    ctx.lineTo(-5, 8);
+    ctx.lineTo(-5, -6);
+  } else {
+    ctx.moveTo(0, -13);
+    ctx.lineTo(11, 5);
+    ctx.lineTo(4, 3);
+    ctx.lineTo(3, 11);
+    ctx.lineTo(0, 6);
+    ctx.lineTo(-3, 11);
+    ctx.lineTo(-4, 3);
+    ctx.lineTo(-11, 5);
+  }
+  ctx.closePath();
+  ctx.fill();
+  if (kind === 'cruiser') {
+    ctx.fillRect(-12, -2, 6, 3);
+    ctx.fillRect(6, -2, 6, 3);
+  }
+  ctx.fillStyle = '#ffb15a';
+  ctx.fillRect(-1.6, 8, 3.2, 4);
+  ctx.restore();
+}
+function drawBadge(x, y, text, color) {
+  ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+  const label = '[ ' + text + ' ]';
+  const w = ctx.measureText(label).width + 12;
+  roundRect(x - w / 2, y - 11, w, 22, 7);
+  ctx.fillStyle = 'rgba(5, 10, 22, 0.88)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y + 1);
+}
+function drawStars() {
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    ctx.globalAlpha = 0.25 + s.z * 0.7;
+    ctx.fillStyle = s.z > 0.8 ? '#fff6d0' : '#d5e9ff';
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+  ctx.globalAlpha = 1;
+}
+function hangarChrome(label, accent) {
+  const h = UI.hangar;
+  roundRect(h.x, h.y, h.w, h.h, 16);
+  ctx.fillStyle = 'rgba(8, 14, 28, 0.9)';
+  ctx.fill();
+  ctx.save();
+  roundRect(h.x, h.y, h.w, h.h, 16);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(90, 150, 190, 0.08)';
+  ctx.lineWidth = 1;
+  for (let x = h.x - 20; x < h.x + h.w; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, h.y);
+    ctx.lineTo(x - 50, h.y + h.h);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = accent || 'rgba(80, 190, 220, 0.45)';
+  roundRect(h.x, h.y, h.w, h.h, 16);
+  ctx.stroke();
+  ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = accent || COL.cyan;
+  ctx.fillText(label, h.x + 16, h.y + 16);
+  if (G.strobe > 0) {
+    ctx.fillStyle = 'rgba(255, 40, 70,' + (0.18 * G.strobe) + ')';
+    roundRect(h.x, h.y, h.w, h.h, 16);
+    ctx.fill();
+    const blink = Math.sin(G.t * 28) > 0;
+    ctx.fillStyle = blink ? '#ff3355' : '#5a1020';
+    ctx.beginPath();
+    ctx.arc(h.x + 18, h.y + h.h - 18, 5, 0, Math.PI * 2);
+    ctx.arc(h.x + h.w - 18, h.y + h.h - 18, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+function drawTray() {
+  const h = UI.hangar;
+  const y = h.y + h.h - 36;
+  const m = G.mission;
+  if (!m) return;
+  const shown = m.chips.slice(0, G.phase);
+  ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = shown.length ? COL.gold : COL.muted;
+  const text = shown.length ? shown.join('    →    ') : 'Working line locks in after each correct step';
+  ctx.fillText(text, h.x + 16, y + 16);
+}
+function drawLooseGrid(count, rect, kind) {
+  const cols = Math.max(4, Math.ceil(Math.sqrt(count * (rect.w / Math.max(1, rect.h)))));
+  const rows = Math.ceil(count / cols);
+  const cw = rect.w / cols;
+  const rh = rect.h / rows;
+  const scale = clamp(Math.min(cw, rh) / 34, 0.42, 1.15);
+  for (let i = 0; i < count; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = rect.x + cw * col + cw / 2;
+    const y = rect.y + rh * row + rh / 2;
+    drawShip(x, y + Math.sin(G.t * 2 + i) * 1.2, kind, scale, 0);
+  }
+}
+function groupedPoint(i, unit, den, rect) {
+  const bay = Math.floor(i / unit);
+  const k = i % unit;
+  const bw = rect.w / den;
+  const cols = unit > 6 ? 2 : 1;
+  const rows = Math.ceil(unit / cols);
+  const col = k % cols;
+  const row = Math.floor(k / cols);
+  return {
+    bay,
+    x: rect.x + bay * bw + bw * (col + 1) / (cols + 1),
+    y: rect.y + 28 + (rect.h - 36) * (row + 1) / (rows + 1)
+  };
+}
+function loosePoint(i, count, rect) {
+  const cols = Math.max(4, Math.ceil(Math.sqrt(count * (rect.w / Math.max(1, rect.h)))));
+  const rows = Math.ceil(count / cols);
+  const cw = rect.w / cols;
+  const rh = rect.h / rows;
+  return {
+    x: rect.x + cw * (i % cols) + cw / 2,
+    y: rect.y + rh * Math.floor(i / cols) + rh / 2,
+    scale: clamp(Math.min(cw, rh) / 34, 0.42, 1.15)
+  };
+}
+
+function drawCollection(m) {
+  const rect = shipRect();
+  const v = m.visual;
+  const slice = G.slice;
+  hangarChrome(slice > 0.65 ? (v.den + ' EQUAL SQUADRONS  ·  ' + v.unit + ' SHIPS EACH') : 'FLIGHT DECK  ·  UNSLICED UNTIL THE DENOMINATOR DROPS', COL.cyan);
+  if (slice < 0.98) {
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COL.dim;
+    ctx.globalAlpha = 1 - slice;
+    ctx.fillText(v.n + ' STARFIGHTERS IN ONE BERTH', UI.hangar.x + UI.hangar.w - 18, UI.hangar.y + 16);
+    ctx.globalAlpha = 1;
+  }
+  const cols = Math.max(4, Math.ceil(Math.sqrt(v.n * (rect.w / rect.h))));
+  const rows = Math.ceil(v.n / cols);
+  const cell = Math.min(rect.w / cols, rect.h / rows);
+  const looseScale = clamp(cell / 34, 0.4, 1.1);
+  const bayW = rect.w / v.den;
+  const gCols = v.unit > 6 ? 2 : 1;
+  const gRows = Math.ceil(v.unit / gCols);
+  const gScale = clamp(Math.min(bayW / (gCols + 0.4), (rect.h - 30) / (gRows + 0.6)) / 30, 0.4, 1.05);
+
+  if (slice > 0.02) {
+    for (let b = 0; b < v.den; b++) {
+      const x = rect.x + b * bayW;
+      const hot = G.mark > 0 && b < v.num;
+      ctx.globalAlpha = 0.15 + slice * 0.85;
+      roundRect(x + 4, rect.y, bayW - 8, rect.h, 8);
+      ctx.fillStyle = hot ? 'rgba(255, 193, 74, 0.16)' : 'rgba(62, 224, 255, 0.05)';
+      ctx.fill();
+      ctx.lineWidth = hot ? 2 : 1;
+      ctx.strokeStyle = hot ? COL.gold : 'rgba(62, 224, 255, 0.35)';
+      ctx.stroke();
+      if (b < v.den - 1) {
+        const lx = x + bayW;
+        ctx.strokeStyle = COL.cyan;
+        ctx.globalAlpha = slice;
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = COL.cyan;
+        ctx.beginPath();
+        ctx.moveTo(lx, rect.y + 8);
+        ctx.lineTo(lx, rect.y + rect.h * slice);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+      ctx.globalAlpha = slice;
+      drawBadge(x + bayW / 2, rect.y + 16, String(v.unit), hot ? COL.gold : COL.cyan);
+      if (hot) {
+        ctx.font = '700 11px Trebuchet MS, Segoe UI, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = COL.gold;
+        ctx.fillText('LAUNCH', x + bayW / 2, rect.y + rect.h - 8);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+  for (let i = 0; i < v.n; i++) {
+    const a = loosePoint(i, v.n, rect);
+    const b = groupedPoint(i, v.unit, v.den, rect);
+    const x = lerp(a.x, b.x, slice);
+    const y = lerp(a.y, b.y, slice);
+    const sc = lerp(looseScale, gScale, slice);
+    const hot = slice > 0.6 && G.mark > 0 && b.bay < v.num;
+    ctx.globalAlpha = hot ? 1 : (G.mark > 0 && slice > 0.6 ? 0.45 : 1);
+    drawShip(x, y + Math.sin(G.t * 2.2 + i * 0.4) * (1 - slice * 0.5), 'fighter', sc, 0);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawWingShips(x, y, w, h, kind, count) {
+  const show = Math.min(count, 8);
+  const cols = Math.min(4, show);
+  const rows = Math.ceil(show / cols);
+  for (let i = 0; i < show; i++) {
+    const c = i % cols;
+    const r = Math.floor(i / cols);
+    drawShip(
+      x + w * (c + 1) / (cols + 1),
+      y + h * (r + 1) / (rows + 1),
+      kind, 0.85, 0
+    );
+  }
+}
+function drawPortion(m) {
+  hangarChrome('MIXED FLEET DOCK  ·  THREE WINGS, ONE FRACTION', COL.gold);
+  const rect = shipRect();
+  const v = m.visual;
+  const gap = 14;
+  const dw = (rect.w - gap * 2) / 3;
+  for (let i = 0; i < 3; i++) {
+    const x = rect.x + i * (dw + gap);
+    const asked = i === v.ask;
+    roundRect(x, rect.y, dw, rect.h * 0.62, 10);
+    ctx.fillStyle = asked ? 'rgba(255, 193, 74, 0.1)' : 'rgba(62, 224, 255, 0.05)';
+    ctx.fill();
+    ctx.strokeStyle = asked ? COL.gold : 'rgba(120, 170, 200, 0.4)';
+    ctx.lineWidth = asked ? 2 : 1;
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = asked ? COL.gold : COL.ink;
+    ctx.fillText(v.names[i].toUpperCase(), x + dw / 2, rect.y + 18);
+    ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(String(v.counts[i]), x + dw / 2, rect.y + 48);
+    drawWingShips(x, rect.y + 64, dw, rect.h * 0.62 - 74, v.kinds[i], v.counts[i]);
+  }
+  const benchY = rect.y + rect.h * 0.66;
+  const benchH = rect.h * 0.34;
+  roundRect(rect.x, benchY, rect.w, benchH, 10);
+  ctx.fillStyle = 'rgba(4, 10, 20, 0.55)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 193, 74, 0.35)';
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (G.slice < 0.5) {
+    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    ctx.fillText('Add every wing before you write the fraction.', rect.x + rect.w / 2, benchY + benchH / 2);
+  } else {
+    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText('FLEET  ' + v.total + ' SHIPS', rect.x + 150, benchY + benchH / 2);
+    const raw = v.part + '/' + v.total;
+    ctx.font = '700 26px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(G.mark > 0.4 ? raw : '? / ' + '?', rect.x + rect.w * 0.48, benchY + benchH / 2);
+    if (G.mark > 0.4) {
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 20px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillText('÷ ' + v.g, rect.x + rect.w * 0.64, benchY + benchH / 2);
+      ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillStyle = G.finale > 0.4 ? COL.green : COL.muted;
+      ctx.fillText(G.finale > 0.4 ? (v.sn + '/' + v.sd) : '? / ?', rect.x + rect.w * 0.82, benchY + benchH / 2);
+    }
+  }
+}
+
+function drawInk(m) {
+  hangarChrome('NEBULA CLOAK  ·  HIDDEN SQUADRONS', COL.nebula);
+  const rect = shipRect();
+  const v = m.visual;
+  if (G.slice < 0.85) {
+    ctx.globalAlpha = 1 - G.slice;
+    const gap = 12;
+    const dw = (rect.w * 0.72 - gap * 2) / 3;
+    for (let i = 0; i < 3; i++) {
+      const x = rect.x + i * (dw + gap);
+      roundRect(x, rect.y, dw, rect.h, 10);
+      ctx.fillStyle = 'rgba(62, 224, 255, 0.06)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(120, 200, 230, 0.45)';
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillStyle = COL.ink;
+      ctx.fillText(v.names[i].toUpperCase(), x + dw / 2, rect.y + 20);
+      ctx.font = '700 26px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillStyle = COL.cyan;
+      ctx.fillText(String(v.counts[i]), x + dw / 2, rect.y + 50);
+      drawWingShips(x, rect.y + 64, dw, rect.h - 76, v.kinds[i], Math.min(8, v.counts[i]));
+    }
+    const nx = rect.x + rect.w * 0.75;
+    const nw = rect.w * 0.25;
+    roundRect(nx, rect.y, nw, rect.h, 12);
+    const g = ctx.createLinearGradient(nx, rect.y, nx + nw, rect.y + rect.h);
+    g.addColorStop(0, 'rgba(120, 60, 220, 0.2)');
+    g.addColorStop(1, 'rgba(176, 107, 255, 0.55)');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.strokeStyle = COL.nebula;
+    ctx.stroke();
+    ctx.fillStyle = COL.white;
+    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('CLOAKED', nx + nw / 2, rect.y + rect.h * 0.38);
+    ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.gold;
+    ctx.fillText(v.hN + '/' + v.den, nx + nw / 2, rect.y + rect.h * 0.52);
+    ctx.font = '700 42px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = '#f3e8ff';
+    ctx.globalAlpha = (1 - G.slice) * pulse(G.t, 3, 0.55, 1);
+    ctx.fillText('?', nx + nw / 2, rect.y + rect.h * 0.72);
+    ctx.globalAlpha = 1;
+  }
+  if (G.slice > 0.05) {
+    ctx.globalAlpha = G.slice;
+    const bw = rect.w / v.den;
+    for (let b = 0; b < v.den; b++) {
+      const x = rect.x + b * bw;
+      const cloaked = b >= v.visN && G.finale < 0.65;
+      roundRect(x + 3, rect.y, bw - 6, rect.h, 8);
+      if (cloaked) {
+        const ng = ctx.createLinearGradient(x, rect.y, x, rect.y + rect.h);
+        ng.addColorStop(0, 'rgba(90, 40, 180, 0.35)');
+        ng.addColorStop(1, 'rgba(176, 107, 255,' + pulse(G.t, 2.4, 0.35, 0.7) + ')');
+        ctx.fillStyle = ng;
+        ctx.fill();
+        ctx.strokeStyle = COL.nebula;
+        ctx.stroke();
+        ctx.fillStyle = '#f6ecff';
+        ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('?', x + bw / 2, rect.y + rect.h * 0.55);
+      } else {
+        const hot = G.finale > 0.65 || b < v.visN;
+        ctx.fillStyle = hot ? 'rgba(62, 224, 255, 0.08)' : 'rgba(255,255,255,0.03)';
+        ctx.fill();
+        ctx.strokeStyle = G.finale > 0.65 ? COL.green : COL.cyan;
+        ctx.stroke();
+        const mini = Math.min(4, Math.max(2, Math.floor(bw / 28)));
+        for (let k = 0; k < mini; k++) {
+          drawShip(x + bw * (k + 1) / (mini + 1), rect.y + rect.h * 0.42, v.kinds[k % 3], clamp(bw / 90, 0.45, 0.9), 0);
+        }
+      }
+      if (G.mark > 0.45 && !(cloaked)) {
+        drawBadge(x + bw / 2, rect.y + 16, String(v.unit), COL.cyan);
+      } else if (G.slice > 0.8 && b === 0) {
+        /* bay count is the model, ship count waits for the unit step */
+      }
+    }
+    ctx.globalAlpha = 1;
+    if (G.finale > 0.65) {
+      ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = COL.green;
+      ctx.textBaseline = 'middle';
+      ctx.fillText('FULL ARMADA  ' + v.total, UI.hangar.x + UI.hangar.w - 18, UI.hangar.y + 16);
+    }
+  }
+}
+
+function drawRemainder(m) {
+  hangarChrome('PATROL SPLIT  ·  FRACTION OF THE REMAINDER', COL.amber);
+  const rect = shipRect();
+  const v = m.visual;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.dim;
+  ctx.fillText('STARTING ARMADA', rect.x + rect.w / 2, rect.y + 8);
+  const barY = rect.y + 28;
+  const barH = 78;
+  const gap = 8;
+  const segW = (rect.w - gap * (v.aD - 1)) / v.aD;
+  for (let i = 0; i < v.aD; i++) {
+    const alpha = i < v.aN;
+    const slide = alpha ? -26 * G.slice : 18 * G.slice;
+    const x = rect.x + i * (segW + gap) + slide;
+    roundRect(x, barY, segW, barH, 8);
+    ctx.fillStyle = alpha ? 'rgba(255, 90, 110, 0.22)' : 'rgba(62, 224, 255, 0.1)';
+    ctx.fill();
+    ctx.strokeStyle = alpha ? COL.p1 : COL.cyan;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(alpha ? 'ALPHA' : 'STAYS', x + segW / 2, barY + 22);
+    ctx.font = '700 22px Trebuchet MS, Segoe UI, sans-serif';
+    if (G.slice > 0.45) {
+      ctx.fillStyle = alpha ? COL.p1 : COL.cyan;
+      ctx.fillText(String(alpha ? v.alpha / v.aN : v.rem / (v.aD - v.aN)), x + segW / 2, barY + 50);
+    } else if (alpha) {
+      ctx.fillStyle = COL.gold;
+      ctx.fillText(v.aN + '/' + v.aD, x + segW / 2, barY + 50);
+    }
+  }
+  ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.dim;
+  ctx.textAlign = 'left';
+  ctx.fillText('TOTAL ' + v.total, rect.x, barY + barH + 18);
+
+  const rY = rect.y + 150;
+  ctx.textAlign = 'left';
+  ctx.fillStyle = G.slice > 0.4 ? COL.cyan : COL.muted;
+  ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillText(G.slice > 0.4 ? ('REMAINDER  ' + v.rem + ' SHIPS') : 'REMAINDER  —  subtract Alpha first', rect.x, rY);
+  if (G.mark > 0.05 || G.slice > 0.85) {
+    const bw = (rect.w - 8 * (v.bD - 1)) / v.bD;
+    for (let i = 0; i < v.bD; i++) {
+      const x = rect.x + i * (bw + 8);
+      const hot = G.finale > 0.45 && i < v.bN;
+      roundRect(x, rY + 16, bw, 86, 8);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = hot ? 'rgba(255, 193, 74, 0.22)' : 'rgba(94, 255, 154, 0.08)';
+      ctx.fill();
+      ctx.strokeStyle = hot ? COL.gold : 'rgba(94, 255, 154, 0.75)';
+      ctx.lineWidth = hot ? 2.5 : 1.5;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = hot ? COL.gold : COL.green;
+      ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillText(G.mark > 0.45 ? String(v.unit) : '?', x + bw / 2, rY + 50);
+      ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillText(hot ? 'BETA' : 'PART', x + bw / 2, rY + 78);
+    }
+  }
+  if (G.finale > 0.5) {
+    ctx.textAlign = 'right';
+    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.gold;
+    ctx.fillText('BETA  ' + v.beta + ' SHIPS', rect.x + rect.w, rY + 120);
+  }
+}
+
+function drawOverdrive(m) {
+  hangarChrome('OVERDRIVE  ·  1 WHOLE  +  EXPANSION', COL.gold);
+  const rect = shipRect();
+  const v = m.visual;
+  const gap = 18;
+  const dw = (rect.w - gap) / 2;
+  drawDeck(rect.x, rect.y, dw, rect.h, 'BASE HANGAR', '1 WHOLE', COL.cyan, true, v);
+  drawDeck(rect.x + dw + gap, rect.y, dw, rect.h, 'OVERFLOW DECK', 'TARGET  ' + v.mixed, COL.gold, false, v);
+}
+function drawDeck(x, y, w, h, title, sub, color, isBase, v) {
+  roundRect(x, y, w, h, 12);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.fillStyle = isBase ? 'rgba(62, 224, 255, 0.04)' : 'rgba(255, 193, 74, 0.04)';
+  ctx.fill();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = color;
+  ctx.fillText(title, x + 12, y + 16);
+  ctx.textAlign = 'right';
+  ctx.fillText(sub, x + w - 12, y + 16);
+  const inner = { x: x + 10, y: y + 32, w: w - 20, h: h - 44 };
+  if (isBase) drawBaseBays(inner, v);
+  else drawOverflowBays(inner, v);
+}
+function miniShips(x, y, w, h, n, kind, scale) {
+  const show = Math.max(1, Math.min(n, 4));
+  for (let i = 0; i < show; i++) {
+    drawShip(x + w * (i + 1) / (show + 1), y + h * 0.58, kind, scale, 0);
+  }
+}
+function drawBaseBays(rect, v) {
+  const bw = rect.w / v.gD;
+  for (let i = 0; i < v.gD; i++) {
+    const known = i < v.gN;
+    const filled = known || G.mark > 0.55;
+    const x = rect.x + i * bw;
+    roundRect(x + 3, rect.y, bw - 6, rect.h, 7);
+    ctx.fillStyle = filled ? 'rgba(62, 224, 255, 0.1)' : 'rgba(255,255,255,0.02)';
+    ctx.fill();
+    ctx.setLineDash(filled ? [] : [4, 4]);
+    ctx.strokeStyle = filled ? COL.cyan : 'rgba(62,224,255,0.35)';
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (filled) miniShips(x, rect.y, bw, rect.h, 3, 'fighter', clamp(bw / 80, 0.4, 0.85));
+    if (known && G.slice > 0.45) drawBadge(x + bw / 2, rect.y + 14, String(v.unit), COL.cyan);
+    else if (!known && G.mark > 0.55) drawBadge(x + bw / 2, rect.y + 14, String(v.unit), COL.green);
+  }
+  if (G.slice < 0.45) {
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.gold;
+    ctx.fillText(v.given + '  =  ' + v.ships + ' SHIPS', rect.x + (bw * v.gN) / 2, rect.y + rect.h - 12);
+  }
+  if (G.mark > 0.55) {
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.green;
+    ctx.fillText('BASE  ' + v.base, rect.x + rect.w / 2, rect.y + rect.h - 12);
+  }
+}
+function drawOverflowBays(rect, v) {
+  const showFullExtra = v.eW > 1;
+  let y = rect.y;
+  let h = rect.h;
+  if (showFullExtra) {
+    const bandH = 54;
+    roundRect(rect.x, y, rect.w, bandH, 7);
+    ctx.strokeStyle = 'rgba(255, 193, 74, 0.7)';
+    ctx.stroke();
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = G.finale > 0.4 ? COL.gold : COL.muted;
+    ctx.fillText(G.finale > 0.4 ? ('EXTRA WHOLE  ' + v.base + ' SHIPS') : 'EXTRA WHOLE  ·  HOLDS FOR LAUNCH', rect.x + rect.w / 2, y + bandH / 2);
+    if (G.finale > 0.4) {
+      for (let i = 0; i < 6; i++) drawShip(rect.x + rect.w * (i + 1) / 7, y + 34, 'cruiser', 0.55, 0);
+    }
+    y += bandH + 8;
+    h -= bandH + 8;
+  }
+  const bw = rect.w / v.eD;
+  for (let i = 0; i < v.eD; i++) {
+    const filled = G.finale > 0.35 && i < v.eN;
+    const x = rect.x + i * bw;
+    roundRect(x + 3, y, bw - 6, h, 7);
+    ctx.fillStyle = filled ? 'rgba(255, 193, 74, 0.16)' : 'rgba(255,255,255,0.02)';
+    ctx.fill();
+    ctx.setLineDash(filled ? [] : [4, 4]);
+    ctx.strokeStyle = filled ? COL.gold : 'rgba(255, 193, 74, 0.4)';
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (filled) {
+      miniShips(x, y, bw, h, 3, 'scout', clamp(bw / 70, 0.45, 0.9));
+      drawBadge(x + bw / 2, y + 14, String(v.base / v.eD), COL.gold);
+    } else if (i === 0) {
+      ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(255, 193, 74, 0.55)';
+      ctx.fillText('HOLDS', x + bw / 2, y + h * 0.5);
+    }
+  }
+}
+
+function drawHUD() {
+  const r = UI.hud;
+  roundRect(r.x, r.y, r.w, r.h, 12);
+  ctx.fillStyle = 'rgba(6, 12, 24, 0.88)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.28)';
+  ctx.stroke();
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.cyan;
+  ctx.fillText(G.playMode === 'versus' ? 'VERSUS DUEL' : 'SOLO COMMANDER', r.x + 14, r.y + 25);
+  const m = G.mission;
+  if (m) {
+    ctx.fillStyle = COL.gold;
+    ctx.fillText('T' + m.tier + '  ' + m.tierName, r.x + 210, r.y + 25);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText('MISSION ' + (G.missionIndex + 1) + ' / ' + G.sortie.length, r.x + 520, r.y + 25);
+  }
+  if (G.playMode === 'versus') {
+    drawWingScore(r.x + 700, r.y + 25, players[0]);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(players[0].stars + '  ★  ' + players[1].stars, r.x + r.w * 0.78, r.y + 25);
+    drawWingScore(r.x + r.w - 168, r.y + 25, players[1]);
+  } else {
+    const p = players[0];
+    drawShields(r.x + 700, r.y + 25, p);
+    ctx.textAlign = 'left';
+    ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = p.combo > 1 ? COL.gold : COL.dim;
+    ctx.fillText(p.combo > 1 ? ('COMBO ×' + p.combo) : 'COMBO ×1', r.x + 860, r.y + 25);
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'right';
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(p.score + ' FCP', r.x + r.w - 132, r.y + 18);
+    ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    ctx.fillText('BEST ' + G.best + '   ★ ' + p.stars, r.x + r.w - 132, r.y + 36);
+  }
+}
+function drawShields(x, y, p) {
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    const sx = x + i * 22;
+    ctx.moveTo(sx, y - 8);
+    ctx.lineTo(sx + 8, y - 8);
+    ctx.lineTo(sx + 8, y + 2);
+    ctx.lineTo(sx + 4, y + 9);
+    ctx.lineTo(sx, y + 2);
+    ctx.closePath();
+    ctx.fillStyle = i < p.shields ? COL.cyan : 'rgba(80, 100, 120, 0.35)';
+    ctx.fill();
+  }
+}
+function drawWingScore(x, y, p) {
+  ctx.textAlign = 'left';
+  ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = p.color;
+  ctx.fillText(p.short, x, y - 8);
+  drawShields(x + 28, y - 8, p);
+  ctx.fillStyle = p.shields > 0 ? COL.ink : COL.red;
+  ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillText(p.score + ' FCP', x, y + 10);
+}
+
+function drawBrief() {
+  const r = UI.brief;
+  const m = G.mission;
+  roundRect(r.x, r.y, r.w, r.h, 12);
+  ctx.fillStyle = 'rgba(8, 14, 28, 0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 193, 74, 0.28)';
+  ctx.stroke();
+  if (!m) return;
+  const step = m.steps[Math.min(G.step, 2)];
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.gold;
+  ctx.fillText(step.kicker, r.x + 14, r.y + 16);
+  ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.ink;
+  const lines = wrapText(m.brief, r.w - 36);
+  ctx.fillText(lines[0] || '', r.x + 14, r.y + 42);
+  if (lines[1]) {
+    ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(lines[1], r.x + 14, r.y + 62);
+  }
+  ctx.textAlign = 'right';
+  ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+  for (let i = 0; i < 3; i++) {
+    const on = i < G.phase;
+    const now = i === G.step && G.mode === 'play';
+    ctx.fillStyle = on ? COL.green : (now ? COL.gold : COL.muted);
+    ctx.fillText(on ? '✓' : String(i + 1), r.x + r.w - 58 + i * 18, r.y + 16);
+  }
+}
+
+function drawPrompt() {
+  const m = G.mission;
+  if (!m || G.paused || (G.mode !== 'play' && G.mode !== 'launch')) return;
+  const step = m.steps[Math.min(G.step, 2)];
+  const r = UI.prompt;
+  roundRect(r.x, r.y, r.w, r.h, 12);
+  ctx.fillStyle = 'rgba(6, 24, 40, 0.96)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.75)';
+  ctx.stroke();
+  ctx.fillStyle = COL.cyan;
+  roundRect(r.x + 8, r.y + 12, 5, r.h - 24, 2);
+  ctx.fill();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 24px Trebuchet MS, Segoe UI, sans-serif';
+  let lines = wrapText(step.prompt, r.w - 56);
+  if (lines.length > 1) {
+    ctx.font = '700 20px Trebuchet MS, Segoe UI, sans-serif';
+    lines = wrapText(step.prompt, r.w - 56).slice(0, 2);
+  }
+  ctx.fillStyle = COL.cyan;
+  const lineH = lines.length > 1 ? 24 : 28;
+  const top = r.y + r.h / 2 - ((lines.length - 1) * lineH) / 2;
+  for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], r.x + r.w / 2, top + i * lineH);
+}
+
+function drawCards() {
+  const m = G.mission;
+  const launch = G.spots.find(s => s.id === 'launch');
+  if (!m || !launch || G.paused || (G.mode !== 'play' && G.mode !== 'launch')) return;
+  const step = m.steps[Math.min(G.step, 2)];
+  for (let i = 0; i < 4; i++) {
+    const s = G.spots[i];
+    if (!s) continue;
+    const choice = step.choices[i];
+    if (!s || s.id !== 'card' || !choice) continue;
+    let armed = -1;
+    for (let p = 0; p < activeCount(); p++) if (players[p].armed === i) armed = p;
+    const focused = players[0].focus === i || (G.playMode === 'versus' && players[1].focus === i);
+    roundRect(s.x, s.y, s.w, s.h, 12);
+    ctx.fillStyle = armed >= 0 ? 'rgba(255, 193, 74, 0.14)' : 'rgba(10, 18, 34, 0.94)';
+    ctx.fill();
+    ctx.lineWidth = focused || armed >= 0 ? 3 : 1.5;
+    ctx.strokeStyle = armed >= 0 ? COL.gold : (focused ? COL.cyan : 'rgba(120, 160, 190, 0.4)');
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const size = choice.label.length > 12 ? 22 : (choice.label.length > 8 ? 26 : 32);
+    ctx.font = '700 ' + size + 'px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.ink;
+    const lines = wrapText(choice.label, s.w - 24);
+    const top = s.y + s.h * 0.38 - (lines.length - 1) * 12;
+    for (let L = 0; L < lines.length; L++) ctx.fillText(lines[L], s.x + s.w / 2, top + L * 26);
+    ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(choice.caption, s.x + s.w / 2, s.y + s.h - 28);
+    if (armed >= 0) {
+      ctx.fillStyle = players[armed].color;
+      ctx.font = '700 11px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillText(players[armed].short + ' ARMED', s.x + s.w / 2, s.y + 16);
+    }
+  }
+  const ready = step.launch;
+  const launchIndex = G.spots.indexOf(launch);
+  const launchFocus = players[0].focus === launchIndex || (G.playMode === 'versus' && players[1].focus === launchIndex);
+  const armedAny = players[0].armed >= 0 || (G.playMode === 'versus' && players[1].armed >= 0);
+  roundRect(launch.x, launch.y, launch.w, launch.h, 14);
+  const glow = ready ? pulse(G.t, 4, 0.55, 1) : 0.35;
+  ctx.fillStyle = ready ? 'rgba(255, 140, 40, 0.18)' : 'rgba(20, 28, 44, 0.9)';
+  ctx.fill();
+  ctx.lineWidth = launchFocus ? 4 : 3;
+  ctx.strokeStyle = launchFocus ? COL.cyan : (ready ? 'rgba(255, 176, 60,' + glow + ')' : 'rgba(90, 110, 130, 0.4)');
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = ready ? COL.gold : COL.muted;
+  ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillText(ready ? 'FINAL STEP' : 'STANDBY', launch.x + launch.w / 2, launch.y + 36);
+  ctx.font = '700 20px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = ready ? COL.white : COL.muted;
+  ctx.fillText('LAUNCH', launch.x + launch.w / 2, launch.y + 78);
+  ctx.fillText('SQUADRON', launch.x + launch.w / 2, launch.y + 104);
+  ctx.font = '700 12px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = armedAny && ready ? COL.green : COL.dim;
+  ctx.fillText(armedAny && ready ? 'THRUSTERS HOT' : (ready ? 'ARM A CARD' : 'LOCK A CARD'), launch.x + launch.w / 2, launch.y + 146);
+}
+
+function drawReticle(p) {
+  if (G.playMode !== 'versus' && p.id !== 0) return;
+  if (G.mode !== 'play' && G.mode !== 'launch' && G.mode !== 'title') return;
+  const r = 15 + Math.sin(G.t * 5 + p.id) * 1.5;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = p.stun > 0 ? (0.35 + 0.4 * Math.abs(Math.sin(G.t * 18))) : 0.95;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-r - 7, 0); ctx.lineTo(-r + 3, 0);
+  ctx.moveTo(r + 7, 0); ctx.lineTo(r - 3, 0);
+  ctx.moveTo(0, -r - 7); ctx.lineTo(0, -r + 3);
+  ctx.moveTo(0, r + 7); ctx.lineTo(0, r - 3);
+  ctx.stroke();
+  if (p.stun > 0) {
+    ctx.font = '700 10px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = p.color;
+    ctx.textAlign = 'center';
+    ctx.fillText('STUN', 0, -r - 12);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawFeedback() {
+  if (G.feedbackT <= 0 || !G.feedback) return;
+  const w = 900;
+  const x = (W - w) / 2;
+  const y = UI.hangar.y + 148;
+  ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+  const lines = wrapText(G.feedback, w - 36).slice(0, 3);
+  const h = 42 + lines.length * 22;
+  const alpha = G.feedbackT > 0.35 ? 1 : G.feedbackT / 0.35;
+  const tone = G.feedbackGood === 'neutral' ? 'neutral' : (G.feedbackGood ? 'good' : 'bad');
+  ctx.globalAlpha = Math.max(0, alpha);
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = tone === 'good' ? 'rgba(8, 40, 32, 0.96)' : (tone === 'neutral' ? 'rgba(28, 22, 8, 0.96)' : 'rgba(48, 10, 18, 0.96)');
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = tone === 'good' ? COL.green : (tone === 'neutral' ? COL.gold : COL.red);
+  ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = tone === 'bad' ? COL.gold : (tone === 'neutral' ? COL.gold : COL.green);
+  ctx.fillText(G.feedbackTitle, x + 16, y + 16);
+  ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.ink;
+  for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], x + 16, y + 42 + i * 22);
+  ctx.globalAlpha = 1;
+}
+
+function drawFlyers() {
+  for (let i = 0; i < G.flyers.length; i++) {
+    const f = G.flyers[i];
+    if (f.x > W + 40) continue;
+    drawShip(f.x, f.y, f.kind, f.scale, Math.PI / 2);
+  }
+  for (let i = 0; i < sparks.length; i++) {
+    const s = sparks[i];
+    ctx.globalAlpha = clamp(s.life * 3, 0, 1);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(s.x, s.y, s.size || 2, s.size || 2);
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < G.floaters.length; i++) {
+    const f = G.floaters[i];
+    ctx.globalAlpha = clamp(f.life, 0, 1);
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTitle() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillText('SINGAPORE PRIMARY 4–5   ·   FRACTIONS OF WHOLE NUMBERS', W / 2, 78);
+  ctx.font = '700 64px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.white;
+  ctx.fillText('SQUADRON SPLITTER', W / 2, 142);
+  ctx.font = '700 22px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.gold;
+  ctx.fillText('FLEET COMMANDER', W / 2, 188);
+  ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.dim;
+  ctx.fillText('Slice equal squadrons   ·   Simplify the fleet   ·   Decloak the nebula   ·   Scale past 1 whole', W / 2, 228);
+
+  for (let i = 0; i < G.spots.length; i++) {
+    const s = G.spots[i];
+    const on = G.titleFocus === i;
+    roundRect(s.x, s.y, s.w, s.h, 16);
+    ctx.fillStyle = on ? 'rgba(62, 224, 255, 0.1)' : 'rgba(8, 14, 28, 0.88)';
+    ctx.fill();
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.strokeStyle = s.id === 'versus' ? (on ? COL.p2 : 'rgba(74, 163, 255, 0.7)') : (on ? COL.p1 : 'rgba(255, 90, 110, 0.7)');
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.white;
+    ctx.font = '700 26px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(s.id === 'solo' ? 'SOLO COMMANDER' : 'VERSUS DUEL', s.x + s.w / 2, s.y + 48);
+    ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    const body = s.id === 'solo'
+      ? ['Mouse, keyboard, or one 8BitDo', 'Combo streak across all four tiers', '3 carrier shields  ·  high score']
+      : ['Red Wing vs Blue Wing, same puzzle', 'First correct lock takes the step', 'Launch step scores a victory star'];
+    for (let L = 0; L < body.length; L++) ctx.fillText(body[L], s.x + s.w / 2, s.y + 96 + L * 26);
+    ctx.fillStyle = on ? COL.gold : COL.muted;
+    ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(on ? 'A  /  ENTER  /  CLICK TO LAUNCH' : 'SELECT', s.x + s.w / 2, s.y + s.h - 28);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = '700 14px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.dim;
+  ctx.fillText('SOLO   mouse hover + click    ·    WASD or arrows    ·    Space / Enter    ·    Pad 0  A', W / 2, 560);
+  ctx.fillText('VERSUS   P1  WASD + F/Space or Pad 0     ·     P2  Arrows + Enter or Pad 1', W / 2, 586);
+  ctx.fillStyle = COL.gold;
+  ctx.fillText('BEST  ' + G.best + '  FLEET COMMAND POINTS', W / 2, 628);
+  ctx.fillStyle = COL.muted;
+  ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillText(G.padNote, W / 2, 660);
+  if (G.bootErrors.length) {
+    ctx.fillStyle = COL.red;
+    ctx.fillText(G.bootErrors[0], W / 2, 692);
+  }
+  for (let i = 0; i < 5; i++) {
+    drawShip(80 + ((G.t * 70 + i * 140) % (W + 120)) - 40, 34 + (i % 2) * 8, i % 2 ? 'fighter' : 'scout', 0.72, Math.PI / 2);
+  }
+}
+
+function drawEnd() {
+  const win = G.mode === 'victory';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 48px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = win ? COL.gold : COL.red;
+  ctx.fillText(win ? 'SORTIE COMPLETE' : 'SHIELDS DOWN', W / 2, 150);
+  ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.ink;
+  if (G.playMode === 'versus') {
+    const lead = players[0].stars === players[1].stars
+      ? (players[0].score === players[1].score ? 'Dead heat' : (players[0].score > players[1].score ? players[0].name : players[1].name) + ' takes the deck')
+      : (players[0].stars > players[1].stars ? players[0].name : players[1].name) + ' wins the star tally';
+    ctx.fillText(lead, W / 2, 220);
+    ctx.fillStyle = COL.p1;
+    ctx.fillText(players[0].name + '   ★ ' + players[0].stars + '    ' + players[0].score + ' FCP', W / 2, 268);
+    ctx.fillStyle = COL.p2;
+    ctx.fillText(players[1].name + '   ★ ' + players[1].stars + '    ' + players[1].score + ' FCP', W / 2, 304);
+  } else {
+    ctx.fillText(win ? 'The armada answered every order.' : 'The carrier took too many bad locks.', W / 2, 214);
+    ctx.fillStyle = COL.gold;
+    ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(players[0].score + ' FLEET COMMAND POINTS', W / 2, 270);
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.dim;
+    ctx.fillText('Stars ' + players[0].stars + '    ·    Best ' + G.best, W / 2, 312);
+  }
+  ctx.font = '700 15px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.dim;
+  const note = win
+    ? 'You sliced squadrons, simplified wings, decloaked a nebula, and scaled past one whole.'
+    : 'A fraction of a fleet is equal groups. Divide by the denominator before you multiply.';
+  ctx.fillText(note, W / 2, 380);
+  for (let i = 0; i < G.spots.length; i++) {
+    const s = G.spots[i];
+    const on = players[0].focus === i;
+    roundRect(s.x, s.y, s.w, s.h, 12);
+    ctx.fillStyle = on ? 'rgba(62,224,255,0.12)' : 'rgba(8,14,28,0.9)';
+    ctx.fill();
+    ctx.strokeStyle = on ? COL.cyan : 'rgba(140,170,200,0.4)';
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = COL.white;
+    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(s.id === 'again' ? 'FLY AGAIN' : 'TITLE SCREEN', s.x + s.w / 2, s.y + s.h / 2);
+  }
+}
+
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.62)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 36px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.fillStyle = COL.white;
+  ctx.fillText('HOLDING PATTERN', W / 2, 240);
+  for (let i = 0; i < G.spots.length; i++) {
+    const s = G.spots[i];
+    roundRect(s.x, s.y, s.w, s.h, 12);
+    ctx.fillStyle = 'rgba(10, 18, 32, 0.95)';
+    ctx.fill();
+    ctx.strokeStyle = i === 0 ? COL.cyan : COL.gold;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.font = '700 20px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillText(s.id === 'resume' ? 'RESUME SORTIE' : 'RETURN TO TITLE', s.x + s.w / 2, s.y + s.h / 2);
+  }
+}
+
+function drawPlayfield() {
+  drawHUD();
+  drawBrief();
+  const m = G.mission;
+  if (!m) return;
+  if (m.kind === 'collection') drawCollection(m);
+  else if (m.kind === 'portion') drawPortion(m);
+  else if (m.kind === 'ink') drawInk(m);
+  else if (m.kind === 'remainder') drawRemainder(m);
+  else if (m.kind === 'overdrive') drawOverdrive(m);
+  drawTray();
+  drawPrompt();
+  drawCards();
+  drawFeedback();
+  drawFlyers();
+  if (G.mode === 'launch') {
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 13px Trebuchet MS, Segoe UI, sans-serif';
+    ctx.fillStyle = COL.gold;
+    ctx.fillText('SQUADRON AWAY', UI.hangar.x + UI.hangar.w - 18, UI.hangar.y + 16);
+  }
+}
+
+function draw() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (G.shake > 0.4) ctx.translate(rand(-G.shake, G.shake), rand(-G.shake * 0.6, G.shake * 0.6));
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+  const neb = ctx.createRadialGradient(1100, 80, 20, 1100, 80, 280);
+  neb.addColorStop(0, 'rgba(120, 70, 220, 0.28)');
+  neb.addColorStop(1, 'rgba(120, 70, 220, 0)');
+  ctx.fillStyle = neb;
+  ctx.fillRect(800, 0, 480, 320);
+
+  if (G.mode === 'title') drawTitle();
+  else if (G.mode === 'victory' || G.mode === 'gameover') {
+    drawStars();
+    drawEnd();
+  } else drawPlayfield();
+
+  if (G.mode === 'play' || G.mode === 'launch' || G.mode === 'title' || G.mode === 'victory' || G.mode === 'gameover') {
+    const n = (G.mode === 'play' || G.mode === 'launch') && G.playMode === 'versus' ? 2 : 1;
+    if (G.mode === 'title') {
+      /* title uses card focus, no free reticle */
+    } else {
+      for (let i = 0; i < n; i++) drawReticle(players[i]);
+    }
+  }
+  if (G.paused) drawPause();
+  if (G.strobe > 0 && G.mode === 'play') {
+    ctx.fillStyle = 'rgba(255, 30, 60,' + (0.12 * G.strobe) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+}
+
+function frame(now) {
+  const dt = Math.min(0.034, (now - (frame.last || now)) / 1000);
+  frame.last = now;
+  try {
+    update(dt);
+    draw();
+    G.fatal = '';
+  } catch (err) {
+    G.fatal = err && err.message ? err.message : String(err);
+    if (live) live.textContent = G.fatal;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#17060c';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffd0d8';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Squadron Splitter hit a snag: ' + G.fatal, 24, 48);
+    console.error(err);
+  }
+  requestAnimationFrame(frame);
+}
+
+resize();
+canvas.focus();
+if (globalThis.SQUADRON_TEST) {
+  console.log(bootErrors.length ? bootErrors.join('\n') : 'OK');
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
