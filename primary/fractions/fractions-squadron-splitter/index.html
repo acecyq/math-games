@@ -317,12 +317,6 @@ const BANK = {
   ]
 };
 
-const SCRIPT = [
-  ['t1', 0], ['t2', 0], ['ink', 0], ['t4', 0],
-  ['t1', 1], ['t2', 1], ['rem', 0], ['t4', 1],
-  ['t1', 2], ['t2', 2], ['ink', 1], ['t4', 2]
-];
-
 function takeChoices(correct, candidates) {
   const choices = [{
     label: String(correct.label),
@@ -501,7 +495,7 @@ function buildT2(spec) {
     chips: [
       counts.join(' + ') + ' = ' + total,
       'HCF of ' + part + ' and ' + total + ' = ' + g,
-      raw + ' = ' + simple
+      '(' + part + ' ÷ ' + g + ') / (' + total + ' ÷ ' + g + ') = ' + simple
     ],
     visual: { names, counts, kinds, ask, total, part, g, sn, sd },
     steps: [
@@ -537,7 +531,7 @@ function buildT2(spec) {
       {
         kicker: 'STEP 3 OF 3  ·  LOCK THE FRACTION',
         prompt: 'What fraction of the fleet are ' + askName + ', in simplest form?',
-        success: raw + ' ÷ ' + g + ' = ' + simple + ' of the fleet are ' + askName + '.',
+        success: 'Divide the numerator and the denominator by ' + g + '. (' + part + ' ÷ ' + g + ') / (' + total + ' ÷ ' + g + ') = ' + simple + '.',
         launch: true,
         choices: takeChoices(
           { label: simple, caption: 'simplest form' },
@@ -821,24 +815,148 @@ function buildT4(spec) {
   };
 }
 
-function randomT1() {
-  const dens = [4, 5, 6, 7, 8, 9];
-  const den = dens[irand(0, dens.length - 1)];
-  const opts = [];
-  for (let n = 2; n < den; n++) if (gcd(n, den) === 1) opts.push(n);
-  if (!opts.length) return null;
-  const num = opts[irand(0, opts.length - 1)];
-  const unit = irand(4, 9);
-  return { n: unit * den, num, den };
+function pick(list) {
+  return list[irand(0, list.length - 1)];
 }
-function randomT4() {
-  const givens = [[2, 3], [3, 4], [3, 5], [2, 5], [4, 5], [5, 6], [3, 8], [5, 8], [2, 7], [4, 7], [5, 9], [2, 9]];
-  const exps = [[1, 1, 2], [1, 1, 3], [1, 2, 3], [1, 1, 4], [1, 3, 4], [1, 2, 5], [1, 3, 5], [1, 1, 6], [2, 1, 2], [2, 1, 3], [2, 1, 4], [1, 3, 8]];
-  const g = givens[irand(0, givens.length - 1)];
-  const e = exps[irand(0, exps.length - 1)];
-  const unit = irand(4, 12);
+function wingSet() {
+  return pick([
+    { names: ['Scouts', 'Cruisers', 'Bombers'], kinds: ['scout', 'cruiser', 'fighter'] },
+    { names: ['Scouts', 'Cruisers', 'Heavy Fighters'], kinds: ['scout', 'cruiser', 'fighter'] },
+    { names: ['Scouts', 'Fighters', 'Bombers'], kinds: ['scout', 'fighter', 'cruiser'] }
+  ]);
+}
+function splitSum(total, parts, minEach) {
+  if (total < parts * minEach) return null;
+  const out = [];
+  let left = total;
+  for (let i = 0; i < parts - 1; i++) {
+    const hi = left - (parts - i - 1) * minEach;
+    if (hi < minEach) return null;
+    const v = irand(minEach, hi);
+    out.push(v);
+    left -= v;
+  }
+  if (left < minEach) return null;
+  out.push(left);
+  return out;
+}
+function randomT1(band) {
+  const dens = band === 'easy' ? [4, 5, 6] : (band === 'hard' ? [7, 8, 9] : [5, 6, 7, 8]);
+  const den = pick(dens);
+  const nums = [];
+  const start = band === 'easy' ? 1 : 2;
+  for (let n = start; n < den; n++) if (gcd(n, den) === 1) nums.push(n);
+  if (!nums.length) return null;
+  const num = pick(nums);
+  const unit = band === 'easy' ? irand(4, 6) : (band === 'hard' ? irand(6, 9) : irand(5, 8));
+  const n = unit * den;
+  if (band === 'easy' && n > 36) return null;
+  if (band === 'medium' && (n < 30 || n > 64)) return null;
+  return { n: n, num: num, den: den };
+}
+function randomT2(band) {
+  const dens = band === 'easy' ? [3, 4, 5, 6] : [4, 5, 6, 7, 8, 9];
+  const den = pick(dens);
+  const nums = [];
+  for (let n = 1; n < den; n++) if (gcd(n, den) === 1) nums.push(n);
+  if (!nums.length) return null;
+  const num = pick(nums);
+  const unit = band === 'easy' ? irand(3, 6) : irand(4, 9);
+  const total = unit * den;
+  const part = unit * num;
+  if (band === 'easy' && (total < 18 || total > 48)) return null;
+  if (band !== 'easy' && (total < 36 || total > 81)) return null;
+  const rest = total - part;
+  const minEach = 4;
+  if (rest < minEach * 2) return null;
+  let otherA = 0;
+  let otherB = 0;
+  let found = false;
+  for (let i = 0; i < 16; i++) {
+    otherA = irand(minEach, rest - minEach);
+    otherB = rest - otherA;
+    if (otherA !== otherB && otherA !== part && otherB !== part) { found = true; break; }
+  }
+  if (!found) return null;
+  const wings = wingSet();
+  const counts = [0, 0, 0];
+  const ask = irand(0, 2);
+  const others = [0, 1, 2].filter(i => i !== ask);
+  counts[ask] = part;
+  counts[others[0]] = otherA;
+  counts[others[1]] = otherB;
+  return { names: wings.names, kinds: wings.kinds, counts: counts, ask: ask };
+}
+function randomInk(band) {
+  const dens = band === 'easy' ? [4, 5, 6] : [6, 8, 10];
+  const den = pick(dens);
+  const hN = irand(1, Math.max(1, Math.floor(den / 3)));
+  const visN = den - hN;
+  if (visN < 3) return null;
+  const unit = band === 'easy' ? irand(4, 8) : irand(6, 14);
+  const vis = unit * visN;
+  if (vis < 24 || vis > 126) return null;
+  const counts = splitSum(vis, 3, 4);
+  if (!counts || new Set(counts).size < 3) return null;
+  const wings = wingSet();
+  return { names: wings.names, kinds: wings.kinds, counts: counts, hidden: [hN, den] };
+}
+function randomRem(band) {
+  const setups = band === 'hard' ? [
+    { a: [1, 3], b: [3, 5] },
+    { a: [1, 4], b: [3, 5] },
+    { a: [1, 5], b: [3, 4] },
+    { a: [2, 5], b: [3, 4] },
+    { a: [1, 5], b: [3, 5] },
+    { a: [1, 4], b: [3, 4] },
+    { a: [1, 3], b: [3, 4] },
+    { a: [1, 6], b: [3, 5] },
+    { a: [2, 5], b: [2, 3] }
+  ] : [
+    { a: [1, 3], b: [2, 3] },
+    { a: [1, 4], b: [2, 3] },
+    { a: [1, 3], b: [2, 5] },
+    { a: [1, 2], b: [3, 5] },
+    { a: [1, 4], b: [3, 5] },
+    { a: [1, 5], b: [2, 3] },
+    { a: [2, 5], b: [1, 2] }
+  ];
+  const s = pick(setups);
+  const aN = s.a[0], aD = s.a[1], bN = s.b[0], bD = s.b[1];
+  const stay = aD - aN;
+  const floorTotal = band === 'hard' ? 60 : 40;
+  const options = [];
+  for (let unit = 4; unit <= 18; unit++) {
+    if ((unit * bD) % stay !== 0) continue;
+    const k = (unit * bD) / stay;
+    const total = k * aD;
+    const rem = unit * bD;
+    const alpha = total - rem;
+    const beta = unit * bN;
+    if (alpha <= 0 || total % bD !== 0) continue;
+    if (total < floorTotal || total > 160) continue;
+    if (beta === alpha || beta === rem) continue;
+    options.push(total);
+  }
+  if (!options.length) return null;
+  return { total: pick(options), a: [aN, aD], b: [bN, bD] };
+}
+function randomT4(band) {
+  const givens = band === 'easy'
+    ? [[2, 3], [3, 4], [2, 5], [3, 5], [4, 5]]
+    : (band === 'hard'
+      ? [[2, 3], [3, 4], [3, 5], [4, 5], [5, 6], [3, 8], [5, 8], [4, 7], [5, 9]]
+      : [[2, 3], [3, 4], [3, 5], [2, 5], [4, 5], [5, 6], [3, 8]]);
+  const exps = band === 'easy'
+    ? [[1, 1, 2], [1, 1, 3], [1, 1, 4], [1, 2, 5]]
+    : (band === 'hard'
+      ? [[1, 2, 3], [1, 3, 4], [1, 2, 5], [1, 3, 5], [2, 1, 2], [2, 1, 3], [2, 1, 4], [1, 3, 8]]
+      : [[1, 1, 2], [1, 1, 3], [1, 2, 3], [1, 1, 4], [1, 3, 4], [1, 2, 5], [1, 3, 5]]);
+  const g = pick(givens);
+  const e = pick(exps);
+  const unit = band === 'easy' ? irand(4, 8) : (band === 'hard' ? irand(6, 12) : irand(5, 10));
   const base = unit * g[1];
-  if (base % e[2] !== 0 || base < 24 || base > 120) return null;
+  if (base % e[2] !== 0 || base < 24 || base > (band === 'hard' ? 120 : 96)) return null;
   return { gN: g[0], gD: g[1], ships: unit * g[0], eW: e[0], eN: e[1], eD: e[2] };
 }
 
@@ -899,32 +1017,34 @@ function validateBanks() {
     errs.push(...assertMission(m));
     if (!m || m.visual.total !== m.visual.base * s.eW + m.visual.fracExtra) errs.push('t4 total');
   });
+  const makers = { t1: buildT1, t2: buildT2, ink: buildInk, rem: buildRem, t4: buildT4 };
+  const rollers = { t1: randomT1, t2: randomT2, ink: randomInk, rem: randomRem, t4: randomT4 };
   let genOk = 0;
-  for (let i = 0; i < 24; i++) {
-    const a = buildT1(randomT1());
-    const b = buildT4(randomT4());
-    if (a && assertMission(a).length === 0) genOk++;
-    if (b && assertMission(b).length === 0) genOk++;
+  ['easy', 'medium', 'hard'].forEach(band => {
+    Object.keys(rollers).forEach(kind => {
+      for (let i = 0; i < 8; i++) {
+        const spec = rollers[kind](band);
+        if (!spec) continue;
+        const mission = makers[kind](spec);
+        if (mission && assertMission(mission).length === 0) genOk++;
+      }
+    });
+  });
+  if (genOk < 60) errs.push('generator thin ' + genOk);
+  const seenSorties = new Set();
+  for (let i = 0; i < 12; i++) {
+    const list = buildSortie();
+    if (!list || list.length !== 8) { errs.push('sortie short'); continue; }
+    for (let s = 1; s < list.length; s++) {
+      if (list[s].tier < list[s - 1].tier) errs.push('sortie dip ' + list.map(m => m.tier).join(','));
+    }
+    const briefs = list.map(m => m.brief);
+    if (new Set(briefs).size !== 8) errs.push('sortie dup');
+    list.forEach(m => errs.push(...assertMission(m)));
+    seenSorties.add(briefs.join('|'));
   }
-  if (genOk < 20) errs.push('generator thin ' + genOk);
+  if (seenSorties.size < 10) errs.push('sortie frozen ' + seenSorties.size);
   return errs;
-}
-
-function makeFromScript(pair) {
-  const kind = pair[0], idx = pair[1];
-  if (kind === 't1') return buildT1(BANK.t1[idx]);
-  if (kind === 't2') return buildT2(BANK.t2[idx]);
-  if (kind === 'ink') return buildInk(BANK.ink[idx]);
-  if (kind === 'rem') return buildRem(BANK.rem[idx]);
-  return buildT4(BANK.t4[idx]);
-}
-
-function safeGenerated(kind) {
-  for (let i = 0; i < 30; i++) {
-    const m = kind === 't1' ? buildT1(randomT1()) : buildT4(randomT4());
-    if (m && assertMission(m).length === 0) return m;
-  }
-  return null;
 }
 
 /* ---------- State ---------- */
@@ -1031,22 +1151,95 @@ function beginGame(mode) {
   G.playMode = mode;
   G.run = G.run || 0;
   resetPlayers();
-  G.sortie = buildSortie(G.run);
+  G.sortie = buildSortie();
   G.missionIndex = 0;
   G.ending = '';
   G.paused = false;
   loadMission(0);
   speak(mode === 'versus' ? 'Versus duel. First correct lock scores the step.' : 'Solo commander. Slice the fleet.');
 }
-function buildSortie(run) {
-  const start = (run * 4) % SCRIPT.length;
+function ladderRows() {
+  return [
+    ['t1', 'easy'],
+    ['t1', 'medium'],
+    ['t2', 'easy'],
+    ['t2', 'medium'],
+    ['ink', 'medium'],
+    ['rem', 'hard'],
+    ['t4', 'medium'],
+    ['t4', 'hard']
+  ];
+}
+function specKey(kind, spec) {
+  if (!spec) return '';
+  if (kind === 't1') return 't1:' + spec.n + ':' + spec.num + '/' + spec.den;
+  if (kind === 't2') return 't2:' + spec.counts.join(',') + ':' + spec.ask;
+  if (kind === 'ink') return 'ink:' + spec.counts.join(',') + ':' + spec.hidden.join('/');
+  if (kind === 'rem') return 'rem:' + spec.total + ':' + spec.a.join('/') + '>' + spec.b.join('/');
+  return 't4:' + spec.ships + ':' + spec.gN + '/' + spec.gD + '>' + spec.eW + ' ' + spec.eN + '/' + spec.eD;
+}
+function generateSpec(kind, band) {
+  if (kind === 't1') return randomT1(band);
+  if (kind === 't2') return randomT2(band);
+  if (kind === 'ink') return randomInk(band);
+  if (kind === 'rem') return randomRem(band);
+  return randomT4(band);
+}
+function buildSpec(kind, spec) {
+  if (kind === 't1') return buildT1(spec);
+  if (kind === 't2') return buildT2(spec);
+  if (kind === 'ink') return buildInk(spec);
+  if (kind === 'rem') return buildRem(spec);
+  return buildT4(spec);
+}
+function bandOk(kind, spec, band) {
+  if (kind === 't1') {
+    if (band === 'easy') return spec.den <= 6 && spec.n <= 42;
+    if (band === 'hard') return spec.den >= 7;
+    return spec.n >= 30;
+  }
+  if (kind === 't2') {
+    const total = spec.counts[0] + spec.counts[1] + spec.counts[2];
+    return band === 'easy' ? total <= 48 : total >= 36;
+  }
+  if (kind === 'ink') return spec.hidden[1] >= (band === 'easy' ? 4 : 6);
+  if (kind === 'rem') return spec.total >= (band === 'hard' ? 60 : 40);
+  return band === 'hard' ? true : spec.eW === 1;
+}
+function fallbackSpec(kind, band, used) {
+  const pool = BANK[kind] || [];
+  const fresh = pool.filter(s => !used.has(specKey(kind, s)));
+  const fitted = fresh.filter(s => bandOk(kind, s, band));
+  const list = fitted.length ? fitted : fresh;
+  if (!list.length) return pool.length ? pool[irand(0, pool.length - 1)] : null;
+  return list[irand(0, list.length - 1)];
+}
+function rollMission(kind, band, used) {
+  for (let i = 0; i < 48; i++) {
+    const spec = generateSpec(kind, band);
+    if (!spec) continue;
+    const key = specKey(kind, spec);
+    if (used.has(key)) continue;
+    const mission = buildSpec(kind, spec);
+    if (!mission || assertMission(mission).length) continue;
+    used.add(key);
+    return mission;
+  }
+  const spec = fallbackSpec(kind, band, used);
+  const mission = spec ? buildSpec(kind, spec) : null;
+  if (mission && assertMission(mission).length === 0) {
+    used.add(specKey(kind, spec));
+    return mission;
+  }
+  return null;
+}
+function buildSortie() {
+  const used = new Set();
   const list = [];
-  for (let i = 0; i < 8; i++) list.push(makeFromScript(SCRIPT[(start + i) % SCRIPT.length]));
-  if (run > 0) {
-    const g1 = safeGenerated('t1');
-    const g4 = safeGenerated('t4');
-    if (g1) list[1] = g1;
-    if (g4) list[5] = g4;
+  const rows = ladderRows();
+  for (let i = 0; i < rows.length; i++) {
+    const mission = rollMission(rows[i][0], rows[i][1], used);
+    list.push(mission || buildT1(BANK.t1[i % BANK.t1.length]));
   }
   return list;
 }
@@ -1922,29 +2115,71 @@ function drawPortion(m) {
   ctx.fill();
   ctx.strokeStyle = 'rgba(255, 193, 74, 0.35)';
   ctx.stroke();
-  ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   if (G.slice < 0.5) {
+    ctx.textAlign = 'center';
     ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
     ctx.fillStyle = COL.dim;
     ctx.fillText('Add every wing before you write the fraction.', rect.x + rect.w / 2, benchY + benchH / 2);
   } else {
-    ctx.font = '700 18px Trebuchet MS, Segoe UI, sans-serif';
+    const cy = benchY + benchH / 2;
+    ctx.textAlign = 'left';
+    ctx.font = '700 16px Trebuchet MS, Segoe UI, sans-serif';
     ctx.fillStyle = COL.cyan;
-    ctx.fillText('FLEET  ' + v.total + ' SHIPS', rect.x + 150, benchY + benchH / 2);
-    const raw = v.part + '/' + v.total;
-    ctx.font = '700 26px Trebuchet MS, Segoe UI, sans-serif';
-    ctx.fillStyle = COL.ink;
-    ctx.fillText(G.mark > 0.4 ? raw : '? / ' + '?', rect.x + rect.w * 0.48, benchY + benchH / 2);
-    if (G.mark > 0.4) {
-      ctx.fillStyle = COL.gold;
-      ctx.font = '700 20px Trebuchet MS, Segoe UI, sans-serif';
-      ctx.fillText('÷ ' + v.g, rect.x + rect.w * 0.64, benchY + benchH / 2);
-      ctx.font = '700 28px Trebuchet MS, Segoe UI, sans-serif';
-      ctx.fillStyle = G.finale > 0.4 ? COL.green : COL.muted;
-      ctx.fillText(G.finale > 0.4 ? (v.sn + '/' + v.sd) : '? / ?', rect.x + rect.w * 0.82, benchY + benchH / 2);
+    ctx.fillText('FLEET  ' + v.total + ' SHIPS', rect.x + 16, cy);
+    const showFactor = G.mark > 0.4;
+    drawSplitFraction(
+      rect.x + rect.w * (showFactor ? 0.42 : 0.58),
+      cy,
+      String(v.part),
+      String(v.total),
+      showFactor ? ('÷ ' + v.g) : '',
+      COL.ink,
+      COL.gold
+    );
+    if (showFactor) {
+      const solved = G.finale > 0.4;
+      ctx.textAlign = 'center';
+      ctx.font = '700 22px Trebuchet MS, Segoe UI, sans-serif';
+      ctx.fillStyle = COL.dim;
+      ctx.fillText('=', rect.x + rect.w * 0.64, cy);
+      drawSplitFraction(
+        rect.x + rect.w * 0.76,
+        cy,
+        solved ? String(v.sn) : '?',
+        solved ? String(v.sd) : '?',
+        '',
+        solved ? COL.green : COL.muted,
+        COL.muted
+      );
     }
   }
+}
+
+function drawSplitFraction(cx, cy, top, bottom, factor, numColor, factorColor) {
+  ctx.font = '700 22px Trebuchet MS, Segoe UI, sans-serif';
+  ctx.textBaseline = 'middle';
+  const numW = Math.max(ctx.measureText(top).width, ctx.measureText(bottom).width);
+  const facW = factor ? ctx.measureText(factor).width : 0;
+  const gap = factor ? 12 : 0;
+  const blockW = numW + gap + facW;
+  const left = cx - blockW / 2;
+  ctx.textAlign = 'right';
+  ctx.fillStyle = numColor;
+  ctx.fillText(top, left + numW, cy - 15);
+  ctx.fillText(bottom, left + numW, cy + 15);
+  if (factor) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = factorColor;
+    ctx.fillText(factor, left + numW + gap, cy - 15);
+    ctx.fillText(factor, left + numW + gap, cy + 15);
+  }
+  ctx.strokeStyle = factor ? factorColor : numColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(left - 6, cy);
+  ctx.lineTo(left + blockW + 6, cy);
+  ctx.stroke();
 }
 
 function drawInk(m) {
