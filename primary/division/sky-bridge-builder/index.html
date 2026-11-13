@@ -154,99 +154,391 @@
   document.getElementById('btn-audio').onclick = () => { audio.init(); audio.toggleMute(); };
 
   /* ===================== MATH ===================== */
-  function generateLongDivision(dividend, divisor) {
-    const digs = String(dividend).split('').map(Number);
-    const steps = [];
-    let idx = 0, working = 0, took = 0;
-    while (idx < digs.length && working < divisor) {
-      working = working * 10 + digs[idx++];
-      took++;
+  function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
     }
-    while (true) {
-      const q = Math.floor(working / divisor);
-      const product = q * divisor;
-      const rem = working - product;
-      const more = idx < digs.length;
-      steps.push({
-        working, q, product, rem,
-        bringDown: more ? digs[idx] : null,
-        isFinal: !more,
-        zeroPlaceholder: q === 0 && steps.length > 0,
-        groupSpan: steps.length === 0 ? took : 1,
-        digitEnd: idx - (more ? 0 : 0) // end index exclusive in dividend for this working start alignment
-      });
-      // Align working under dividend: compute start column
-      steps[steps.length - 1].colEnd = idx; // exclusive index after digits consumed so far for this working
-      if (!more) break;
-      working = rem * 10 + digs[idx++];
-    }
-    // Fix column alignment for rendering
-    let consumed = 0;
-    for (let s = 0; s < steps.length; s++) {
-      if (s === 0) consumed = steps[0].groupSpan;
-      else consumed++;
-      steps[s].colEnd = consumed;
-      steps[s].colStart = consumed - String(steps[s].working).length;
-    }
-    return {
-      dividend, divisor,
-      quotient: Math.floor(dividend / divisor),
-      remainder: dividend % divisor,
-      digits: digs,
-      steps,
-      quotientDigits: steps.map(s => s.q)
-    };
+    return a;
+  }
+  function fmt(n) {
+    return String(Math.abs(Math.round(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '\u2009');
+  }
+  function pow10(z) {
+    let n = 1;
+    for (let i = 0; i < z; i++) n *= 10;
+    return n;
+  }
+  function tz(n) {
+    let z = 0;
+    let x = Math.round(Math.abs(n));
+    while (x > 0 && x % 10 === 0) { x = Math.floor(x / 10); z++; }
+    return z;
+  }
+  function front(n) {
+    let x = Math.round(Math.abs(n));
+    while (x > 0 && x % 10 === 0) x = Math.floor(x / 10);
+    return x;
+  }
+  function zerosWord(n) { return n === 1 ? 'zero' : 'zeros'; }
+
+  function buildMul(left, right) {
+    left = Math.round(left);
+    right = Math.round(right);
+    if (left <= 0 || right <= 0) return null;
+    const lf = front(left), lz = tz(left);
+    const rf = front(right), rz = tz(right);
+    const core = lf * rf;
+    const attach = lz + rz;
+    const ans = core * pow10(attach);
+    if (ans !== left * right) return null;
+    return { kind: 'mul', op: '×', left, right, ans, lf, lz, rf, rz, core, attach, cancel: attach };
   }
 
-  function distractors(correct, extras = []) {
-    const set = new Set([correct, ...extras]);
-    const out = [correct];
-    const cand = [correct + 1, correct - 1, correct + 2, correct - 2, correct + 3,
-      Math.max(0, correct - 3), correct * 2, Math.floor(correct / 2), correct + 10, Math.max(0, correct - 10)];
-    for (const c of cand) {
-      if (c >= 0 && !set.has(c) && out.length < 4) { set.add(c); out.push(c); }
-    }
-    let n = 0;
-    while (out.length < 4 && n++ < 50) {
-      const r = Math.max(0, correct + ((Math.random() * 9) | 0) - 4);
-      if (!set.has(r)) { set.add(r); out.push(r); }
-    }
-    for (let i = out.length - 1; i > 0; i--) {
-      const j = (Math.random() * (i + 1)) | 0;
-      [out[i], out[j]] = [out[j], out[i]];
-    }
-    return out.slice(0, 4);
+  function buildDiv(left, right) {
+    left = Math.round(left);
+    right = Math.round(right);
+    if (right <= 0 || left % right !== 0) return null;
+    const lf = front(left), lz = tz(left);
+    const rf = front(right), rz = tz(right);
+    if (rf === 0 || lf % rf !== 0 || rz > lz) return null;
+    const cancel = rz;
+    const core = lf / rf;
+    const attach = lz - rz;
+    if (!Number.isInteger(core)) return null;
+    const ans = core * pow10(attach);
+    if (ans !== left / right) return null;
+    return { kind: 'div', op: '÷', left, right, ans, lf, lz, rf, rz, core, attach, cancel };
   }
 
-  const CAL_BANK = [
-    { raw: 48, op: '×10', answer: 480, prompt: 'Fabricate 48 bundles of 10 m cable' },
-    { raw: 307, op: '×10', answer: 3070, prompt: 'Fabricate 307 bundles of 10 m cable' },
-    { raw: 650, op: '×10', answer: 6500, prompt: 'Fabricate 650 bundles of 10 m cable' },
-    { raw: 73, op: '×10', answer: 730, prompt: 'Order 73 packs of 10 m girders' },
-    { raw: 215, op: '×10', answer: 2150, prompt: 'Spin 215 reels of 10 m cable' },
-    { raw: 90, op: '×10', answer: 900, prompt: 'Stamp 90 plates into 10 m beams' },
-    { raw: 920, op: '÷10', answer: 92, prompt: 'Slice a 920 m master beam into 10 equal girders' },
-    { raw: 4300, op: '÷10', answer: 430, prompt: 'Partition 4 300 m stock into 10 equal spans' },
-    { raw: 8050, op: '÷10', answer: 805, prompt: 'Cut an 8 050 m cable into 10 equal runs' },
-    { raw: 760, op: '÷10', answer: 76, prompt: 'Divide 760 m rail into 10 equal rails' },
-    { raw: 5100, op: '÷10', answer: 510, prompt: 'Split 5 100 m into 10 equal girders' },
-    { raw: 3400, op: '÷10', answer: 340, prompt: 'Slice 3 400 m into 10 equal beams' }
+  const EASY_MUL = [
+    [12, 2], [12, 3], [12, 4], [12, 5],
+    [15, 2], [15, 3], [15, 4],
+    [16, 2], [16, 4], [16, 5],
+    [18, 2], [18, 4], [18, 5],
+    [24, 2], [24, 3], [24, 4],
+    [25, 2], [25, 4],
+    [14, 2], [14, 5],
+    [21, 3], [21, 4],
+    [28, 2], [28, 3],
+    [32, 2], [32, 3],
+    [35, 2], [35, 4],
+    [36, 2], [36, 3],
+    [42, 2], [42, 3],
+    [45, 2], [45, 4],
+    [27, 2], [27, 3],
+    [48, 2]
+  ];
+  // [quotient front, divisor front]. Dividend front is their product.
+  const EASY_DIV = [
+    [6, 2], [4, 3], [8, 2], [6, 3], [9, 2], [8, 3], [6, 4], [9, 3],
+    [7, 2], [7, 3], [7, 4], [7, 5], [7, 6], [8, 4], [8, 5], [8, 6],
+    [9, 4], [9, 5], [9, 6], [5, 4], [6, 5], [6, 6], [4, 6], [4, 8],
+    [12, 2], [12, 3], [12, 4], [12, 5], [12, 6], [5, 6], [5, 8],
+    [6, 7], [8, 7], [9, 7], [6, 8], [8, 8], [4, 9], [6, 9], [8, 9]
   ];
 
-  const DIV_BANK = {
-    1: [
-      { d: 84, v: 4 }, { d: 96, v: 3 }, { d: 745, v: 5 }, { d: 864, v: 6 },
-      { d: 63, v: 3 }, { d: 728, v: 8 }, { d: 936, v: 6 }, { d: 555, v: 5 }
-    ],
-    2: [
-      { d: 816, v: 4 }, { d: 927, v: 9 }, { d: 618, v: 3 }, { d: 248, v: 4 },
-      { d: 515, v: 5 }, { d: 824, v: 4 }, { d: 309, v: 3 }, { d: 726, v: 6 }
-    ],
-    3: [
-      { d: 538, v: 4 }, { d: 749, v: 6 }, { d: 950, v: 7 }, { d: 473, v: 5 },
-      { d: 682, v: 3 }, { d: 851, v: 8 }, { d: 367, v: 4 }, { d: 629, v: 7 }
-    ]
-  };
+  const BAND_NAME = [
+    '× ÷ by 10',
+    '× ÷ by 10 and 100',
+    '× by tens',
+    '× by tens and hundreds',
+    '÷ by tens',
+    '÷ by tens and hundreds'
+  ];
+
+  function bandOf(rank) {
+    return Math.max(0, Math.min(5, rank | 0));
+  }
+
+  function makePure(band) {
+    const mul = Math.random() < 0.5;
+    const power = band <= 0 ? 10 : (Math.random() < 0.5 ? 10 : (Math.random() < 0.75 ? 100 : 1000));
+    if (mul) {
+      let f;
+      if (band <= 0) {
+        f = irand(12, 98);
+        if (f % 10 === 0) f += 3;
+      } else if (Math.random() < 0.4) {
+        f = irand(1, 9) * 100 + irand(1, 9);
+      } else if (Math.random() < 0.35) {
+        f = irand(2, 9) * 10;
+      } else {
+        f = irand(12, 99);
+        if (f % 10 === 0) f += 1;
+      }
+      if (power >= 100 && f > 400) f = irand(12, 99);
+      if (power === 1000 && f > 99) f = irand(12, 99);
+      return buildMul(f, power);
+    }
+    let ans;
+    if (band <= 0) {
+      ans = irand(12, 98);
+      if (ans % 10 === 0) ans += 1;
+    } else {
+      const roll = Math.random();
+      if (roll < 0.34) ans = irand(2, 9) * 10;
+      else if (roll < 0.5) ans = irand(2, 9) * 100;
+      else if (roll < 0.72) ans = irand(1, 9) * 100 + irand(1, 9);
+      else {
+        ans = irand(12, 98);
+        if (ans % 10 === 0) ans += 1;
+      }
+    }
+    if (ans * power > 999999) ans = irand(12, 98);
+    return buildDiv(ans * power, power);
+  }
+
+  function makeMul(band) {
+    const pool = band <= 2 ? EASY_MUL.filter(pair => pair[1] <= 5) : EASY_MUL;
+    const pair = pool[irand(0, pool.length - 1)];
+    const power = band >= 3 && Math.random() < 0.45 ? 100 : 10;
+    let left = pair[0];
+    const right = pair[1] * power;
+    if (band >= 3 && Math.random() < 0.4) left = irand(2, 5) * 10;
+    if (left * right > 999999) return null;
+    return buildMul(left, right);
+  }
+
+  function makeDiv(band) {
+    const pool = band <= 4
+      ? EASY_DIV.filter(pair => pair[0] <= 9 && pair[1] <= 6)
+      : EASY_DIV;
+    const pair = pool[irand(0, pool.length - 1)];
+    const qf = pair[0];
+    const rf = pair[1];
+    const cancel = band >= 5 && Math.random() < 0.4 ? 2 : 1;
+    const leftover = band >= 5 ? irand(0, 2) : irand(0, 1);
+    const left = qf * rf * pow10(cancel + leftover);
+    const right = rf * pow10(cancel);
+    if (left > 999999 || right > 100000) return null;
+    return buildDiv(left, right);
+  }
+
+  function rollProblem(rank) {
+    const band = bandOf(rank);
+    for (let i = 0; i < 30; i++) {
+      let built = null;
+      if (band <= 1) built = makePure(band);
+      else if (band <= 3) built = Math.random() < 0.88 ? makeMul(band) : makePure(1);
+      else built = Math.random() < 0.88 ? makeDiv(band) : makeMul(3);
+      if (built) return built;
+    }
+    return band <= 3 ? buildMul(24, 10) : buildDiv(4200, 60);
+  }
+
+  const recentKeys = [];
+  function makeProblem(rank) {
+    for (let i = 0; i < 16; i++) {
+      const built = rollProblem(rank);
+      const key = built.kind + ':' + built.left + ':' + built.right;
+      if (!recentKeys.includes(key)) {
+        recentKeys.push(key);
+        if (recentKeys.length > 8) recentKeys.shift();
+        return built;
+      }
+    }
+    const built = rollProblem(rank);
+    recentKeys.push(built.kind + ':' + built.left + ':' + built.right);
+    return built;
+  }
+
+  function stepLabels(p) {
+    if (p.kind === 'mul') return ['PARK ZEROS', 'MULTIPLY FRONTS', 'STICK ZEROS ON'];
+    return ['ZEROS LEFT', 'DIVIDE FRONTS', 'STICK LEFTOVERS ON'];
+  }
+
+  function makeSteps(p) {
+    if (p.kind === 'mul') {
+      return [
+        {
+          type: 'zeros',
+          correct: p.attach,
+          prompt: 'Park every trailing zero. Add the gold zeros on both lengths.'
+        },
+        {
+          type: 'core',
+          correct: p.core,
+          prompt: p.rf === 1
+            ? 'Parked zeros stay off the deck. What length is still loaded?'
+            : `Parked zeros stay off the deck. Multiply the loaded lengths: ${fmt(p.lf)} × ${fmt(p.rf)}.`
+        },
+        {
+          type: 'seal',
+          correct: p.ans,
+          prompt: p.attach === 0
+            ? 'No zeros were parked. Lock the loaded length.'
+            : `Roll the ${p.attach} parked ${zerosWord(p.attach)} onto the end.`
+        }
+      ];
+    }
+    return [
+      {
+        type: 'zeros',
+        correct: p.attach,
+        prompt: 'Subtract the trailing zeros. How many are left on the first length?'
+      },
+      {
+        type: 'core',
+        correct: p.core,
+        prompt: p.rf === 1
+          ? 'Shared zeros are off the span. Dividing by 1 leaves the front length as it is.'
+          : `Shared zeros are off the span. Divide the fronts: ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`
+      },
+      {
+        type: 'seal',
+        correct: p.ans,
+        prompt: p.attach === 0
+          ? `No zeros left over. Do not stick an extra zero on ${fmt(p.core)}.`
+          : `${p.attach} ${zerosWord(p.attach)} from ${fmt(p.left)} did not drop. Stick ${p.attach === 1 ? 'it' : 'them'} onto ${fmt(p.core)}.`
+      }
+    ];
+  }
+
+  function interiorShifted(n) {
+    const s = String(Math.round(Math.abs(n)));
+    const idx = s.indexOf('0');
+    if (idx <= 0 || idx === s.length - 1) return null;
+    const moved = Number(s.slice(0, idx) + s.slice(idx + 1) + '0');
+    return moved === Math.round(Math.abs(n)) ? null : moved;
+  }
+  function droppedInterior(n) {
+    const s = String(Math.round(Math.abs(n)));
+    if (!s.includes('0')) return null;
+    const v = Number(s.replace('0', ''));
+    return v === Math.round(Math.abs(n)) ? null : v;
+  }
+
+  function pick4(correct, priority) {
+    const wrong = [];
+    priority.forEach(v => {
+      if (v == null || v === '') return;
+      const n = Math.round(Number(v));
+      if (!Number.isFinite(n) || n < 0 || n > 9999999 || n === correct || wrong.includes(n)) return;
+      wrong.push(n);
+    });
+    const chosen = wrong.slice(0, 3);
+    let pad = 1;
+    while (chosen.length < 3 && pad < 15) {
+      const n = correct + pad * (correct >= 10 ? 10 : 1);
+      pad++;
+      if (n !== correct && n > 0 && !chosen.includes(n)) chosen.push(n);
+    }
+    return shuffle([correct, ...chosen]);
+  }
+
+  function choicesFor(p, step) {
+    if (step.type === 'zeros') {
+      if (p.kind === 'mul') {
+        return pick4(p.attach, [p.lz, p.rz, p.attach + 1, Math.max(0, p.attach - 1), 0, 1, 2, 3, 4]);
+      }
+      return pick4(p.attach, [p.lz, p.rz, p.cancel, p.attach + 1, 0, 1, 2, 3, 4]);
+    }
+    if (step.type === 'core') {
+      return pick4(p.core, [
+        p.ans, p.core * 10, interiorShifted(p.core), droppedInterior(p.core),
+        p.lf, p.core + 1, p.core + p.rf, p.lf + p.rf
+      ]);
+    }
+    const movedCore = interiorShifted(p.core);
+    return pick4(p.ans, [
+      p.core,
+      interiorShifted(p.ans),
+      p.core * pow10(p.attach + 1),
+      p.attach > 0 ? p.core * pow10(Math.max(0, p.attach - 1)) : p.core * 10,
+      droppedInterior(p.ans),
+      movedCore == null ? null : movedCore * pow10(p.attach)
+    ]);
+  }
+
+  function explain(p, step, choice) {
+    if (step.type === 'zeros' && p.kind === 'mul') {
+      if (choice === p.lz || choice === p.rz) {
+        return `${fmt(p.left)} has ${p.lz} and ${fmt(p.right)} has ${p.rz}. Add them: park ${p.attach}, not ${choice}.`;
+      }
+      return `Add the trailing zeros. ${fmt(p.left)} has ${p.lz}, ${fmt(p.right)} has ${p.rz}, so park ${p.attach}.`;
+    }
+    if (step.type === 'zeros') {
+      return `${fmt(p.left)} has ${p.lz} and ${fmt(p.right)} has ${p.rz}. Subtract: ${p.lz} − ${p.rz} = ${p.attach} left, not ${choice}.`;
+    }
+    if (step.type === 'core' && p.kind === 'mul') {
+      if (choice === p.ans) return `That already has the parked zeros. First do only ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}.`;
+      return `Leave the parked zeros in the bay. ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}.`;
+    }
+    if (step.type === 'core') {
+      if (choice === p.ans && p.attach > 0) {
+        return `That already sticks the leftover ${zerosWord(p.attach)} on. First ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}.`;
+      }
+      return `Divide the fronts only. ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. Leftover zeros wait in the bay.`;
+    }
+    if (choice === p.core && p.attach > 0) {
+      return `The front is ${fmt(p.core)}, and ${p.attach} parked ${zerosWord(p.attach)} still go on the end: ${fmt(p.ans)}.`;
+    }
+    if (p.attach > 0 && choice === p.core * pow10(p.attach + 1)) {
+      return `One zero too many. Stick on exactly ${p.attach}: ${fmt(p.core)} becomes ${fmt(p.ans)}.`;
+    }
+    if (p.attach > 1 && choice === p.core * pow10(p.attach - 1)) {
+      return `A parked zero is still off. Stick on all ${p.attach}: ${fmt(p.ans)}.`;
+    }
+    if (p.attach === 0 && choice === p.core * 10) {
+      return `Those zeros were already used. Nothing extra goes on the end. The span is ${fmt(p.ans)}.`;
+    }
+    const moved = interiorShifted(p.ans);
+    if (moved != null && choice === moved) {
+      return `A 0 between other digits stays put. The span is ${fmt(p.ans)}, not ${fmt(choice)}.`;
+    }
+    return p.attach === 0
+      ? `No zeros are left. The span is ${fmt(p.ans)}.`
+      : `Stick exactly ${p.attach} ${zerosWord(p.attach)} onto ${fmt(p.core)} to get ${fmt(p.ans)}.`;
+  }
+
+  function successLine(p, step) {
+    if (step.type === 'zeros' && p.kind === 'mul') return `Parked ${p.attach}. Now multiply ${fmt(p.lf)} × ${fmt(p.rf)}.`;
+    if (step.type === 'zeros') {
+      return p.attach === 0
+        ? `0 zeros left. Now ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`
+        : `${p.lz} − ${p.rz} = ${p.attach} left. Now ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`;
+    }
+    if (step.type === 'core' && p.kind === 'mul') return `${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}. Stick the parked zeros on.`;
+    if (step.type === 'core') {
+      return p.attach === 0
+        ? `${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. No zeros left to stick on.`
+        : `${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. Stick the leftover ${zerosWord(p.attach)} on.`;
+    }
+    return `${fmt(p.left)} ${p.op} ${fmt(p.right)} = ${fmt(p.ans)}.`;
+  }
+
+  function strategyRecap(p) {
+    if (p.kind === 'mul') {
+      return `${fmt(p.left)} × ${fmt(p.right)} = ${fmt(p.ans)}   ·   ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}, then ${p.attach} ${zerosWord(p.attach)}`;
+    }
+    const tail = p.attach === 0
+      ? 'no zeros left over'
+      : `${p.attach} leftover ${zerosWord(p.attach)} → ${fmt(p.ans)}`;
+    return `${fmt(p.left)} ÷ ${fmt(p.right)} = ${fmt(p.ans)}   ·   ${p.lz} − ${p.rz} = ${p.attach}, ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}, ${tail}`;
+  }
+
+  function powLabel(z) { return z <= 0 ? '1' : '1' + '0'.repeat(z); }
+
+  function rewrite(p, stepIndex) {
+    if (stepIndex <= 0) return `${fmt(p.left)}  ${p.op}  ${fmt(p.right)}`;
+    if (p.kind === 'mul') {
+      if (stepIndex === 1) {
+        return p.attach === 0
+          ? `${fmt(p.lf)} × ${fmt(p.rf)}`
+          : `${fmt(p.left)} × ${fmt(p.right)}  =  (${fmt(p.lf)} × ${fmt(p.rf)}) × ${powLabel(p.attach)}`;
+      }
+      return p.attach === 0 ? `${fmt(p.core)}` : `${fmt(p.core)} × ${powLabel(p.attach)}`;
+    }
+    if (stepIndex === 1) {
+      return p.attach === 0
+        ? `${fmt(p.left)} ÷ ${fmt(p.right)}  =  ${fmt(p.lf)} ÷ ${fmt(p.rf)}`
+        : `${fmt(p.left)} ÷ ${fmt(p.right)}  =  (${fmt(p.lf)} ÷ ${fmt(p.rf)}) × ${powLabel(p.attach)}`;
+    }
+    return p.attach === 0 ? `${fmt(p.core)}` : `${fmt(p.core)} × ${powLabel(p.attach)}`;
+  }
 
   /* ===================== PLAYERS ===================== */
   const players = [0, 1].map(id => ({
@@ -350,13 +642,13 @@
   /* ===================== STATE ===================== */
   const S = { TITLE: 'title', PLAY: 'play', WIN: 'win', OVER: 'over' };
   const TITLE_MODES = [
-    { id: 'solo', t: 'SOLO ENGINEER', s: 'Every D-M-S-B step. Mouse, keys, or 8BitDo.' },
-    { id: 'coop', t: 'CO-OP CONSTRUCTION', s: 'P1: Divide & Subtract. P2: Multiply & Bring Down.' },
-    { id: 'versus', t: 'SPAN RACE', s: 'Same contract, two bridges. First train wins.' }
+    { id: 'solo', t: 'SOLO ENGINEER', s: 'Count the zeros, build the span, stick the zeros back on.' },
+    { id: 'coop', t: 'CO-OP CONSTRUCTION', s: 'P1 lays the zeros. P2 multiplies or divides the fronts.' },
+    { id: 'versus', t: 'SPAN RACE', s: 'Same contract. First finished deck wins the train.' }
   ];
   let state = S.TITLE;
   let gameMode = 'solo';
-  let tier = 1, combo = 1, teamScore = 0, titleSel = 0, titleCool = 0;
+  let contracts = 0, combo = 1, teamScore = 0, titleSel = 0, titleCool = 0;
   let popup = null, clouds = [], islands = [], sparks = [], trainX = -40;
   const pointer = { x: 0, y: 0, over: false, moved: false };
 
@@ -366,11 +658,9 @@
 
   function blankBoard() {
     return {
-      phase: 'cal', cal: null, div: null,
-      dmsb: 'D', stepIdx: 0,
-      stampedQ: [], doneM: [], doneS: [], brought: 0,
+      prob: null, steps: [], stepIdx: 0,
       options: [], correct: null,
-      bridgeSeg: 0, complete: false, remainderLocked: false
+      bridgeSeg: 0, complete: false
     };
   }
   let boards = [blankBoard()];
@@ -389,96 +679,42 @@
     const phase = state === S.TITLE ? 'TITLE'
       : state === S.WIN ? 'BRIDGE OPEN'
       : state === S.OVER ? 'GAME OVER'
-      : (boards[0] && boards[0].phase === 'cal' ? 'CALIBRATION ×÷10' : `LONG DIVISION`);
-    document.getElementById('hud-tier').textContent = `TIER ${tier} · ${phase}`;
+      : BAND_NAME[bandOf(contracts)];
+    document.getElementById('hud-tier').textContent = `SPAN ${state === S.PLAY ? contracts + 1 : Math.max(1, contracts)} · ${phase}`;
     document.getElementById('hud-score').textContent = `COMBO ×${combo} · ${teamScore} PTS`;
   }
 
-  function pickCal() {
-    const item = CAL_BANK[(Math.random() * CAL_BANK.length) | 0];
-    const extras = item.op === '×10' ? [item.raw, item.raw * 100] : [item.raw, (item.raw / 100) | 0];
-    return { ...item, shifted: false, options: distractors(item.answer, extras) };
-  }
-
-  function pickDiv() {
-    const bank = DIV_BANK[tier];
-    const item = bank[(Math.random() * bank.length) | 0];
-    return generateLongDivision(item.d, item.v);
-  }
-
   function setupOptions(board) {
-    if (board.phase === 'cal') {
-      board.options = board.cal.options.slice();
-      board.correct = board.cal.answer;
-      return;
-    }
-    const step = board.div.steps[board.stepIdx];
-    if (!step) return;
-    if (board.dmsb === 'D') {
-      board.correct = step.q;
-      board.options = distractors(step.q, [0, 1, step.q + 1]).map(o => Math.max(0, Math.min(9, o)));
-      if (!board.options.includes(step.q)) board.options[0] = step.q;
-    } else if (board.dmsb === 'M') {
-      board.correct = step.product;
-      board.options = distractors(step.product, [step.q * (board.div.divisor + 1), step.working]);
-    } else if (board.dmsb === 'S') {
-      board.correct = step.rem;
-      board.options = distractors(step.rem, [step.working, step.product]);
-    } else if (board.dmsb === 'B') {
-      if (step.isFinal) { board.dmsb = 'R'; setupOptions(board); return; }
-      board.correct = step.bringDown;
-      board.options = distractors(step.bringDown, board.div.digits).map(o => Math.max(0, Math.min(9, o)));
-      if (!board.options.includes(step.bringDown)) board.options[0] = step.bringDown;
-    } else if (board.dmsb === 'R') {
-      board.correct = board.div.remainder;
-      const opts = new Set([board.div.remainder, 0, Math.max(0, board.div.remainder - 1), board.div.remainder + 1]);
-      if (opts.size < 4) opts.add(board.div.divisor);
-      board.options = [...opts].slice(0, 4);
-      while (board.options.length < 4) board.options.push(board.options.length + 2);
-      for (let i = board.options.length - 1; i > 0; i--) {
-        const j = (Math.random() * (i + 1)) | 0;
-        [board.options[i], board.options[j]] = [board.options[j], board.options[i]];
-      }
-    }
+    const step = board.steps[board.stepIdx];
+    if (!step) { board.options = []; board.correct = null; return; }
+    board.correct = step.correct;
+    board.options = choicesFor(board.prob, step);
   }
 
   function startRound() {
-    const cal = pickCal();
-    const div = pickDiv();
+    const prob = makeProblem(contracts);
     const n = gameMode === 'versus' ? 2 : 1;
     boards = [];
     for (let i = 0; i < n; i++) {
       const b = blankBoard();
-      b.cal = JSON.parse(JSON.stringify(cal));
-      b.div = JSON.parse(JSON.stringify(div));
+      b.prob = JSON.parse(JSON.stringify(prob));
+      b.steps = makeSteps(b.prob);
       setupOptions(b);
       boards.push(b);
     }
+    players.forEach(pl => { pl.sel = 0; });
     trainX = -40;
     state = S.PLAY;
-    showPopup('GIRDER STOCK CALIBRATION', cal.prompt, '#7fdfff', 160);
-    updateHUD();
-  }
-
-  function beginDivision(board) {
-    board.phase = 'div';
-    board.dmsb = 'D';
-    board.stepIdx = 0;
-    board.stampedQ = [];
-    board.doneM = [];
-    board.doneS = [];
-    board.brought = 0;
-    setupOptions(board);
     showPopup(
-      `CHASM CONTRACT: ${board.div.dividend} m ÷ ${board.div.divisor} pillars`,
-      `Tier ${tier} · Equal spans${tier === 3 ? ' + remainder ramp' : ''}`,
-      '#f0c040', 170
+      'SPAN CONTRACT',
+      `${fmt(prob.left)} ${prob.op} ${fmt(prob.right)} m · ${BAND_NAME[bandOf(contracts)]}`,
+      '#7fdfff', 160
     );
     updateHUD();
   }
 
-  function coopOwner(dmsb) {
-    return (dmsb === 'D' || dmsb === 'S') ? 0 : 1;
+  function coopOwner(stepIdx) {
+    return stepIdx % 2 === 0 ? 0 : 1;
   }
 
   function boardFor(p) {
@@ -488,7 +724,11 @@
   function mistake(player, tip) {
     audio.error();
     shake = 12;
-    showPopup('STRUCTURAL WARNING!', tip, '#ff6b5a', 200);
+    const cut = tip.length > 78 ? tip.slice(0, 75) + '…' : tip;
+    const dot = cut.indexOf('. ');
+    const title = dot > 12 ? cut.slice(0, dot + 1) : cut;
+    const sub = dot > 12 ? cut.slice(dot + 2) : '';
+    showPopup(title, sub, '#ff6b5a', 220);
     if (player) player.shields = Math.max(0, player.shields - 1);
     combo = 1;
     updateHUD();
@@ -512,66 +752,8 @@
     updateHUD();
   }
 
-  function advance(board, player) {
-    audio.stamp();
-    const step = board.div.steps[board.stepIdx];
-
-    if (board.dmsb === 'D') {
-      board.stampedQ.push(step.q);
-      if (step.zeroPlaceholder) {
-        showPopup('0 PLACEHOLDER LOCKED',
-          `${board.div.divisor} pillars cannot divide ${step.working} into whole tens — zero on the roof!`,
-          '#f0c040', 130);
-      }
-      board.dmsb = 'M';
-      setupOptions(board);
-      award(player, 10);
-      return;
-    }
-    if (board.dmsb === 'M') {
-      board.doneM.push(step.product);
-      board.dmsb = 'S';
-      setupOptions(board);
-      award(player, 10);
-      return;
-    }
-    if (board.dmsb === 'S') {
-      board.doneS.push(step.rem);
-      board.dmsb = step.isFinal ? 'R' : 'B';
-      setupOptions(board);
-      award(player, 10);
-      return;
-    }
-    if (board.dmsb === 'B') {
-      audio.girder();
-      audio.twang();
-      board.bridgeSeg++;
-      board.brought++;
-      board.stepIdx++;
-      board.dmsb = 'D';
-      setupOptions(board);
-      award(player, 15);
-      showPopup('SPAN EXTENDED!', 'Crane brought down the next digit', '#7fdfff', 90);
-      return;
-    }
-    if (board.dmsb === 'R') {
-      board.remainderLocked = true;
-      board.complete = true;
-      board.bridgeSeg = board.div.steps.length;
-      audio.girder();
-      if (board.div.remainder > 0) {
-        showPopup(`DEPLOY ${board.div.remainder}m REMAINDER RAMP!`, 'Cliff gap sealed', '#f0a020', 140);
-      } else {
-        showPopup('EXACT SPAN LOCK — R 0', 'Chasm fully bridged', '#7dffb0', 140);
-      }
-      award(player, 40);
-      onBoardComplete(player);
-    }
-  }
-
   function onBoardComplete(player) {
     if (gameMode === 'versus') {
-      // First finisher wins the race
       if (state === S.WIN) return;
       if (player) player.stars++;
     } else if (player) {
@@ -586,76 +768,52 @@
     audio.horn();
     setTimeout(() => audio.fanfare(), 200);
     teamScore += 100 * combo;
-    showPopup('HOVER-TRAIN CLEARED!', 'Architect Star earned — next contract inbound', '#f0c040', 200);
+    const prob = (player && gameMode === 'versus' ? boards[player.id] : boards[0]).prob;
+    showPopup('HOVER-TRAIN CLEARED!', strategyRecap(prob), '#f0c040', 200);
+    contracts++;
     updateHUD();
     setTimeout(() => {
       if (state !== S.WIN) return;
-      if (Math.random() < 0.5 && tier < 3) tier++;
-      players.forEach(p => { if (p.shields < 3) p.shields++; });
+      players.forEach(pl => { if (pl.shields < 3) pl.shields++; });
       startRound();
-    }, 3000);
+    }, 3200);
   }
 
   function trySelect(player, board) {
     if (!board || board.complete || state !== S.PLAY) return;
+    const step = board.steps[board.stepIdx];
+    if (!step) return;
     const val = board.options[player.sel % board.options.length];
-
-    if (board.phase === 'cal') {
-      if (val === board.correct) {
-        audio.wind();
-        board.cal.shifted = true;
-        award(player, 25);
-        showPopup(
-          `${board.cal.raw} ${board.cal.op} = ${board.cal.answer} m`,
-          'Place-value shift locked · Begin chasm partitioning',
-          '#7dffb0', 130
-        );
-        setTimeout(() => { if (!board.complete && board.phase === 'cal') beginDivision(board); }, 850);
-      } else {
-        const tip = board.cal.op === '×10'
-          ? `×10 shifts digits LEFT and adds a 0. ${board.cal.raw} × 10 = ${board.cal.answer}, not ${val}!`
-          : `÷10 shifts digits RIGHT (drop trailing 0). ${board.cal.raw} ÷ 10 = ${board.cal.answer}, not ${val}!`;
-        mistake(player, tip);
-      }
-      return;
-    }
-
     if (gameMode === 'coop') {
-      const who = coopOwner(board.dmsb);
+      const who = coopOwner(board.stepIdx);
       if (player.id !== who) {
         audio.click();
         showPopup('HANDOFF REQUIRED',
-          who === 0 ? 'P1 (Red) handles Divide & Subtract' : 'P2 (Blue) handles Multiply & Bring Down / Ramp',
-          '#f0c040', 100);
+          who === 0
+            ? (board.stepIdx === 0 ? 'P1 lays the zeros' : 'P1 sticks the zeros back on')
+            : 'P2 multiplies or divides the fronts',
+          '#f0c040', 110);
         return;
       }
     }
-
-    const step = board.div.steps[board.stepIdx];
-    if (val === board.correct) {
-      advance(board, player);
+    if (val === step.correct) {
+      audio.stamp();
+      board.bridgeSeg++;
+      award(player, step.type === 'seal' ? 40 : 15);
+      if (step.type === 'seal') {
+        board.complete = true;
+        board.stepIdx++;
+        onBoardComplete(player);
+        return;
+      }
+      const note = successLine(board.prob, step);
+      board.stepIdx++;
+      setupOptions(board);
+      if (step.type === 'zeros') audio.girder();
+      showPopup(stepLabels(board.prob)[board.stepIdx - 1], note, '#7dffb0', 120);
       return;
     }
-
-    let tip = 'Recheck your engineering calc!';
-    if (board.dmsb === 'D') {
-      tip = (step.zeroPlaceholder || (step.working < board.div.divisor && step.q === 0))
-        ? `${board.div.divisor} pillars cannot divide ${step.working} m into whole tens! Place a 0 placeholder on the roof before bringing down!`
-        : `Divide: How many groups of ${board.div.divisor} fit in ${step.working}? Answer is ${step.q}, not ${val}.`;
-    } else if (board.dmsb === 'M') {
-      tip = `Check multiplication: ${step.q} × ${board.div.divisor} = ${step.product}, not ${val}!`;
-    } else if (board.dmsb === 'S') {
-      tip = val >= board.div.divisor
-        ? `Remainder ${val} is greater than ${board.div.divisor} pillars — you can fit one more metre per span!`
-        : `Subtract: ${step.working} − ${step.product} = ${step.rem}, not ${val}.`;
-    } else if (board.dmsb === 'B') {
-      tip = `Bring down the next digit: ${step.bringDown}, not ${val}.`;
-    } else if (board.dmsb === 'R') {
-      tip = board.div.remainder > 0 && val === 0
-        ? `Cliff gap remains! Deploy the ${board.div.remainder} m REMAINDER RAMP.`
-        : `Remainder must be ${board.div.remainder} m (less than ${board.div.divisor} pillars).`;
-    }
-    mistake(player, tip);
+    mistake(player, explain(board.prob, step, val));
   }
 
   function handleAction(p) {
@@ -672,7 +830,8 @@
     if (state === S.TITLE) {
       gameMode = TITLE_MODES[titleSel].id;
       players.forEach(pl => { pl.shields = 3; pl.stars = 0; pl.score = 0; });
-      teamScore = 0; combo = 1; tier = 1;
+      teamScore = 0; combo = 1; contracts = 0;
+      recentKeys.length = 0;
       startRound();
       return;
     }
@@ -888,17 +1047,21 @@
     drawCliff(ox + 6, chasmTop, leftW - 6, cliffH, true);
     drawCliff(ox + bw - rightW, chasmTop, rightW - 6, cliffH, false);
 
-    const div = board.div;
-    if (div) {
-      ctx.fillStyle = '#ffe9a0';
-      ctx.font = '700 13px "Exo 2", sans-serif';
+    const prob = board.prob;
+    if (prob) {
+      const spanLabel = `${fmt(prob.left)} ${prob.op} ${fmt(prob.right)} m`;
+      ctx.font = '700 16px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`${div.dividend} m chasm · ${div.divisor} pillars`, ox + bw / 2, oy + 34);
+      const tw = ctx.measureText(spanLabel).width;
+      ctx.fillStyle = 'rgba(4,16,32,0.78)';
+      roundRect(ox + bw / 2 - tw / 2 - 10, oy + 16, tw + 20, 24, 6); ctx.fill();
+      ctx.fillStyle = '#ffe9a0';
+      ctx.fillText(spanLabel, ox + bw / 2, oy + 34);
       ctx.textAlign = 'left';
     }
 
     const deckY = chasmTop + 6;
-    const segs = div ? div.steps.length : 3;
+    const segs = 3;
 
     ctx.strokeStyle = 'rgba(220,230,240,0.4)';
     ctx.lineWidth = 1.5;
@@ -925,19 +1088,6 @@
       ctx.fillRect(sx + segW - 3, deckY + 10, 5, cliffH * 0.32);
     }
 
-    if (board.complete && div && div.remainder > 0) {
-      const rx = gapX + gapW - 20;
-      ctx.fillStyle = '#f0a020';
-      ctx.shadowColor = '#f0a020'; ctx.shadowBlur = 14;
-      ctx.beginPath();
-      ctx.moveTo(rx, deckY + 10); ctx.lineTo(rx + 22, deckY + 10); ctx.lineTo(rx + 22, deckY + 26);
-      ctx.closePath(); ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = '#fff3c8';
-      ctx.font = '700 11px "Exo 2", sans-serif';
-      ctx.fillText(`R ${div.remainder}m`, rx - 6, deckY - 4);
-    }
-
     const craneX = gapX + Math.min(built * segW, gapW - 16) + 8;
     const bob = Math.sin(time * 0.05) * 3;
     ctx.strokeStyle = '#f0c040'; ctx.lineWidth = 3;
@@ -958,197 +1108,150 @@
     }
   }
 
-  function drawCalibration(board, ox, oy, bw, bh) {
-    ctx.fillStyle = 'rgba(4,20,40,0.72)';
-    ctx.strokeStyle = 'rgba(125,220,255,0.5)';
-    ctx.lineWidth = 2;
-    roundRect(ox, oy, bw, bh, 10); ctx.fill(); ctx.stroke();
-    if (!board?.cal) return;
-
-    const cal = board.cal;
-    ctx.fillStyle = '#9de8ff';
-    ctx.font = '700 13px "Exo 2", sans-serif';
-    ctx.fillText('ENGINEERING RAIL · PLACE VALUE [ Th | H | T | O ]', ox + 14, oy + 22);
-    ctx.fillStyle = '#ffe9a0';
-    ctx.font = '600 14px "Exo 2", sans-serif';
-    ctx.fillText(cal.prompt, ox + 14, oy + 46);
-
-    const places = ['Th', 'H', 'T', 'O'];
-    const show = String(cal.shifted ? cal.answer : cal.raw).padStart(4, ' ');
-    const trackX = ox + bw / 2 - 112;
-    const trackY = oy + 88;
-
-    for (let i = 0; i < 4; i++) {
-      const px = trackX + i * 56;
-      const lit = cal.shifted;
-      ctx.fillStyle = lit ? 'rgba(60,140,90,0.45)' : 'rgba(30,80,120,0.5)';
-      ctx.strokeStyle = lit ? '#7dffb0' : '#3db8e8';
-      roundRect(px, trackY, 48, 56, 8); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#8ab';
-      ctx.font = '700 11px "Exo 2", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(places[i], px + 24, trackY - 8);
-      ctx.fillStyle = '#e8f4ff';
-      ctx.font = '800 26px "JetBrains Mono", monospace';
-      ctx.fillText(show[i] === ' ' ? '' : show[i], px + 24, trackY + 38);
-      ctx.textAlign = 'left';
-    }
-
-    ctx.fillStyle = cal.op === '×10' ? '#7dffb0' : '#ffb07a';
-    ctx.font = '700 15px "Exo 2", sans-serif';
+  function drawDigitRow(str, cx, y, trail, ghost, compact, badge) {
+    const n = str.length + (ghost || 0);
+    const box = compact ? 26 : 34;
+    const gap = compact ? 4 : 6;
+    const total = n * box + Math.max(0, n - 1) * gap;
+    let x = cx - total / 2;
     ctx.textAlign = 'center';
-    ctx.fillText(
-      cal.op === '×10' ? '← SHIFT LEFT (×10) · insert trailing 0' : 'SHIFT RIGHT (÷10) · drop trailing 0 →',
-      ox + bw / 2, trackY + 88
-    );
-    ctx.fillStyle = '#c8e8ff';
-    ctx.font = '600 13px "Exo 2", sans-serif';
-    ctx.fillText(`Lock calibrated metres for ${cal.raw} ${cal.op}`, ox + bw / 2, trackY + 112);
+    for (let i = 0; i < n; i++) {
+      const ghosting = i >= str.length;
+      const fromEnd = str.length - 1 - i;
+      const isTrail = !ghosting && fromEnd >= 0 && fromEnd < trail;
+      ctx.fillStyle = ghosting ? 'rgba(240,192,64,0.12)' : isTrail ? 'rgba(240,160,40,0.3)' : 'rgba(16,48,78,0.9)';
+      ctx.strokeStyle = ghosting || isTrail ? '#f0c040' : '#7fdfff';
+      ctx.setLineDash(ghosting ? [3, 3] : []);
+      roundRect(x, y, box, box + 4, 6); ctx.fill(); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = ghosting || isTrail ? '#ffe9a0' : '#e8f4ff';
+      ctx.font = `800 ${compact ? 14 : 18}px "JetBrains Mono", monospace`;
+      ctx.fillText(ghosting ? '0' : str[i], x + box / 2, y + box * 0.72);
+      x += box + gap;
+    }
+    if (badge) {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#9ec4de';
+      ctx.font = '600 11px "Exo 2", sans-serif';
+      ctx.fillText(badge, x + 6, y + box * 0.68);
+    }
+    ctx.textAlign = 'left';
+    ctx.setLineDash([]);
+  }
+
+  function drawPark(count, x, y, compact, label) {
+    const w = compact ? 84 : 108;
+    const h = compact ? 52 : 64;
+    ctx.fillStyle = 'rgba(10,30,52,0.9)';
+    ctx.strokeStyle = '#f0c040';
+    roundRect(x, y, w, h, 8); ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f0c040';
+    ctx.font = '700 10px "Exo 2", sans-serif';
+    ctx.fillText(label, x + w / 2, y + 14);
+    ctx.fillStyle = count ? '#e8f4ff' : '#8ab';
+    ctx.font = `800 ${compact ? 16 : 20}px "JetBrains Mono", monospace`;
+    ctx.fillText(count ? '0'.repeat(Math.min(count, 4)) : 'none', x + w / 2, y + h * 0.68);
     ctx.textAlign = 'left';
   }
 
-  function drawBracket(board, ox, oy, bw, bh) {
-    ctx.fillStyle = 'rgba(4,20,40,0.75)';
+  function drawContract(board, ox, oy, bw, bh, compact) {
+    ctx.fillStyle = 'rgba(4,20,40,0.94)';
     ctx.strokeStyle = 'rgba(125,220,255,0.5)';
     ctx.lineWidth = 2;
     roundRect(ox, oy, bw, bh, 10); ctx.fill(); ctx.stroke();
-
-    ctx.fillStyle = '#9de8ff';
-    ctx.font = '700 13px "Exo 2", sans-serif';
-    ctx.fillText('BLUEPRINT · LONG DIVISION BRACKET', ox + 14, oy + 20);
-
-    if (!board?.div) {
-      ctx.fillStyle = '#8ab';
-      ctx.font = '500 14px "JetBrains Mono", monospace';
-      ctx.fillText('Calibrate girder stock first…', ox + 20, oy + 60);
-      return;
-    }
-
-    const div = board.div;
-    const cell = Math.min(24, (bw - 100) / Math.max(6, div.digits.length + 2));
-    const baseX = ox + 64;
-    const baseY = oy + 78;
-    const mono = `700 ${Math.floor(cell * 0.85)}px "JetBrains Mono", monospace`;
-
-    // Quotient
-    ctx.font = mono;
-    ctx.fillStyle = '#7dffb0';
-    for (let i = 0; i < board.stampedQ.length; i++) {
-      const col = div.steps[i].colEnd - 1;
-      ctx.fillText(String(board.stampedQ[i]), baseX + col * cell, baseY - 30);
-    }
-    if (board.remainderLocked) {
-      ctx.fillStyle = '#f0a020';
-      ctx.fillText(`R${div.remainder}`, baseX + div.digits.length * cell + 8, baseY - 30);
-    }
-
-    // Bracket
-    ctx.strokeStyle = '#c8e8ff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(baseX - 6, baseY - 20);
-    ctx.lineTo(baseX + div.digits.length * cell + 8, baseY - 20);
-    ctx.moveTo(baseX - 6, baseY - 20);
-    ctx.lineTo(baseX - 6, baseY + 6);
-    ctx.stroke();
-
-    ctx.fillStyle = '#ffe9a0';
-    ctx.fillText(String(div.divisor), baseX - 28 - (String(div.divisor).length - 1) * 8, baseY);
-
-    ctx.fillStyle = '#e8f4ff';
-    for (let i = 0; i < div.digits.length; i++) {
-      ctx.fillText(String(div.digits[i]), baseX + i * cell, baseY);
-    }
-
-    // Worked rows for completed DMS steps
-    let rowY = baseY + 28;
-    const maxShow = Math.min(board.doneM.length, board.stepIdx + (board.dmsb === 'R' || board.remainderLocked ? 1 : 0) + 1);
-    for (let s = 0; s < board.doneM.length; s++) {
-      const step = div.steps[s];
-      const prod = String(step.product);
-      const wStr = String(step.working);
-      const prodCol = step.colEnd - prod.length;
-      ctx.fillStyle = '#ff9b8a';
-      ctx.fillText(`-${prod}`, baseX + prodCol * cell - cell * 0.35, rowY);
-      ctx.strokeStyle = 'rgba(200,230,255,0.45)';
-      ctx.beginPath();
-      ctx.moveTo(baseX + step.colStart * cell - 2, rowY + 5);
-      ctx.lineTo(baseX + step.colEnd * cell, rowY + 5);
-      ctx.stroke();
-      rowY += 22;
-
-      if (s < board.doneS.length) {
-        let showVal;
-        if (s < board.brought && div.steps[s + 1]) {
-          showVal = String(div.steps[s + 1].working);
-          const next = div.steps[s + 1];
-          ctx.fillStyle = '#9de8ff';
-          ctx.fillText(showVal, baseX + next.colStart * cell, rowY);
-        } else {
-          showVal = String(board.doneS[s]);
-          ctx.fillStyle = '#9de8ff';
-          ctx.fillText(showVal, baseX + (step.colEnd - showVal.length) * cell, rowY);
-        }
-        rowY += 24;
-      }
-    }
-
-    // Active working spotlight
-    if (board.phase === 'div' && !board.complete && board.dmsb !== 'R') {
-      const step = div.steps[board.stepIdx];
-      if (step && board.dmsb === 'D') {
-        ctx.strokeStyle = '#f0c040';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(baseX + step.colStart * cell - 3, baseY - cell + 4, String(step.working).length * cell + 4, cell + 4);
-      }
-    }
-
-    // D-M-S-B strip
-    const labels = ['1. DIVIDE', '2. MULTIPLY', '3. SUBTRACT', '4. BRING DOWN'];
-    const stages = ['D', 'M', 'S', 'B'];
-    const active = board.dmsb === 'R' ? 3 : Math.max(0, stages.indexOf(board.dmsb));
-    const sy = oy + bh - 46;
-    for (let i = 0; i < 4; i++) {
-      const on = board.phase === 'div' && i === active;
-      const x = ox + 12 + i * ((bw - 24) / 4);
+    if (!board || !board.prob) return;
+    const p = board.prob;
+    const step = board.steps[board.stepIdx];
+    const labels = p.kind === 'mul'
+      ? ['1 PARK ZEROS', '2 FRONTS', '3 STICK ON']
+      : ['1 ZEROS LEFT', '2 FRONTS', '3 STICK ON'];
+    const pillW = (bw - 28) / 3;
+    for (let i = 0; i < 3; i++) {
+      const on = !board.complete && board.stepIdx === i;
+      const x = ox + 8 + i * (pillW + 4);
       ctx.fillStyle = on ? 'rgba(240,192,64,0.35)' : 'rgba(20,40,60,0.55)';
       ctx.strokeStyle = on ? '#f0c040' : 'rgba(100,140,170,0.45)';
-      roundRect(x, sy, (bw - 32) / 4, 30, 6); ctx.fill(); ctx.stroke();
+      roundRect(x, oy + 8, pillW, compact ? 20 : 24, 6); ctx.fill(); ctx.stroke();
       ctx.fillStyle = on ? '#ffe9a0' : '#8ab';
-      ctx.font = '700 10px "Exo 2", sans-serif';
+      ctx.font = `700 ${compact ? 9 : 11}px "Exo 2", sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText(labels[i], x + (bw - 32) / 8, sy + 19);
-      ctx.textAlign = 'left';
+      ctx.fillText(labels[i], x + pillW / 2, oy + (compact ? 22 : 24));
+    }
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe9a0';
+    ctx.font = `800 ${compact ? 14 : 18}px "Exo 2", sans-serif`;
+    const header = board.complete ? `${fmt(p.left)} ${p.op} ${fmt(p.right)} = ${fmt(p.ans)}` : rewrite(p, board.stepIdx);
+    let size = compact ? 14 : 18;
+    ctx.font = `800 ${size}px "Exo 2", sans-serif`;
+    while (size > 11 && ctx.measureText(header).width > bw - 24) {
+      size -= 1;
+      ctx.font = `800 ${size}px "Exo 2", sans-serif`;
+    }
+    ctx.fillText(header, ox + bw / 2, oy + (compact ? 48 : 58));
+
+    const visY = oy + (compact ? 56 : 72);
+    if (board.complete) {
+      ctx.fillStyle = '#7dffb0';
+      ctx.font = `800 ${compact ? 22 : 28}px "JetBrains Mono", monospace`;
+      ctx.fillText(fmt(p.ans) + ' m', ox + bw / 2, visY + 36);
+    } else if (step && step.type === 'zeros') {
+      const gapY = compact ? 62 : 86;
+      drawDigitRow(String(p.left), ox + bw / 2 - 28, visY, p.lz, 0, compact, `${p.lz} trailing`);
+      ctx.fillStyle = '#7fdfff';
+      ctx.font = '800 22px "Exo 2", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.op, ox + bw / 2, visY + gapY * 0.72);
+      drawDigitRow(String(p.right), ox + bw / 2 - 28, visY + gapY, p.rz, 0, compact, `${p.rz} trailing`);
+    } else if (step && step.type === 'core') {
+      ctx.fillStyle = '#e8f4ff';
+      ctx.font = `800 ${compact ? 22 : 32}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'center';
+      const expr = p.kind === 'mul' ? `${fmt(p.lf)}  ×  ${fmt(p.rf)}` : `${fmt(p.lf)}  ÷  ${fmt(p.rf)}`;
+      ctx.fillText(expr, ox + bw / 2 - (compact ? 36 : 50), visY + 28);
+      drawPark(p.attach, ox + bw / 2 + (compact ? 24 : 40), visY, compact, p.kind === 'div' ? 'LEFTOVER' : 'PARKED');
+    } else if (step) {
+      drawDigitRow(String(p.core), ox + bw / 2, visY + 6, 0, p.attach, compact,
+        p.attach ? `stick ${p.attach} ${p.attach === 1 ? 'zero' : 'zeros'} on the end` : 'no zeros left to add');
     }
 
-    if (board.phase === 'div' && gameMode !== 'versus') {
-      ctx.font = '700 12px "Exo 2", sans-serif';
-      if (gameMode === 'solo') {
-        ctx.fillStyle = '#ffb07a';
-        ctx.fillText('► Solo engineer', ox + 14, oy + 40);
-      } else if (gameMode === 'coop') {
-        const who = coopOwner(board.dmsb);
+    if (step && !board.complete) {
+      ctx.fillStyle = '#c8e8ff';
+      ctx.font = `600 ${compact ? 11 : 13}px "Exo 2", sans-serif`;
+      ctx.textAlign = 'center';
+      const maxW = bw - 28;
+      const words = step.prompt.split(' ');
+      const lines = [];
+      let cur = '';
+      for (const w of words) {
+        const trial = cur ? cur + ' ' + w : w;
+        if (cur && ctx.measureText(trial).width > maxW) { lines.push(cur); cur = w; }
+        else cur = trial;
+      }
+      if (cur) lines.push(cur);
+      const base = oy + bh - 12 - (lines.length - 1) * 14;
+      lines.slice(0, 2).forEach((line, i) => ctx.fillText(line, ox + bw / 2, base + i * 14));
+      if (gameMode === 'coop') {
+        const who = board.stepIdx % 2;
         ctx.fillStyle = who === 0 ? '#ff6b5a' : '#5ab0ff';
-        ctx.fillText(who === 0 ? '► P1 turn (Divide / Subtract)' : '► P2 turn (Multiply / Bring Down)', ox + 14, oy + 40);
+        ctx.font = '700 11px "Exo 2", sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(who === 0 ? 'P1' : 'P2', ox + 12, oy + bh - 8);
       }
     }
-
-    // Compact answer preview
-    ctx.fillStyle = '#8ab';
-    ctx.font = '600 11px "JetBrains Mono", monospace';
-    const qSoFar = board.stampedQ.join('') || '…';
-    ctx.fillText(`roof: ${qSoFar}${board.remainderLocked ? ` R${div.remainder}` : ''}`, ox + 14, oy + bh - 56);
+    ctx.textAlign = 'left';
   }
 
   function drawOptions(board, pid) {
-    if (!board?.options) return;
+    if (!board?.options || board.complete) return;
     const cards = optionCards(board.options.length, pid);
-    const label = board.phase === 'cal' ? 'LOCK CALIBRATED METRES'
-      : board.dmsb === 'D' ? 'STAMP QUOTIENT DIGIT [D]'
-      : board.dmsb === 'M' ? 'LOCK STEEL USED [M]'
-      : board.dmsb === 'S' ? 'LOCK REMAINING GAP [S]'
-      : board.dmsb === 'B' ? 'BRING DOWN NEXT DIGIT [B]'
-      : (board.div.remainder > 0 ? `DEPLOY ${board.div.remainder}m REMAINDER RAMP` : 'LOCK R 0 — EXACT SPAN');
+    const step = board.steps && board.steps[board.stepIdx];
+    const zerosStep = step && step.type === 'zeros';
+    const label = !step ? 'DECK LOCKED'
+      : step.type === 'zeros' && board.prob.kind === 'div' ? 'HOW MANY ARE LEFT?'
+      : step.type === 'zeros' ? 'HOW MANY ZEROS?'
+      : step.type === 'core' ? 'LOCK THE FRONT LENGTH'
+      : 'LOCK THE FINISHED DECK';
 
     ctx.fillStyle = '#9de8ff';
     ctx.font = '700 12px "Exo 2", sans-serif';
@@ -1166,14 +1269,24 @@
       ctx.lineWidth = selected ? 3 : 2;
       roundRect(c.x, c.y, c.w, c.h, 8); ctx.fill(); ctx.stroke();
 
-      let text = String(board.options[i]);
-      if (board.phase === 'cal') text = `${board.options[i]} m`;
-      else if (board.dmsb === 'R') text = board.options[i] === 0 ? 'R 0' : `R ${board.options[i]}m`;
-
       ctx.fillStyle = '#e8f4ff';
-      ctx.font = '800 17px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(text, c.cx, c.y + 38);
+      if (zerosStep) {
+        ctx.font = '800 20px "JetBrains Mono", monospace';
+        ctx.fillText(String(board.options[i]), c.cx, c.y + 28);
+        ctx.fillStyle = '#f0c040';
+        ctx.font = '700 11px "Exo 2", sans-serif';
+        ctx.fillText(board.options[i] === 1 ? 'zero' : 'zeros', c.cx, c.y + 48);
+      } else {
+        const text = fmt(board.options[i]);
+        let size = 18;
+        ctx.font = `800 ${size}px "JetBrains Mono", monospace`;
+        while (size > 12 && ctx.measureText(text).width > c.w - 10) {
+          size -= 1;
+          ctx.font = `800 ${size}px "JetBrains Mono", monospace`;
+        }
+        ctx.fillText(text, c.cx, c.y + 38);
+      }
       ctx.textAlign = 'left';
     }
   }
@@ -1227,7 +1340,10 @@
     ctx.fillText('Span & Pillar Engineer', W / 2, titleY + 32);
     ctx.fillStyle = '#c8e8ff';
     ctx.font = '600 14px "Exo 2", sans-serif';
-    ctx.fillText('Primary 3–4 · Place-value ×10 / ÷10 · Long Division D-M-S-B', W / 2, titleY + 56);
+    ctx.fillText('Primary 3–4 · × and ÷ by 10, 100, 1000 and their multiples', W / 2, titleY + 56);
+    ctx.fillStyle = '#9de8ff';
+    ctx.font = '600 13px "JetBrains Mono", monospace';
+    ctx.fillText('4 200 ÷ 60  →  2 − 1 = 1 left  →  42 ÷ 6 = 7  →  stick 1 zero  →  70', W / 2, titleY + 80);
 
     const cards = titleCards();
     for (let i = 0; i < TITLE_MODES.length; i++) {
@@ -1276,17 +1392,30 @@
     ctx.save();
     ctx.globalAlpha = Math.max(0, a);
     ctx.textAlign = 'center';
+    const boxW = Math.min(860, W - 48);
+    const boxH = popup.sub ? 78 : 52;
     ctx.fillStyle = 'rgba(4,20,40,0.85)';
-    roundRect(W / 2 - 290, H * 0.13, 580, 66, 10); ctx.fill();
+    const boxY = H * 0.695;
+    roundRect(W / 2 - boxW / 2, boxY, boxW, boxH, 10); ctx.fill();
     ctx.strokeStyle = popup.color; ctx.lineWidth = 2;
-    roundRect(W / 2 - 290, H * 0.13, 580, 66, 10); ctx.stroke();
+    roundRect(W / 2 - boxW / 2, boxY, boxW, boxH, 10); ctx.stroke();
     ctx.fillStyle = popup.color;
     ctx.font = '800 17px "Exo 2", sans-serif';
-    ctx.fillText(popup.text, W / 2, H * 0.13 + 28);
+    ctx.fillText(popup.text, W / 2, boxY + 26);
     if (popup.sub) {
       ctx.fillStyle = '#c8e8ff';
       ctx.font = '600 12px "Exo 2", sans-serif';
-      ctx.fillText(popup.sub, W / 2, H * 0.13 + 50);
+      const maxW = boxW - 28;
+      const words = popup.sub.split(' ');
+      const lines = [];
+      let cur = '';
+      for (const w of words) {
+        const trial = cur ? cur + ' ' + w : w;
+        if (cur && ctx.measureText(trial).width > maxW) { lines.push(cur); cur = w; }
+        else cur = trial;
+      }
+      if (cur) lines.push(cur);
+      lines.slice(0, 2).forEach((line, i) => ctx.fillText(line, W / 2, boxY + 48 + i * 15));
     }
     ctx.restore();
   }
@@ -1402,32 +1531,14 @@
     } else if (gameMode === 'versus') {
       for (let i = 0; i < 2; i++) {
         const ox = i === 0 ? W * 0.02 : W * 0.52;
-        drawBridge(boards[i], ox, H * 0.055, W * 0.46, H * 0.30, i === 0 ? 'P1 BRIDGE' : 'P2 BRIDGE');
-        if (boards[i].phase === 'cal') drawCalibration(boards[i], ox, H * 0.37, W * 0.46, H * 0.36);
-        else drawBracket(boards[i], ox, H * 0.37, W * 0.46, H * 0.36);
+        drawBridge(boards[i], ox, H * 0.055, W * 0.46, H * 0.26, i === 0 ? 'P1 BRIDGE' : 'P2 BRIDGE');
+        drawContract(boards[i], ox, H * 0.33, W * 0.46, H * 0.40, true);
         drawOptions(boards[i], i);
       }
       drawReticles();
     } else {
-      drawBridge(boards[0], W * 0.02, H * 0.055, W * 0.50, H * 0.40, 'LIVE SKYBRIDGE CHASM');
-      if (boards[0].phase === 'cal') {
-        drawCalibration(boards[0], W * 0.54, H * 0.055, W * 0.44, H * 0.40);
-        ctx.fillStyle = 'rgba(4,20,40,0.55)';
-        roundRect(W * 0.02, H * 0.47, W * 0.50, H * 0.24, 10); ctx.fill();
-        ctx.fillStyle = '#9de8ff';
-        ctx.font = '700 14px "Exo 2", sans-serif';
-        ctx.fillText('Shift digits on the illuminated rail, then lock the metre total.', W * 0.04, H * 0.54);
-        ctx.fillStyle = '#c8e8ff';
-        ctx.font = '600 13px "Exo 2", sans-serif';
-        ctx.fillText('×10 → digits LEFT + trailing 0     ÷10 → digits RIGHT, drop ones 0', W * 0.04, H * 0.59);
-        ctx.fillStyle = '#ffe9a0';
-        const calHint = gameMode === 'solo'
-          ? 'Solo: lock the metre total, then run every D-M-S-B step yourself.'
-          : 'Co-op: either engineer may lock calibration. Then P1/P2 hand off D-M-S-B.';
-        ctx.fillText(calHint, W * 0.04, H * 0.65);
-      } else {
-        drawBracket(boards[0], W * 0.54, H * 0.055, W * 0.44, H * 0.66);
-      }
+      drawBridge(boards[0], W * 0.02, H * 0.055, W * 0.50, H * 0.62, 'LIVE SKYBRIDGE');
+      drawContract(boards[0], W * 0.54, H * 0.055, W * 0.44, H * 0.62, false);
       drawOptions(boards[0], 0);
       drawReticles();
     }

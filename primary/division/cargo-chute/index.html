@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>Cargo Chute: The D-M-S-B Refinery</title>
+<title>Cargo Chute: Zero-Car Refinery</title>
 <style>
   html, body {
     margin: 0;
@@ -36,14 +36,15 @@
 </head>
 <body>
 <noscript>JavaScript and Canvas are required for Cargo Chute.</noscript>
-<canvas id="game" aria-label="Cargo Chute: The D-M-S-B Refinery. Place-value ×10/÷10 and long division D-M-S-B for Primary 3–4. Solo: mouse, WASD + F/Space, or 8BitDo D-pad + A. Co-op P2: arrows + Enter or a second 8BitDo."></canvas>
+<canvas id="game" aria-label="Cargo Chute: Zero-Car Refinery. Multiply and divide by 10, 100, 1000 and their multiples for Primary 3–4. Solo: mouse, WASD + F/Space, or 8BitDo D-pad + A. Co-op P2: arrows + Enter or a second 8BitDo."></canvas>
 <div id="live" class="sr" aria-live="polite"></div>
 <script>
 'use strict';
 
 /* ==========================================================================
-   CARGO CHUTE: THE D-M-S-B REFINERY
-   Singapore Primary 3–4 · ×10/÷10 place-value + single-digit long division
+   CARGO CHUTE: THE ZERO-CAR REFINERY
+   Singapore Primary 3–4 · × and ÷ by 10, 100, 1000 and their multiples
+   Method: park or cancel trailing zeros, work the fronts, stick zeros back on.
    Single-file HTML5 Canvas · Solo / 2P Co-op / Competitive · Web Audio · Mouse · 8BitDo
    ========================================================================== */
 
@@ -74,9 +75,6 @@ const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, R
 const AXIS_DEAD = 0.5;
 const hatIdle = {};
 const PLAY_MODES = ['solo', 'coop', 'versus'];
-
-const STEP_LABELS = ['DIVIDE', 'MULTIPLY', 'SUBTRACT', 'BRING DOWN'];
-const STEP_KEYS = ['D', 'M', 'S', 'B'];
 
 /* ---------- Utils ---------- */
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -198,213 +196,387 @@ const audio = (() => {
   };
 })();
 
-/* ---------- Problem banks & generators ---------- */
-const PLACE_BANK = [
-  { op: '×10', n: 47, ans: 470 },
-  { op: '×10', n: 305, ans: 3050 },
-  { op: '×10', n: 820, ans: 8200 },
-  { op: '×10', n: 63, ans: 630 },
-  { op: '×10', n: 148, ans: 1480 },
-  { op: '×10', n: 902, ans: 9020 },
-  { op: '÷10', n: 640, ans: 64 },
-  { op: '÷10', n: 4500, ans: 450 },
-  { op: '÷10', n: 9080, ans: 908 },
-  { op: '÷10', n: 730, ans: 73 },
-  { op: '÷10', n: 2160, ans: 216 },
-  { op: '÷10', n: 5040, ans: 504 }
+/* ---------- Zero-car problems ----------
+   Multiply: park every trailing zero, multiply the fronts, stick the zeros on.
+   Divide: subtract the trailing zeros, divide the fronts,
+   stick the zeros that are left back on.
+   30 000 ÷ 1 000 → 4 − 3 = 1 left → 3 ÷ 1 = 3 → stick 1 zero → 30
+   4 200 ÷ 60 → 2 − 1 = 1 left → 42 ÷ 6 = 7 → stick 1 zero → 70
+   670 ÷ 10 → 1 − 1 = 0 left → 67 ÷ 1 = 67
+*/
+
+function pow10(z) {
+  let n = 1;
+  for (let i = 0; i < z; i++) n *= 10;
+  return n;
+}
+function tz(n) {
+  let z = 0;
+  let x = Math.round(Math.abs(n));
+  while (x > 0 && x % 10 === 0) { x = Math.floor(x / 10); z++; }
+  return z;
+}
+function front(n) {
+  let x = Math.round(Math.abs(n));
+  while (x > 0 && x % 10 === 0) x = Math.floor(x / 10);
+  return x;
+}
+function zerosWord(n) { return n === 1 ? 'zero' : 'zeros'; }
+
+function buildMul(left, right) {
+  left = Math.round(left);
+  right = Math.round(right);
+  if (left <= 0 || right <= 0) return null;
+  const lf = front(left), lz = tz(left);
+  const rf = front(right), rz = tz(right);
+  const core = lf * rf;
+  const attach = lz + rz;
+  const ans = core * pow10(attach);
+  if (ans !== left * right) return null;
+  return { kind: 'mul', op: '×', left, right, ans, lf, lz, rf, rz, core, attach, cancel: attach };
+}
+
+function buildDiv(left, right) {
+  left = Math.round(left);
+  right = Math.round(right);
+  if (right <= 0 || left % right !== 0) return null;
+  const lf = front(left), lz = tz(left);
+  const rf = front(right), rz = tz(right);
+  if (rf === 0 || lf % rf !== 0 || rz > lz) return null;
+  const cancel = rz;
+  const core = lf / rf;
+  const attach = lz - rz;
+  if (!Number.isInteger(core)) return null;
+  const ans = core * pow10(attach);
+  if (ans !== left / right) return null;
+  return { kind: 'div', op: '÷', left, right, ans, lf, lz, rf, rz, core, attach, cancel };
+}
+
+const EASY_MUL = [
+  [12, 2], [12, 3], [12, 4], [12, 5],
+  [15, 2], [15, 3], [15, 4],
+  [16, 2], [16, 4], [16, 5],
+  [18, 2], [18, 4], [18, 5],
+  [24, 2], [24, 3], [24, 4],
+  [25, 2], [25, 4],
+  [14, 2], [14, 5],
+  [21, 3], [21, 4],
+  [28, 2], [28, 3],
+  [32, 2], [32, 3],
+  [35, 2], [35, 4],
+  [36, 2], [36, 3],
+  [42, 2], [42, 3],
+  [45, 2], [45, 4],
+  [27, 2], [27, 3],
+  [48, 2]
+];
+// [quotient front, divisor front]. Dividend front is their product.
+const EASY_DIV = [
+  [6, 2], [4, 3], [8, 2], [6, 3], [9, 2], [8, 3], [6, 4], [9, 3],
+  [7, 2], [7, 3], [7, 4], [7, 5], [7, 6], [8, 4], [8, 5], [8, 6],
+  [9, 4], [9, 5], [9, 6], [5, 4], [6, 5], [6, 6], [4, 6], [4, 8],
+  [12, 2], [12, 3], [12, 4], [12, 5], [12, 6], [5, 6], [5, 8],
+  [6, 7], [8, 7], [9, 7], [6, 8], [8, 8], [4, 9], [6, 9], [8, 9]
 ];
 
-const DIV_TIER1 = [
-  { d: 84, v: 4, q: 21, r: 0 },
-  { d: 96, v: 3, q: 32, r: 0 },
-  { d: 735, v: 5, q: 147, r: 0 },
-  { d: 864, v: 6, q: 144, r: 0 },
-  { d: 69, v: 3, q: 23, r: 0 },
-  { d: 48, v: 2, q: 24, r: 0 },
-  { d: 936, v: 3, q: 312, r: 0 },
-  { d: 555, v: 5, q: 111, r: 0 }
-];
-const DIV_TIER2 = [
-  { d: 816, v: 4, q: 204, r: 0 },
-  { d: 927, v: 9, q: 103, r: 0 },
-  { d: 618, v: 3, q: 206, r: 0 },
-  { d: 248, v: 4, q: 62, r: 0 },
-  { d: 515, v: 5, q: 103, r: 0 },
-  { d: 728, v: 7, q: 104, r: 0 },
-  { d: 369, v: 3, q: 123, r: 0 },
-  { d: 406, v: 2, q: 203, r: 0 }
-];
-const DIV_TIER3 = [
-  { d: 749, v: 6, q: 124, r: 5 },
-  { d: 835, v: 4, q: 208, r: 3 },
-  { d: 950, v: 7, q: 135, r: 5 },
-  { d: 583, v: 5, q: 116, r: 3 },
-  { d: 674, v: 8, q: 84, r: 2 },
-  { d: 391, v: 3, q: 130, r: 1 },
-  { d: 862, v: 9, q: 95, r: 7 },
-  { d: 457, v: 2, q: 228, r: 1 }
+const BAND_NAME = [
+  '× ÷ by 10',
+  '× ÷ by 10 and 100',
+  '× by tens',
+  '× by tens and hundreds',
+  '÷ by tens',
+  '÷ by tens and hundreds'
 ];
 
-function digitsOf(n) { return String(n).split('').map(Number); }
+function bandOf(rank) {
+  return Math.max(0, Math.min(5, rank | 0));
+}
 
-/** Build D-M-S-B step list for long division of dividend ÷ divisor. */
-function buildDivisionSteps(dividend, divisor) {
-  const digs = digitsOf(dividend);
-  const steps = [];
-  let working = 0;
-  let idx = 0;
-  let quotientDigits = [];
-  let started = false;
-  let bringFrom = -1;
-
-  // Leading grouping: consume digits until working >= divisor
-  while (idx < digs.length && working < divisor) {
-    working = working * 10 + digs[idx];
-    bringFrom = idx;
-    idx++;
-  }
-  // First working number may span multiple leading digits
-  const firstWorking = working;
-  const firstEndIdx = idx - 1;
-
-  while (true) {
-    const qDigit = Math.floor(working / divisor);
-    const product = qDigit * divisor;
-    const diff = working - product;
-    const needsZeroHint = started && working < divisor && qDigit === 0;
-
-    steps.push({
-      type: 'D',
-      working,
-      correct: qDigit,
-      hint: needsZeroHint
-        ? `${divisor} cannot fit into ${working}! Place a 0 on the roof before bringing down the next digit!`
-        : `How many times does ${divisor} fit into ${working}?`,
-      zeroPlaceholder: needsZeroHint,
-      col: firstEndIdx + quotientDigits.length, // roof column index relative to dividend alignment
-      dividendSpan: started ? null : { from: 0, to: firstEndIdx }
-    });
-    quotientDigits.push(qDigit);
-    started = true;
-
-    steps.push({
-      type: 'M',
-      working,
-      qDigit,
-      correct: product,
-      hint: `Check your multiplication: ${qDigit} × ${divisor} = ${product}!`
-    });
-
-    steps.push({
-      type: 'S',
-      working,
-      product,
-      correct: diff,
-      hint: `Subtract carefully: ${working} − ${product} = ${diff}.`
-    });
-
-    if (idx < digs.length) {
-      const nextDigit = digs[idx];
-      const nextWorking = diff * 10 + nextDigit;
-      steps.push({
-        type: 'B',
-        bringDigit: nextDigit,
-        bringIndex: idx,
-        fromDiff: diff,
-        correct: nextWorking,
-        seal: false,
-        hint: `Bring down the ${nextDigit} next to ${diff}.`
-      });
-      working = nextWorking;
-      idx++;
+function makePure(band) {
+  const mul = Math.random() < 0.5;
+  const power = band <= 0 ? 10 : (Math.random() < 0.5 ? 10 : (Math.random() < 0.75 ? 100 : 1000));
+  if (mul) {
+    let f;
+    if (band <= 0) {
+      f = irand(12, 98);
+      if (f % 10 === 0) f += 3;
+    } else if (Math.random() < 0.4) {
+      f = irand(1, 9) * 100 + irand(1, 9);
+    } else if (Math.random() < 0.35) {
+      f = irand(2, 9) * 10;
     } else {
-      // Finished digits — remainder seal or exact
-      steps.push({
-        type: 'B',
-        bringDigit: null,
-        bringIndex: -1,
-        fromDiff: diff,
-        correct: diff,
-        seal: true,
-        remainder: diff,
-        hint: diff === 0
-          ? 'Exact division! Seal the shipment with remainder 0.'
-          : `No digits left. Load the REMAINDER ${diff} capsule (must be < ${divisor}).`
-      });
-      break;
+      f = irand(12, 99);
+      if (f % 10 === 0) f += 1;
+    }
+    if (power >= 100 && f > 400) f = irand(12, 99);
+    if (power === 1000 && f > 99) f = irand(12, 99);
+    return buildMul(f, power);
+  }
+  let ans;
+  if (band <= 0) {
+    ans = irand(12, 98);
+    if (ans % 10 === 0) ans += 1;
+  } else {
+    const roll = Math.random();
+    if (roll < 0.34) ans = irand(2, 9) * 10;
+    else if (roll < 0.5) ans = irand(2, 9) * 100;
+    else if (roll < 0.72) ans = irand(1, 9) * 100 + irand(1, 9);
+    else {
+      ans = irand(12, 98);
+      if (ans % 10 === 0) ans += 1;
     }
   }
+  if (ans * power > 999999) ans = irand(12, 98);
+  return buildDiv(ans * power, power);
+}
 
-  const qStr = quotientDigits.join('').replace(/^0+(?=\d)/, '') || '0';
-  // Keep leading zeros in roof display aligned to dividend width
-  const roof = [];
-  // Align: first quotient digit sits above the last digit of the first group
-  const pad = firstEndIdx;
-  for (let i = 0; i < digs.length; i++) roof.push(null);
-  for (let i = 0; i < quotientDigits.length; i++) {
-    const col = pad + i;
-    if (col < roof.length) roof[col] = quotientDigits[i];
-    else roof.push(quotientDigits[i]);
+function makeMul(band) {
+  const pool = band <= 2 ? EASY_MUL.filter(pair => pair[1] <= 5) : EASY_MUL;
+  const pair = pool[irand(0, pool.length - 1)];
+  const power = band >= 3 && Math.random() < 0.45 ? 100 : 10;
+  let left = pair[0];
+  const right = pair[1] * power;
+  if (band >= 3 && Math.random() < 0.4) left = irand(2, 5) * 10;
+  if (left * right > 999999) return null;
+  return buildMul(left, right);
+}
+
+function makeDiv(band) {
+  const pool = band <= 4
+    ? EASY_DIV.filter(pair => pair[0] <= 9 && pair[1] <= 6)
+    : EASY_DIV;
+  const pair = pool[irand(0, pool.length - 1)];
+  const qf = pair[0];
+  const rf = pair[1];
+  const cancel = band >= 5 && Math.random() < 0.4 ? 2 : 1;
+  const leftover = band >= 5 ? irand(0, 2) : irand(0, 1);
+  const left = qf * rf * pow10(cancel + leftover);
+  const right = rf * pow10(cancel);
+  if (left > 999999 || right > 100000) return null;
+  return buildDiv(left, right);
+}
+
+function rollProblem(rank) {
+  const band = bandOf(rank);
+  for (let i = 0; i < 30; i++) {
+    let built = null;
+    if (band <= 1) built = makePure(band);
+    else if (band <= 3) built = Math.random() < 0.88 ? makeMul(band) : makePure(1);
+    else built = Math.random() < 0.88 ? makeDiv(band) : makeMul(3);
+    if (built) return built;
   }
-
-  return {
-    dividend, divisor,
-    digs,
-    steps,
-    quotientDigits,
-    roof,
-    firstEndIdx,
-    expectedQ: Number(qStr),
-    expectedR: working % divisor // last remainder already in final seal
-  };
+  return band <= 3 ? buildMul(24, 10) : buildDiv(4200, 60);
 }
 
-function fixExpected(prob) {
-  // Recompute remainder properly from last subtract
-  const lastS = [...prob.steps].reverse().find(s => s.type === 'S');
-  const rem = lastS ? lastS.correct : 0;
-  prob.expectedR = rem;
-  return prob;
-}
-
-function makePlaceProblem() {
-  const base = PLACE_BANK[irand(0, PLACE_BANK.length - 1)];
-  // Slight procedural variety
-  if (Math.random() < 0.45) {
-    if (base.op === '×10') {
-      const n = irand(12, 980);
-      return { op: '×10', n, ans: n * 10 };
+const recentKeys = [];
+function makeProblem(rank) {
+  for (let i = 0; i < 16; i++) {
+    const built = rollProblem(rank);
+    const key = built.kind + ':' + built.left + ':' + built.right;
+    if (!recentKeys.includes(key)) {
+      recentKeys.push(key);
+      if (recentKeys.length > 8) recentKeys.shift();
+      return built;
     }
-    let n = irand(2, 980) * 10;
-    if (n % 10 !== 0) n = Math.round(n / 10) * 10;
-    return { op: '÷10', n, ans: n / 10 };
   }
-  return { ...base };
-}
-
-function makeDivProblem(tier) {
-  const bank = tier === 1 ? DIV_TIER1 : tier === 2 ? DIV_TIER2 : DIV_TIER3;
-  const pick = bank[irand(0, bank.length - 1)];
-  const built = fixExpected(buildDivisionSteps(pick.d, pick.v));
-  // Verify against bank
-  built.expectedQ = pick.q;
-  built.expectedR = pick.r;
-  built.tier = tier;
+  const built = rollProblem(rank);
+  recentKeys.push(built.kind + ':' + built.left + ':' + built.right);
   return built;
 }
 
-function choiceSet(correct, extras, count) {
-  const wrong = new Set();
-  (extras || []).forEach(v => {
-    if (Number.isFinite(v) && v !== correct && v >= 0) wrong.add(Math.round(v));
-  });
-  let guard = 0;
-  while (wrong.size < (count || 3) && guard++ < 50) {
-    const delta = irand(1, 6) * (Math.random() < 0.5 ? 1 : -1);
-    const v = Math.max(0, Math.round(correct) + delta);
-    if (v !== correct) wrong.add(v);
+function stepLabels(p) {
+  if (p.kind === 'mul') return ['PARK ZEROS', 'MULTIPLY FRONTS', 'STICK ZEROS ON'];
+  return ['ZEROS LEFT', 'DIVIDE FRONTS', 'STICK LEFTOVERS ON'];
+}
+
+function makeSteps(p) {
+  if (p.kind === 'mul') {
+    return [
+      {
+        type: 'zeros',
+        correct: p.attach,
+        prompt: 'Park every trailing zero-car. Add the amber cars on both numbers.'
+      },
+      {
+        type: 'core',
+        correct: p.core,
+        prompt: p.rf === 1
+          ? 'Parked zeros stay in the bay. What number is still on the chute?'
+          : `Parked zeros stay in the bay. Multiply the loaded cars: ${fmt(p.lf)} × ${fmt(p.rf)}.`
+      },
+      {
+        type: 'seal',
+        correct: p.ans,
+        prompt: p.attach === 0
+          ? 'No zeros were parked. The loaded number is the shipment.'
+          : `Roll the ${p.attach} parked ${zerosWord(p.attach)} onto the end.`
+      }
+    ];
   }
-  return shuffle([correct, ...shuffle([...wrong]).slice(0, (count || 3))]);
+  return [
+    {
+      type: 'zeros',
+      correct: p.attach,
+      prompt: 'Subtract the trailing zeros. How many are left on the first number?'
+    },
+    {
+      type: 'core',
+      correct: p.core,
+      prompt: p.rf === 1
+        ? 'Shared zeros are off the chute. Dividing by 1 leaves the front number as it is.'
+        : `Shared zeros are off the chute. Divide the fronts: ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`
+    },
+    {
+      type: 'seal',
+      correct: p.ans,
+      prompt: p.attach === 0
+        ? `No zero-cars left over. Do not stick an extra zero on ${fmt(p.core)}.`
+        : `${p.attach} ${zerosWord(p.attach)} from ${fmt(p.left)} did not drop. Stick ${p.attach === 1 ? 'it' : 'them'} onto ${fmt(p.core)}.`
+    }
+  ];
+}
+
+function interiorShifted(n) {
+  const s = String(Math.round(Math.abs(n)));
+  const idx = s.indexOf('0');
+  if (idx <= 0 || idx === s.length - 1) return null;
+  const moved = Number(s.slice(0, idx) + s.slice(idx + 1) + '0');
+  return moved === Math.round(Math.abs(n)) ? null : moved;
+}
+function droppedInterior(n) {
+  const s = String(Math.round(Math.abs(n)));
+  if (!s.includes('0')) return null;
+  const v = Number(s.replace('0', ''));
+  return v === Math.round(Math.abs(n)) ? null : v;
+}
+
+function pick4(correct, priority) {
+  const wrong = [];
+  priority.forEach(v => {
+    if (v == null || v === '') return;
+    const n = Math.round(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > 9999999 || n === correct || wrong.includes(n)) return;
+    wrong.push(n);
+  });
+  const chosen = wrong.slice(0, 3);
+  let pad = 1;
+  while (chosen.length < 3 && pad < 15) {
+    const n = correct + pad * (correct >= 10 ? 10 : 1);
+    pad++;
+    if (n !== correct && n > 0 && !chosen.includes(n)) chosen.push(n);
+  }
+  return shuffle([correct, ...chosen]);
+}
+
+function choicesFor(p, step) {
+  if (step.type === 'zeros') {
+    if (p.kind === 'mul') {
+      return pick4(p.attach, [p.lz, p.rz, p.attach + 1, Math.max(0, p.attach - 1), 0, 1, 2, 3, 4]);
+    }
+    return pick4(p.attach, [p.lz, p.rz, p.cancel, p.attach + 1, 0, 1, 2, 3, 4]);
+  }
+  if (step.type === 'core') {
+    return pick4(p.core, [
+      p.ans, p.core * 10, interiorShifted(p.core), droppedInterior(p.core),
+      p.lf, p.core + 1, p.core + p.rf, p.lf + p.rf
+    ]);
+  }
+  const movedCore = interiorShifted(p.core);
+  return pick4(p.ans, [
+    p.core,
+    interiorShifted(p.ans),
+    p.core * pow10(p.attach + 1),
+    p.attach > 0 ? p.core * pow10(Math.max(0, p.attach - 1)) : p.core * 10,
+    droppedInterior(p.ans),
+    movedCore == null ? null : movedCore * pow10(p.attach)
+  ]);
+}
+
+function explain(p, step, choice) {
+  if (step.type === 'zeros' && p.kind === 'mul') {
+    if (choice === p.lz || choice === p.rz) {
+      return `${fmt(p.left)} has ${p.lz} and ${fmt(p.right)} has ${p.rz}. Add them: park ${p.attach}, not ${choice}.`;
+    }
+    return `Add the trailing zeros. ${fmt(p.left)} has ${p.lz}, ${fmt(p.right)} has ${p.rz}, so park ${p.attach}.`;
+  }
+  if (step.type === 'zeros') {
+    return `${fmt(p.left)} has ${p.lz} and ${fmt(p.right)} has ${p.rz}. Subtract: ${p.lz} − ${p.rz} = ${p.attach} left, not ${choice}.`;
+  }
+  if (step.type === 'core' && p.kind === 'mul') {
+    if (choice === p.ans) return `That already has the parked zeros. First do only ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}.`;
+    return `Leave the parked zeros in the bay. ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}.`;
+  }
+  if (step.type === 'core') {
+    if (choice === p.ans && p.attach > 0) {
+      return `That already sticks the leftover ${zerosWord(p.attach)} on. First ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}.`;
+    }
+    return `Divide the fronts only. ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. Leftover zeros wait in the bay.`;
+  }
+  if (choice === p.core && p.attach > 0) {
+    return `The front is ${fmt(p.core)}, and ${p.attach} parked ${zerosWord(p.attach)} still go on the end: ${fmt(p.ans)}.`;
+  }
+  if (p.attach > 0 && choice === p.core * pow10(p.attach + 1)) {
+    return `One zero too many. Stick on exactly ${p.attach}: ${fmt(p.core)} becomes ${fmt(p.ans)}.`;
+  }
+  if (p.attach > 1 && choice === p.core * pow10(p.attach - 1)) {
+    return `A parked zero is still off. Stick on all ${p.attach}: ${fmt(p.ans)}.`;
+  }
+  if (p.attach === 0 && choice === p.core * 10) {
+    return `Those zeros were already used. Nothing extra goes on the end. The shipment is ${fmt(p.ans)}.`;
+  }
+  const moved = interiorShifted(p.ans);
+  if (moved != null && choice === moved) {
+    return `A 0 between digits is cargo. It stays where it is. The shipment is ${fmt(p.ans)}, not ${fmt(choice)}.`;
+  }
+  return p.attach === 0
+    ? `No zero-cars are left. The shipment is ${fmt(p.ans)}.`
+    : `Stick exactly ${p.attach} ${zerosWord(p.attach)} onto ${fmt(p.core)} to get ${fmt(p.ans)}.`;
+}
+
+function successLine(p, step) {
+  if (step.type === 'zeros' && p.kind === 'mul') return `Parked ${p.attach}. Now multiply ${fmt(p.lf)} × ${fmt(p.rf)}.`;
+  if (step.type === 'zeros') {
+    return p.attach === 0
+      ? `0 zeros left. Now ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`
+      : `${p.lz} − ${p.rz} = ${p.attach} left. Now ${fmt(p.lf)} ÷ ${fmt(p.rf)}.`;
+  }
+  if (step.type === 'core' && p.kind === 'mul') return `${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}. Stick the parked zeros on.`;
+  if (step.type === 'core') {
+    return p.attach === 0
+      ? `${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. No zeros left to stick on.`
+      : `${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}. Stick the leftover ${zerosWord(p.attach)} on.`;
+  }
+  return `${fmt(p.left)} ${p.op} ${fmt(p.right)} = ${fmt(p.ans)}.`;
+}
+
+function strategyRecap(p) {
+  if (p.kind === 'mul') {
+    return `${fmt(p.left)} × ${fmt(p.right)} = ${fmt(p.ans)}   ·   ${fmt(p.lf)} × ${fmt(p.rf)} = ${fmt(p.core)}, then ${p.attach} ${zerosWord(p.attach)}`;
+  }
+  const tail = p.attach === 0
+    ? 'no zeros left over'
+    : `${p.attach} leftover ${zerosWord(p.attach)} → ${fmt(p.ans)}`;
+  return `${fmt(p.left)} ÷ ${fmt(p.right)} = ${fmt(p.ans)}   ·   ${p.lz} − ${p.rz} = ${p.attach}, ${fmt(p.lf)} ÷ ${fmt(p.rf)} = ${fmt(p.core)}, ${tail}`;
+}
+
+function powLabel(z) { return z <= 0 ? '1' : '1' + '0'.repeat(z); }
+
+function rewrite(p, stepIndex) {
+  if (stepIndex <= 0) return `${fmt(p.left)}  ${p.op}  ${fmt(p.right)}`;
+  if (p.kind === 'mul') {
+    if (stepIndex === 1) {
+      return p.attach === 0
+        ? `${fmt(p.lf)} × ${fmt(p.rf)}`
+        : `${fmt(p.left)} × ${fmt(p.right)}  =  (${fmt(p.lf)} × ${fmt(p.rf)}) × ${powLabel(p.attach)}`;
+    }
+    return p.attach === 0 ? `${fmt(p.core)}` : `${fmt(p.core)} × ${powLabel(p.attach)}`;
+  }
+  if (stepIndex === 1) {
+    return p.attach === 0
+      ? `${fmt(p.left)} ÷ ${fmt(p.right)}  =  ${fmt(p.lf)} ÷ ${fmt(p.rf)}`
+      : `${fmt(p.left)} ÷ ${fmt(p.right)}  =  (${fmt(p.lf)} ÷ ${fmt(p.rf)}) × ${powLabel(p.attach)}`;
+  }
+  return p.attach === 0 ? `${fmt(p.core)}` : `${fmt(p.core)} × ${powLabel(p.attach)}`;
 }
 
 /* ---------- Players ---------- */
@@ -417,18 +589,18 @@ function makePlayer(i) {
     stars: 0,
     score: 0,
     combo: 0,
-    reticle: i,
+    reticle: 0,
     padIndex: i,
     gpPrev: { a: false, left: false, right: false, up: false, down: false, start: false },
     lockUntil: 0,
-    board: null // competitive private board
+    board: null
   };
 }
 
 /* ---------- Game state ---------- */
 const G = {
-  mode: 'title', // title | calibrate | play | batchDone | gameOver
-  playMode: 'solo', // solo | coop | versus
+  mode: 'title',
+  playMode: 'solo',
   t: 0,
   tier: 1,
   batchesDone: 0,
@@ -439,20 +611,13 @@ const G = {
   feedbackT: 0,
   flash: 0,
   shake: 0,
-  titleFocus: 0, // index into PLAY_MODES: solo, coop, versus
+  titleFocus: 0,
   muteHover: false,
   hint: '',
   phaseLabel: '',
-  // shared / coop board
+  recap: '',
   board: null,
-  place: null,
-  placeChoices: [],
-  placeSelected: 0,
-  stepChoices: [],
-  selected: 0,
-  hover: -1,
   anim: { press: 0, crane: 0, stamp: 0, rocket: 0, jam: 0 },
-  dmsbLit: 0,
   padNote: '',
   winPlayer: -1
 };
@@ -460,160 +625,74 @@ const G = {
 let players = [makePlayer(0), makePlayer(1)];
 
 function emptyBoard(prob) {
+  const steps = makeSteps(prob);
   return {
     prob,
+    steps,
     stepIndex: 0,
-    roof: prob.roof.map(() => null),
-    writtenQ: [],
-    workRows: [], // visual subtract rows { product, diff, indent }
-    brought: [],
-    currentWorking: null,
-    currentProduct: null,
-    currentDiff: null,
-    sealed: false,
-    remainder: null,
     done: false,
-    placeDone: false
+    choices: choicesFor(prob, steps[0])
   };
-}
-
-function currentStep(board) {
-  if (!board || !board.prob) return null;
-  return board.prob.steps[board.stepIndex] || null;
-}
-
-function activePlayerForStep(step) {
-  if (G.playMode === 'solo') return 0;
-  if (G.playMode !== 'coop' || !step) return -1;
-  // P1: D + S · P2: M + B
-  if (step.type === 'D' || step.type === 'S') return 0;
-  return 1;
 }
 
 function focusedPlayMode() {
   return PLAY_MODES[G.titleFocus] || 'solo';
 }
 
-function startCalibrate() {
-  G.mode = 'calibrate';
-  G.dmsbLit = -1;
-  G.place = makePlaceProblem();
-  const extras = G.place.op === '×10'
-    ? [G.place.n, G.place.n * 100, G.place.ans + 10, G.place.ans - 10, G.place.n * 10 + 10]
-    : [G.place.n, G.place.n / 100, G.place.ans * 10, G.place.ans + 10, G.place.ans - 1];
-  G.placeChoices = choiceSet(G.place.ans, extras, 3);
-  G.placeSelected = 0;
-  players.forEach(p => { p.reticle = 0; });
-  G.feedback = '';
-  G.hint = G.place.op === '×10'
-    ? 'Shift digits LEFT one place and insert 0 in the Ones car.'
-    : 'Shift digits RIGHT one place and drop the trailing 0 from Ones.';
-  G.phaseLabel = `Intake Calibration · ${G.place.op}`;
-  speak(`Calibrate conveyor: ${fmt(G.place.n)} ${G.place.op === '×10' ? 'times 10' : 'divided by 10'}.`);
-}
-
-function cloneProb(prob) {
-  const built = buildDivisionSteps(prob.dividend, prob.divisor);
-  built.expectedQ = prob.expectedQ;
-  built.expectedR = prob.expectedR;
-  built.tier = prob.tier;
-  return built;
-}
-
-function startDivisionBatch() {
-  const prob = makeDivProblem(G.tier);
+function refreshLabels() {
+  const board = G.playMode === 'versus' ? players[0].board : G.board;
+  if (!board) return;
+  const p = board.prob;
   if (G.playMode === 'versus') {
-    players[0].board = emptyBoard(cloneProb(prob));
-    players[1].board = emptyBoard(cloneProb(prob));
+    G.hint = 'Same shipment. First foreman to stick the zeros on launches the rocket.';
+    G.phaseLabel = `${fmt(p.left)} ${p.op} ${fmt(p.right)}`;
+    speak(G.phaseLabel + '. ' + G.hint);
+    return;
+  }
+  const step = board.steps[board.stepIndex];
+  const station = stepLabels(p)[board.stepIndex] || '';
+  const who = G.playMode === 'coop' ? board.stepIndex % 2 : 0;
+  G.phaseLabel = G.playMode === 'coop'
+    ? `${station} · ${players[who].short}'s turn`
+    : station;
+  G.hint = step ? step.prompt : '';
+  speak(`${fmt(p.left)} ${p.op} ${fmt(p.right)}. ${G.phaseLabel}. ${G.hint}`);
+}
+
+function startShipment() {
+  const prob = makeProblem(G.batchesDone);
+  if (G.playMode === 'versus') {
+    players[0].board = emptyBoard(JSON.parse(JSON.stringify(prob)));
+    players[1].board = emptyBoard(JSON.parse(JSON.stringify(prob)));
     G.board = null;
     G.winPlayer = -1;
-    players.forEach(p => {
-      p.reticle = 0;
-      refreshBoardChoices(p.board);
-    });
-    G.phaseLabel = `Tier ${G.tier} Sprint · ${prob.dividend} ÷ ${prob.divisor} · Race to seal!`;
-    G.hint = 'Same ore block — first foreman to finish launches the rocket.';
-    speak(G.phaseLabel);
+    players.forEach(p => { p.reticle = 0; });
   } else {
     G.board = emptyBoard(prob);
-    loadStepChoices(G.board);
+    players.forEach(p => { p.board = null; p.reticle = 0; });
   }
   G.mode = 'play';
   G.feedback = '';
+  G.recap = '';
   G.anim.rocket = 0;
-}
-
-function buildChoicesForStep(board, step) {
-  const c = step.correct;
-  if (step.type === 'D') {
-    let opts = choiceSet(c, [c + 1, c - 1, c + 2, 0, 1, Math.min(9, c + 3)], 3).map(v => clamp(v, 0, 9));
-    opts = [...new Set(opts)];
-    while (opts.length < 4) {
-      const n = irand(0, 9);
-      if (!opts.includes(n)) opts.push(n);
-    }
-    return shuffle(opts.slice(0, 4));
-  }
-  if (step.type === 'M') {
-    return choiceSet(c, [
-      c + board.prob.divisor, c - board.prob.divisor,
-      step.qDigit * (board.prob.divisor + 1), step.qDigit + board.prob.divisor, c + 1, c - 1
-    ], 3);
-  }
-  if (step.type === 'S') {
-    return choiceSet(c, [
-      c + 1, c - 1, step.working + step.product, Math.abs(step.product - step.working), c + board.prob.divisor
-    ], 3);
-  }
-  // Bring down / seal
-  if (step.seal) {
-    return choiceSet(c, [c + 1, c - 1, board.prob.divisor, board.prob.divisor - 1, 0], 3);
-  }
-  return choiceSet(c, [c + 1, c - 1, step.fromDiff, step.bringDigit, c + 10, step.fromDiff * 10], 3);
-}
-
-function refreshBoardChoices(board) {
-  if (!board || board.done) { board.choices = []; return; }
-  const step = currentStep(board);
-  if (!step) { board.choices = []; return; }
-  board.choices = buildChoicesForStep(board, step);
-  board.selected = 0;
-}
-
-function loadStepChoices(board) {
-  const step = currentStep(board);
-  if (!step) { G.stepChoices = []; return; }
-  G.stepChoices = buildChoicesForStep(board, step);
-  G.selected = 0;
-  G.hover = -1;
-  players.forEach(p => { p.reticle = 0; });
-  G.dmsbLit = STEP_KEYS.indexOf(step.type);
-  G.hint = step.hint;
-  const who = activePlayerForStep(step);
-  if (G.playMode === 'coop' && who >= 0) {
-    G.phaseLabel = `Station ${step.type}: ${STEP_LABELS[G.dmsbLit]} · ${players[who].short}'s turn`;
-    audio.handoff();
-  } else {
-    G.phaseLabel = `Station ${step.type}: ${STEP_LABELS[G.dmsbLit]}`;
-  }
-  speak(G.phaseLabel + '. ' + step.hint);
+  refreshLabels();
 }
 
 function beginGame(playMode) {
   audio.ensure();
   G.playMode = playMode;
   players = [makePlayer(0), makePlayer(1)];
-  G.tier = 1;
   G.batchesDone = 0;
+  recentKeys.length = 0;
   G.teamScore = 0;
   G.teamCombo = 0;
   G.winPlayer = -1;
   G.padNote = playMode === 'coop'
-    ? 'Co-op Relay · P1: Divide & Subtract · P2: Multiply & Bring Down'
+    ? 'Co-op · P1 drops or parks the zeros and sticks them back on · P2 does the fronts'
     : playMode === 'solo'
-      ? 'Solo shift · You run every station · Mouse, keys, or 8BitDo D-pad + A'
-      : 'Competitive Sprint · First to seal the shipment wins a Foreman Star';
-  startCalibrate();
+      ? 'Solo · Count the zeros, work the fronts, then stick the zeros back on'
+      : 'Sprint · Same shipment · first to stick the zeros on wins a Foreman Star';
+  startShipment();
 }
 
 /* ---------- Answer handling ---------- */
@@ -628,11 +707,11 @@ function loseShield(pi) {
   audio.buzz();
   spawnSparks(W / 2, H / 2, COL.bad, 18);
   if (p.shields <= 0) {
-    // soft fail — refill after batch with star penalty
     p.shields = 3;
     p.score = Math.max(0, p.score - 50);
-    G.feedback = `${p.short} hardhats depleted! −50 ore credits. Shields refilled.`;
+    return true;
   }
+  return false;
 }
 
 function awardCorrect(pi, pts) {
@@ -657,82 +736,20 @@ function awardCorrect(pi, pts) {
   audio.ok();
 }
 
-function submitPlace(pi) {
-  if (G.mode !== 'calibrate') return;
-  if (players[pi].lockUntil > G.t) return;
-  const choice = G.placeChoices[players[pi].reticle];
-  if (choice === undefined) return;
-  audio.ensure();
-  if (choice === G.place.ans) {
-    audio.slide();
-    audio.chime();
-    awardCorrect(pi, 80);
-    G.feedback = `Calibration locked: ${fmt(G.place.n)} ${G.place.op} = ${fmt(G.place.ans)}`;
-    G.feedbackKind = 'good';
-    spawnSparks(W / 2, 280, COL.cyan, 20);
-    setTimeout(() => startDivisionBatch(), 700);
-  } else {
-    G.feedback = G.place.op === '×10'
-      ? `Wrong shift! ×10 moves digits LEFT and puts 0 in Ones. Answer is ${fmt(G.place.ans)}.`
-      : `Wrong shift! ÷10 moves digits RIGHT and drops the Ones 0. Answer is ${fmt(G.place.ans)}.`;
-    G.feedbackKind = 'bad';
-    G.feedbackT = 2;
-    loseShield(pi);
-    players[pi].lockUntil = G.t + 0.4;
-  }
-}
-
-function applyStepSuccess(board, step, value) {
-  if (step.type === 'D') {
-    // Place quotient digit on roof
-    const col = board.prob.firstEndIdx + board.writtenQ.length;
-    if (col < board.roof.length) board.roof[col] = value;
-    else board.roof.push(value);
-    board.writtenQ.push(value);
-    board.currentWorking = step.working;
-    G.anim.stamp = 0.35;
-    audio.stamp();
-  } else if (step.type === 'M') {
-    board.currentProduct = value;
-    G.anim.press = 0.15;
-  } else if (step.type === 'S') {
-    board.currentDiff = value;
-    board.workRows.push({
-      product: board.currentProduct,
-      diff: value,
-      working: board.currentWorking
-    });
-    G.anim.press = 0.4;
-    audio.press();
-  } else if (step.type === 'B') {
-    if (step.seal) {
-      board.sealed = true;
-      board.remainder = value;
-      board.done = true;
-      G.anim.crane = 0.3;
-      audio.clank();
-    } else {
-      board.brought.push(step.bringDigit);
-      board.currentWorking = value;
-      G.anim.crane = 0.45;
-      audio.clank();
-    }
-  }
-  board.stepIndex++;
-}
-
 function completeBatch(winnerPi) {
+  const board = G.playMode === 'versus' ? players[winnerPi].board : G.board;
+  const prob = board.prob;
   G.mode = 'batchDone';
   G.anim.rocket = 0.01;
   audio.rocket();
   G.batchesDone++;
+  G.recap = strategyRecap(prob);
   if (G.playMode === 'versus' && winnerPi >= 0) {
     players[winnerPi].stars++;
     G.winPlayer = winnerPi;
-    G.feedback = `${players[winnerPi].short} launches the cargo rocket! Foreman Star earned!`;
+    G.feedback = `${players[winnerPi].short} launches the cargo rocket!`;
   } else {
-    G.feedback = `Shipment sealed! Quotient ${G.board.prob.expectedQ}` +
-      (G.board.remainder ? ` R ${G.board.remainder}` : '') + ' · Rocket away!';
+    G.feedback = 'Shipment sealed. Rocket away!';
     const combo = G.playMode === 'solo' ? players[0].combo : G.teamCombo;
     if (combo >= 4) {
       players[0].stars++;
@@ -740,111 +757,67 @@ function completeBatch(winnerPi) {
     }
   }
   G.feedbackKind = 'good';
-  G.feedbackT = 3;
-  speak(G.feedback);
-  // Progress tier every 2 batches
-  if (G.batchesDone % 2 === 0 && G.tier < 3) G.tier++;
+  G.feedbackT = 4;
+  speak(G.recap);
 }
 
-function submitDivision(pi) {
+function submitAnswer(pi) {
   if (G.mode !== 'play') return;
-  if (players[pi].lockUntil > G.t) return;
-  audio.ensure();
-
-  if (G.playMode === 'versus') {
-    const board = players[pi].board;
-    if (!board || board.done) return;
-    const step = currentStep(board);
-    if (!step) return;
-    const choice = board.choices[players[pi].reticle];
-    if (choice === undefined) return;
-    if (choice === step.correct) {
-      // remainder check
-      if (step.seal && step.remainder >= board.prob.divisor) {
-        G.feedback = `Remainder ${step.remainder} is larger than divisor ${board.prob.divisor} — you can fit one more group!`;
-        G.feedbackKind = 'bad';
-        loseShield(pi);
-        return;
-      }
-      applyStepSuccess(board, step, choice);
-      awardCorrect(pi, step.type === 'B' && step.seal ? 150 : 60);
-      if (board.done) {
-        completeBatch(pi);
-        return;
-      }
-      refreshBoardChoices(board);
-    } else {
-      wrongStep(pi, step, choice, board);
-    }
-    return;
-  }
-
-  // Co-op
-  const board = G.board;
-  const step = currentStep(board);
-  if (!step || board.done) return;
-  const allowed = activePlayerForStep(step);
-  if (allowed !== pi) {
-    G.feedback = `That's ${players[allowed].short}'s station! Hand off the console.`;
+  const player = players[pi];
+  if (player.lockUntil > G.t) return;
+  const board = G.playMode === 'versus' ? player.board : G.board;
+  if (!board || board.done) return;
+  if (G.playMode === 'coop' && (board.stepIndex % 2) !== pi) {
+    G.feedback = `That's ${players[board.stepIndex % 2].short}'s station. Hand over the console.`;
     G.feedbackKind = 'warn';
-    G.feedbackT = 1.2;
+    G.feedbackT = 1.4;
     audio.select();
     return;
   }
-  const choice = G.stepChoices[players[pi].reticle];
-  if (choice === undefined) return;
+  const step = board.steps[board.stepIndex];
+  const choice = board.choices[player.reticle];
+  if (choice === undefined || !step) return;
+  audio.ensure();
   if (choice === step.correct) {
-    if (step.seal && step.remainder > 0 && step.remainder >= board.prob.divisor) {
-      G.feedback = `Remainder ${step.remainder} ≥ divisor ${board.prob.divisor} — fit one more group!`;
-      G.feedbackKind = 'bad';
-      loseShield(pi);
+    const pts = step.type === 'seal' ? 140 : step.type === 'core' ? 90 : 70;
+    if (step.type === 'zeros') audio.slide();
+    else if (step.type === 'core') audio.stamp();
+    else audio.clank();
+    awardCorrect(pi, pts);
+    G.feedback = successLine(board.prob, step);
+    G.feedbackKind = 'good';
+    G.feedbackT = 1.6;
+    board.stepIndex++;
+    spawnSparks(W / 2, 300, COL.cyan, 14);
+    if (board.stepIndex >= board.steps.length) {
+      board.done = true;
+      completeBatch(G.playMode === 'versus' ? pi : -1);
       return;
     }
-    applyStepSuccess(board, step, choice);
-    awardCorrect(pi, step.type === 'B' && step.seal ? 150 : 70);
-    if (board.done) {
-      completeBatch(-1);
-      return;
-    }
-    loadStepChoices(board);
-  } else {
-    wrongStep(pi, step, choice, board);
-  }
-}
-
-function wrongStep(pi, step, choice, board) {
-  let msg = step.hint;
-  if (step.type === 'D' && step.zeroPlaceholder) {
-    msg = step.hint;
-  } else if (step.type === 'M') {
-    msg = `Check your multiplication: ${step.qDigit} × ${board.prob.divisor} = ${step.correct}, not ${choice}!`;
-  } else if (step.type === 'S') {
-    msg = `Subtract: ${step.working} − ${step.product} = ${step.correct}, not ${choice}.`;
-  } else if (step.type === 'B' && step.seal) {
-    if (choice >= board.prob.divisor) {
-      msg = `Remainder ${choice} is larger than divisor ${board.prob.divisor} — you can fit one more group!`;
+    board.choices = choicesFor(board.prob, board.steps[board.stepIndex]);
+    if (G.playMode === 'versus') {
+      player.reticle = 0;
     } else {
-      msg = `Seal remainder ${step.correct}, not ${choice}.`;
+      players.forEach(p => { p.reticle = 0; });
+      if (G.playMode === 'coop') audio.handoff();
+      refreshLabels();
     }
-  } else if (step.type === 'B') {
-    msg = `Bring down ${step.bringDigit} beside ${step.fromDiff} → ${step.correct}.`;
-  } else if (step.type === 'D') {
-    msg = `${board.prob.divisor} into ${step.working} is ${step.correct}, not ${choice}.`;
+    return;
   }
-  G.feedback = msg;
+  const refilled = loseShield(pi);
+  G.feedback = explain(board.prob, step, choice) + (refilled ? ' Shields refilled, −50 credits.' : '');
   G.feedbackKind = 'bad';
-  G.feedbackT = 2.4;
-  loseShield(pi);
-  players[pi].lockUntil = G.t + 0.35;
+  G.feedbackT = 3.4;
+  player.lockUntil = G.t + 0.45;
 }
 
 function nextAfterBatch() {
   if (G.batchesDone >= 6) {
     G.mode = 'gameOver';
-    speak('Refinery shift complete!');
+    speak('Refinery shift complete.');
     return;
   }
-  startCalibrate();
+  startShipment();
 }
 
 /* ---------- FX ---------- */
@@ -927,17 +900,14 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => held.delete(e.code));
 
-function choiceCount() {
-  if (G.mode === 'calibrate') return G.placeChoices.length;
-  if (G.mode === 'play') {
-    if (G.playMode === 'versus') return 4;
-    return G.stepChoices.length;
-  }
-  return 4;
+function choiceCount(pi) {
+  if (G.mode !== 'play') return 0;
+  const board = G.playMode === 'versus' ? players[pi].board : G.board;
+  return board && board.choices ? board.choices.length : 0;
 }
 
 function moveReticle(pi, dir) {
-  const n = choiceCount();
+  const n = choiceCount(pi);
   if (!n) return;
   const p = players[pi];
   p.reticle = (p.reticle + dir + n) % n;
@@ -945,8 +915,7 @@ function moveReticle(pi, dir) {
 }
 
 function confirmPlayer(pi) {
-  if (G.mode === 'calibrate') submitPlace(pi);
-  else if (G.mode === 'play') submitDivision(pi);
+  if (G.mode === 'play') submitAnswer(pi);
 }
 
 function padPressed(gp, i) {
@@ -1080,7 +1049,7 @@ function syncPointer(e) {
 
 function hoverSoloChoice() {
   if (G.playMode !== 'solo') return;
-  if (G.mode !== 'calibrate' && G.mode !== 'play') return;
+  if (G.mode !== 'play') return;
   for (const hs of hotspots) {
     if (pointer.x >= hs.x && pointer.x <= hs.x + hs.w && pointer.y >= hs.y && pointer.y <= hs.y + hs.h) {
       players[0].reticle = hs.index;
@@ -1243,7 +1212,7 @@ function drawHUD() {
   if (G.playMode !== 'solo') drawBadge(W - 216, 8, players[1]);
 
   // Center mode card
-  rr(W / 2 - 180, 8, 360, 52, 8);
+  rr(W / 2 - 210, 8, 420, 52, 8);
   ctx.fillStyle = COL.panel;
   ctx.fill();
   ctx.strokeStyle = COL.brass;
@@ -1252,14 +1221,16 @@ function drawHUD() {
   ctx.fillStyle = COL.amber;
   ctx.font = 'bold 13px Trebuchet MS, sans-serif';
   ctx.textAlign = 'center';
-  const modeStr = G.playMode === 'coop' ? 'CO-OP RELAY' : G.playMode === 'solo' ? 'SOLO SHIFT' : 'COMPETITIVE SPRINT';
-  ctx.fillText(modeStr, W / 2, 26);
+  const rankNow = G.mode === 'play' ? G.batchesDone : Math.max(0, G.batchesDone - 1);
+  const tierName = BAND_NAME[bandOf(rankNow)];
+  ctx.fillText(tierName, W / 2, 26);
   ctx.fillStyle = COL.ink;
   ctx.font = '12px Trebuchet MS, sans-serif';
+  const modeStr = G.playMode === 'coop' ? 'CO-OP' : G.playMode === 'solo' ? 'SOLO' : 'SPRINT';
   const scoreBit = G.playMode === 'solo'
-    ? ` · ${players[0].score} · Combo ${players[0].combo}`
-    : ` · Team ${G.teamScore}` + (G.playMode === 'coop' ? ` · Combo ${G.teamCombo}` : '');
-  ctx.fillText(`Tier ${G.tier} · Batch ${Math.min(G.batchesDone + 1, 6)}/6` + scoreBit, W / 2, 46);
+    ? `${players[0].score} pts · Combo ${players[0].combo}`
+    : `Team ${G.teamScore}` + (G.playMode === 'coop' ? ` · Combo ${G.teamCombo}` : '');
+  ctx.fillText(`${modeStr} · ${Math.min(G.batchesDone + 1, 6)}/6 · ${scoreBit}`, W / 2, 46);
   ctx.textAlign = 'left';
 
   // Mute
@@ -1275,15 +1246,29 @@ function drawHUD() {
   ctx.textAlign = 'left';
 }
 
-function drawDMSBBar(x, y) {
-  const labels = STEP_LABELS;
-  const w = 150, gap = 8;
+function wrapLines(text, maxW) {
+  const words = String(text).split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const trial = cur ? cur + ' ' + words[i] : words[i];
+    if (cur && ctx.measureText(trial).width > maxW) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = trial;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 3);
+}
+
+function drawStepBar(x, y, labels, lit) {
+  const w = 236, gap = 10, h = 34;
   const total = labels.length * w + (labels.length - 1) * gap;
   let cx = x - total / 2;
   labels.forEach((lab, i) => {
-    const on = G.dmsbLit === i;
-    rr(cx, y, w, 36, 6);
-    ctx.fillStyle = on ? 'rgba(255,184,74,0.25)' : 'rgba(20,30,45,0.85)';
+    const on = lit === i;
+    rr(cx, y, w, h, 6);
+    ctx.fillStyle = on ? 'rgba(48,32,8,0.96)' : 'rgba(12,18,28,0.96)';
     ctx.fill();
     ctx.strokeStyle = on ? COL.amber : COL.steel;
     ctx.lineWidth = on ? 2.5 : 1.5;
@@ -1291,245 +1276,188 @@ function drawDMSBBar(x, y) {
     ctx.fillStyle = on ? COL.amber : COL.dim;
     ctx.font = 'bold 12px Trebuchet MS, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${i + 1}. ${lab}`, cx + w / 2, y + 23);
-    if (i < labels.length - 1) {
-      ctx.fillStyle = COL.muted;
-      ctx.fillText('→', cx + w + gap / 2, y + 23);
-    }
+    ctx.fillText(`${i + 1}. ${lab}`, cx + w / 2, y + 22);
     cx += w + gap;
   });
   ctx.textAlign = 'left';
 }
 
-function placeValueCars(n, x, y, highlightShift) {
-  // Show up to 4 place cars: Th H T O
-  let s = String(Math.round(n));
-  while (s.length < 4) s = ' ' + s;
-  if (s.length > 4) s = s.slice(-4);
-  const labels = ['Th', 'H', 'T', 'O'];
-  const carW = 70, carH = 78, gap = 10;
-  const total = 4 * carW + 3 * gap;
-  let cx = x - total / 2;
-  // rail
-  ctx.fillStyle = '#1c2838';
-  ctx.fillRect(cx - 20, y + carH - 8, total + 40, 14);
-  ctx.fillStyle = COL.brass;
-  ctx.fillRect(cx - 20, y + carH + 2, total + 40, 3);
+function drawTrain(n, cx, y, opt) {
+  const s = String(Math.round(Math.abs(n)));
+  const trail = opt.trail || 0;
+  const ghost = opt.ghost || 0;
+  const maxW = opt.maxW || 700;
+  const count = s.length + ghost;
+  const gap = 8;
+  let carW = opt.carW || 52;
+  if (count * carW + (count - 1) * gap > maxW) {
+    carW = Math.floor((maxW - (count - 1) * gap) / Math.max(1, count));
+  }
+  carW = clamp(carW, 28, 58);
+  const carH = Math.round(carW * 1.2);
+  const total = count * carW + Math.max(0, count - 1) * gap;
+  let x = cx - total / 2;
 
-  for (let i = 0; i < 4; i++) {
-    const ch = s[i];
-    rr(cx, y, carW, carH - 10, 8);
-    const glow = highlightShift && ((highlightShift === 'L' && i < 3) || (highlightShift === 'R' && i > 0));
-    ctx.fillStyle = glow ? 'rgba(62,240,255,0.18)' : 'rgba(18,28,42,0.95)';
-    ctx.fill();
-    ctx.strokeStyle = glow ? COL.cyan : COL.amber;
+  ctx.fillStyle = '#1c2838';
+  ctx.fillRect(x - 14, y + carH - 8, total + 28, 12);
+  ctx.fillStyle = COL.brass;
+  ctx.fillRect(x - 14, y + carH + 2, total + 28, 3);
+
+  for (let i = 0; i < count; i++) {
+    const isGhost = i >= s.length;
+    const fromEnd = s.length - 1 - i;
+    const isTrail = !isGhost && fromEnd >= 0 && fromEnd < trail;
+    rr(x, y, carW, carH - 10, 7);
+    if (isGhost) {
+      ctx.fillStyle = 'rgba(255,184,74,0.08)';
+      ctx.fill();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = COL.amber;
+    } else if (isTrail) {
+      ctx.fillStyle = 'rgba(255,184,74,0.18)';
+      ctx.fill();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = COL.amber;
+    } else {
+      ctx.fillStyle = 'rgba(18,28,42,0.95)';
+      ctx.fill();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = COL.cyan;
+    }
     ctx.lineWidth = 2;
     ctx.stroke();
-    // inner glow
-    ctx.strokeStyle = 'rgba(255,213,106,0.35)';
-    ctx.strokeRect(cx + 6, y + 6, carW - 12, carH - 22);
-    ctx.fillStyle = COL.dim;
-    ctx.font = 'bold 11px Trebuchet MS, sans-serif';
+    ctx.setLineDash([]);
     ctx.textAlign = 'center';
-    ctx.fillText(labels[i], cx + carW / 2, y + 18);
-    ctx.fillStyle = COL.ink;
-    ctx.font = 'bold 36px "Courier New", monospace';
-    ctx.fillText(ch === ' ' ? '·' : ch, cx + carW / 2, y + 58);
-    // wheels
+    ctx.fillStyle = isGhost || isTrail ? COL.amber : COL.ink;
+    ctx.font = `bold ${Math.max(15, Math.floor(carW * 0.52))}px "Courier New", monospace`;
+    ctx.fillText(isGhost ? '0' : s[i], x + carW / 2, y + carH * 0.58);
     ctx.fillStyle = '#445566';
-    ctx.beginPath(); ctx.arc(cx + 16, y + carH - 6, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + carW - 16, y + carH - 6, 6, 0, Math.PI * 2); ctx.fill();
-    cx += carW + gap;
+    ctx.beginPath(); ctx.arc(x + carW * 0.28, y + carH - 6, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + carW * 0.72, y + carH - 6, 4, 0, Math.PI * 2); ctx.fill();
+    x += carW + gap;
+  }
+  if (opt.badge) {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '13px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(opt.badge, cx, y + carH + 18);
   }
   ctx.textAlign = 'left';
+  ctx.setLineDash([]);
+  return carH;
 }
 
-function drawLongDivision(board, ox, oy, scale, spotlight) {
-  if (!board || !board.prob) return;
-  const prob = board.prob;
-  const digs = prob.digs;
-  const cell = 38 * scale;
-  const font = `bold ${Math.floor(32 * scale)}px "Courier New", monospace`;
-  const midFont = `bold ${Math.floor(26 * scale)}px "Courier New", monospace`;
-  const small = `${Math.floor(15 * scale)}px Trebuchet MS, sans-serif`;
-
-  ctx.save();
-  ctx.translate(ox, oy);
-
-  const panelW = (digs.length + 4) * cell + 70;
-  const panelH = 300 * scale;
-  rr(-56, -36, panelW, panelH, 12);
-  ctx.fillStyle = 'rgba(10,16,26,0.92)';
+function drawParkBay(count, x, y, compact, label) {
+  const w = compact ? 118 : 168;
+  const h = compact ? 72 : 96;
+  rr(x, y, w, h, 8);
+  ctx.fillStyle = 'rgba(16,24,38,0.92)';
   ctx.fill();
-  ctx.strokeStyle = COL.crystal;
+  ctx.strokeStyle = COL.amber;
   ctx.lineWidth = 2;
   ctx.stroke();
-
-  const baseX = 78;
-  const roofY = 22;
-  const divY = 72;
-  const workY0 = 118;
-
-  ctx.font = font;
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  // Divisor left of bracket
   ctx.fillStyle = COL.amber;
-  ctx.fillText(String(prob.divisor), baseX - cell * 0.95, divY);
-
-  // Long-division bracket (vinculum + vertical)
-  const bracketLeft = baseX - cell * 0.4;
-  const bracketRight = baseX + digs.length * cell + 6;
-  ctx.strokeStyle = COL.ink;
-  ctx.lineWidth = 3 * scale;
-  ctx.beginPath();
-  ctx.moveTo(bracketLeft, divY - cell * 0.55);
-  ctx.lineTo(bracketLeft, divY + cell * 0.5);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(bracketLeft, divY - cell * 0.55);
-  ctx.lineTo(bracketRight, divY - cell * 0.55);
-  ctx.stroke();
-
-  // Roof quotient — column-aligned with dividend
-  for (let i = 0; i < board.roof.length; i++) {
-    const v = board.roof[i];
-    if (v == null) continue;
-    const px = baseX + i * cell + cell / 2;
-    if (G.anim.stamp > 0 && i === board.writtenQ.length - 1) {
-      ctx.fillStyle = COL.glow;
-      ctx.beginPath(); ctx.arc(px, roofY, 18 * scale, 0, Math.PI * 2); ctx.fill();
-    }
-    ctx.fillStyle = COL.green;
-    ctx.fillText(String(v), px, roofY);
-  }
-
-  // Dividend digits
-  for (let i = 0; i < digs.length; i++) {
-    const px = baseX + i * cell + cell / 2;
-    // brought-down highlight
-    if (board.brought.length && i === prob.firstEndIdx + board.brought.length) {
-      ctx.fillStyle = 'rgba(62,240,255,0.15)';
-      ctx.fillRect(px - cell * 0.4, divY - cell * 0.4, cell * 0.8, cell * 0.8);
-    }
+  ctx.font = 'bold 11px Trebuchet MS, sans-serif';
+  ctx.fillText(label, x + w / 2, y + 18);
+  if (count <= 0) {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '14px Trebuchet MS, sans-serif';
+    ctx.fillText('none', x + w / 2, y + h * 0.62);
+  } else {
     ctx.fillStyle = COL.ink;
-    ctx.fillText(String(digs[i]), px, divY);
+    ctx.font = `bold ${compact ? 18 : 26}px "Courier New", monospace`;
+    ctx.fillText('0'.repeat(Math.min(count, 4)), x + w / 2, y + h * 0.62);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '12px Trebuchet MS, sans-serif';
+    ctx.fillText(count === 1 ? '1 zero-car' : `${count} zero-cars`, x + w / 2, y + h - 12);
   }
-
-  // Working scratch rows: product then difference, right-aligned under active columns
-  let wy = workY0;
-  ctx.font = midFont;
-  board.workRows.forEach((row, ri) => {
-    const endCol = prob.firstEndIdx + ri;
-    const prodStr = String(row.product);
-    const diffStr = String(row.diff);
-    // product digits right-aligned at endCol
-    ctx.fillStyle = COL.cyan;
-    for (let k = 0; k < prodStr.length; k++) {
-      const col = endCol - (prodStr.length - 1 - k);
-      if (col < 0) continue;
-      ctx.fillText(prodStr[k], baseX + col * cell + cell / 2, wy);
-    }
-    // minus sign
-    ctx.fillText('−', baseX + Math.max(0, endCol - prodStr.length) * cell - 6, wy);
-    wy += cell * 0.55;
-    ctx.strokeStyle = COL.muted;
-    ctx.lineWidth = 2;
-    const lineL = baseX + Math.max(0, endCol - Math.max(prodStr.length, diffStr.length)) * cell;
-    const lineR = baseX + (endCol + 1) * cell;
-    ctx.beginPath();
-    ctx.moveTo(lineL, wy);
-    ctx.lineTo(lineR, wy);
-    ctx.stroke();
-    wy += cell * 0.45;
-    ctx.fillStyle = COL.ink;
-    for (let k = 0; k < diffStr.length; k++) {
-      const col = endCol - (diffStr.length - 1 - k);
-      if (col < 0) continue;
-      ctx.fillText(diffStr[k], baseX + col * cell + cell / 2, wy);
-    }
-    // If next digit was brought down onto this diff, show it
-    if (ri < board.brought.length) {
-      ctx.fillStyle = COL.cyan;
-      ctx.fillText(String(board.brought[ri]), baseX + (endCol + 1) * cell + cell / 2, wy);
-    }
-    wy += cell * 0.85;
-  });
-
-  // Multiply is already locked, so the product sits on the bracket during Subtract.
-  const step = currentStep(board);
-  let pendingY = null;
-  if (step && step.type === 'S' && board.currentProduct != null && !board.done) {
-    const endCol = prob.firstEndIdx + board.workRows.length;
-    const prodStr = String(board.currentProduct);
-    pendingY = wy;
-    ctx.font = midFont;
-    ctx.fillStyle = COL.cyan;
-    ctx.textAlign = 'center';
-    for (let k = 0; k < prodStr.length; k++) {
-      const col = endCol - (prodStr.length - 1 - k);
-      if (col < 0) continue;
-      ctx.fillText(prodStr[k], baseX + col * cell + cell / 2, wy);
-    }
-    ctx.fillText('−', baseX + Math.max(0, endCol - prodStr.length) * cell - 6, wy);
-    wy += cell * 0.55;
-    ctx.strokeStyle = COL.muted;
-    ctx.lineWidth = 2;
-    const lineL = baseX + Math.max(0, endCol - prodStr.length) * cell;
-    const lineR = baseX + (endCol + 1) * cell;
-    ctx.beginPath();
-    ctx.moveTo(lineL, wy);
-    ctx.lineTo(lineR, wy);
-    ctx.stroke();
-    wy += cell * 0.2;
-  }
-
-  // Live working number callout
-  if (step && !board.done && (step.type === 'D' || step.type === 'M' || step.type === 'S')) {
-    ctx.font = small;
-    ctx.fillStyle = COL.amber;
-    ctx.textAlign = 'left';
-    ctx.fillText(`Working: ${step.working}`, -40, panelH - 70 * scale);
-  }
-
-  if (board.sealed) {
-    ctx.font = small;
-    ctx.fillStyle = COL.amber;
-    ctx.textAlign = 'left';
-    ctx.fillText(
-      board.remainder === 0 ? 'SEALED · EXACT DIVISION' : `REMAINDER CAPSULE [ ${board.remainder} ]`,
-      -40,
-      panelH - 48 * scale
-    );
-  }
-
-  // Neon spotlight frame
-  if (spotlight && !board.done && step) {
-    ctx.strokeStyle = COL.amber;
-    ctx.lineWidth = 2.5;
-    ctx.globalAlpha = 0.5 + 0.3 * Math.sin(G.t * 7);
-    let sy = divY - 28;
-    if (step.type === 'D') sy = roofY - 22;
-    else if (step.type === 'S' && pendingY != null) sy = pendingY - cell * 0.85;
-    else if (step.type === 'M') sy = Math.min(wy - 40, workY0 - 10);
-    rr(bracketLeft - 8, sy, bracketRight - bracketLeft + 20, 48, 8);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-
-  ctx.restore();
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
 }
 
-function drawChoiceCards(choices, y, activePlayers) {
+function interiorNote(n) {
+  const s = String(Math.round(Math.abs(n)));
+  const z = tz(n);
+  const body = z ? s.slice(0, -z) : s;
+  if (!body.includes('0')) return '';
+  return `The 0 inside ${fmt(n)} is cargo. Only amber end-cars are trailing zeros.`;
+}
+
+function drawWorkbench(board, cx, top, maxW, compact) {
+  const p = board.prob;
+  const si = board.stepIndex;
+  if (si >= board.steps.length) return;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.amber;
+  const header = rewrite(p, si);
+  ctx.font = compact ? 'bold 15px Trebuchet MS, sans-serif' : 'bold 22px Trebuchet MS, sans-serif';
+  let guard = 0;
+  while (!compact && ctx.measureText(header).width > maxW && guard++ < 6) {
+    ctx.font = `bold ${22 - guard * 2}px Trebuchet MS, sans-serif`;
+  }
+  ctx.fillText(header, cx, top);
+
+  if (si === 0) {
+    const row1 = top + (compact ? 14 : 24);
+    const h1 = drawTrain(p.left, cx, row1, {
+      trail: p.lz, maxW, carW: compact ? 36 : 50,
+      badge: `${p.lz} trailing`
+    });
+    ctx.fillStyle = COL.cyan;
+    ctx.font = compact ? 'bold 16px Trebuchet MS, sans-serif' : 'bold 20px Trebuchet MS, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.op, cx, row1 + h1 + (compact ? 32 : 40));
+    const row2 = row1 + h1 + (compact ? 40 : 52);
+    const h2 = drawTrain(p.right, cx, row2, {
+      trail: p.rz, maxW: maxW * 0.72, carW: compact ? 36 : 50,
+      badge: `${p.rz} trailing`
+    });
+    if (!compact) {
+      const note = interiorNote(p.left) || interiorNote(p.right) ||
+        'Amber cars are trailing zeros. A 0 sitting between other digits stays put.';
+      ctx.fillStyle = COL.crystal;
+      ctx.font = '14px Trebuchet MS, sans-serif';
+      ctx.fillText(note, cx, row2 + h2 + 36);
+    }
+  } else if (si === 1) {
+    const y = top + (compact ? 28 : 56);
+    ctx.fillStyle = COL.ink;
+    ctx.font = compact ? 'bold 26px "Courier New", monospace' : 'bold 40px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    const expr = p.kind === 'mul' ? `${fmt(p.lf)}  ×  ${fmt(p.rf)}` : `${fmt(p.lf)}  ÷  ${fmt(p.rf)}`;
+    ctx.fillText(expr, cx - (compact ? 50 : 80), y + 16);
+    const bayLabel = p.kind === 'div' ? 'LEFTOVER' : 'PARKED';
+    drawParkBay(p.attach, cx + (compact ? 70 : 120), y - 28, compact, bayLabel);
+    if (!compact) {
+      ctx.fillStyle = COL.dim;
+      ctx.font = '15px Trebuchet MS, sans-serif';
+      const note = p.kind === 'mul'
+        ? 'These zeros are not part of the multiply yet.'
+        : (p.attach === 0
+          ? 'No zeros left to stick on.'
+          : 'These leftover zeros are not part of the divide yet.');
+      ctx.fillText(note, cx, y + 78);
+    }
+  } else {
+    const y = top + (compact ? 20 : 40);
+    drawTrain(p.core, cx, y, {
+      ghost: p.attach,
+      maxW,
+      carW: compact ? 36 : 52,
+      badge: p.attach === 0 ? 'No zeros left to stick on' : `Stick ${p.attach} parked ${zerosWord(p.attach)} on the end`
+    });
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawChoiceCards(choices, y, activePlayers, step) {
   hotspots.length = 0;
   if (!choices || !choices.length) return;
   const n = choices.length;
-  const cardW = 140, cardH = 72, gap = 18;
+  const cardW = 168, cardH = 72, gap = 16;
   const total = n * cardW + (n - 1) * gap;
   let x = (W - total) / 2;
+  const zerosStep = step && step.type === 'zeros';
 
   choices.forEach((c, i) => {
     const selectedBy = activePlayers.filter(pi => players[pi].reticle === i);
@@ -1540,57 +1468,107 @@ function drawChoiceCards(choices, y, activePlayers) {
     ctx.lineWidth = selectedBy.length ? 3 : 2;
     ctx.stroke();
 
-    ctx.fillStyle = COL.ink;
-    ctx.font = 'bold 28px "Courier New", monospace';
+    const label = zerosStep ? String(c) : fmt(c);
     ctx.textAlign = 'center';
-    const label = (G.mode === 'play' && currentStep(G.board || players[0].board)?.type === 'B' &&
-      currentStep(G.board || players[0].board)?.seal)
-      ? `R ${c}` : String(c);
-    ctx.fillText(label, x + cardW / 2, y + 46);
+    ctx.fillStyle = COL.ink;
+    let size = zerosStep ? 30 : 26;
+    ctx.font = `bold ${size}px "Courier New", monospace`;
+    while (size > 16 && ctx.measureText(label).width > cardW - 18) {
+      size -= 2;
+      ctx.font = `bold ${size}px "Courier New", monospace`;
+    }
+    ctx.fillText(label, x + cardW / 2, y + (zerosStep ? 40 : 46));
+    if (zerosStep) {
+      ctx.fillStyle = COL.amber;
+      ctx.font = 'bold 12px Trebuchet MS, sans-serif';
+      ctx.fillText(c === 1 ? 'zero' : 'zeros', x + cardW / 2, y + 60);
+    }
 
     selectedBy.forEach((pi, k) => {
       ctx.strokeStyle = players[pi].color;
       ctx.lineWidth = 3;
       rr(x - 4 - k * 3, y - 4 - k * 3, cardW + 8 + k * 6, cardH + 8 + k * 6, 12);
       ctx.stroke();
-      // reticle crosshair
-      const cx = x + cardW / 2 + (pi === 0 ? -30 : 30);
-      const cy = y + 14;
+      const hx = x + cardW / 2 + (pi === 0 ? -36 : 36);
+      const hy = y + 14;
       ctx.strokeStyle = players[pi].color;
       ctx.beginPath();
-      ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy);
-      ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8);
+      ctx.moveTo(hx - 8, hy); ctx.lineTo(hx + 8, hy);
+      ctx.moveTo(hx, hy - 8); ctx.lineTo(hx, hy + 8);
       ctx.stroke();
       ctx.fillStyle = players[pi].color;
       ctx.font = 'bold 10px Trebuchet MS, sans-serif';
-      ctx.fillText(players[pi].short, cx, cy - 10);
+      ctx.fillText(players[pi].short, hx, hy - 10);
     });
 
-    hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: activePlayers[0] });
-    // also allow P2 click on same cards in coop
-    if (activePlayers.length > 1) {
-      hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: activePlayers[1] });
-    }
+    activePlayers.forEach(pi => {
+      hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: pi });
+    });
     x += cardW + gap;
   });
   ctx.textAlign = 'left';
 }
 
+function drawVersusChoices(choices, x0, y, pi, step) {
+  if (!choices || !choices.length) return;
+  const n = choices.length;
+  const cardW = 120, cardH = 58, gap = 8;
+  const total = n * cardW + (n - 1) * gap;
+  let x = x0 + (560 - total) / 2;
+  const zerosStep = step && step.type === 'zeros';
+  choices.forEach((c, i) => {
+    const on = players[pi].reticle === i;
+    rr(x, y, cardW, cardH, 8);
+    ctx.fillStyle = on ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.95)';
+    ctx.fill();
+    ctx.strokeStyle = on ? players[pi].color : COL.steel;
+    ctx.lineWidth = on ? 3 : 2;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'center';
+    const label = zerosStep ? String(c) : fmt(c);
+    let size = 18;
+    ctx.font = `bold ${size}px "Courier New", monospace`;
+    while (size > 12 && ctx.measureText(label).width > cardW - 12) {
+      size -= 1;
+      ctx.font = `bold ${size}px "Courier New", monospace`;
+    }
+    ctx.fillText(label, x + cardW / 2, y + (zerosStep ? 28 : 36));
+    if (zerosStep) {
+      ctx.fillStyle = COL.amber;
+      ctx.font = '11px Trebuchet MS, sans-serif';
+      ctx.fillText(c === 1 ? 'zero' : 'zeros', x + cardW / 2, y + 46);
+    }
+    hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: pi });
+    x += cardW + gap;
+  });
+  ctx.textAlign = 'left';
+}
+
+function shortPrompt(p, step) {
+  if (!step) return '';
+  if (step.type === 'zeros' && p.kind === 'mul') return 'How many trailing zeros get parked?';
+  if (step.type === 'zeros') return 'How many zeros are left?';
+  if (step.type === 'core' && p.kind === 'mul') return `${fmt(p.lf)} × ${fmt(p.rf)} = ?`;
+  if (step.type === 'core') return `${fmt(p.lf)} ÷ ${fmt(p.rf)} = ?`;
+  if (p.attach === 0) return 'No zeros left. What is the shipment?';
+  return `Stick ${p.attach} ${zerosWord(p.attach)} on ${fmt(p.core)}.`;
+}
+
 function modeCards() {
   const items = [
-    { id: 'solo', title: 'SOLO SHIFT', sub: 'Mouse · keys · 8BitDo' },
-    { id: 'coop', title: 'CO-OP RELAY', sub: 'P1: D & S · P2: M & B' },
-    { id: 'versus', title: 'SPRINT RACE', sub: 'First seal wins a Star' }
+    { id: 'solo', title: 'SOLO SHIFT', sub: 'You run every station' },
+    { id: 'coop', title: 'CO-OP RELAY', sub: 'P1 zeros · P2 the fronts' },
+    { id: 'versus', title: 'SPRINT RACE', sub: 'First to finish the chute' }
   ];
   const bw = 300, bh = 82, gap = 20;
   const total = items.length * bw + (items.length - 1) * gap;
   const x0 = (W - total) / 2;
-  const y = 424;
+  const y = 430;
   return items.map((m, i) => ({ ...m, i, x: x0 + i * (bw + gap), y, w: bw, h: bh }));
 }
 
 function drawTitle() {
-  // Hero brand
   ctx.textAlign = 'center';
   ctx.fillStyle = COL.amber;
   ctx.font = 'bold 18px Trebuchet MS, sans-serif';
@@ -1598,27 +1576,28 @@ function drawTitle() {
 
   ctx.fillStyle = COL.ink;
   ctx.font = 'bold 54px Trebuchet MS, sans-serif';
-  ctx.fillText('CARGO CHUTE', W / 2, 168);
+  ctx.fillText('CARGO CHUTE', W / 2, 164);
   ctx.fillStyle = COL.cyan;
   ctx.font = 'bold 28px Trebuchet MS, sans-serif';
-  ctx.fillText('The D-M-S-B Refinery', W / 2, 210);
+  ctx.fillText('Zero-Car Refinery', W / 2, 204);
 
   ctx.fillStyle = COL.dim;
   ctx.font = '16px Trebuchet MS, sans-serif';
-  ctx.fillText('Primary 3–4 · Place-value ×10 / ÷10 · Long division Divide → Multiply → Subtract → Bring Down', W / 2, 250);
+  ctx.fillText('Primary 3–4 · Multiply and divide by 10, 100, 1000 and their multiples', W / 2, 242);
 
-  // Decorative bracket preview
   ctx.strokeStyle = 'rgba(154,216,255,0.35)';
   ctx.lineWidth = 2;
-  rr(W / 2 - 220, 268, 440, 100, 12);
+  rr(W / 2 - 340, 262, 680, 118, 12);
   ctx.stroke();
   ctx.fillStyle = COL.crystal;
-  ctx.font = '22px "Courier New", monospace';
-  ctx.fillText('    2 0 4', W / 2, 306);
-  ctx.fillText('4 | 8 1 6', W / 2, 338);
-  ctx.fillStyle = COL.dim;
-  ctx.font = '13px Trebuchet MS, sans-serif';
-  ctx.fillText('Zero-placeholder mastery · Remainder capsules · Refinery combo chain', W / 2, 356);
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillText('4 200  ÷  60', W / 2, 298);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '16px Trebuchet MS, sans-serif';
+  ctx.fillText('2 − 1 = 1 zero left  →  42 ÷ 6 = 7', W / 2, 330);
+  ctx.fillStyle = COL.amber;
+  ctx.font = '16px Trebuchet MS, sans-serif';
+  ctx.fillText('The leftover zero stays on  →  70', W / 2, 356);
 
   modeCards().forEach((m) => {
     const on = G.titleFocus === m.i;
@@ -1638,134 +1617,73 @@ function drawTitle() {
 
   ctx.fillStyle = COL.ink;
   ctx.font = '14px Trebuchet MS, sans-serif';
-  ctx.fillText('P1: click a card · WASD + F / Space · 8BitDo D-pad + A', W / 2, 540);
+  ctx.fillText('P1: click a card · WASD + F / Space · 8BitDo D-pad + A', W / 2, 548);
   ctx.fillStyle = COL.dim;
   ctx.font = '14px Trebuchet MS, sans-serif';
-  ctx.fillText('P2 co-op / sprint: Arrows + Enter · second 8BitDo · M mutes audio', W / 2, 564);
+  ctx.fillText('P2 co-op / sprint: Arrows + Enter · second 8BitDo · M mutes audio', W / 2, 572);
   ctx.fillStyle = COL.amber;
   ctx.font = 'bold 16px Trebuchet MS, sans-serif';
-  ctx.fillText('Click a mode, or press Space / A to start the highlighted one', W / 2, 600);
+  ctx.fillText('Zeros off the chute, fronts next, then the zeros roll back on', W / 2, 608);
   if (G.padNote) {
     ctx.fillStyle = COL.cyan;
     ctx.font = '13px Trebuchet MS, sans-serif';
-    ctx.fillText(G.padNote, W / 2, 612);
+    ctx.fillText(G.padNote, W / 2, 634);
   }
-  ctx.textAlign = 'left';
-}
-
-function drawCalibrate() {
-  drawDMSBBar(W / 2, 72);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = COL.cyan;
-  ctx.font = 'bold 20px Trebuchet MS, sans-serif';
-  ctx.fillText(G.phaseLabel, W / 2, 140);
-  ctx.fillStyle = COL.ink;
-  ctx.font = '18px Trebuchet MS, sans-serif';
-  ctx.fillText(`Shift the place-value train: ${fmt(G.place.n)} ${G.place.op} = ?`, W / 2, 175);
-  ctx.fillStyle = COL.dim;
-  ctx.font = '14px Trebuchet MS, sans-serif';
-  ctx.fillText(G.hint, W / 2, 200);
-  ctx.textAlign = 'left';
-
-  const shift = G.place.op === '×10' ? 'L' : 'R';
-  placeValueCars(G.place.n, W / 2, 230, shift);
-
-  // Arrow indicator
-  ctx.textAlign = 'center';
-  ctx.fillStyle = COL.amber;
-  ctx.font = 'bold 28px Trebuchet MS, sans-serif';
-  ctx.fillText(G.place.op === '×10' ? '⟸  ×10  SHIFT LEFT  ·  insert 0 in Ones' : '⟹  ÷10  SHIFT RIGHT  ·  drop Ones 0', W / 2, 360);
-
-  drawChoiceCards(G.placeChoices, 420, G.playMode === 'solo' ? [0] : [0, 1]);
   ctx.textAlign = 'left';
 }
 
 function drawPlay() {
-  drawDMSBBar(W / 2, 72);
+  const sample = G.playMode === 'versus' ? players[0].board : G.board;
+  if (!sample) return;
+  const lit = G.playMode === 'versus' ? -1 : sample.stepIndex;
+  drawStepBar(W / 2, 120, stepLabels(sample.prob), lit);
 
   ctx.textAlign = 'center';
-  ctx.fillStyle = COL.cyan;
-  ctx.font = 'bold 16px Trebuchet MS, sans-serif';
-  ctx.fillText(G.phaseLabel, W / 2, 128);
-  if (G.hint) {
-    ctx.fillStyle = COL.dim;
-    ctx.font = '13px Trebuchet MS, sans-serif';
-    ctx.fillText(G.hint, W / 2, 150);
+  if (G.playMode === 'coop' && G.phaseLabel) {
+    ctx.fillStyle = COL.cyan;
+    ctx.font = 'bold 16px Trebuchet MS, sans-serif';
+    ctx.fillText(G.phaseLabel, W / 2, 174);
   }
-  ctx.textAlign = 'left';
 
   if (G.playMode === 'versus') {
-    // Side-by-side brackets
-    ctx.fillStyle = players[0].color;
-    ctx.font = 'bold 14px Trebuchet MS, sans-serif';
-    ctx.fillText('P1 BRACKET', 120, 170);
-    ctx.fillStyle = players[1].color;
-    ctx.fillText('P2 BRACKET', W / 2 + 120, 170);
-    drawLongDivision(players[0].board, 80, 190, 0.85, true);
-    drawLongDivision(players[1].board, W / 2 + 40, 190, 0.85, true);
-
-    // Each player uses own choices — show the active player's card set under their side if both on same step type use dual
-    // Display P1 choices left-bottom, P2 right-bottom when steps differ; else shared mid
-    const c0 = players[0].board.choices || [];
-    const c1 = players[1].board.choices || [];
     hotspots.length = 0;
-    drawVersusChoices(c0, 60, 520, 0);
-    drawVersusChoices(c1, W / 2 + 20, 520, 1);
-  } else {
-    const board = G.board;
-    const step = currentStep(board);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = COL.amber;
-    ctx.font = 'bold 18px Trebuchet MS, sans-serif';
-    ctx.fillText(`${board.prob.dividend} ÷ ${board.prob.divisor}`, W / 2, 168);
-    ctx.textAlign = 'left';
-    drawLongDivision(board, W / 2 - 160, 190, 1, true);
-
-    // Hydraulic press visual during subtract
-    if (step && step.type === 'S' && G.anim.press > 0) {
-      const py = 200 + (1 - G.anim.press / 0.4) * 80;
-      ctx.fillStyle = '#5a6a80';
-      ctx.fillRect(W / 2 - 40, py, 80, 24);
-      ctx.fillStyle = COL.bad;
-      ctx.fillRect(W / 2 - 30, py + 24, 60, 8);
-    }
-
-    const who = activePlayerForStep(step);
-    const actives = who >= 0 ? [who] : [0, 1];
-    drawChoiceCards(G.stepChoices, 520, actives);
-
-    // Seal button label
-    if (step && step.type === 'B' && step.seal) {
-      ctx.textAlign = 'center';
-      ctx.fillStyle = COL.amber;
+    [0, 1].forEach(pi => {
+      const board = players[pi].board;
+      const left = pi === 0 ? 48 : W / 2 + 24;
+      const cx = left + 280;
+      ctx.fillStyle = players[pi].color;
       ctx.font = 'bold 14px Trebuchet MS, sans-serif';
-      ctx.fillText(step.remainder === 0 ? 'Select REMAINDER 0 to seal exact shipment' : `Load REMAINDER capsule to seal`, W / 2, 505);
-      ctx.textAlign = 'left';
-    }
+      ctx.textAlign = 'center';
+      const name = board.done ? 'SEALED' : (stepLabels(board.prob)[board.stepIndex] || 'SEALED');
+      ctx.fillText(`${players[pi].short} · ${name}`, cx, 168);
+      if (!board.done) {
+        drawWorkbench(board, cx, 188, 500, true);
+        const step = board.steps[board.stepIndex];
+        ctx.fillStyle = COL.dim;
+        ctx.font = '13px Trebuchet MS, sans-serif';
+        ctx.fillText(shortPrompt(board.prob, step), cx, 392);
+        drawVersusChoices(board.choices, left, 408, pi, step);
+      } else {
+        ctx.fillStyle = COL.green;
+        ctx.font = 'bold 28px Trebuchet MS, sans-serif';
+        ctx.fillText(fmt(board.prob.ans), cx, 280);
+      }
+    });
+    ctx.textAlign = 'left';
+    return;
   }
-}
 
-function drawVersusChoices(choices, x0, y, pi) {
-  if (!choices || !choices.length) return;
-  const n = choices.length;
-  const cardW = 110, cardH = 60, gap = 10;
-  let x = x0;
-  choices.forEach((c, i) => {
-    const on = players[pi].reticle === i;
-    rr(x, y, cardW, cardH, 8);
-    ctx.fillStyle = on ? 'rgba(255,184,74,0.2)' : 'rgba(16,24,38,0.95)';
-    ctx.fill();
-    ctx.strokeStyle = on ? players[pi].color : COL.steel;
-    ctx.lineWidth = on ? 3 : 2;
-    ctx.stroke();
-    ctx.fillStyle = COL.ink;
-    ctx.font = 'bold 22px "Courier New", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(String(c), x + cardW / 2, y + 38);
-    hotspots.push({ x, y, w: cardW, h: cardH, index: i, player: pi });
-    x += cardW + gap;
-  });
+  if (G.hint) {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '15px Trebuchet MS, sans-serif';
+    ctx.fillText(G.hint, W / 2, G.playMode === 'coop' ? 198 : 172);
+  }
   ctx.textAlign = 'left';
+  const board = G.board;
+  const step = board.steps[board.stepIndex];
+  drawWorkbench(board, W / 2, 222, 820, false);
+  const who = G.playMode === 'coop' ? board.stepIndex % 2 : 0;
+  drawChoiceCards(board.choices, 512, [who], step);
 }
 
 function drawBatchDone() {
@@ -1798,10 +1716,13 @@ function drawBatchDone() {
   ctx.fillText('CARGO ROCKET LAUNCHED!', W / 2, 140);
   ctx.fillStyle = COL.ink;
   ctx.font = '18px Trebuchet MS, sans-serif';
-  ctx.fillText(G.feedback || 'Batch complete', W / 2, 180);
+  ctx.fillText(G.feedback || 'Shipment sealed', W / 2, 180);
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '16px Trebuchet MS, sans-serif';
+  wrapLines(G.recap || '', 1000).forEach((line, i) => ctx.fillText(line, W / 2, 214 + i * 24));
   ctx.fillStyle = COL.dim;
   ctx.font = '15px Trebuchet MS, sans-serif';
-  ctx.fillText('Press Space / A for next intake calibration', W / 2, H - 80);
+  ctx.fillText('Press Space / A for the next shipment', W / 2, H - 80);
   ctx.textAlign = 'left';
 }
 
@@ -1825,25 +1746,33 @@ function drawGameOver() {
     ctx.font = 'bold 28px Trebuchet MS, sans-serif';
     ctx.fillText(`Winner: ${w}`, W / 2, 360);
   }
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '18px Trebuchet MS, sans-serif';
+  ctx.fillText('Zeros off the chute, fronts next, then the zeros roll back on.', W / 2, 420);
   ctx.fillStyle = COL.dim;
   ctx.font = '16px Trebuchet MS, sans-serif';
-  ctx.fillText('Press Space / A to return to title', W / 2, 440);
+  ctx.fillText('Press Space / A to return to title', W / 2, 460);
   ctx.textAlign = 'left';
 }
 
 function drawFeedback() {
   if (G.feedbackT <= 0 || !G.feedback) return;
+  if (G.mode === 'batchDone') return;
   const col = G.feedbackKind === 'bad' ? COL.bad : G.feedbackKind === 'warn' ? COL.warn : COL.green;
-  rr(W / 2 - 360, H - 120, 720, 44, 8);
+  ctx.font = '15px Trebuchet MS, sans-serif';
+  const lines = wrapLines(G.feedback, 980);
+  const boxW = 1040;
+  const boxH = 16 + lines.length * 20;
+  const boxY = H - 36 - boxH;
+  rr(W / 2 - boxW / 2, boxY, boxW, boxH, 8);
   ctx.fillStyle = 'rgba(8,12,20,0.92)';
   ctx.fill();
   ctx.strokeStyle = col;
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.fillStyle = col;
-  ctx.font = '14px Trebuchet MS, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(G.feedback, W / 2, H - 93);
+  lines.forEach((line, i) => ctx.fillText(line, W / 2, boxY + 22 + i * 20));
   ctx.textAlign = 'left';
 }
 
@@ -1902,8 +1831,7 @@ function frame(now) {
     drawTitle();
   } else {
     drawHUD();
-    if (G.mode === 'calibrate') drawCalibrate();
-    else if (G.mode === 'play') drawPlay();
+    if (G.mode === 'play') drawPlay();
     else if (G.mode === 'batchDone') drawBatchDone();
     else if (G.mode === 'gameOver') drawGameOver();
     drawFeedback();
@@ -1919,11 +1847,11 @@ function frame(now) {
   ctx.restore();
 
   // pad note
-  if (G.mode !== 'title' && G.padNote) {
+  if (G.mode === 'play' && G.padNote && G.feedbackT <= 0) {
     ctx.fillStyle = COL.muted;
-    ctx.font = '11px Trebuchet MS, sans-serif';
+    ctx.font = '12px Trebuchet MS, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(G.padNote, W / 2, H - 46);
+    ctx.fillText(G.padNote, W / 2, H - 50);
     ctx.textAlign = 'left';
   }
 
@@ -1936,7 +1864,7 @@ setInterval(() => {
   if (G.mode !== 'title') spawnSteam(rand(40, W - 40), rand(130, 200));
 }, 800);
 
-speak('Cargo Chute Refinery ready. Solo shift, Co-op Relay, or Sprint Race. Player 1 can use the mouse, keyboard, or an 8BitDo.');
+speak('Cargo Chute ready. Park or drop the zeros, work the fronts, then stick the zeros back on.');
 </script>
 </body>
 </html>
