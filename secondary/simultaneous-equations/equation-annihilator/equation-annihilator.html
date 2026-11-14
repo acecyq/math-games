@@ -1,0 +1,2498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Equation Annihilator: Term Crusher</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #05070c;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<p class="sr">Equation Annihilator: Term Crusher. A collider game that teaches the elimination method for simultaneous linear equations. Solo uses the mouse, WASD or arrow keys, and Space or Enter, or gamepad 1. In co-op and versus, player 1 uses WASD and F or Space, or gamepad 1. Player 2 uses the arrow keys and Enter, or gamepad 2. Press M to mute. Press Escape to pause.</p>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+const VW = 1600;
+const VH = 900;
+const FONT = '"Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif';
+const MINUS = '\u2212';
+const TIMES = '\u00d7';
+
+const COL = {
+  bg: '#05070c',
+  cyan: '#3ee7ff',
+  mag: '#ff3d9a',
+  gold: '#ffd15c',
+  violet: '#c9a6ff',
+  white: '#f4f7ff',
+  dim: '#93a0b8',
+  red: '#ff5b6a',
+  blue: '#4dabff',
+  good: '#5dffb0',
+  ink: '#07101c'
+};
+
+const GEO = {
+  t1: { x: 48, y: 166, w: 1504, h: 156 },
+  core: { x: 48, y: 334, w: 1504, h: 108 },
+  t2: { x: 48, y: 454, w: 1504, h: 156 },
+  cardY: 656,
+  cardH: 150,
+  fire: { x: 590, y: 820, w: 420, h: 48 },
+  mute: { x: 1490, y: 12, w: 86, h: 34 }
+};
+
+const STEP_POINTS = { 1: 120, 2: 180, 3: 350 };
+
+const memory = { sigs: [], sols: [] };
+
+let canvas, ctx;
+let reduceMotion = false;
+
+const G = {
+  screen: 'title',
+  mode: 'solo',
+  menu: 0,
+  roundNumber: 1,
+  round: null,
+  step: 1,
+  cards: [],
+  phase: 'choose',
+  anim: null,
+  shields: 3,
+  shieldMax: 3,
+  score: 0,
+  combo: 0,
+  roundMistakes: 0,
+  roundsCleared: 0,
+  p: [
+    { shields: 3, stars: 0, score: 0, stun: 0, miss: 0, focus: 0 },
+    { shields: 3, stars: 0, score: 0, stun: 0, miss: 0, focus: 1 }
+  ],
+  arm: [null, null],
+  tip: { kind: 'hint', text: '' },
+  lock: 0,
+  dying: 0,
+  koPending: false,
+  stepAge: 0,
+  clearT: 0,
+  popup: null,
+  floater: null,
+  flash: 0,
+  shake: 0,
+  chosen: -1,
+  badFlash: null,
+  pause: false,
+  lastInput: 'key',
+  ret: { x: 800, y: 700 },
+  hold: [{ t: 0, dir: 0 }, { t: 0, dir: 0 }],
+  best: { solo: 0, coop: 0, versusStars: 0, versusScore: 0 }
+};
+
+const pointer = { x: -1, y: -1, inside: false, pressed: false, moved: false };
+const down = {};
+const edges = [];
+const padPrev = [{}, {}];
+const parts = [];
+const stars = Array.from({ length: 90 }, () => ({
+  x: Math.random() * VW,
+  y: Math.random() * VH,
+  r: Math.random() * 1.3 + 0.3,
+  p: Math.random() * Math.PI * 2,
+  s: 0.4 + Math.random() * 1.6
+}));
+
+const audio = {
+  ctx: null,
+  master: null,
+  musicGain: null,
+  sfxGain: null,
+  muted: false,
+  musicOn: false,
+  nextNote: 0,
+  step: 0,
+  _noise: null,
+  ensure() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 0.9;
+    this.master.connect(this.ctx.destination);
+    this.musicGain = this.ctx.createGain();
+    this.musicGain.gain.value = 0.22;
+    this.musicGain.connect(this.master);
+    this.sfxGain = this.ctx.createGain();
+    this.sfxGain.gain.value = 0.55;
+    this.sfxGain.connect(this.master);
+    try { this.muted = localStorage.getItem('ea-muted') === '1'; } catch (e) { /* ignore */ }
+    this.master.gain.value = this.muted ? 0 : 0.9;
+  },
+  resume() {
+    this.ensure();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.musicOn) {
+      this.musicOn = true;
+      this.nextNote = this.ctx.currentTime + 0.06;
+    }
+  },
+  toggle() {
+    this.ensure();
+    this.muted = !this.muted;
+    if (this.master) this.master.gain.value = this.muted ? 0 : 0.9;
+    try { localStorage.setItem('ea-muted', this.muted ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (!this.muted) {
+      this.resume();
+      if (this.ctx) this.nextNote = this.ctx.currentTime + 0.05;
+    }
+  },
+  noise() {
+    if (this._noise) return this._noise;
+    const len = Math.floor(this.ctx.sampleRate * 0.25);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this._noise = buf;
+    return buf;
+  },
+  tone(dest, time, freq, dur, type, gain, slide) {
+    if (!this.ctx) return;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(Math.max(40, freq), time);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.exponentialRampToValueAtTime(gain, time + Math.min(0.03, dur * 0.3));
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    o.connect(g);
+    g.connect(dest);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+  },
+  hat(time, gain) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise();
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 1800;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.musicGain);
+    src.start(time);
+    src.stop(time + 0.06);
+  },
+  tick() {
+    if (!this.ctx || !this.musicOn || this.muted) return;
+    const eighth = 60 / 136 / 2;
+    const lead = [0, 3, 7, 12, 10, 7, 3, 0, 0, 5, 7, 12, 15, 12, 7, 3];
+    const bass = [0, 0, -5, -5, -2, -2, 0, 5];
+    while (this.nextNote < this.ctx.currentTime + 0.28) {
+      const t = this.nextNote;
+      const s = this.step % 16;
+      const a = 110 * Math.pow(2, bass[(s >> 1) % 8] / 12);
+      if (s % 2 === 0) this.tone(this.musicGain, t, a, eighth * 1.8, 'triangle', 0.09);
+      const f = 440 * Math.pow(2, lead[s] / 12);
+      this.tone(this.musicGain, t, f, eighth * 0.92, 'square', 0.035);
+      if (s % 2 === 0) this.hat(t, s % 4 === 0 ? 0.03 : 0.018);
+      if (s % 8 === 0 || s % 8 === 4) this.tone(this.musicGain, t, 180, 0.08, 'sine', 0.08, 55);
+      this.step = (this.step + 1) % 16;
+      this.nextNote += eighth;
+    }
+  },
+  charge() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 160, 0.42, 'sawtooth', 0.06, 880);
+    this.tone(this.sfxGain, t, 320, 0.42, 'square', 0.03, 990);
+  },
+  boom() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 220, 0.28, 'square', 0.08, 90);
+    this.tone(this.sfxGain, t + 0.02, 660, 0.22, 'triangle', 0.06);
+    this.tone(this.sfxGain, t + 0.04, 990, 0.18, 'sine', 0.05);
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise();
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.12, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+    src.connect(g);
+    g.connect(this.sfxGain);
+    src.start(t);
+    src.stop(t + 0.26);
+  },
+  fuse() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 55, 0.55, 'sine', 0.14, 40);
+    [440, 554, 659, 880].forEach((f, i) => this.tone(this.sfxGain, t + i * 0.07, f, 0.28, 'triangle', 0.06));
+  },
+  bad() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 96, 0.28, 'sawtooth', 0.07, 70);
+    this.tone(this.sfxGain, t, 140, 0.22, 'square', 0.04, 80);
+  }
+};
+
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function randSign() { return Math.random() < 0.5 ? -1 : 1; }
+function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
+function shuffle(list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+function gcd(a, b) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  while (b) {
+    const t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+function reduceRat(n, d) {
+  if (!d) return { n: 0, d: 1 };
+  if (d < 0) { n = -n; d = -d; }
+  const g = gcd(n, d);
+  return { n: n / g, d: d / g };
+}
+function ratEq(p, q) { return p.n * q.d === q.n * p.d; }
+function negRat(p) { return reduceRat(-p.n, p.d); }
+function addInt(p, k) { return reduceRat(p.n + k * p.d, p.d); }
+function pairKey(x, y) {
+  const a = reduceRat(x.n, x.d);
+  const b = reduceRat(y.n, y.d);
+  return a.n + '/' + a.d + ',' + b.n + '/' + b.d;
+}
+function fmtInt(n) { return n < 0 ? MINUS + Math.abs(n) : String(n); }
+function fmtRat(r) {
+  const v = reduceRat(r.n, r.d);
+  if (v.d === 1) return fmtInt(v.n);
+  return (v.n < 0 ? MINUS : '') + Math.abs(v.n) + '/' + v.d;
+}
+function fmtAbs(n, v) {
+  const a = Math.abs(n);
+  if (v && a === 1) return v;
+  if (!v) return String(a);
+  return String(a) + v;
+}
+function fmtSigned(n, v) { return (n < 0 ? MINUS : '+') + fmtAbs(n, v); }
+function fmtEq(eq, vars) {
+  let s = '';
+  if (eq.a) s += (eq.a < 0 ? MINUS : '') + fmtAbs(eq.a, vars[0]);
+  if (eq.b) {
+    const body = fmtAbs(eq.b, vars[1]);
+    if (!s) s += (eq.b < 0 ? MINUS : '') + body;
+    else s += eq.b < 0 ? ' ' + MINUS + ' ' + body : ' + ' + body;
+  }
+  if (!s) s = '0';
+  return s + ' = ' + fmtInt(eq.c);
+}
+function scaleEq(eq, m) { return { a: eq.a * m, b: eq.b * m, c: eq.c * m }; }
+function combine(e1, e2, op) {
+  const s = op === 'add' ? 1 : -1;
+  return { a: e1.a + s * e2.a, b: e1.b + s * e2.b, c: e1.c + s * e2.c };
+}
+function toR(eq) {
+  return { a: { n: eq.a, d: 1 }, b: { n: eq.b, d: 1 }, c: { n: eq.c, d: 1 } };
+}
+function sameRats(p, q) {
+  return p.a.n * q.a.d === q.a.n * p.a.d &&
+    p.b.n * q.b.d === q.b.n * p.b.d &&
+    p.c.n * q.c.d === q.c.n * p.c.d;
+}
+function equivInt(e, f) {
+  return e.a * f.b === e.b * f.a && e.a * f.c === e.c * f.a && e.b * f.c === e.c * f.b;
+}
+function multipliersFor(e1, e2, target) {
+  const c1 = target === 'x' ? e1.a : e1.b;
+  const c2 = target === 'x' ? e2.a : e2.b;
+  if (!c1 || !c2) return null;
+  const g = gcd(c1, c2);
+  return [Math.abs(c2) / g, Math.abs(c1) / g];
+}
+function alsoAligns(e1, e2, m, target) {
+  const other = target === 'x' ? 'y' : 'x';
+  const c1 = other === 'x' ? e1.a : e1.b;
+  const c2 = other === 'x' ? e2.a : e2.b;
+  return Math.abs(m[0] * c1) === Math.abs(m[1] * c2);
+}
+function opFor(e1, e2, m, target) {
+  const c1 = (target === 'x' ? e1.a : e1.b) * m[0];
+  const c2 = (target === 'x' ? e2.a : e2.b) * m[1];
+  if (!c1 || !c2) return null;
+  return Math.sign(c1) === Math.sign(c2) ? 'sub' : 'add';
+}
+function rhs(a, b, sol) {
+  const n = a * sol.xN * sol.yD + b * sol.yN * sol.xD;
+  const d = sol.xD * sol.yD;
+  if (n % d !== 0) return null;
+  return n / d;
+}
+function solvedRat(eq, target) {
+  if (target === 'x') return reduceRat(eq.c, eq.a);
+  return reduceRat(eq.c, eq.b);
+}
+function otherCost(e1, e2, target) {
+  const m = multipliersFor(e1, e2, target === 'x' ? 'y' : 'x');
+  if (!m) return 99;
+  return Math.max(m[0], m[1]);
+}
+function looksFractional(eq, L) {
+  return [eq.a, eq.b, eq.c].some((v) => reduceRat(v, L).d !== 1);
+}
+function easier(e1, e2) {
+  const w = (e) => Math.abs(e.a) + Math.abs(e.b) + Math.abs(e.c);
+  return w(e1) <= w(e2) ? e1 : e2;
+}
+
+function scrambleTokens(eq, vars) {
+  const tokens = [];
+  const pushLeft = (coef, label) => {
+    if (coef < 0) tokens.push({ t: 'op', s: MINUS });
+    const mag = Math.abs(coef);
+    tokens.push({ t: 'txt', s: mag === 1 ? label : mag + label });
+  };
+  pushLeft(eq.b, vars[1]);
+  tokens.push({ t: 'op', s: '=' });
+  tokens.push({ t: 'txt', s: fmtInt(eq.c) });
+  if (eq.a) {
+    tokens.push({ t: 'op', s: eq.a > 0 ? MINUS : '+' });
+    const mag = Math.abs(eq.a);
+    tokens.push({ t: 'txt', s: mag === 1 ? vars[0] : mag + vars[0] });
+  }
+  return tokens;
+}
+function substTokens(eq) {
+  const tokens = [];
+  let first = true;
+  const add = (coef, den) => {
+    if (!coef) return;
+    if (!first) tokens.push({ t: 'op', s: coef < 0 ? MINUS : '+' });
+    else if (coef < 0) tokens.push({ t: 'op', s: MINUS });
+    first = false;
+    tokens.push({ t: 'frac', num: String(Math.abs(coef)), den: den });
+  };
+  add(eq.a, 'u+v');
+  add(eq.b, 'u' + MINUS + 'v');
+  tokens.push({ t: 'op', s: '=' });
+  tokens.push({ t: 'txt', s: fmtInt(eq.c) });
+  return tokens;
+}
+function tokensText(tokens) {
+  return tokens.map((tk) => {
+    if (tk.t === 'op') return ' ' + tk.s + ' ';
+    if (tk.t === 'txt') return tk.s;
+    return tk.num + '/(' + tk.den + ')';
+  }).join('').replace(/\s+/g, ' ').trim();
+}
+function makeKicker(face1, face2, disp1, disp2) {
+  const tags = [];
+  if (disp1 === 'scramble' || disp2 === 'scramble') tags.push('REARRANGE');
+  if (disp1 === 'frac' || disp2 === 'frac') tags.push('CLEAR');
+  if (disp1 === 'subst' || disp2 === 'subst') tags.push('LET a, b');
+  const mul = 'EQ1 ' + TIMES + face1 + '    EQ2 ' + TIMES + face2;
+  return tags.length ? tags.join(' · ') + '    ' + mul : mul;
+}
+function cancelTip(s1, s2, target, op, vars) {
+  const name = target === 'x' ? vars[0] : vars[1];
+  const c1 = target === 'x' ? s1.a : s1.b;
+  const c2 = target === 'x' ? s2.a : s2.b;
+  const left = fmtSigned(c1, name);
+  const right = fmtSigned(c2, name);
+  if (op === 'sub') {
+    return 'Both ' + name + '-terms have the SAME sign (' + left + ' and ' + right + ')! Subtracting cancels them: ' + left + ' ' + MINUS + ' (' + right + ') = 0!';
+  }
+  return 'The ' + name + '-terms have OPPOSITE signs (' + left + ' and ' + right + ')! Adding cancels them: ' + left + ' + (' + right + ') = 0!';
+}
+function signTip(s1, s2, target, op, vars) {
+  const other = target === 'x' ? 'y' : 'x';
+  const name = other === 'x' ? vars[0] : vars[1];
+  const c1 = other === 'x' ? s1.a : s1.b;
+  const c2 = other === 'x' ? s2.a : s2.b;
+  const result = op === 'sub' ? c1 - c2 : c1 + c2;
+  const mid = op === 'sub' ? MINUS : '+';
+  const arithmetic = fmtSigned(c1, name) + ' ' + mid + ' (' + fmtSigned(c2, name) + ') = ' + fmtSigned(result, name);
+  if (c1 < 0 || c2 < 0 || result < 0) return 'Watch the negative sign! ' + arithmetic + '!';
+  return 'Keep every sign when you combine the remaining terms: ' + arithmetic + '.';
+}
+function forgotTip(e1, e2, m1, m2, L1, L2) {
+  const bits = [];
+  if (m1 * L1 > 1) bits.push(fmtRat(reduceRat(e1.c, L1)) + ' ' + TIMES + ' ' + (m1 * L1) + ' = ' + fmtInt(e1.c * m1));
+  if (m2 * L2 > 1) bits.push(fmtRat(reduceRat(e2.c, L2)) + ' ' + TIMES + ' ' + (m2 * L2) + ' = ' + fmtInt(e2.c * m2));
+  if (bits.length === 1) {
+    const m = m1 * L1 > 1 ? m1 * L1 : m2 * L2;
+    return 'Every term across BOTH sides must be multiplied by ' + m + ' — don\'t forget ' + bits[0] + '!';
+  }
+  return 'Every term across BOTH sides must be multiplied — don\'t forget ' + bits.join(' and ') + '!';
+}
+function setupHint(r) {
+  const eq = easier(r.e1, r.e2);
+  const knownIsX = r.target !== 'x';
+  const knownName = knownIsX ? r.vars[0] : r.vars[1];
+  const knownVal = knownIsX ? r.sol.x : r.sol.y;
+  const unk = knownIsX ? r.vars[1] : r.vars[0];
+  return 'Put ' + knownName + ' = ' + fmtRat(knownVal) + ' into ' + fmtEq(eq, r.vars) + ' and solve for ' + unk + '.';
+}
+function step3Tip(trap, r) {
+  const x = fmtRat(r.sol.x);
+  const y = fmtRat(r.sol.y);
+  const pair = '(' + x + ', ' + y + ')';
+  if (trap === 'swap') {
+    return 'The coordinates are swapped. ' + r.vars[0] + ' = ' + x + ' and ' + r.vars[1] + ' = ' + y + ', so lock ' + pair + '.';
+  }
+  return 'Check the back-substitution. ' + r.vars[0] + ' = ' + x + ' and ' + r.vars[1] + ' = ' + y + ', so the lock is ' + pair + '.';
+}
+
+function randSol(kind) {
+  if (kind === 'half') {
+    const odd = () => {
+      let n = randInt(-4, 4) * 2 + 1;
+      if (n === 0) n = 1;
+      return n;
+    };
+    if (Math.random() < 0.28) return { xN: odd(), xD: 2, yN: odd(), yD: 2 };
+    if (Math.random() < 0.5) return { xN: odd(), xD: 2, yN: randInt(1, 6) * randSign(), yD: 1 };
+    return { xN: randInt(1, 6) * randSign(), xD: 1, yN: odd(), yD: 2 };
+  }
+  const span = kind === 'large' ? 8 : 6;
+  return { xN: randInt(1, span) * randSign(), xD: 1, yN: randInt(1, span) * randSign(), yD: 1 };
+}
+function fitCoef(coef, sol, variable) {
+  const den = variable === 'x' ? sol.xD : sol.yD;
+  if (den === 2 && Math.abs(coef) % 2 !== 0) coef += coef > 0 ? 1 : -1;
+  if (coef === 0) return den === 2 ? 2 : 1;
+  return coef;
+}
+function randOther(sol, variable, shape) {
+  const hi = shape === 'large' ? 12 : 8;
+  const lo = shape === 'large' ? 3 : 1;
+  const den = variable === 'x' ? sol.xD : sol.yD;
+  for (let i = 0; i < 16; i++) {
+    let v = randInt(lo, hi) * randSign();
+    if (den === 2 && Math.abs(v) % 2 !== 0) continue;
+    if (v !== 0) return v;
+  }
+  return den === 2 ? 2 : 1;
+}
+function coeffPlan(shape) {
+  if (shape === 'direct') {
+    const mag = randInt(1, 5);
+    const s1 = randSign();
+    const s2 = Math.random() < 0.72 ? -s1 : s1;
+    return { mag1: mag, mag2: mag, s1: s1, s2: s2, lockMag: true };
+  }
+  if (shape === 'single') {
+    const m = Math.random() < 0.5 ? 2 : 3;
+    const base = randInt(1, 4);
+    const s1 = randSign();
+    const s2 = Math.random() < 0.5 ? s1 : -s1;
+    if (Math.random() < 0.5) return { mag1: base, mag2: base * m, s1: s1, s2: s2, lockMag: false };
+    return { mag1: base * m, mag2: base, s1: s1, s2: s2, lockMag: false };
+  }
+  if (shape === 'dual' || shape === 'large') {
+    const dual = shape === 'dual';
+    if (!dual && Math.random() < 0.48) {
+      const m = randInt(3, 6);
+      const base = randInt(5, 8);
+      const s1 = randSign();
+      const s2 = Math.random() < 0.55 ? s1 : -s1;
+      if (Math.random() < 0.5) return { mag1: base, mag2: base * m, s1: s1, s2: s2, lockMag: false };
+      return { mag1: base * m, mag2: base, s1: s1, s2: s2, lockMag: false };
+    }
+    let M1 = 2;
+    let M2 = 3;
+    let guard = 0;
+    const hi = dual ? 5 : 6;
+    do {
+      M1 = randInt(2, hi);
+      M2 = randInt(dual ? 2 : 4, dual ? 5 : 7);
+      guard++;
+    } while (gcd(M1, M2) !== 1 && guard < 40);
+    if (gcd(M1, M2) !== 1) return null;
+    let s1;
+    let s2;
+    if (dual && Math.random() < 0.62) {
+      s1 = Math.random() < 0.6 ? -1 : 1;
+      s2 = s1;
+    } else {
+      s1 = randSign();
+      s2 = -s1;
+    }
+    return { mag1: M2, mag2: M1, s1: s1, s2: s2, lockMag: false };
+  }
+  const roll = Math.random();
+  if (roll < 0.42) return coeffPlan('dual');
+  if (roll < 0.78) return coeffPlan('single');
+  return coeffPlan('direct');
+}
+function buildCoeffs(sol, shape) {
+  const plan = coeffPlan(shape);
+  if (!plan) return null;
+  const target = Math.random() < 0.5 ? 'x' : 'y';
+  let coef1;
+  let coef2;
+  if (plan.lockMag) {
+    const den = target === 'x' ? sol.xD : sol.yD;
+    let mag = plan.mag1;
+    if (den === 2 && mag % 2) mag += 1;
+    coef1 = plan.s1 * mag;
+    coef2 = plan.s2 * mag;
+  } else {
+    coef1 = fitCoef(plan.s1 * plan.mag1, sol, target);
+    coef2 = fitCoef(plan.s2 * plan.mag2, sol, target);
+  }
+  const cLimit = shape === 'large' ? 280 : 90;
+  const scaleCap = shape === 'large' ? 72 : (shape === 'dual' || shape === 'mixed' ? 24 : 16);
+  const cScaleCap = shape === 'large' ? 520 : (shape === 'dual' || shape === 'mixed' ? 80 : 42);
+  for (let attempt = 0; attempt < 28; attempt++) {
+    const ov = target === 'y' ? 'x' : 'y';
+    const o1 = randOther(sol, ov, shape);
+    const o2 = randOther(sol, ov, shape);
+    const e1 = target === 'y' ? { a: o1, b: coef1, c: 0 } : { a: coef1, b: o1, c: 0 };
+    const e2 = target === 'y' ? { a: o2, b: coef2, c: 0 } : { a: coef2, b: o2, c: 0 };
+    const c1 = rhs(e1.a, e1.b, sol);
+    const c2 = rhs(e2.a, e2.b, sol);
+    if (c1 == null || c2 == null) continue;
+    e1.c = c1;
+    e2.c = c2;
+    if (!e1.a || !e1.b || !e2.a || !e2.b) continue;
+    if (Math.abs(c1) > cLimit || Math.abs(c2) > cLimit) continue;
+    if (e1.a * e2.b - e2.a * e1.b === 0) continue;
+    const m = multipliersFor(e1, e2, target);
+    if (!m) continue;
+    if (alsoAligns(e1, e2, m, target)) continue;
+    const sc1 = scaleEq(e1, m[0]);
+    const sc2 = scaleEq(e2, m[1]);
+    const coeffs = [sc1.a, sc1.b, sc2.a, sc2.b];
+    if (coeffs.some((v) => Math.abs(v) > scaleCap)) continue;
+    if (Math.abs(sc1.c) > cScaleCap || Math.abs(sc2.c) > cScaleCap) continue;
+    const cost = Math.max(m[0], m[1]);
+    if ((shape === 'direct' || shape === 'single' || shape === 'dual') && otherCost(e1, e2, target) < cost) continue;
+    return { e1: e1, e2: e2, target: target, m1: m[0], m2: m[1] };
+  }
+  return null;
+}
+function acceptShape(built, shape) {
+  const m1 = built.m1;
+  const m2 = built.m2;
+  const mx = Math.max(m1, m2);
+  const mn = Math.min(m1, m2);
+  if (shape === 'direct') return m1 === 1 && m2 === 1;
+  if (shape === 'single') return mn === 1 && (mx === 2 || mx === 3);
+  if (shape === 'dual') return m1 >= 2 && m2 >= 2 && mx <= 6;
+  if (shape === 'mixed') return mx <= 8 && m1 * m2 > 1;
+  if (shape === 'large') {
+    const big = [built.e1.a, built.e1.b, built.e2.a, built.e2.b].some((v) => Math.abs(v) >= 6);
+    return big && mx <= 8;
+  }
+  return false;
+}
+function pickFraction(built) {
+  const pools = [2, 3, 4, 5, 6, 10];
+  const both = Math.random() < 0.72;
+  for (let i = 0; i < 24; i++) {
+    let L1 = pick(pools);
+    let L2 = pick(pools);
+    if (L1 * built.m1 > 18 || L2 * built.m2 > 18) continue;
+    const f1 = looksFractional(built.e1, L1);
+    const f2 = looksFractional(built.e2, L2);
+    if (!f1 && !f2) continue;
+    if (both && (!f1 || !f2)) continue;
+    return {
+      L1: f1 ? L1 : 1,
+      L2: f2 ? L2 : 1,
+      d1: f1 ? 'frac' : 'std',
+      d2: f2 ? 'frac' : 'std'
+    };
+  }
+  return null;
+}
+function substitutionDegenerate(sol) {
+  const a = reduceRat(sol.xN, sol.xD);
+  const b = reduceRat(sol.yN, sol.yD);
+  if (!a.n || !b.n) return true;
+  const p = reduceRat(a.d, a.n);
+  const q = reduceRat(b.d, b.n);
+  const u = reduceRat(p.n * q.d + q.n * p.d, 2 * p.d * q.d);
+  const v = reduceRat(p.n * q.d - q.n * p.d, 2 * p.d * q.d);
+  return u.n === 0 || v.n === 0;
+}
+function rollSubst() {
+  if (Math.random() < 0.5) {
+    for (let attempt = 0; attempt < 16; attempt++) {
+    const a = randInt(1, 6) * randSign();
+    const b = randInt(1, 6) * randSign();
+    if (substitutionDegenerate({ xN: a, xD: 1, yN: b, yD: 1 })) continue;
+    const top = { a: 1, b: -1, c: a - b };
+    const bot = { a: 1, b: 1, c: a + b };
+    const flip = Math.random() < 0.5;
+    return {
+      e1: flip ? bot : top,
+      e2: flip ? top : bot,
+      sol: { xN: a, xD: 1, yN: b, yD: 1 },
+      target: 'y',
+      vars: ['a', 'b'],
+      disp1: 'subst',
+      disp2: 'subst',
+      L1: 1,
+      L2: 1,
+      allowDouble: true,
+      kind: 'subst'
+    };
+    }
+  }
+  for (let i = 0; i < 12; i++) {
+    const sol = randSol('nonzero');
+    const shape = Math.random() < 0.55 ? 'dual' : 'single';
+    const built = buildCoeffs(sol, shape);
+    if (!built || !acceptShape(built, shape)) continue;
+    if (!sol.xN || !sol.yN || substitutionDegenerate(sol)) continue;
+    return {
+      e1: built.e1,
+      e2: built.e2,
+      sol: sol,
+      target: built.target,
+      vars: ['a', 'b'],
+      disp1: 'subst',
+      disp2: 'subst',
+      L1: 1,
+      L2: 1,
+      allowDouble: false,
+      kind: 'subst'
+    };
+  }
+  return null;
+}
+function rollSpec(tier) {
+  if (tier === 3 && Math.random() < 0.4) return rollSubst();
+  let skin = 'std';
+  if (tier === 2) {
+    const r = Math.random();
+    skin = r < 0.38 ? 'frac' : r < 0.72 ? 'scramble' : 'half';
+  }
+  const sol = (skin === 'half' || (skin === 'frac' && Math.random() < 0.3))
+    ? randSol('half')
+    : randSol(tier === 3 ? 'large' : 'int');
+  const shape = tier === 0
+    ? (Math.random() < 0.5 ? 'direct' : 'single')
+    : tier === 1 ? 'dual'
+      : tier === 3 ? 'large'
+        : 'mixed';
+  const built = buildCoeffs(sol, shape);
+  if (!built || !acceptShape(built, shape)) return null;
+  let disp1 = 'std';
+  let disp2 = 'std';
+  let L1 = 1;
+  let L2 = 1;
+  let kind = tier === 3 ? 'large' : 'standard';
+  if (skin === 'frac') {
+    const frac = pickFraction(built);
+    if (!frac) return null;
+    L1 = frac.L1;
+    L2 = frac.L2;
+    disp1 = frac.d1;
+    disp2 = frac.d2;
+    kind = 'fraction';
+  } else if (skin === 'scramble') {
+    disp1 = Math.random() < 0.78 ? 'scramble' : 'std';
+    disp2 = disp1 === 'std' ? 'scramble' : (Math.random() < 0.45 ? 'scramble' : 'std');
+    kind = 'scramble';
+  } else if (skin === 'half') {
+    if (sol.xD === 1 && sol.yD === 1) return null;
+    kind = 'half';
+  }
+  if ((sol.xD > 1 || sol.yD > 1) && kind === 'fraction') kind = 'fraction';
+  return {
+    e1: built.e1,
+    e2: built.e2,
+    sol: sol,
+    target: built.target,
+    vars: ['x', 'y'],
+    disp1: disp1,
+    disp2: disp2,
+    L1: L1,
+    L2: L2,
+    allowDouble: false,
+    kind: kind
+  };
+}
+function alignsTarget(e1, e2, am1, am2, target) {
+  const c1 = target === 'x' ? e1.a : e1.b;
+  const c2 = target === 'x' ? e2.a : e2.b;
+  return am1 > 0 && am2 > 0 && Math.abs(am1 * c1) === Math.abs(am2 * c2);
+}
+function previewOf(eq, m) {
+  return { a: { n: eq.a * m, d: 1 }, b: { n: eq.b * m, d: 1 }, c: { n: eq.c * m, d: 1 } };
+}
+function forgotPreview(eq, m, L) {
+  return { a: { n: eq.a * m, d: 1 }, b: { n: eq.b * m, d: 1 }, c: reduceRat(eq.c, L) };
+}
+function buildStep1(r) {
+  const correctPrev = { eq1: previewOf(r.e1, r.m1), eq2: previewOf(r.e2, r.m2) };
+  const correctKicker = makeKicker(r.face1, r.face2, r.disp1, r.disp2);
+  const name = r.target === 'x' ? r.vars[0] : r.vars[1];
+  const other = r.target === 'x' ? r.vars[1] : r.vars[0];
+  const cards = [{
+    correct: true,
+    trap: null,
+    kicker: correctKicker,
+    eq1: correctPrev.eq1,
+    eq2: correctPrev.eq2,
+    tip: ''
+  }];
+  const have = (eq1, eq2) => cards.some((c) => sameRats(c.eq1, eq1) && sameRats(c.eq2, eq2));
+  const push = (card) => {
+    if (have(card.eq1, card.eq2)) return;
+    cards.push(card);
+  };
+  if (r.face1 > 1 || r.face2 > 1) {
+    const eq1 = forgotPreview(r.e1, r.m1, r.L1);
+    const eq2 = forgotPreview(r.e2, r.m2, r.L2);
+    push({
+      correct: false,
+      trap: 'forgot',
+      kicker: correctKicker,
+      eq1: eq1,
+      eq2: eq2,
+      tip: forgotTip(r.e1, r.e2, r.m1, r.m2, r.L1, r.L2)
+    });
+  }
+  if (r.disp1 === 'scramble' || r.disp2 === 'scramble') {
+    const b1 = r.disp1 === 'scramble' ? { a: -r.e1.a, b: r.e1.b, c: r.e1.c } : r.e1;
+    const b2 = r.disp2 === 'scramble' ? { a: -r.e2.a, b: r.e2.b, c: r.e2.c } : r.e2;
+    const sample = r.disp1 === 'scramble' ? r.e1 : r.e2;
+    const bad = r.disp1 === 'scramble' ? b1 : b2;
+    push({
+      correct: false,
+      trap: 'rearrange',
+      kicker: correctKicker,
+      eq1: previewOf(b1, r.m1),
+      eq2: previewOf(b2, r.m2),
+      tip: tokensText(scrambleTokens(sample, r.vars)) + ' rearranges to ' + fmtEq(sample, r.vars) + '. A term that crosses the equals sign changes sign, so it is not ' + fmtEq(bad, r.vars) + '.'
+    });
+  }
+  if (r.m1 !== r.m2) {
+    const eq1 = previewOf(r.e1, r.m2);
+    const eq2 = previewOf(r.e2, r.m1);
+    if (!alignsTarget(r.e1, r.e2, r.m2, r.m1, r.target)) {
+      push({
+        correct: false,
+        trap: 'swap',
+        kicker: makeKicker(r.L1 * r.m2, r.L2 * r.m1, r.disp1, r.disp2),
+        eq1: eq1,
+        eq2: eq2,
+        tip: 'The multipliers are swapped. Equation 1 needs ' + TIMES + r.face1 + ' and equation 2 needs ' + TIMES + r.face2 + '.'
+      });
+    }
+  }
+  if ((r.L1 > 1 || r.L2 > 1) && (r.m1 !== 1 || r.m2 !== 1) && !alignsTarget(r.e1, r.e2, 1, 1, r.target)) {
+    push({
+      correct: false,
+      trap: 'partial',
+      kicker: makeKicker(r.L1, r.L2, r.disp1, r.disp2),
+      eq1: previewOf(r.e1, 1),
+      eq2: previewOf(r.e2, 1),
+      tip: 'The denominators are cleared, but the ' + name + '-terms still do not match. The full multipliers are ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
+    });
+  }
+  const otherM = multipliersFor(r.e1, r.e2, r.target === 'x' ? 'y' : 'x');
+  if (otherM && (otherM[0] !== r.m1 || otherM[1] !== r.m2) && !alignsTarget(r.e1, r.e2, otherM[0], otherM[1], r.target)) {
+    push({
+      correct: false,
+      trap: 'other',
+      kicker: makeKicker(r.L1 * otherM[0], r.L2 * otherM[1], r.disp1, r.disp2),
+      eq1: previewOf(r.e1, otherM[0]),
+      eq2: previewOf(r.e2, otherM[1]),
+      tip: 'That pair aligns ' + other + ', but this collision is set to eliminate ' + name + '. Use ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
+    });
+  }
+  const fillers = [
+    [r.m1 + 1, r.m2], [r.m1, r.m2 + 1], [r.m1 + 1, r.m2 + 1], [r.m1 + 2, r.m2], [r.m1, r.m2 + 2],
+    [Math.max(1, r.m1 - 1), r.m2], [r.m1, Math.max(1, r.m2 - 1)],
+    [1, 2], [2, 1], [1, 3], [3, 1], [1, 4], [4, 1], [1, 5], [5, 1],
+    [2, 3], [3, 2], [2, 5], [5, 2], [3, 4], [4, 3], [3, 5], [5, 3], [4, 5], [5, 4],
+    [2, 2], [3, 3], [4, 4], [5, 5], [6, 1], [1, 6], [3, 6], [6, 3]
+  ];
+  fillers.forEach((pair) => {
+    if (cards.length >= 8) return;
+    const am1 = pair[0];
+    const am2 = pair[1];
+    if (am1 === r.m1 && am2 === r.m2) return;
+    if (am1 > 12 || am2 > 12) return;
+    if (alignsTarget(r.e1, r.e2, am1, am2, r.target)) return;
+    push({
+      correct: false,
+      trap: 'scale',
+      kicker: makeKicker(r.L1 * am1, r.L2 * am2, r.disp1, r.disp2),
+      eq1: previewOf(r.e1, am1),
+      eq2: previewOf(r.e2, am2),
+      tip: 'Those multipliers do not match the ' + name + '-coefficients. The least pair is ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
+    });
+  });
+  if (cards.length < 4) return null;
+  const picked = [cards[0]];
+  for (let i = 1; i < cards.length && picked.length < 4; i++) picked.push(cards[i]);
+  return shuffle(picked);
+}
+function buildStep2(r) {
+  const s1 = r.scaled1;
+  const s2 = r.scaled2;
+  const shown = r.raw;
+  const wrongOp = r.op === 'add' ? 'sub' : 'add';
+  const wshown = combine(s1, s2, wrongOp);
+  const tname = r.target === 'x' ? r.vars[0] : r.vars[1];
+  const cards = [{
+    correct: true,
+    trap: null,
+    op: r.op,
+    result: shown,
+    tip: ''
+  }];
+  const used = [shown];
+  const add = (eq, op, trap, tip) => {
+    if (!eq || (eq.a === 0 && eq.b === 0)) return;
+    if (used.some((u) => equivInt(u, eq))) return;
+    used.push(eq);
+    cards.push({ correct: false, trap: trap, op: op, result: eq, tip: tip });
+  };
+  const killedOther = (r.target === 'x' ? wshown.a === 0 : wshown.b === 0) && (wshown.a !== 0 || wshown.b !== 0);
+  let wrongTip = cancelTip(s1, s2, r.target, r.op, r.vars);
+  if (killedOther) {
+    const killed = wshown.a === 0 ? r.vars[0] : r.vars[1];
+    wrongTip = 'That collision cancels ' + killed + ', not ' + tname + '. ' + wrongTip;
+  }
+  add(wshown, wrongOp, 'wrong-op', wrongTip);
+  add({
+    a: shown.a === 0 ? 0 : -shown.a,
+    b: shown.b === 0 ? 0 : -shown.b,
+    c: shown.c
+  }, r.op, 'sign', signTip(s1, s2, r.target, r.op, r.vars));
+  const coef = r.target === 'x' ? shown.b : shown.a;
+  [1, -1, 2, -2].forEach((delta) => {
+    if (!coef || cards.length >= 6) return;
+    add({
+      a: shown.a,
+      b: shown.b,
+      c: shown.c + coef * delta
+    }, r.op, 'arith', 'Line the terms up before you combine. Constants: ' + fmtInt(s1.c) + (r.op === 'sub' ? ' ' + MINUS + ' ' : ' + ') + (r.op === 'sub' && s2.c < 0 ? '(' + fmtInt(s2.c) + ')' : fmtInt(s2.c)) + ' = ' + fmtInt(shown.c) + '. Check the remaining ' + (r.target === 'x' ? r.vars[1] : r.vars[0]) + '-term the same way.');
+  });
+  if (cards.length < 4) return null;
+  return shuffle(cards.slice(0, 4));
+}
+function buildStep3(r) {
+  const x = r.sol.x;
+  const y = r.sol.y;
+  const cards = [{ correct: true, trap: null, point: { x: x, y: y }, tip: '' }];
+  const have = (pt) => cards.some((c) => ratEq(c.point.x, pt.x) && ratEq(c.point.y, pt.y));
+  const push = (pt, trap) => {
+    if (ratEq(pt.x, x) && ratEq(pt.y, y)) return;
+    if (have(pt)) return;
+    cards.push({ correct: false, trap: trap, point: pt, tip: step3Tip(trap, r) });
+  };
+  push({ x: y, y: x }, 'swap');
+  push({ x: negRat(x), y: y }, 'sign');
+  push({ x: x, y: negRat(y) }, 'sign');
+  push({ x: negRat(x), y: negRat(y) }, 'sign');
+  push({ x: addInt(x, 1), y: y }, 'arith');
+  push({ x: x, y: addInt(y, 1) }, 'arith');
+  push({ x: addInt(x, -1), y: y }, 'arith');
+  push({ x: x, y: addInt(y, -1) }, 'arith');
+  const eq = easier(r.e1, r.e2);
+  if (r.target === 'y' && eq.b) {
+    push({ x: x, y: reduceRat(eq.c * x.d + eq.a * x.n, eq.b * x.d) }, 'backsub');
+  } else if (r.target === 'x' && eq.a) {
+    push({ x: reduceRat(eq.c * y.d + eq.b * y.n, eq.a * y.d), y: y }, 'backsub');
+  }
+  if (cards.length < 4) return null;
+  return shuffle(cards.slice(0, 4));
+}
+function insightFor(sol) {
+  if (!sol.x.n || !sol.y.n) return '';
+  const p = reduceRat(sol.x.d, sol.x.n);
+  const q = reduceRat(sol.y.d, sol.y.n);
+  const u = reduceRat(p.n * q.d + q.n * p.d, 2 * p.d * q.d);
+  const v = reduceRat(p.n * q.d - q.n * p.d, 2 * p.d * q.d);
+  return 'Since a = 1/(u+v) and b = 1/(u' + MINUS + 'v), u = ' + fmtRat(u) + ' and v = ' + fmtRat(v) + '.';
+}
+function pack(spec) {
+  if (!spec) return null;
+  const m = multipliersFor(spec.e1, spec.e2, spec.target);
+  if (!m) return null;
+  const op = opFor(spec.e1, spec.e2, m, spec.target);
+  if (!op) return null;
+  if (!spec.allowDouble && alsoAligns(spec.e1, spec.e2, m, spec.target)) return null;
+  const sol = { x: reduceRat(spec.sol.xN, spec.sol.xD), y: reduceRat(spec.sol.yN, spec.sol.yD) };
+  if (sol.x.d > 2 || sol.y.d > 2) return null;
+  const round = {
+    e1: spec.e1,
+    e2: spec.e2,
+    m1: m[0],
+    m2: m[1],
+    L1: spec.L1,
+    L2: spec.L2,
+    face1: m[0] * spec.L1,
+    face2: m[1] * spec.L2,
+    op: op,
+    target: spec.target,
+    vars: spec.vars,
+    disp1: spec.disp1,
+    disp2: spec.disp2,
+    allowDouble: !!spec.allowDouble,
+    kind: spec.kind,
+    sol: sol
+  };
+  round.scaled1 = scaleEq(round.e1, round.m1);
+  round.scaled2 = scaleEq(round.e2, round.m2);
+  round.raw = combine(round.scaled1, round.scaled2, round.op);
+  if (round.target === 'x' && (round.raw.a !== 0 || round.raw.b === 0)) return null;
+  if (round.target === 'y' && (round.raw.b !== 0 || round.raw.a === 0)) return null;
+  const solvedVar = round.target === 'x' ? 'y' : 'x';
+  round.known = solvedRat(round.raw, solvedVar);
+  const want = solvedVar === 'x' ? sol.x : sol.y;
+  if (!ratEq(round.known, want)) return null;
+  const knownName = solvedVar === 'x' ? round.vars[0] : round.vars[1];
+  round.knownText = knownName + ' = ' + fmtRat(round.known);
+  round.cards1 = buildStep1(round);
+  round.cards2 = buildStep2(round);
+  round.cards3 = buildStep3(round);
+  if (!round.cards1 || !round.cards2 || !round.cards3) return null;
+  const a = [spec.e1.a, spec.e1.b, spec.e1.c].join(':');
+  const b = [spec.e2.a, spec.e2.b, spec.e2.c].join(':');
+  round.sig = (a < b ? a + '~' + b : b + '~' + a) + '@' + spec.kind;
+  round.solKey = pairKey(sol.x, sol.y);
+  round.insight = spec.kind === 'subst' ? insightFor(sol) : '';
+  round.lesson = [
+    'Scale equation 1 by ' + TIMES + round.face1 + ' and equation 2 by ' + TIMES + round.face2 + '.',
+    fmtEq(round.scaled1, round.vars),
+    fmtEq(round.scaled2, round.vars),
+    (round.op === 'add' ? 'Add' : 'Subtract') + ': ' + fmtEq(round.raw, round.vars) + '  →  ' + round.knownText,
+    'Solution (' + fmtRat(sol.x) + ', ' + fmtRat(sol.y) + ')'
+  ];
+  if (round.insight) round.lesson.push(round.insight);
+  const problems = audit(round);
+  if (problems.length) return null;
+  return round;
+}
+function emergencySpec() {
+  return {
+    e1: { a: 2, b: 3, c: 12 },
+    e2: { a: 4, b: -3, c: 6 },
+    sol: { xN: 3, xD: 1, yN: 2, yD: 1 },
+    target: 'y',
+    vars: ['x', 'y'],
+    disp1: 'std',
+    disp2: 'std',
+    L1: 1,
+    L2: 1,
+    allowDouble: false,
+    kind: 'standard'
+  };
+}
+function generateRound(roundNumber, mem) {
+  const tier = roundNumber <= 2 ? 0 : roundNumber <= 4 ? 1 : roundNumber <= 6 ? 2 : 3;
+  const history = mem || memory;
+  for (let relax = 0; relax < 3; relax++) {
+    for (let i = 0; i < 40; i++) {
+      const spec = rollSpec(tier);
+      const round = pack(spec);
+      if (!round) continue;
+      if (relax < 2) {
+        if (history.sigs.indexOf(round.sig) !== -1) continue;
+        if (history.sols.indexOf(round.solKey) !== -1) continue;
+      }
+      round.fallback = false;
+      round.tier = tier;
+      return round;
+    }
+  }
+  const fb = pack(emergencySpec());
+  fb.fallback = true;
+  fb.tier = tier;
+  return fb;
+}
+function audit(r) {
+  const problems = [];
+  const fit = (eq) => {
+    const n = eq.a * r.sol.x.n * r.sol.y.d + eq.b * r.sol.y.n * r.sol.x.d;
+    return n === eq.c * r.sol.x.d * r.sol.y.d;
+  };
+  if (!fit(r.e1) || !fit(r.e2)) problems.push('solution');
+  const m = multipliersFor(r.e1, r.e2, r.target);
+  if (!m || m[0] !== r.m1 || m[1] !== r.m2) problems.push('multipliers');
+  if (opFor(r.e1, r.e2, [r.m1, r.m2], r.target) !== r.op) problems.push('operator');
+  if (r.target === 'x' && (r.raw.a !== 0 || r.raw.b === 0)) problems.push('cancel');
+  if (r.target === 'y' && (r.raw.b !== 0 || r.raw.a === 0)) problems.push('cancel');
+  const solvedVar = r.target === 'x' ? 'y' : 'x';
+  if (!ratEq(solvedRat(r.raw, solvedVar), solvedVar === 'x' ? r.sol.x : r.sol.y)) problems.push('value');
+  ['cards1', 'cards2', 'cards3'].forEach((key) => {
+    const cs = r[key];
+    if (!cs || cs.length !== 4) problems.push(key + '-count');
+    else if (cs.filter((c) => c.correct).length !== 1) problems.push(key + '-flag');
+  });
+  if (r.cards1) {
+    const good = r.cards1.find((c) => c.correct);
+    const expect1 = previewOf(r.e1, r.m1);
+    const expect2 = previewOf(r.e2, r.m2);
+    if (!good || !sameRats(good.eq1, expect1) || !sameRats(good.eq2, expect2)) problems.push('preview');
+    r.cards1.forEach((c) => {
+      if (!c.correct && sameRats(c.eq1, expect1) && sameRats(c.eq2, expect2)) problems.push('dup-step1');
+    });
+  }
+  if (r.cards2) {
+    const good = r.cards2.find((c) => c.correct);
+    r.cards2.forEach((c) => {
+      if (!c.correct && good && equivInt(c.result, good.result)) problems.push('equiv-step2');
+    });
+  }
+  if (r.cards3) {
+    const seen = {};
+    r.cards3.forEach((c) => {
+      const key = pairKey(c.point.x, c.point.y);
+      if (seen[key]) problems.push('dup-step3');
+      seen[key] = true;
+      const is = ratEq(c.point.x, r.sol.x) && ratEq(c.point.y, r.sol.y);
+      if (is !== !!c.correct) problems.push('flag-step3');
+    });
+  }
+  return problems;
+}
+function selfTest() {
+  const emergencyRound = pack(emergencySpec());
+  const report = { tiers: {}, problems: [], emergency: emergencyRound ? audit(emergencyRound) : ['pack-failed'] };
+  [0, 1, 2, 3].forEach((tier) => {
+    const mem = { sigs: [], sols: [] };
+    const roundNumber = [1, 3, 5, 8][tier];
+    const kinds = {};
+    const traps = { forgot: 0, sign: 0, wrongOp: 0, rearrange: 0 };
+    const ops = { add: 0, sub: 0, sameSign: 0, half: 0 };
+    let ok = 0;
+    let fb = 0;
+    let repeats = 0;
+    const slots = {};
+    for (let i = 0; i < 36; i++) {
+      const r = generateRound(roundNumber, mem);
+      const problems = audit(r);
+      if (problems.length) report.problems.push({ tier: tier, problems: problems, sig: r.sig });
+      else ok++;
+      if (r.fallback) fb++;
+      if (mem.sigs.indexOf(r.sig) !== -1 || mem.sols.indexOf(r.solKey) !== -1) repeats++;
+      mem.sigs.push(r.sig);
+      mem.sols.push(r.solKey);
+      if (mem.sigs.length > 6) mem.sigs.shift();
+      if (mem.sols.length > 6) mem.sols.shift();
+      kinds[r.kind] = (kinds[r.kind] || 0) + 1;
+      if (r.cards1.some((c) => c.trap === 'forgot')) traps.forgot++;
+      if (r.cards1.some((c) => c.trap === 'rearrange')) traps.rearrange++;
+      if (r.cards2.some((c) => c.trap === 'sign')) traps.sign++;
+      if (r.cards2.some((c) => c.trap === 'wrong-op')) traps.wrongOp++;
+      ops[r.op] += 1;
+      const tc1 = r.target === 'x' ? r.scaled1.a : r.scaled1.b;
+      const tc2 = r.target === 'x' ? r.scaled2.a : r.scaled2.b;
+      if (Math.sign(tc1) === Math.sign(tc2)) ops.sameSign += 1;
+      if (r.sol.x.d > 1 || r.sol.y.d > 1) ops.half += 1;
+      const slot = r.cards3.findIndex((c) => c.correct);
+      slots[slot] = (slots[slot] || 0) + 1;
+    }
+    report.tiers[tier] = { ok: ok, fallback: fb, repeats: repeats, kinds: kinds, traps: traps, ops: ops, slots: slots };
+  });
+  return report;
+}
+
+function tierName(n) {
+  if (n <= 2) return 'WARM-UP';
+  if (n <= 4) return 'INTERMEDIATE';
+  if (n <= 6) return 'ADVANCED';
+  return 'MASTER';
+}
+function targetName(r) { return r.target === 'x' ? r.vars[0] : r.vars[1]; }
+function objectiveText() {
+  const r = G.round;
+  if (!r) return '';
+  const name = targetName(r);
+  if (G.step === 1) {
+    if (r.kind === 'fraction') return 'CLEAR DENOMINATORS AND ALIGN ' + name;
+    if (r.kind === 'scramble') return 'REARRANGE INTO STANDARD FORM AND ALIGN ' + name;
+    if (r.kind === 'subst') return 'REWRITE IN a, b AND ALIGN ' + name;
+    return 'ALIGN COEFFICIENTS FOR ' + name;
+  }
+  if (G.step === 2) return 'SELECT COLLISION OPERATOR TO CANCEL ' + name;
+  return 'BACK-SUBSTITUTE AND LOCK (' + r.vars[0] + ', ' + r.vars[1] + ')';
+}
+function defaultHint() {
+  const r = G.round;
+  const name = targetName(r);
+  if (G.step === 1) {
+    if (r.kind === 'fraction') return 'Clear the denominators, then scale until the ' + name + '-terms match. Multiply every term, including the constant.';
+    if (r.kind === 'scramble') return 'Move both variables to the left of the equals sign. A term that crosses the sign changes sign. Then align ' + name + '.';
+    if (r.kind === 'subst') return 'Let a = 1/(u+v) and b = 1/(u' + MINUS + 'v). Rewrite both feeds as a linear pair, then align ' + name + '.';
+    return 'Choose the smallest whole-number multipliers that make the ' + name + '-coefficients equal in size. Multiply the constant too.';
+  }
+  if (G.step === 2) return 'Opposite signs, ADD (+). Same signs, SUBTRACT (' + MINUS + '). Subtracting flips every sign on the lower track before the terms crash.';
+  return setupHint(r);
+}
+function cardRect(i) {
+  const gap = 16;
+  const x0 = 36;
+  const w = (VW - x0 * 2 - gap * 3) / 4;
+  return { x: x0 + i * (w + gap), y: GEO.cardY, w: w, h: GEO.cardH };
+}
+function eqRect(panel) {
+  return { x: panel.x + 168, y: panel.y + 46, w: panel.w - 210, h: panel.h - 64 };
+}
+function burst(x, y, color, n, speed, life) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.35 + Math.random());
+    parts.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s,
+      life: life || 0.55,
+      age: 0,
+      color: color,
+      r: 1.6 + Math.random() * 2.6
+    });
+  }
+  if (parts.length > 300) parts.splice(0, parts.length - 300);
+}
+function termPoint(which, variable) {
+  const panel = which === 0 ? GEO.t1 : GEO.t2;
+  const rect = eqRect(panel);
+  const cols = colGeom(rect);
+  return { x: variable === 'x' ? cols.x : variable === 'y' ? cols.y : cols.c, y: rect.y + rect.h * 0.55 };
+}
+function corePoint() { return { x: 250, y: GEO.core.y + GEO.core.h / 2 }; }
+
+function loadBest() {
+  try {
+    G.best.solo = +(localStorage.getItem('ea-best-solo') || 0);
+    G.best.coop = +(localStorage.getItem('ea-best-coop') || 0);
+    G.best.versusStars = +(localStorage.getItem('ea-best-vs-stars') || 0);
+    G.best.versusScore = +(localStorage.getItem('ea-best-vs-score') || 0);
+  } catch (e) { /* ignore */ }
+}
+function saveBest() {
+  try {
+    if (G.mode === 'solo' && G.score > G.best.solo) {
+      G.best.solo = G.score;
+      localStorage.setItem('ea-best-solo', String(G.score));
+    }
+    if (G.mode === 'coop' && G.score > G.best.coop) {
+      G.best.coop = G.score;
+      localStorage.setItem('ea-best-coop', String(G.score));
+    }
+    if (G.mode === 'versus') {
+      const stars = Math.max(G.p[0].stars, G.p[1].stars);
+      const score = Math.max(G.p[0].score, G.p[1].score);
+      if (stars > G.best.versusStars || (stars === G.best.versusStars && score > G.best.versusScore)) {
+        G.best.versusStars = stars;
+        G.best.versusScore = score;
+        localStorage.setItem('ea-best-vs-stars', String(stars));
+        localStorage.setItem('ea-best-vs-score', String(score));
+      }
+    }
+  } catch (e) { /* ignore */ }
+}
+function remember(r) {
+  memory.sigs.push(r.sig);
+  memory.sols.push(r.solKey);
+  if (memory.sigs.length > 6) memory.sigs.shift();
+  if (memory.sols.length > 6) memory.sols.shift();
+}
+function scalerIsP1() { return G.roundNumber % 2 === 1; }
+function canAct(player) {
+  if (G.screen !== 'play' || G.pause || G.phase !== 'choose' || G.dying > 0) return false;
+  if (G.mode === 'solo') return player === 0;
+  if (G.mode === 'versus') return G.p[player].shields > 0 && G.p[player].stun <= 0;
+  if (G.shields <= 0) return false;
+  if (G.step === 3) return true;
+  const p1Scales = scalerIsP1();
+  if (G.step === 1) return player === (p1Scales ? 0 : 1);
+  return player === (p1Scales ? 1 : 0);
+}
+function setHint(text, kind) {
+  G.tip = { kind: kind || 'hint', text: text || defaultHint() };
+}
+function resetRoundInput() {
+  G.arm = [null, null];
+  G.stepAge = 0;
+  G.chosen = -1;
+  G.p[0].focus = 0;
+  G.p[1].focus = 1;
+}
+function loadRound() {
+  G.round = generateRound(G.roundNumber, memory);
+  remember(G.round);
+  G.step = 1;
+  G.cards = G.round.cards1;
+  G.phase = 'choose';
+  G.anim = null;
+  G.roundMistakes = 0;
+  G.p[0].miss = 0;
+  G.p[1].miss = 0;
+  resetRoundInput();
+  setHint();
+}
+function newGame(mode) {
+  G.mode = mode;
+  G.screen = 'play';
+  G.pause = false;
+  G.roundNumber = 1;
+  G.score = 0;
+  G.combo = 0;
+  G.roundsCleared = 0;
+  G.shieldMax = mode === 'coop' ? 4 : 3;
+  G.shields = G.shieldMax;
+  G.koPending = false;
+  G.dying = 0;
+  G.popup = null;
+  G.flash = 0;
+  G.p = [
+    { shields: 3, stars: 0, score: 0, stun: 0, miss: 0, focus: 0 },
+    { shields: 3, stars: 0, score: 0, stun: 0, miss: 0, focus: 1 }
+  ];
+  loadRound();
+}
+function award(player) {
+  const step = G.step;
+  if (G.mode === 'versus') {
+    const speed = Math.max(0, Math.round((10 - G.stepAge) * 25));
+    const gain = STEP_POINTS[step] + speed;
+    G.p[player].score += gain;
+    if (step === 3) G.p[player].stars += 1;
+    G.popup = { text: '+' + gain + (speed ? '  SPEED +' + speed : ''), life: 1.35, color: player === 0 ? COL.red : COL.blue };
+    return;
+  }
+  G.combo += 1;
+  const bonus = 40 * (G.combo - 1);
+  const gain = STEP_POINTS[step] + bonus;
+  G.score += gain;
+  G.popup = {
+    text: step === 3 ? '+350' + (bonus ? '   COMBO +' + bonus : '') : '+' + gain,
+    life: 1.35,
+    color: COL.gold
+  };
+}
+function finishAnim() {
+  const type = G.anim.type;
+  G.anim = null;
+  if (type === 'scale') {
+    G.step = 2;
+    G.cards = G.round.cards2;
+    G.phase = 'choose';
+    resetRoundInput();
+    setHint();
+    return;
+  }
+  if (type === 'flip' || type === 'collide') {
+    G.step = 3;
+    G.cards = G.round.cards3;
+    G.phase = 'choose';
+    resetRoundInput();
+    setHint();
+    return;
+  }
+  G.roundsCleared += 1;
+  let repaired = false;
+  if (G.mode === 'versus') {
+    G.p.forEach((p) => {
+      if (p.miss === 0 && p.shields > 0 && p.shields < 3) p.shields += 1;
+    });
+  } else if (G.roundMistakes === 0 && G.shields < G.shieldMax) {
+    G.shields += 1;
+    repaired = true;
+  }
+  G.phase = 'clear';
+  G.clearT = 1.85;
+  const extra = G.round.insight ? ' ' + G.round.insight : '';
+  const repair = repaired ? ' Flawless collision restores one shield.' : '';
+  setHint('Core stable. (' + fmtRat(G.round.sol.x) + ', ' + fmtRat(G.round.sol.y) + ') locked.' + repair + extra, 'good');
+}
+function nextRound() {
+  if (G.koPending) {
+    endMatch();
+    return;
+  }
+  G.roundNumber += 1;
+  loadRound();
+}
+function endMatch() {
+  saveBest();
+  G.screen = 'over';
+  G.pause = false;
+  G.menu = 0;
+  G.phase = 'choose';
+}
+function onCorrect(player) {
+  award(player);
+  const step = G.step;
+  G.phase = 'anim';
+  G.anim = { type: step === 1 ? 'scale' : step === 2 ? (G.round.op === 'sub' ? 'flip' : 'collide') : 'fuse', t: 0 };
+  if (step === 1) audio.charge();
+  if (step === 3) audio.fuse();
+  if (!reduceMotion) {
+    const c = corePoint();
+    if (step === 1) {
+      burst(96, GEO.t1.y + 78, COL.cyan, 16, 160, 0.45);
+      burst(96, GEO.t2.y + 78, COL.mag, 16, 160, 0.45);
+    }
+    if (step === 3) {
+      burst(c.x, c.y, COL.gold, 46, 280, 0.8);
+      burst(800, c.y, COL.cyan, 24, 220, 0.7);
+      G.shake = 12;
+    }
+  }
+}
+function onWrong(player, card) {
+  if (G.mode !== 'versus') G.combo = 0;
+  G.roundMistakes += 1;
+  G.p[player].miss += 1;
+  G.tip = { kind: 'bad', text: card.tip };
+  audio.bad();
+  G.flash = 1;
+  G.lock = 0.42;
+  G.arm = [null, null];
+  if (!reduceMotion) {
+    G.shake = 10;
+    burst(pointer.inside ? pointer.x : 800, pointer.inside ? pointer.y : 760, COL.red, 22, 180, 0.45);
+  }
+  if (G.mode === 'versus') {
+    G.p[player].shields = Math.max(0, G.p[player].shields - 1);
+    G.p[player].stun = 0.75;
+    const other = 1 - player;
+    if (G.p[player].shields <= 0 && G.p[other].shields <= 0) G.dying = 1.05;
+    else if (G.p[player].shields <= 0) G.koPending = true;
+  } else {
+    G.shields = Math.max(0, G.shields - 1);
+    if (G.shields <= 0) G.dying = 1.15;
+  }
+}
+function trySubmit(player, index) {
+  if (!canAct(player) || G.lock > 0) return;
+  const card = G.cards[index];
+  if (!card) return;
+  if (G.mode === 'coop' && G.step === 3) {
+    G.arm[player] = index;
+    if (G.arm[0] != null && G.arm[1] != null) {
+      if (G.arm[0] === G.arm[1]) {
+        G.chosen = index;
+        if (card.correct) onCorrect(0);
+        else onWrong(0, card);
+      } else {
+        G.tip = { kind: 'warn', text: 'Locks differ. Both operators confirm the same coordinate pair, then the core fires.' };
+      }
+    }
+    return;
+  }
+  G.chosen = index;
+  if (card.correct) onCorrect(player);
+  else {
+    G.badFlash = { index: index, life: 0.4 };
+    onWrong(player, card);
+  }
+}
+function moveFocus(player, dir) {
+  if (G.pause) return;
+  if (G.screen === 'title') {
+    G.menu = (G.menu + dir + 3) % 3;
+    return;
+  }
+  if (G.screen === 'over') {
+    G.menu = (G.menu + dir + 2) % 2;
+    return;
+  }
+  if (!canAct(player)) return;
+  G.p[player].focus = (G.p[player].focus + dir + 4) % 4;
+}
+function confirmFocus(player) {
+  if (G.pause) {
+    G.pause = false;
+    return;
+  }
+  if (G.screen === 'title') {
+    audio.resume();
+    newGame(['solo', 'coop', 'versus'][G.menu]);
+    return;
+  }
+  if (G.screen === 'over') {
+    if (G.menu === 0) newGame(G.mode);
+    else G.screen = 'title';
+    return;
+  }
+  if (G.phase === 'clear') {
+    G.clearT = 0;
+    return;
+  }
+  if (G.phase !== 'choose') return;
+  trySubmit(player, G.p[player].focus);
+}
+function consumeDir(slot, dir, dt) {
+  if (!dir) {
+    slot.t = 0;
+    slot.dir = 0;
+    return 0;
+  }
+  if (dir !== slot.dir) {
+    slot.dir = dir;
+    slot.t = 0;
+    slot.repeats = 0;
+    return dir;
+  }
+  slot.t += dt;
+  const wait = slot.repeats ? 0.14 : 0.32;
+  if (slot.t >= wait) {
+    slot.t = 0;
+    slot.repeats = (slot.repeats || 0) + 1;
+    return dir;
+  }
+  return 0;
+}
+function axis(neg, pos) {
+  if (neg && !pos) return -1;
+  if (pos && !neg) return 1;
+  return 0;
+}
+function keyDir(player) {
+  if (G.mode === 'solo') {
+    const x = axis(down.KeyA || down.ArrowLeft, down.KeyD || down.ArrowRight);
+    const y = axis(down.KeyW || down.ArrowUp, down.KeyS || down.ArrowDown);
+    return x || y;
+  }
+  if (player === 0) return axis(down.KeyA, down.KeyD) || axis(down.KeyW, down.KeyS);
+  return axis(down.ArrowLeft, down.ArrowRight) || axis(down.ArrowUp, down.ArrowDown);
+}
+function readPads() {
+  const out = [null, null];
+  if (!navigator.getGamepads) return out;
+  let pads;
+  try { pads = navigator.getGamepads(); } catch (e) { return out; }
+  if (!pads) return out;
+  for (let i = 0; i < 2; i++) {
+    const pad = pads[i];
+    if (pad && pad.connected) out[i] = pad;
+  }
+  return out;
+}
+function padDir(pad) {
+  if (!pad) return 0;
+  const b = pad.buttons;
+  const x = axis(b[14] && b[14].pressed, b[15] && b[15].pressed);
+  const y = axis(b[12] && b[12].pressed, b[13] && b[13].pressed);
+  if (x || y) return x || y;
+  const ax = pad.axes && pad.axes.length ? pad.axes[0] : 0;
+  const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] : 0;
+  if (Math.abs(ax) > Math.abs(ay)) {
+    if (ax > 0.5) return 1;
+    if (ax < -0.5) return -1;
+  } else {
+    if (ay > 0.5) return 1;
+    if (ay < -0.5) return -1;
+  }
+  return 0;
+}
+function padPressed(pad, prev, index) {
+  const now = !!(pad && pad.buttons[index] && pad.buttons[index].pressed);
+  const was = !!prev[index];
+  prev[index] = now;
+  return now && !was;
+}
+function hit(rect, x, y) {
+  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+}
+function update(dt) {
+  audio.tick();
+  G.shake = Math.max(0, G.shake - dt * 42);
+  G.flash = Math.max(0, G.flash - dt * 2.4);
+  if (G.popup) {
+    G.popup.life -= dt;
+    if (G.popup.life <= 0) G.popup = null;
+  }
+  if (G.floater) {
+    G.floater.life -= dt;
+    G.floater.y -= dt * 18;
+    if (G.floater.life <= 0) G.floater = null;
+  }
+  if (G.badFlash) {
+    G.badFlash.life -= dt;
+    if (G.badFlash.life <= 0) G.badFlash = null;
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    p.age += dt;
+    if (p.age >= p.life) {
+      parts.splice(i, 1);
+      continue;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 20 * dt;
+  }
+  const list = edges.splice(0, edges.length);
+  list.forEach((code) => {
+    if (code === 'KeyM') {
+      audio.toggle();
+      return;
+    }
+    if (code === 'Escape' && G.screen === 'play') {
+      G.pause = !G.pause;
+      return;
+    }
+    if (G.screen === 'title') {
+      if (code === 'Digit1') { audio.resume(); newGame('solo'); }
+      if (code === 'Digit2') { audio.resume(); newGame('coop'); }
+      if (code === 'Digit3') { audio.resume(); newGame('versus'); }
+      if (code === 'Enter' || code === 'Space') confirmFocus(0);
+      return;
+    }
+    if (G.screen === 'over') {
+      if (code === 'Enter' || code === 'Space') confirmFocus(0);
+      return;
+    }
+    if (G.pause) {
+      if (code === 'Enter' || code === 'Space' || code === 'KeyF') G.pause = false;
+      return;
+    }
+    if (G.mode === 'solo') {
+      if (code === 'Space' || code === 'Enter' || code === 'KeyF') {
+        G.lastInput = 'key';
+        confirmFocus(0);
+      }
+    } else {
+      if (code === 'KeyF' || code === 'Space') {
+        G.lastInput = 'key';
+        confirmFocus(0);
+      }
+      if (code === 'Enter') {
+        G.lastInput = 'key';
+        confirmFocus(1);
+      }
+    }
+  });
+  if (G.pause) return;
+  const pads = readPads();
+  for (let i = 0; i < 2; i++) {
+    const player = G.mode === 'solo' ? 0 : i;
+    if (G.mode === 'solo' && i === 1) {
+      padPressed(pads[1], padPrev[1], 0);
+      continue;
+    }
+    const pad = G.mode === 'solo' ? (pads[0] || pads[1]) : pads[i];
+    const prev = G.mode === 'solo' ? padPrev[0] : padPrev[i];
+    if (pad && pad !== (G.mode === 'solo' ? pads[0] || pads[1] : pads[i])) { /* keep */ }
+    if (padPressed(pad, prev, 0)) {
+      audio.resume();
+      G.lastInput = 'pad';
+      if (G.mode === 'solo') confirmFocus(0);
+      else confirmFocus(player);
+    }
+    const dir = consumeDir(G.hold[player], keyDir(G.mode === 'solo' ? 0 : player) || padDir(pad), dt);
+    if (dir) {
+      G.lastInput = keyDir(G.mode === 'solo' ? 0 : player) ? 'key' : 'pad';
+      moveFocus(player, dir);
+    }
+    if (G.mode === 'solo') break;
+  }
+  if (G.mode === 'solo' && pointer.moved && G.screen === 'play' && G.phase === 'choose') {
+    for (let i = 0; i < 4; i++) {
+      if (hit(cardRect(i), pointer.x, pointer.y)) G.p[0].focus = i;
+    }
+  }
+  pointer.moved = false;
+  if (pointer.pressed) {
+    audio.resume();
+    G.lastInput = 'mouse';
+    pointer.pressed = false;
+    if (hit(GEO.mute, pointer.x, pointer.y)) {
+      audio.toggle();
+    } else if (G.screen === 'title') {
+      const modes = ['solo', 'coop', 'versus'];
+      for (let i = 0; i < 3; i++) {
+        const rect = { x: 70 + i * 500, y: 248, w: 450, h: 280 };
+        if (hit(rect, pointer.x, pointer.y)) newGame(modes[i]);
+      }
+    } else if (G.screen === 'over') {
+      const retry = { x: 500, y: 700, w: 250, h: 56 };
+      const title = { x: 850, y: 700, w: 250, h: 56 };
+      if (hit(retry, pointer.x, pointer.y)) newGame(G.mode);
+      else if (hit(title, pointer.x, pointer.y)) G.screen = 'title';
+    } else if (!G.pause && G.phase === 'clear') {
+      G.clearT = 0;
+    } else if (!G.pause && G.phase === 'choose' && G.mode === 'solo') {
+      let used = false;
+      for (let i = 0; i < 4; i++) {
+        if (hit(cardRect(i), pointer.x, pointer.y)) {
+          G.p[0].focus = i;
+          trySubmit(0, i);
+          used = true;
+        }
+      }
+      if (!used && hit(GEO.fire, pointer.x, pointer.y)) trySubmit(0, G.p[0].focus);
+    }
+  }
+  if (G.dying > 0) {
+    G.dying -= dt;
+    if (G.dying <= 0) endMatch();
+    return;
+  }
+  if (G.screen !== 'play' || G.pause) return;
+  G.p[0].stun = Math.max(0, G.p[0].stun - dt);
+  G.p[1].stun = Math.max(0, G.p[1].stun - dt);
+  G.lock = Math.max(0, G.lock - dt);
+  if (G.phase === 'choose') G.stepAge += dt;
+  if (G.phase === 'anim' && G.anim) {
+    G.anim.t += dt;
+    const dur = G.anim.type === 'flip' ? 1.32 : G.anim.type === 'fuse' ? 1.2 : 1.02;
+    if ((G.anim.type === 'flip' || G.anim.type === 'collide') && !G.anim.shot && G.anim.t > 0.58) {
+      G.anim.shot = true;
+      audio.boom();
+      const c = corePoint();
+      const v = G.round.target === 'x' ? 'x' : 'y';
+      if (!reduceMotion) {
+        burst(termPoint(0, v).x, termPoint(0, v).y, COL.gold, 18, 200, 0.5);
+        burst(termPoint(1, v).x, termPoint(1, v).y, COL.gold, 18, 200, 0.5);
+        burst(c.x, c.y, COL.white, 36, 260, 0.7);
+        G.shake = 9;
+      }
+      G.floater = { text: '0', x: c.x, y: c.y - 8, life: 0.85, color: COL.gold };
+    }
+    if (G.anim.t >= dur) finishAnim();
+  } else if (G.phase === 'clear') {
+    G.clearT -= dt;
+    if (G.clearT <= 0) nextRound();
+  }
+  if (G.mode === 'solo') {
+    const focus = cardRect(G.p[0].focus);
+    const tx = G.lastInput === 'mouse' && pointer.inside ? pointer.x : focus.x + focus.w / 2;
+    const ty = G.lastInput === 'mouse' && pointer.inside ? pointer.y : focus.y + focus.h - 18;
+    G.ret.x += (tx - G.ret.x) * Math.min(1, dt * 14);
+    G.ret.y += (ty - G.ret.y) * Math.min(1, dt * 14);
+  }
+}
+
+function font(size, weight) { return (weight || 800) + ' ' + size + 'px ' + FONT; }
+function text(str, x, y, size, color, align, weight) {
+  ctx.fillStyle = color;
+  ctx.font = font(size, weight || 800);
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+function wrap(str, size, maxW, weight) {
+  ctx.font = font(size, weight || 700);
+  const words = String(str).split(' ');
+  const lines = [];
+  let cur = '';
+  words.forEach((word) => {
+    const next = cur ? cur + ' ' + word : word;
+    if (ctx.measureText(next).width > maxW && cur) {
+      lines.push(cur);
+      cur = word;
+    } else cur = next;
+  });
+  if (cur) lines.push(cur);
+  return lines;
+}
+function roundRect(x, y, w, h, r) {
+  const rad = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+function panel(rect, fill, stroke) {
+  roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+function drawShield(x, y, on, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 9);
+  ctx.lineTo(x + 8, y - 5);
+  ctx.lineTo(x + 8, y + 2);
+  ctx.lineTo(x, y + 10);
+  ctx.lineTo(x - 8, y + 2);
+  ctx.lineTo(x - 8, y - 5);
+  ctx.closePath();
+  ctx.fillStyle = on ? color : 'rgba(255,255,255,0.12)';
+  ctx.fill();
+}
+function drawShieldRow(right, y, have, max, color) {
+  for (let i = max - 1; i >= 0; i--) drawShield(right - (max - 1 - i) * 20, y, i < have, color);
+}
+function colGeom(rect) {
+  const x0 = rect.x + rect.w * 0.02;
+  const span = rect.w * 0.96;
+  return {
+    x: x0 + span * 0.14,
+    op: x0 + span * 0.40,
+    y: x0 + span * 0.56,
+    eq: x0 + span * 0.76,
+    c: x0 + span * 0.90
+  };
+}
+function ratParts(r, abs) {
+  const v = reduceRat(r.n, r.d);
+  const sign = abs ? 1 : (v.n < 0 ? -1 : 1);
+  return { sign: sign, n: Math.abs(v.n), d: v.d };
+}
+function measureTerm(coef, variable, size, abs) {
+  const p = ratParts(coef, abs);
+  ctx.font = font(size, 800);
+  if (p.d === 1) {
+    const body = variable ? (p.n === 1 ? variable : p.n + variable) : String(p.n);
+    return ctx.measureText((p.sign < 0 ? MINUS : '') + body).width;
+  }
+  ctx.font = font(size * 0.58, 800);
+  const fw = Math.max(ctx.measureText(String(p.n)).width, ctx.measureText(String(p.d)).width) + 10;
+  ctx.font = font(size, 800);
+  const signW = p.sign < 0 ? ctx.measureText(MINUS).width + 3 : 0;
+  const varW = variable ? ctx.measureText(variable).width + 4 : 0;
+  return signW + fw + varW;
+}
+function drawTerm(cx, cy, coef, variable, size, color, abs) {
+  const p = ratParts(coef, abs);
+  ctx.fillStyle = color;
+  ctx.textBaseline = 'middle';
+  if (p.d === 1) {
+    const body = variable ? (p.n === 1 ? variable : p.n + variable) : String(p.n);
+    ctx.font = font(size, 800);
+    ctx.textAlign = 'center';
+    ctx.fillText((p.sign < 0 ? MINUS : '') + body, cx, cy);
+    return;
+  }
+  ctx.font = font(size * 0.58, 800);
+  const fw = Math.max(ctx.measureText(String(p.n)).width, ctx.measureText(String(p.d)).width) + 10;
+  ctx.font = font(size, 800);
+  const signW = p.sign < 0 ? ctx.measureText(MINUS).width + 3 : 0;
+  const varW = variable ? ctx.measureText(variable).width + 4 : 0;
+  let x = cx - (signW + fw + varW) / 2;
+  if (p.sign < 0) {
+    ctx.textAlign = 'left';
+    ctx.font = font(size, 800);
+    ctx.fillText(MINUS, x, cy);
+    x += signW;
+  }
+  ctx.font = font(size * 0.58, 800);
+  ctx.textAlign = 'center';
+  ctx.fillText(String(p.n), x + fw / 2, cy - size * 0.34);
+  ctx.fillRect(x + 2, cy - 1.4, fw - 4, 2.4);
+  ctx.fillText(String(p.d), x + fw / 2, cy + size * 0.36);
+  if (variable) {
+    ctx.font = font(size, 800);
+    ctx.textAlign = 'left';
+    ctx.fillText(variable, x + fw + 4, cy);
+  }
+}
+function drawAligned(rect, cy, eq, vars, size, color, hide) {
+  const cols = colGeom(rect);
+  const b = ratParts(eq.b, false);
+  if (!(hide === 'x')) drawTerm(cols.x, cy, eq.a, vars[0], size, color, false);
+  ctx.fillStyle = color;
+  ctx.font = font(size, 800);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (hide !== 'y') ctx.fillText(b.sign < 0 ? MINUS : '+', cols.op, cy);
+  if (hide !== 'y') drawTerm(cols.y, cy, eq.b, vars[1], size, color, true);
+  ctx.fillStyle = color;
+  ctx.font = font(size * 0.8, 700);
+  ctx.textAlign = 'center';
+  ctx.fillText('=', cols.eq, cy);
+  if (hide !== 'c') drawTerm(cols.c, cy, eq.c, '', size, color, false);
+}
+function fitLine(str, maxW, size) {
+  let s = size;
+  while (s > 12) {
+    ctx.font = font(s, 800);
+    if (ctx.measureText(str).width <= maxW) return s;
+    s -= 1;
+  }
+  return s;
+}
+function fitEqSize(rect, eq, vars, size) {
+  let s = size;
+  const cols = colGeom(rect);
+  const budget = rect.w * 0.2;
+  while (s > 12) {
+    const w1 = measureTerm(eq.a, vars[0], s, false);
+    const w2 = measureTerm(eq.b, vars[1], s, true);
+    const w3 = measureTerm(eq.c, '', s, false);
+    if (w1 < budget && w2 < budget && w3 < cols.c - cols.eq) return s;
+    s -= 2;
+  }
+  return s;
+}
+function drawTokens(tokens, cx, cy, size, color) {
+  ctx.fillStyle = color;
+  ctx.textBaseline = 'middle';
+  const widths = tokens.map((tk) => {
+    if (tk.t === 'frac') {
+      ctx.font = font(size * 0.52, 800);
+      return Math.max(ctx.measureText(tk.num).width, ctx.measureText(tk.den).width) + 12;
+    }
+    ctx.font = font(tk.t === 'op' ? size * 0.8 : size, 800);
+    return ctx.measureText(tk.s).width + (tk.t === 'op' ? 14 : 6);
+  });
+  const total = widths.reduce((a, b) => a + b, 0);
+  let x = cx - total / 2;
+  tokens.forEach((tk, i) => {
+    const w = widths[i];
+    if (tk.t === 'frac') {
+      ctx.font = font(size * 0.52, 800);
+      ctx.textAlign = 'center';
+      ctx.fillText(tk.num, x + w / 2, cy - size * 0.3);
+      ctx.fillRect(x + 2, cy - 1.3, w - 4, 2.2);
+      ctx.fillText(tk.den, x + w / 2, cy + size * 0.32);
+    } else {
+      ctx.font = font(tk.t === 'op' ? size * 0.78 : size, 800);
+      ctx.textAlign = 'center';
+      ctx.fillText(tk.s, x + w / 2, cy);
+    }
+    x += w;
+  });
+}
+function shownEquation(which) {
+  const r = G.round;
+  const eq = which === 0 ? r.e1 : r.e2;
+  const L = which === 0 ? r.L1 : r.L2;
+  const scaled = which === 0 ? r.scaled1 : r.scaled2;
+  const anim = G.anim;
+  const revealed = G.step > 1 || G.phase === 'clear' || (anim && anim.type === 'scale' && anim.t > 0.5) || (anim && anim.type !== 'scale');
+  if (revealed) return { mode: 'cols', eq: toR(scaled), hide: null };
+  const disp = which === 0 ? r.disp1 : r.disp2;
+  if (disp === 'scramble') return { mode: 'raw', tokens: scrambleTokens(eq, r.vars) };
+  if (disp === 'subst') return { mode: 'raw', tokens: substTokens(eq) };
+  if (disp === 'frac') return { mode: 'cols', eq: { a: reduceRat(eq.a, L), b: reduceRat(eq.b, L), c: reduceRat(eq.c, L) }, hide: null };
+  return { mode: 'cols', eq: toR(eq), hide: null };
+}
+function drawTrack(which) {
+  const rect = which === 0 ? GEO.t1 : GEO.t2;
+  const color = which === 0 ? COL.cyan : COL.mag;
+  const r = G.round;
+  panel(rect, 'rgba(7,14,28,0.92)', color);
+  const time = performance.now() / 1000;
+  ctx.save();
+  roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.clip();
+  for (let i = 0; i < 16; i++) {
+    const t = (time * 0.12 + i / 16) % 1;
+    const x = rect.x + 24 + t * (rect.w - 48);
+    ctx.globalAlpha = 0.25 + 0.5 * Math.abs(Math.sin(time * 3 + i));
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, rect.y + 8, 2.4, 0, Math.PI * 2);
+    ctx.arc(rect.x + rect.w - 24 - t * (rect.w - 48), rect.y + rect.h - 8, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.arc(rect.x + 52, rect.y + rect.h / 2, 22, time, time + Math.PI * 1.4);
+  ctx.stroke();
+  text(which === 0 ? 'EQ 1' : 'EQ 2', rect.x + 86, rect.y + 28, 16, color, 'left', 900);
+  const disp = which === 0 ? r.disp1 : r.disp2;
+  const feed = disp === 'frac' ? 'FRACTION FEED' : disp === 'scramble' ? 'SCRAMBLED FEED' : disp === 'subst' ? 'SUBSTITUTION' : 'STANDARD';
+  const revealed = G.step > 1 || (G.anim && G.anim.type === 'scale' && G.anim.t > 0.5) || (G.anim && G.anim.type !== 'scale') || G.phase === 'clear';
+  text(revealed ? 'ALIGNED' : feed, rect.x + 150, rect.y + 28, 13, COL.dim, 'left', 700);
+  if (revealed) {
+    const face = which === 0 ? r.face1 : r.face2;
+    text(TIMES + face, rect.x + 86, rect.y + 52, 14, COL.gold, 'left', 800);
+  }
+  const view = shownEquation(which);
+  const box = eqRect(rect);
+  let hide = null;
+  let drawEq = view.eq;
+  if (which === 1 && G.anim && G.anim.type === 'flip' && G.anim.t > 0.48 && drawEq) {
+    drawEq = {
+      a: negRat(drawEq.a),
+      b: negRat(drawEq.b),
+      c: negRat(drawEq.c)
+    };
+  }
+  if (G.anim && (G.anim.type === 'flip' || G.anim.type === 'collide') && G.anim.t > 0.72 && revealed) {
+    hide = r.target === 'x' ? 'x' : 'y';
+  }
+  if (revealed && G.step >= 1) {
+    const cols = colGeom(box);
+    const hx = r.target === 'x' ? cols.x : cols.y;
+    const pulse = 0.16 + 0.1 * Math.sin(time * 5);
+    const showGold = G.step > 1 || (G.anim && G.anim.type === 'scale' && G.anim.t > 0.5) || G.phase === 'clear';
+    if (showGold) {
+      roundRect(hx - 78, rect.y + 48, 156, rect.h - 70, 14);
+      ctx.fillStyle = 'rgba(255,209,92,' + (0.2 + pulse) + ')';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,209,92,0.95)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+  const cy = rect.y + rect.h * 0.62;
+  if (view.mode === 'raw' && !revealed) {
+    const size = view.tokens.some((tk) => tk.t === 'frac') ? 30 : 34;
+    drawTokens(view.tokens, rect.x + rect.w * 0.58, cy, size, color);
+  } else if (drawEq) {
+    const size = fitEqSize(box, drawEq, r.vars, 36);
+    drawAligned(box, cy, drawEq, r.vars, size, color, hide);
+  }
+  if (which === 1 && G.anim && G.anim.type === 'flip' && G.anim.t < 0.7) {
+    const u = G.anim.t / 0.7;
+    const x = rect.x + 20 + u * (rect.w - 40);
+    ctx.strokeStyle = 'rgba(255,209,92,0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(x, rect.y + 18);
+    ctx.lineTo(x, rect.y + rect.h - 18);
+    ctx.stroke();
+    text('SIGN FLIP', x, rect.y + rect.h - 28, 12, COL.gold, 'center', 800);
+  }
+}
+function drawCore() {
+  const rect = GEO.core;
+  panel(rect, 'rgba(8,12,26,0.94)', 'rgba(201,166,255,0.85)');
+  const cy = rect.y + rect.h / 2;
+  const time = performance.now() / 1000;
+  ctx.save();
+  ctx.translate(230, cy);
+  ctx.rotate(time * 0.8);
+  ctx.strokeStyle = COL.violet;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 34, 0.2, 2.2);
+  ctx.stroke();
+  ctx.rotate(time);
+  ctx.strokeStyle = COL.cyan;
+  ctx.beginPath();
+  ctx.arc(0, 0, 24, 0, 1.6);
+  ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = 'rgba(62,231,255,0.18)';
+  ctx.beginPath();
+  ctx.arc(230, cy, 10, 0, Math.PI * 2);
+  ctx.fill();
+  let label = 'ANNIHILATION CORE';
+  let sub = 'STANDBY';
+  let color = COL.violet;
+  if (G.phase === 'clear' && G.round) {
+    label = 'SOLUTION LOCKED';
+    sub = '(' + fmtRat(G.round.sol.x) + ', ' + fmtRat(G.round.sol.y) + ')';
+    color = COL.gold;
+  } else if (G.round && (G.step >= 3 || (G.anim && G.anim.type !== 'scale' && G.anim.t > 0.75))) {
+    label = fmtEq(G.round.raw, G.round.vars);
+    sub = G.round.knownText;
+    color = COL.gold;
+  } else if (G.phase === 'anim') {
+    sub = 'COLLIDING';
+  }
+  text(label, 930, cy - 16, label.length > 28 ? 22 : 26, color, 'center', 800);
+  text(sub, 930, cy + 18, 22, COL.white, 'center', 800);
+}
+function cardTitle(card) {
+  if (card.kicker) return card.kicker;
+  if (card.op) return card.op === 'add' ? 'ADD EQUATIONS  (+)' : 'SUBTRACT EQUATIONS  (' + MINUS + ')';
+  return 'COORDINATE LOCK';
+}
+function resultValue(eq, vars) {
+  if (!eq || (eq.a && eq.b)) return '';
+  if (eq.a) return vars[0] + ' = ' + fmtRat(solvedRat(eq, 'x'));
+  if (eq.b) return vars[1] + ' = ' + fmtRat(solvedRat(eq, 'y'));
+  return '';
+}
+function drawPair(cx, cy, point, vars, size, color) {
+  const termSize = size * 0.78;
+  const xw = measureTerm(point.x, '', termSize, false);
+  const yw = measureTerm(point.y, '', termSize, false);
+  ctx.font = font(size, 800);
+  ctx.textBaseline = 'middle';
+  const commaW = ctx.measureText(', ').width;
+  const parenW = ctx.measureText('(').width;
+  let x = cx - (parenW * 2 + xw + yw + commaW) / 2;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.fillText('(', x, cy);
+  x += parenW;
+  drawTerm(x + xw / 2, cy, point.x, '', termSize, color, false);
+  x += xw;
+  ctx.font = font(size, 800);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(', ', x, cy);
+  x += commaW;
+  drawTerm(x + yw / 2, cy, point.y, '', termSize, color, false);
+  x += yw;
+  ctx.font = font(size, 800);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(')', x, cy);
+  text(vars[0] + ', ' + vars[1], cx, cy + size * 0.62, 13, COL.dim, 'center', 700);
+}
+function drawCard(i) {
+  const rect = cardRect(i);
+  const card = G.cards[i];
+  if (!card) return;
+  const focused = [];
+  if (G.screen === 'play' && G.phase === 'choose') {
+    if (G.mode === 'solo' && G.p[0].focus === i) focused.push(COL.cyan);
+    if (G.mode !== 'solo' && canAct(0) && G.p[0].focus === i) focused.push(COL.red);
+    if (G.mode !== 'solo' && canAct(1) && G.p[1].focus === i) focused.push(COL.blue);
+  }
+  const bad = G.badFlash && G.badFlash.index === i;
+  const chosen = G.phase === 'anim' && G.chosen === i;
+  panel(rect, bad ? 'rgba(70,16,24,0.94)' : 'rgba(10,16,30,0.94)', bad ? COL.red : chosen ? COL.gold : 'rgba(147,160,184,0.45)');
+  ctx.save();
+  roundRect(rect.x + 2, rect.y + 2, rect.w - 4, rect.h - 4, 14);
+  ctx.clip();
+  focused.forEach((color, idx) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    roundRect(rect.x + 4 + idx * 3, rect.y + 4 + idx * 3, rect.w - 8 - idx * 6, rect.h - 8 - idx * 6, 12);
+    ctx.stroke();
+  });
+  const title = cardTitle(card);
+  const titleLines = wrap(title, 13, rect.w - 24, 800).slice(0, 2);
+  titleLines.forEach((line, li) => text(line, rect.x + rect.w / 2, rect.y + 18 + li * 16, 13, COL.gold, 'center', 800));
+  const top = rect.y + 26 + titleLines.length * 16;
+  if (card.eq1 && card.eq2) {
+    const box = { x: rect.x + 8, y: top, w: rect.w - 16, h: rect.h - (top - rect.y) - 8 };
+    const s1 = fitEqSize(box, card.eq1, G.round.vars, 18);
+    const s2 = fitEqSize(box, card.eq2, G.round.vars, 18);
+    const size = Math.min(s1, s2);
+    drawAligned(box, top + 22, card.eq1, G.round.vars, size, COL.cyan, null);
+    drawAligned(box, top + 62, card.eq2, G.round.vars, size, COL.mag, null);
+  } else if (card.result) {
+    const both = card.result.a && card.result.b;
+    const box = { x: rect.x + 8, y: top, w: rect.w - 16, h: 70 };
+    if (both) {
+      const size = fitEqSize(box, toR(card.result), G.round.vars, 18);
+      drawAligned(box, top + 28, toR(card.result), G.round.vars, size, COL.white, null);
+      text('BOTH VARIABLES REMAIN', rect.x + rect.w / 2, rect.y + rect.h - 22, 12, COL.red, 'center', 800);
+    } else {
+      const line = fmtEq(card.result, G.round.vars);
+      const size = fitLine(line, rect.w - 28, 22);
+      text(line, rect.x + rect.w / 2, top + 24, size, COL.white, 'center', 800);
+      text(resultValue(card.result, G.round.vars), rect.x + rect.w / 2, rect.y + rect.h - 28, 20, COL.gold, 'center', 800);
+    }
+  } else if (card.point) {
+    drawPair(rect.x + rect.w / 2, rect.y + 86, card.point, G.round.vars, 32, COL.white);
+  }
+  if (G.mode === 'coop' && G.step === 3 && G.phase === 'choose') {
+    if (G.arm[0] === i) text('P1', rect.x + 16, rect.y + rect.h - 16, 12, COL.red, 'left', 900);
+    if (G.arm[1] === i) text('P2', rect.x + rect.w - 16, rect.y + rect.h - 16, 12, COL.blue, 'right', 900);
+  }
+  ctx.restore();
+}
+function drawHud() {
+  ctx.fillStyle = 'rgba(5,8,16,0.92)';
+  ctx.fillRect(0, 0, VW, 58);
+  ctx.fillStyle = 'rgba(62,231,255,0.35)';
+  ctx.fillRect(0, 57, VW, 1);
+  const mode = G.mode === 'solo' ? 'SOLO PHYSICIST' : G.mode === 'coop' ? '2P CO-OP TEAM' : '2P VERSUS';
+  text(mode, 24, 29, 18, COL.white, 'left', 900);
+  text('ROUND ' + G.roundNumber + '  ·  ' + tierName(G.roundNumber), 620, 29, 18, COL.gold, 'center', 800);
+  if (G.mode === 'versus') {
+    let x = 1464;
+    const drawP = (label, p, color) => {
+      const score = p.score.toLocaleString('en-US');
+      text(score, x, 29, 15, color, 'right', 800);
+      x -= ctx.measureText(score).width + 10;
+      text('★ ' + p.stars, x, 29, 15, COL.gold, 'right', 800);
+      x -= 46;
+      drawShieldRow(x, 29, p.shields, 3, color);
+      x -= 74;
+      text(label, x, 29, 14, color, 'right', 900);
+      x -= 36;
+    };
+    drawP('P2', G.p[1], COL.blue);
+    x -= 18;
+    drawP('P1', G.p[0], COL.red);
+  } else {
+    let x = 1464;
+    const scoreLabel = (G.mode === 'coop' ? 'TEAM SCORE  ' : 'SCORE  ') + G.score.toLocaleString('en-US');
+    text(scoreLabel, x, 29, 16, COL.gold, 'right', 800);
+    x -= ctx.measureText(scoreLabel).width + 22;
+    const combo = 'COMBO  ' + G.combo;
+    text(combo, x, 29, 16, COL.white, 'right', 800);
+    x -= ctx.measureText(combo).width + 16;
+    drawShieldRow(x, 29, G.shields, G.shieldMax, G.mode === 'coop' ? COL.good : COL.cyan);
+  }
+  roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 16);
+  ctx.fillStyle = '#101828';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  text(audio.muted ? 'MUTE' : 'SOUND', GEO.mute.x + GEO.mute.w / 2, GEO.mute.y + 17, 12, COL.gold, 'center', 900);
+}
+function drawTelemetry() {
+  ctx.fillStyle = 'rgba(12,20,36,0.95)';
+  ctx.fillRect(0, 58, VW, 42);
+  for (let i = 1; i <= 3; i++) {
+    const on = G.step === i && G.phase !== 'clear';
+    const done = G.step > i || G.phase === 'clear';
+    ctx.beginPath();
+    ctx.fillStyle = done ? COL.good : on ? COL.gold : 'rgba(255,255,255,0.16)';
+    ctx.arc(28 + i * 22, 79, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  let who = '';
+  if (G.mode === 'coop' && G.phase === 'choose') {
+    if (G.step === 3) who = 'BOTH  ·  ';
+    else {
+      const p1 = (G.step === 1) === scalerIsP1();
+      who = (p1 ? 'P1' : 'P2') + '  ·  ';
+    }
+  }
+  text(who + objectiveText(), 800, 79, 20, COL.white, 'center', 800);
+}
+function drawTip() {
+  const rect = { x: 48, y: 108, w: 1504, h: 48 };
+  const bad = G.tip.kind === 'bad';
+  const good = G.tip.kind === 'good';
+  const warn = G.tip.kind === 'warn';
+  panel(rect, bad ? 'rgba(48,12,18,0.94)' : 'rgba(8,14,26,0.9)', bad ? COL.red : good ? COL.good : warn ? COL.gold : 'rgba(62,231,255,0.35)');
+  const size = G.tip.text.length > 140 ? 14 : 16;
+  const lines = wrap(G.tip.text, size, rect.w - 36, 700).slice(0, 2);
+  lines.forEach((line, i) => {
+    text(line, rect.x + 18, rect.y + (lines.length === 1 ? 24 : 16 + i * 18), size, bad ? '#ffd5da' : COL.white, 'left', 700);
+  });
+}
+function drawDeck() {
+  text('COMMAND DECK', 48, 636, 14, COL.dim, 'left', 800);
+  let role = 'MOUSE, WASD, OR ARROWS    ·    SPACE FIRES';
+  if (G.mode === 'coop') {
+    if (G.step === 3) role = 'BOTH OPERATORS CONFIRM THE SAME PAIR';
+    else role = ((G.step === 1) === scalerIsP1() ? 'P1 SCALES' : 'P2 SCALES') + '    ·    ' + ((G.step === 2) === scalerIsP1() ? 'P1 COLLAPSES THE CORE' : 'P2 COLLAPSES THE CORE');
+    if (G.step === 1) role = (scalerIsP1() ? 'P1 SCALES THIS WAVE' : 'P2 SCALES THIS WAVE') + '    ·    ROLES SWAP NEXT ROUND';
+    if (G.step === 2) role = (scalerIsP1() ? 'P2 SELECTS THE COLLISION' : 'P1 SELECTS THE COLLISION');
+  } else if (G.mode === 'versus') role = 'FIRST CORRECT LOCK TAKES THE STEP AND THE SPEED BONUS';
+  text(role, 1552, 636, 13, COL.dim, 'right', 700);
+  for (let i = 0; i < 4; i++) drawCard(i);
+  const hot = G.mode === 'solo' && hit(GEO.fire, pointer.x, pointer.y);
+  roundRect(GEO.fire.x, GEO.fire.y, GEO.fire.w, GEO.fire.h, 14);
+  ctx.fillStyle = G.phase === 'choose' ? 'rgba(62,231,255,0.16)' : 'rgba(255,255,255,0.04)';
+  ctx.fill();
+  ctx.strokeStyle = hot ? COL.white : COL.cyan;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  const label = G.phase === 'anim' ? 'COLLIDING' : G.phase === 'clear' ? 'CORE STABLE' : 'FIRE COLLIDER';
+  text('[  ' + label + '  ]', GEO.fire.x + GEO.fire.w / 2, GEO.fire.y + 24, 18, COL.cyan, 'center', 900);
+}
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, '#10192b');
+  g.addColorStop(1, '#05070c');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+  const time = performance.now() / 1000;
+  stars.forEach((s) => {
+    ctx.globalAlpha = 0.25 + 0.75 * (0.5 + 0.5 * Math.sin(time * s.s + s.p));
+    ctx.fillStyle = '#d5e4ff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+function drawParts() {
+  parts.forEach((p) => {
+    ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  if (G.floater) {
+    ctx.globalAlpha = Math.max(0, G.floater.life);
+    text(G.floater.text, G.floater.x, G.floater.y, 42, G.floater.color || COL.gold, 'center', 900);
+    ctx.globalAlpha = 1;
+  }
+  if (G.popup) {
+    ctx.globalAlpha = Math.max(0, Math.min(1, G.popup.life));
+    text(G.popup.text, 930, GEO.core.y - 16, 20, G.popup.color || COL.gold, 'center', 900);
+    ctx.globalAlpha = 1;
+  }
+}
+function drawPlay() {
+  drawBackground();
+  drawHud();
+  drawTelemetry();
+  drawTip();
+  if (G.round) {
+    drawTrack(0);
+    drawCore();
+    drawTrack(1);
+    drawDeck();
+  }
+  drawParts();
+  if (G.mode === 'solo' && G.phase === 'choose' && G.lastInput === 'mouse' && pointer.inside) drawReticle(G.ret.x, G.ret.y, COL.cyan);
+  if (G.mode !== 'solo' && G.phase === 'choose') {
+    [0, 1].forEach((player) => {
+      if (!canAct(player)) return;
+      const rect = cardRect(G.p[player].focus);
+      const color = player === 0 ? COL.red : COL.blue;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(rect.x + 18 + player * 28, rect.y + rect.h - 8);
+      ctx.lineTo(rect.x + 28 + player * 28, rect.y + rect.h + 8);
+      ctx.lineTo(rect.x + 38 + player * 28, rect.y + rect.h - 8);
+      ctx.stroke();
+    });
+  }
+  if (G.flash > 0) {
+    ctx.fillStyle = 'rgba(255,70,90,' + (G.flash * 0.18) + ')';
+    ctx.fillRect(0, 0, VW, VH);
+  }
+  if (G.pause) {
+    ctx.fillStyle = 'rgba(4,6,12,0.72)';
+    ctx.fillRect(0, 0, VW, VH);
+    panel({ x: 500, y: 330, w: 600, h: 180 }, '#0d1524', COL.gold);
+    text('PAUSED', 800, 390, 36, COL.gold, 'center', 900);
+    text('Esc, Space, or A resumes the collision.', 800, 444, 18, COL.white, 'center', 700);
+  }
+}
+function drawReticle(x, y, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, 13, 0, Math.PI * 2);
+  ctx.moveTo(x - 22, y);
+  ctx.lineTo(x - 7, y);
+  ctx.moveTo(x + 7, y);
+  ctx.lineTo(x + 22, y);
+  ctx.moveTo(x, y - 22);
+  ctx.lineTo(x, y - 7);
+  ctx.moveTo(x, y + 7);
+  ctx.lineTo(x, y + 22);
+  ctx.stroke();
+}
+function drawTitle() {
+  drawBackground();
+  drawHudShell();
+  text('ELIMINATION CHAMBER', 800, 78, 14, COL.cyan, 'center', 800);
+  text('EQUATION ANNIHILATOR', 800, 124, 52, COL.white, 'center', 900);
+  text('TERM CRUSHER', 800, 176, 22, COL.gold, 'center', 800);
+  text('Simultaneous linear equations  ·  elimination method', 800, 208, 16, COL.dim, 'center', 700);
+  const modes = [
+    ['SOLO PHYSICIST', 'Mouse, keyboard, or one 8BitDo.', 'Three core shields and a combo score.', 'You run every step of the collision.', 'Click a card or press Fire.'],
+    ['2P CO-OP TEAM', 'One team score. Four shared shields.', 'P1 scales. P2 fires the collision.', 'Roles swap every round.', 'Both lock the final (x, y).'],
+    ['2P VERSUS', 'Same system, first lock takes it.', 'Speed bonus on every step.', 'Step 3 awards a physicist star.', 'Three shields each.']
+  ];
+  modes.forEach((lines, i) => {
+    const rect = { x: 70 + i * 500, y: 248, w: 450, h: 280 };
+    const on = G.menu === i;
+    panel(rect, 'rgba(8,14,28,0.94)', on ? COL.gold : 'rgba(147,160,184,0.4)');
+    text(i === 0 ? '1' : i === 1 ? '2' : '3', rect.x + 28, rect.y + 32, 14, COL.dim, 'left', 800);
+    text(lines[0], rect.x + rect.w / 2, rect.y + 58, 22, on ? COL.gold : COL.white, 'center', 900);
+    lines.slice(1).forEach((line, li) => text(line, rect.x + rect.w / 2, rect.y + 112 + li * 32, 16, COL.dim, 'center', 700));
+  });
+  const help = [
+    'Step 1  align a variable with the least multipliers.  Step 2  add opposite signs, or subtract matching signs.  Step 3  back-substitute.',
+    'P1: WASD + F or Space, pad 1 A.    P2: arrows + Enter, pad 2 A.    Solo also uses the mouse.    M mutes.    Esc pauses.',
+    'A wrong gate costs one shield and opens the algebra note for that mistake.'
+  ];
+  help.forEach((line, i) => text(line, 800, 580 + i * 28, 15, i === 2 ? COL.gold : COL.white, 'center', 700));
+  text('Best solo ' + G.best.solo.toLocaleString('en-US') + '    ·    Best team ' + G.best.coop.toLocaleString('en-US') + '    ·    Best duel ★ ' + G.best.versusStars, 800, 700, 14, COL.dim, 'center', 700);
+}
+function drawHudShell() {
+  ctx.fillStyle = 'rgba(5,8,16,0.72)';
+  ctx.fillRect(0, 0, VW, 58);
+  roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 16);
+  ctx.fillStyle = '#101828';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  text(audio.muted ? 'MUTE' : 'SOUND', GEO.mute.x + GEO.mute.w / 2, GEO.mute.y + 17, 12, COL.gold, 'center', 900);
+}
+function drawOver() {
+  drawBackground();
+  drawHudShell();
+  const versus = G.mode === 'versus';
+  text(versus ? 'DUEL COMPLETE' : 'CONTAINMENT LOST', 800, 120, 42, versus ? COL.gold : COL.red, 'center', 900);
+  if (versus) {
+    const winner = versusWinner();
+    text(winner < 0 ? 'Stars are tied.' : 'Master Physicist  ·  P' + (winner + 1), 800, 176, 22, COL.white, 'center', 800);
+    text('P1   ★ ' + G.p[0].stars + '    ' + G.p[0].score.toLocaleString('en-US') + '     ·     P2   ★ ' + G.p[1].stars + '    ' + G.p[1].score.toLocaleString('en-US'), 800, 214, 18, COL.dim, 'center', 700);
+  } else {
+    text((G.mode === 'coop' ? 'Team score ' : 'Score ') + G.score.toLocaleString('en-US') + '    ·    Rounds ' + G.roundsCleared + '    ·    Best ' + (G.mode === 'coop' ? G.best.coop : G.best.solo).toLocaleString('en-US'), 800, 176, 20, COL.white, 'center', 700);
+  }
+  if (G.round) {
+    panel({ x: 360, y: 260, w: 880, h: 390 }, 'rgba(8,14,28,0.94)', 'rgba(62,231,255,0.4)');
+    text('Worked collision', 800, 292, 16, COL.gold, 'center', 800);
+    G.round.lesson.forEach((line, i) => text(line, 800, 336 + i * 36, 18, COL.white, 'center', 700));
+  }
+  const retry = { x: 500, y: 700, w: 250, h: 56 };
+  const title = { x: 850, y: 700, w: 250, h: 56 };
+  panel(retry, G.menu === 0 ? 'rgba(62,231,255,0.18)' : '#101828', G.menu === 0 ? COL.cyan : COL.dim);
+  panel(title, G.menu === 1 ? 'rgba(255,209,92,0.14)' : '#101828', G.menu === 1 ? COL.gold : COL.dim);
+  text('PLAY AGAIN', retry.x + retry.w / 2, retry.y + 28, 16, COL.cyan, 'center', 900);
+  text('TITLE', title.x + title.w / 2, title.y + 28, 16, COL.gold, 'center', 900);
+}
+function versusWinner() {
+  const a = G.p[0];
+  const b = G.p[1];
+  if (a.stars !== b.stars) return a.stars > b.stars ? 0 : 1;
+  if (a.score !== b.score) return a.score > b.score ? 0 : 1;
+  return -1;
+}
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const shakeX = G.shake > 0 ? (Math.random() - 0.5) * G.shake : 0;
+  const shakeY = G.shake > 0 ? (Math.random() - 0.5) * G.shake : 0;
+  ctx.setTransform(view.scale, 0, 0, view.scale, view.ox + shakeX, view.oy + shakeY);
+  if (G.screen === 'title') drawTitle();
+  else if (G.screen === 'over') drawOver();
+  else drawPlay();
+  let hot = hit(GEO.mute, pointer.x, pointer.y);
+  if (G.screen === 'play' && G.mode === 'solo') {
+    if (hit(GEO.fire, pointer.x, pointer.y)) hot = true;
+    for (let i = 0; i < 4; i++) if (hit(cardRect(i), pointer.x, pointer.y)) hot = true;
+  }
+  if (G.screen === 'title') {
+    for (let i = 0; i < 3; i++) if (hit({ x: 70 + i * 500, y: 248, w: 450, h: 280 }, pointer.x, pointer.y)) hot = true;
+  }
+  canvas.style.cursor = hot ? 'pointer' : 'default';
+}
+
+const view = { scale: 1, ox: 0, oy: 0 };
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  view.scale = Math.min(canvas.width / VW, canvas.height / VH);
+  view.ox = (canvas.width - VW * view.scale) / 2;
+  view.oy = (canvas.height - VH * view.scale) / 2;
+}
+function worldPoint(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (canvas.width / rect.width);
+  const y = (clientY - rect.top) * (canvas.height / rect.height);
+  return { x: (x - view.ox) / view.scale, y: (y - view.oy) / view.scale };
+}
+function frame(now) {
+  if (!frame.last) frame.last = now;
+  const dt = Math.min(0.05, (now - frame.last) / 1000);
+  frame.last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d');
+  reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  loadBest();
+  try { audio.muted = localStorage.getItem('ea-muted') === '1'; } catch (e) { /* ignore */ }
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.addEventListener('pointermove', (e) => {
+    const p = worldPoint(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    pointer.moved = true;
+  });
+  canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+  canvas.addEventListener('pointerdown', (e) => {
+    const p = worldPoint(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    pointer.pressed = true;
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    down[e.code] = true;
+    edges.push(e.code);
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(e.code) !== -1) e.preventDefault();
+  });
+  window.addEventListener('keyup', (e) => { down[e.code] = false; });
+  window.addEventListener('gamepadconnected', () => {});
+  requestAnimationFrame(frame);
+}
+
+function snapshot() {
+  const r = G.round;
+  return {
+    screen: G.screen,
+    mode: G.mode,
+    pause: G.pause,
+    step: G.step,
+    phase: G.phase,
+    shields: G.shields,
+    score: G.score,
+    combo: G.combo,
+    focus: G.p[0].focus,
+    players: G.p.map((p) => ({ shields: p.shields, stars: p.stars, score: p.score, focus: p.focus })),
+    tip: G.tip,
+    round: r ? {
+      kind: r.kind,
+      target: r.target,
+      op: r.op,
+      faces: [r.face1, r.face2],
+      sol: [fmtRat(r.sol.x), fmtRat(r.sol.y)],
+      lesson: r.lesson
+    } : null,
+    cards: (G.cards || []).map((c) => ({
+      correct: !!c.correct,
+      trap: c.trap,
+      kicker: c.kicker || (c.op ? c.op : 'point')
+    }))
+  };
+}
+globalThis.__EA = { generateRound: generateRound, audit: audit, selfTest: selfTest, pack: pack, emergencySpec: emergencySpec, memory: memory, snapshot: snapshot };
+if (typeof document !== 'undefined') boot();
+</script>
+</body>
+</html>
