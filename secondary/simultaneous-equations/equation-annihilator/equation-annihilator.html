@@ -763,6 +763,183 @@ function previewOf(eq, m) {
 function forgotPreview(eq, m, L) {
   return { a: { n: eq.a * m, d: 1 }, b: { n: eq.b * m, d: 1 }, c: reduceRat(eq.c, L) };
 }
+function integerScale(orig, shown) {
+  let m = 0;
+  const keys = ['a', 'b', 'c'];
+  for (let i = 0; i < keys.length; i++) {
+    const o = orig[keys[i]];
+    const s = shown[keys[i]];
+    if (!s || s.d <= 0) return null;
+    if (!o) {
+      if (s.n !== 0) return null;
+      continue;
+    }
+    if (s.n % s.d !== 0) return null;
+    const val = s.n / s.d;
+    if (val % o !== 0) return null;
+    const mk = val / o;
+    if (mk < 1 || mk !== Math.trunc(mk)) return null;
+    if (!m) m = mk;
+    else if (m !== mk) return null;
+  }
+  return m || null;
+}
+function pathOf(r, eq1, eq2) {
+  const m1 = integerScale(r.e1, eq1);
+  const m2 = integerScale(r.e2, eq2);
+  if (!m1 || !m2) return null;
+  const x = alignsTarget(r.e1, r.e2, m1, m2, 'x');
+  const y = alignsTarget(r.e1, r.e2, m1, m2, 'y');
+  if (!x && !y) return null;
+  let target = r.target;
+  if (target === 'x' && !x) target = 'y';
+  else if (target === 'y' && !y) target = 'x';
+  if (!opFor(r.e1, r.e2, [m1, m2], target)) return null;
+  return { m1: m1, m2: m2, target: target };
+}
+function lessonFor(round) {
+  const lines = [
+    'Scale equation 1 by ' + TIMES + round.face1 + ' and equation 2 by ' + TIMES + round.face2 + '.',
+    fmtEq(round.scaled1, round.vars),
+    fmtEq(round.scaled2, round.vars),
+    (round.op === 'add' ? 'Add' : 'Subtract') + ': ' + fmtEq(round.raw, round.vars) + '  →  ' + round.knownText,
+    'Solution (' + fmtRat(round.sol.x) + ', ' + fmtRat(round.sol.y) + ')'
+  ];
+  if (round.insight) lines.push(round.insight);
+  return lines;
+}
+function projectRound(r, path) {
+  const op = opFor(r.e1, r.e2, [path.m1, path.m2], path.target);
+  if (!op) return null;
+  const scaled1 = scaleEq(r.e1, path.m1);
+  const scaled2 = scaleEq(r.e2, path.m2);
+  const raw = combine(scaled1, scaled2, op);
+  if (path.target === 'x' && (raw.a !== 0 || raw.b === 0)) return null;
+  if (path.target === 'y' && (raw.b !== 0 || raw.a === 0)) return null;
+  const solvedVar = path.target === 'x' ? 'y' : 'x';
+  const known = solvedRat(raw, solvedVar);
+  const want = solvedVar === 'x' ? r.sol.x : r.sol.y;
+  if (!ratEq(known, want)) return null;
+  const knownName = solvedVar === 'x' ? r.vars[0] : r.vars[1];
+  const trial = {
+    e1: r.e1,
+    e2: r.e2,
+    m1: path.m1,
+    m2: path.m2,
+    L1: r.L1,
+    L2: r.L2,
+    face1: path.m1 * r.L1,
+    face2: path.m2 * r.L2,
+    op: op,
+    target: path.target,
+    vars: r.vars,
+    disp1: r.disp1,
+    disp2: r.disp2,
+    allowDouble: r.allowDouble,
+    kind: r.kind,
+    sol: r.sol,
+    insight: r.insight,
+    scaled1: scaled1,
+    scaled2: scaled2,
+    raw: raw,
+    known: known,
+    knownText: knownName + ' = ' + fmtRat(known)
+  };
+  trial.cards2 = buildStep2(trial);
+  trial.cards3 = buildStep3(trial);
+  if (!trial.cards2 || !trial.cards3) return null;
+  trial.lesson = lessonFor(trial);
+  return trial;
+}
+function legalPath(r, eq1, eq2) {
+  const path = pathOf(r, eq1, eq2);
+  if (!path) return null;
+  if (path.m1 === r.m1 && path.m2 === r.m2 && path.target === r.target) return path;
+  const projected = projectRound(r, path);
+  if (!projected) return null;
+  path.projected = projected;
+  return path;
+}
+function adoptPath(round, path) {
+  if (!path || !path.projected) return;
+  const t = path.projected;
+  round.m1 = t.m1;
+  round.m2 = t.m2;
+  round.face1 = t.face1;
+  round.face2 = t.face2;
+  round.op = t.op;
+  round.target = t.target;
+  round.scaled1 = t.scaled1;
+  round.scaled2 = t.scaled2;
+  round.raw = t.raw;
+  round.known = t.known;
+  round.knownText = t.knownText;
+  round.cards2 = t.cards2;
+  round.cards3 = t.cards3;
+  round.lesson = t.lesson;
+}
+function step2Path(r, card) {
+  if (!card || !card.result || (card.op !== 'add' && card.op !== 'sub')) return null;
+  const raw = combine(r.scaled1, r.scaled2, card.op);
+  if (raw.a !== card.result.a || raw.b !== card.result.b || raw.c !== card.result.c) return null;
+  const killedX = raw.a === 0 && raw.b !== 0;
+  const killedY = raw.b === 0 && raw.a !== 0;
+  if (!killedX && !killedY) return null;
+  const target = killedX ? 'x' : 'y';
+  const solvedVar = target === 'x' ? 'y' : 'x';
+  const known = solvedRat(raw, solvedVar);
+  const want = solvedVar === 'x' ? r.sol.x : r.sol.y;
+  if (!ratEq(known, want)) return null;
+  const knownName = solvedVar === 'x' ? r.vars[0] : r.vars[1];
+  return {
+    op: card.op,
+    target: target,
+    raw: raw,
+    known: known,
+    knownText: knownName + ' = ' + fmtRat(known)
+  };
+}
+function legalStep2(r, card) {
+  const path = step2Path(r, card);
+  if (!path) return null;
+  if (path.op === r.op && path.target === r.target) return path;
+  const trial = {
+    e1: r.e1,
+    e2: r.e2,
+    m1: r.m1,
+    m2: r.m2,
+    L1: r.L1,
+    L2: r.L2,
+    face1: r.face1,
+    face2: r.face2,
+    op: path.op,
+    target: path.target,
+    vars: r.vars,
+    scaled1: r.scaled1,
+    scaled2: r.scaled2,
+    raw: path.raw,
+    known: path.known,
+    knownText: path.knownText,
+    sol: r.sol,
+    insight: r.insight
+  };
+  trial.cards3 = buildStep3(trial);
+  if (!trial.cards3) return null;
+  path.cards3 = trial.cards3;
+  path.lesson = lessonFor(trial);
+  return path;
+}
+function adoptStep2(round, path) {
+  if (!path || (path.op === round.op && path.target === round.target)) return;
+  if (!path.cards3) return;
+  round.op = path.op;
+  round.target = path.target;
+  round.raw = path.raw;
+  round.known = path.known;
+  round.knownText = path.knownText;
+  round.cards3 = path.cards3;
+  round.lesson = path.lesson;
+}
 function buildStep1(r) {
   const correctPrev = { eq1: previewOf(r.e1, r.m1), eq2: previewOf(r.e2, r.m2) };
   const correctKicker = makeKicker(r.face1, r.face2, r.disp1, r.disp2);
@@ -807,7 +984,9 @@ function buildStep1(r) {
       tip: tokensText(scrambleTokens(sample, r.vars)) + ' rearranges to ' + fmtEq(sample, r.vars) + '. A term that crosses the equals sign changes sign, so it is not ' + fmtEq(bad, r.vars) + '.'
     });
   }
-  if (r.m1 !== r.m2) {
+  const otherM = multipliersFor(r.e1, r.e2, r.target === 'x' ? 'y' : 'x');
+  const swapIsOther = !!(otherM && otherM[0] === r.m2 && otherM[1] === r.m1);
+  if (r.m1 !== r.m2 && !swapIsOther) {
     const eq1 = previewOf(r.e1, r.m2);
     const eq2 = previewOf(r.e2, r.m1);
     if (!alignsTarget(r.e1, r.e2, r.m2, r.m1, r.target)) {
@@ -817,7 +996,7 @@ function buildStep1(r) {
         kicker: makeKicker(r.L1 * r.m2, r.L2 * r.m1, r.disp1, r.disp2),
         eq1: eq1,
         eq2: eq2,
-        tip: 'The multipliers are swapped. Equation 1 needs ' + TIMES + r.face1 + ' and equation 2 needs ' + TIMES + r.face2 + '.'
+        tip: 'Those multipliers do not line up either variable. One pair that works is ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + ', which lines up ' + name + '.'
       });
     }
   }
@@ -828,10 +1007,9 @@ function buildStep1(r) {
       kicker: makeKicker(r.L1, r.L2, r.disp1, r.disp2),
       eq1: previewOf(r.e1, 1),
       eq2: previewOf(r.e2, 1),
-      tip: 'The denominators are cleared, but the ' + name + '-terms still do not match. The full multipliers are ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
+      tip: 'The denominators are cleared, but neither variable\'s coefficients match. One pair that works is ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
     });
   }
-  const otherM = multipliersFor(r.e1, r.e2, r.target === 'x' ? 'y' : 'x');
   if (otherM && (otherM[0] !== r.m1 || otherM[1] !== r.m2) && !alignsTarget(r.e1, r.e2, otherM[0], otherM[1], r.target)) {
     push({
       correct: false,
@@ -862,12 +1040,20 @@ function buildStep1(r) {
       kicker: makeKicker(r.L1 * am1, r.L2 * am2, r.disp1, r.disp2),
       eq1: previewOf(r.e1, am1),
       eq2: previewOf(r.e2, am2),
-      tip: 'Those multipliers do not match the ' + name + '-coefficients. The least pair is ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + '.'
+      tip: 'Those multipliers do not line up either variable. One pair that works is ' + TIMES + r.face1 + ' and ' + TIMES + r.face2 + ', which lines up ' + name + '.'
     });
   });
   if (cards.length < 4) return null;
   const picked = [cards[0]];
   for (let i = 1; i < cards.length && picked.length < 4; i++) picked.push(cards[i]);
+  picked.forEach((card) => {
+    const path = legalPath(r, card.eq1, card.eq2);
+    if (!path) return;
+    card.correct = true;
+    card.trap = null;
+    card.path = path;
+    card.tip = '';
+  });
   return shuffle(picked);
 }
 function buildStep2(r) {
@@ -911,6 +1097,14 @@ function buildStep2(r) {
       b: shown.b,
       c: shown.c + coef * delta
     }, r.op, 'arith', 'Line the terms up before you combine. Constants: ' + fmtInt(s1.c) + (r.op === 'sub' ? ' ' + MINUS + ' ' : ' + ') + (r.op === 'sub' && s2.c < 0 ? '(' + fmtInt(s2.c) + ')' : fmtInt(s2.c)) + ' = ' + fmtInt(shown.c) + '. Check the remaining ' + (r.target === 'x' ? r.vars[1] : r.vars[0]) + '-term the same way.');
+  });
+  cards.forEach((card) => {
+    const path = legalStep2(r, card);
+    if (!path) return;
+    card.correct = true;
+    card.trap = null;
+    card.step2 = path;
+    card.tip = '';
   });
   if (cards.length < 4) return null;
   return shuffle(cards.slice(0, 4));
@@ -997,14 +1191,7 @@ function pack(spec) {
   round.sig = (a < b ? a + '~' + b : b + '~' + a) + '@' + spec.kind;
   round.solKey = pairKey(sol.x, sol.y);
   round.insight = spec.kind === 'subst' ? insightFor(sol) : '';
-  round.lesson = [
-    'Scale equation 1 by ' + TIMES + round.face1 + ' and equation 2 by ' + TIMES + round.face2 + '.',
-    fmtEq(round.scaled1, round.vars),
-    fmtEq(round.scaled2, round.vars),
-    (round.op === 'add' ? 'Add' : 'Subtract') + ': ' + fmtEq(round.raw, round.vars) + '  →  ' + round.knownText,
-    'Solution (' + fmtRat(sol.x) + ', ' + fmtRat(sol.y) + ')'
-  ];
-  if (round.insight) round.lesson.push(round.insight);
+  round.lesson = lessonFor(round);
   const problems = audit(round);
   if (problems.length) return null;
   return round;
@@ -1063,21 +1250,27 @@ function audit(r) {
   ['cards1', 'cards2', 'cards3'].forEach((key) => {
     const cs = r[key];
     if (!cs || cs.length !== 4) problems.push(key + '-count');
-    else if (cs.filter((c) => c.correct).length !== 1) problems.push(key + '-flag');
+    else {
+      const n = cs.filter((c) => c.correct).length;
+      if (key === 'cards3' ? n !== 1 : n < 1) problems.push(key + '-flag');
+    }
   });
   if (r.cards1) {
-    const good = r.cards1.find((c) => c.correct);
     const expect1 = previewOf(r.e1, r.m1);
     const expect2 = previewOf(r.e2, r.m2);
-    if (!good || !sameRats(good.eq1, expect1) || !sameRats(good.eq2, expect2)) problems.push('preview');
+    const canonical = r.cards1.some((c) => c.correct && sameRats(c.eq1, expect1) && sameRats(c.eq2, expect2));
+    if (!canonical) problems.push('preview');
     r.cards1.forEach((c) => {
+      const legal = !!legalPath(r, c.eq1, c.eq2);
+      if (legal !== !!c.correct) problems.push(legal ? 'missed-path' : 'false-path');
       if (!c.correct && sameRats(c.eq1, expect1) && sameRats(c.eq2, expect2)) problems.push('dup-step1');
     });
   }
   if (r.cards2) {
-    const good = r.cards2.find((c) => c.correct);
     r.cards2.forEach((c) => {
-      if (!c.correct && good && equivInt(c.result, good.result)) problems.push('equiv-step2');
+      const legal = !!legalStep2(r, c);
+      if (legal !== !!c.correct) problems.push(legal ? 'missed-step2' : 'false-step2');
+      if (!c.correct && r.cards2.some((g) => g.correct && equivInt(c.result, g.result))) problems.push('equiv-step2');
     });
   }
   if (r.cards3) {
@@ -1146,22 +1339,21 @@ function objectiveText() {
   if (!r) return '';
   const name = targetName(r);
   if (G.step === 1) {
-    if (r.kind === 'fraction') return 'CLEAR DENOMINATORS AND ALIGN ' + name;
-    if (r.kind === 'scramble') return 'REARRANGE INTO STANDARD FORM AND ALIGN ' + name;
-    if (r.kind === 'subst') return 'REWRITE IN a, b AND ALIGN ' + name;
-    return 'ALIGN COEFFICIENTS FOR ' + name;
+    if (r.kind === 'fraction') return 'CLEAR DENOMINATORS AND ALIGN EITHER VARIABLE';
+    if (r.kind === 'scramble') return 'REARRANGE INTO STANDARD FORM AND ALIGN EITHER VARIABLE';
+    if (r.kind === 'subst') return 'REWRITE IN a, b AND ALIGN EITHER VARIABLE';
+    return 'ALIGN EITHER VARIABLE';
   }
   if (G.step === 2) return 'SELECT COLLISION OPERATOR TO CANCEL ' + name;
   return 'BACK-SUBSTITUTE AND LOCK (' + r.vars[0] + ', ' + r.vars[1] + ')';
 }
 function defaultHint() {
   const r = G.round;
-  const name = targetName(r);
   if (G.step === 1) {
-    if (r.kind === 'fraction') return 'Clear the denominators, then scale until the ' + name + '-terms match. Multiply every term, including the constant.';
-    if (r.kind === 'scramble') return 'Move both variables to the left of the equals sign. A term that crosses the sign changes sign. Then align ' + name + '.';
-    if (r.kind === 'subst') return 'Let a = 1/(u+v) and b = 1/(u' + MINUS + 'v). Rewrite both feeds as a linear pair, then align ' + name + '.';
-    return 'Choose the smallest whole-number multipliers that make the ' + name + '-coefficients equal in size. Multiply the constant too.';
+    if (r.kind === 'fraction') return 'Clear the denominators, then scale until one variable\'s coefficients match. Either variable works. Multiply every term, including the constant.';
+    if (r.kind === 'scramble') return 'Move both variables to the left of the equals sign. A term that crosses the sign changes sign. Then align either variable.';
+    if (r.kind === 'subst') return 'Let a = 1/(u+v) and b = 1/(u' + MINUS + 'v). Rewrite both feeds as a linear pair, then align either variable.';
+    return 'Either variable can cancel. Choose whole-number multipliers that make its coefficients equal in size, and multiply the constant too.';
   }
   if (G.step === 2) return 'Opposite signs, ADD (+). Same signs, SUBTRACT (' + MINUS + '). Subtracting flips every sign on the lower track before the terms crash.';
   return setupHint(r);
@@ -1361,6 +1553,9 @@ function endMatch() {
   G.phase = 'choose';
 }
 function onCorrect(player) {
+  const card = G.cards[G.chosen];
+  if (G.step === 1 && card) adoptPath(G.round, card.path);
+  if (G.step === 2 && card) adoptStep2(G.round, card.step2);
   award(player);
   const step = G.step;
   G.phase = 'anim';
@@ -2335,7 +2530,7 @@ function drawTitle() {
     lines.slice(1).forEach((line, li) => text(line, rect.x + rect.w / 2, rect.y + 112 + li * 32, 16, COL.dim, 'center', 700));
   });
   const help = [
-    'Step 1  align a variable with the least multipliers.  Step 2  add opposite signs, or subtract matching signs.  Step 3  back-substitute.',
+    'Step 1  align either variable.  Step 2  add opposite signs, or subtract matching signs.  Step 3  back-substitute.',
     'P1: WASD + F or Space, pad 1 A.    P2: arrows + Enter, pad 2 A.    Solo also uses the mouse.    M mutes.    Esc pauses.',
     'A wrong gate costs one shield and opens the algebra note for that mistake.'
   ];
@@ -2491,7 +2686,7 @@ function snapshot() {
     }))
   };
 }
-globalThis.__EA = { generateRound: generateRound, audit: audit, selfTest: selfTest, pack: pack, emergencySpec: emergencySpec, memory: memory, snapshot: snapshot };
+globalThis.__EA = { generateRound: generateRound, audit: audit, selfTest: selfTest, pack: pack, emergencySpec: emergencySpec, memory: memory, snapshot: snapshot, adoptPath: adoptPath, adoptStep2: adoptStep2 };
 if (typeof document !== 'undefined') boot();
 </script>
 </body>
