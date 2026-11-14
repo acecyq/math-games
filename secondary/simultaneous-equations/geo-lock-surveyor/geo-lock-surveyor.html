@@ -1,0 +1,3273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geo-Lock Surveyor: Blueprint Algebra</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #061018;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+  }
+  noscript {
+    color: #e7f6ff;
+    font-family: "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>Geo-Lock Surveyor needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+/* Geo-Lock Surveyor: Blueprint Algebra
+   Singapore Sec 2 G3 — form and solve simultaneous linear equations
+   from geometric constraints. Every blueprint is built from random
+   integer parameters, solved exactly, and rejected if the diagram,
+   the equations, or the distractors disagree. */
+
+const W = 1280;
+const H = 720;
+const UI = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const MONO = 'ui-monospace, Consolas, "Courier New", monospace';
+const MINUS = '\u2212';
+const TIMES = '\u00d7';
+
+const COL = {
+  bg: '#07131d',
+  ink: '#e7f6ff',
+  dim: '#8eafc4',
+  cyan: '#3ee0ff',
+  magenta: '#ff3d9a',
+  amber: '#ffc857',
+  good: '#5dffb0',
+  bad: '#ff4d6a',
+  gold: '#ffe08a',
+  p1: '#ff3355',
+  p2: '#3aa0ff'
+};
+
+const GEO = {
+  hud: { x: 16, y: 10, w: 1248, h: 52 },
+  spec: { x: 16, y: 70, w: 1248, h: 68 },
+  stage: { x: 16, y: 146, w: 1248, h: 312 },
+  view: { x: 28, y: 158, w: 748, h: 288 },
+  bus: { x: 788, y: 158, w: 464, h: 288 },
+  deck: { x: 16, y: 466, w: 1248, h: 240 },
+  mute: { x: 1168, y: 18, w: 80, h: 36 }
+};
+
+const TRIPLES = [
+  [6, 8, 10], [8, 6, 10], [5, 12, 13], [12, 5, 13], [9, 12, 15], [12, 9, 15],
+  [8, 15, 17], [15, 8, 17], [7, 24, 25], [20, 21, 29], [21, 20, 29],
+  [12, 16, 20], [16, 12, 20], [18, 24, 30], [15, 20, 25], [20, 15, 25],
+  [10, 24, 26], [9, 40, 41], [12, 35, 37], [28, 45, 53], [11, 60, 61],
+  [15, 36, 39], [24, 32, 40], [21, 28, 35], [28, 21, 35], [18, 80, 82]
+];
+
+let canvas, ctx;
+const game = {
+  screen: 'title',
+  mode: 'solo',
+  round: 1,
+  step: 0,
+  phase: 'play',
+  problem: null,
+  shields: 3,
+  maxShields: 3,
+  pShields: [3, 3],
+  score: 0,
+  pScore: [0, 0],
+  stars: [0, 0],
+  combo: 0,
+  pCombo: [0, 0],
+  cleared: 0,
+  sel: [0, 0],
+  titleSel: 0,
+  tip: '',
+  tipT: 0,
+  lock: 0,
+  celebrateT: 0,
+  time: 0,
+  shake: 0,
+  flash: 0,
+  particles: [],
+  floats: [],
+  history: [],
+  best: {},
+  paused: false,
+  fatal: '',
+  overReason: '',
+  winner: '',
+  mouseX: 640,
+  mouseY: 360,
+  mouseIn: false,
+  pointerDevice: 'mouse',
+  hoverLock: false,
+  padOn: [false, false],
+  view: { s: 1, ox: 0, oy: 0 },
+  lastAward: 0
+};
+
+const keysDown = new Set();
+const keyEdge = new Set();
+let pointerDown = false;
+let pointerEdge = false;
+let frameUsed = false;
+let lastAudit = '';
+
+const audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  muted: false,
+  started: false,
+  step: 0,
+  next: 0,
+  noise: null
+};
+
+const padMem = [
+  { buttons: [], dx: 0, dy: 0 },
+  { buttons: [], dx: 0, dy: 0 }
+];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function randInt(rng, a, b) { return a + Math.floor(rng() * (b - a + 1)); }
+function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+
+function ev(e, sol) { return e.a * sol.x + e.b * sol.y + e.c; }
+function addE(p, q) { return { a: p.a + q.a, b: p.b + q.b, c: p.c + q.c }; }
+function sameE(p, q) { return p.a === q.a && p.b === q.b && p.c === q.c; }
+
+function stdDiff(left, right) {
+  return { A: left.a - right.a, B: left.b - right.b, C: right.c - left.c };
+}
+function stdNum(expr, n) {
+  return { A: expr.a, B: expr.b, C: n - expr.c };
+}
+function stdScale(expr, k, rhs) {
+  return { A: k * expr.a, B: k * expr.b, C: rhs - k * expr.c };
+}
+function holdsStd(e, sol) { return e.A * sol.x + e.B * sol.y === e.C; }
+function solve2(e1, e2) {
+  const det = e1.A * e2.B - e2.A * e1.B;
+  if (det === 0) return null;
+  const nx = e1.C * e2.B - e2.C * e1.B;
+  const ny = e1.A * e2.C - e2.A * e1.C;
+  if (nx % det !== 0 || ny % det !== 0) return null;
+  return { x: nx / det, y: ny / det };
+}
+function validSystem(e1, e2, sol) {
+  if (!e1 || !e2) return false;
+  if ((e1.A === 0 && e1.B === 0) || (e2.A === 0 && e2.B === 0)) return false;
+  if (!holdsStd(e1, sol) || !holdsStd(e2, sol)) return false;
+  const got = solve2(e1, e2);
+  return !!got && got.x === sol.x && got.y === sol.y;
+}
+function proportional(p, q) {
+  if (!p || !q) return false;
+  if ((p.A === 0 && p.B === 0) || (q.A === 0 && q.B === 0)) return false;
+  return p.A * q.B - q.A * p.B === 0 &&
+    p.A * q.C - q.A * p.C === 0 &&
+    p.B * q.C - q.B * p.C === 0;
+}
+
+function fmtExpr(e, v1, v2) {
+  const parts = [];
+  function push(coef, body) {
+    if (!coef) return;
+    parts.push({ c: coef, body: body });
+  }
+  if (e.a) push(e.a, (Math.abs(e.a) === 1 ? '' : String(Math.abs(e.a))) + v1);
+  if (e.b) push(e.b, (Math.abs(e.b) === 1 ? '' : String(Math.abs(e.b))) + v2);
+  if (e.c) push(e.c, String(Math.abs(e.c)));
+  if (!parts.length) return '0';
+  let s = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (i === 0) s += (p.c < 0 ? MINUS : '') + p.body;
+    else s += p.c < 0 ? ' ' + MINUS + ' ' + p.body : ' + ' + p.body;
+  }
+  return s;
+}
+function fmtAtom(e, v1, v2) {
+  const s = fmtExpr(e, v1, v2);
+  const terms = (e.a ? 1 : 0) + (e.b ? 1 : 0) + (e.c ? 1 : 0);
+  if (terms > 1 || s.charAt(0) === MINUS) return '(' + s + ')';
+  return s;
+}
+function parseMath(src) {
+  const tokens = [];
+  const re = /\{(\d+)\|(\d+)\}/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(src))) {
+    if (m.index > last) tokens.push({ t: 't', s: src.slice(last, m.index) });
+    tokens.push({ t: 'f', n: m[1], d: m[2] });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) tokens.push({ t: 't', s: src.slice(last) });
+  if (!tokens.length) tokens.push({ t: 't', s: '' });
+  return tokens;
+}
+function joinBits(items) {
+  let s = '';
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const body = (Math.abs(item.c) === 1 && item.name ? '' : String(Math.abs(item.c))) + (item.name || '');
+    if (i === 0) s += (item.c < 0 ? MINUS : '') + (item.name ? body : String(Math.abs(item.c)));
+    else s += item.c < 0 ? ' ' + MINUS + ' ' + (item.name ? body : String(Math.abs(item.c))) : ' + ' + (item.name ? body : String(Math.abs(item.c)));
+  }
+  return s || '0';
+}
+function groupTip(exprs, v1, v2) {
+  const as = [];
+  const bs = [];
+  exprs.forEach((e) => {
+    if (e.a) as.push({ c: e.a, name: v1 });
+    if (e.b) bs.push({ c: e.b, name: v2 });
+  });
+  const sum = exprs.reduce((acc, e) => addE(acc, e), { a: 0, b: 0, c: 0 });
+  const bits = [];
+  if (as.length) bits.push('(' + joinBits(as) + ')');
+  if (bs.length) bits.push('(' + joinBits(bs) + ')');
+  let left = bits.join(' + ');
+  if (sum.c > 0) left += (left ? ' + ' : '') + sum.c;
+  else if (sum.c < 0) left += ' ' + MINUS + ' ' + Math.abs(sum.c);
+  return 'Combine like terms carefully: ' + left + ' = ' + fmtExpr(sum, v1, v2) + '!';
+}
+
+function sampleCoef(rng, allowZero) {
+  const bag = allowZero
+    ? [0, 0, 1, 1, 1, 2, 2, 3, 3, 4, -1, -1, -2, -3, 1, 2]
+    : [1, 1, 1, 2, 2, 3, 3, 4, -1, -1, -2, -3, 2, 1];
+  return bag[Math.floor(rng() * bag.length)];
+}
+function makeExpr(rng, sol, target, avoid, both) {
+  const banned = avoid || [];
+  for (let i = 0; i < 120; i++) {
+    const a = sampleCoef(rng, !both);
+    const b = sampleCoef(rng, !both);
+    if (both && (a === 0 || b === 0)) continue;
+    if (a === 0 && b === 0) continue;
+    if (a < 0 || (a === 0 && b < 0)) continue;
+    const c = target - a * sol.x - b * sol.y;
+    if (Math.abs(c) > 14) continue;
+    const e = { a: a, b: b, c: c };
+    if (ev(e, sol) !== target) continue;
+    if (banned.some((o) => sameE(o, e))) continue;
+    return e;
+  }
+  return null;
+}
+function pickSol(rng, lo, hi) {
+  const x = randInt(rng, lo, hi);
+  let y = randInt(rng, lo, hi);
+  if (y === x) y = x === hi ? lo : x + 1;
+  return { x: x, y: y };
+}
+function flipExpr(e, which) {
+  if (!e) return null;
+  if (which === 'a' && !e.a) return null;
+  if (which === 'b' && !e.b) return null;
+  return {
+    a: which === 'a' ? -e.a : e.a,
+    b: which === 'b' ? -e.b : e.b,
+    c: e.c
+  };
+}
+function pickTriple(rng, pred) {
+  const bag = TRIPLES.filter(pred);
+  if (!bag.length) return null;
+  return pick(rng, bag);
+}
+
+function makeEqCard(plain, ok, correct, trap, tip, std) {
+  return {
+    plain: plain,
+    tokens: parseMath(plain),
+    ok: ok,
+    correct: !!correct,
+    trap: trap || '',
+    tip: correct ? '' : (tip || 'That equation does not match the marks on the blueprint.'),
+    std: std || null,
+    kind: 'eq',
+    claim: null,
+    dead: false
+  };
+}
+function valueCard(vars, pair, measure, correct, trap, tip) {
+  const plain = '(' + vars[0] + ', ' + vars[1] + ') = (' + pair.x + ', ' + pair.y + '),   ' +
+    measure.label + ' = ' + measure.value + ' ' + measure.unit;
+  return {
+    plain: plain,
+    tokens: parseMath(plain),
+    ok: function () { return !!correct; },
+    correct: !!correct,
+    trap: trap || '',
+    tip: correct ? '' : (tip || 'Solve both locked equations again, then substitute into the figure.'),
+    std: null,
+    kind: 'value',
+    claim: { x: pair.x, y: pair.y, value: measure.value, label: measure.label, unit: measure.unit },
+    dead: false
+  };
+}
+function sameClaim(a, b) {
+  return a.x === b.x && a.y === b.y && a.value === b.value && a.label === b.label;
+}
+function chooseCards(rng, sol, correct, pool) {
+  if (!correct || !correct.ok(sol)) return null;
+  const byPlain = {};
+  pool.forEach(function (card) {
+    if (!card || card.plain === correct.plain || card.ok(sol)) return;
+    if (correct.claim && card.claim && sameClaim(correct.claim, card.claim)) return;
+    const prev = byPlain[card.plain];
+    if (!prev || (card.trap && !prev.trap)) byPlain[card.plain] = card;
+  });
+  const unique = [];
+  Object.keys(byPlain).forEach(function (key) { unique.push(byPlain[key]); });
+  const cards = [correct];
+  const order = shuffle(rng, unique);
+  for (let i = 0; i < order.length && cards.length < 4; i++) cards.push(order[i]);
+  if (cards.length < 4) return null;
+  return shuffle(rng, cards);
+}
+function buildValueStep(rng, vars, sol, measure, measureAt, traps) {
+  const correct = valueCard(vars, sol, measure, true, '', '');
+  const pool = [];
+  traps.forEach((t) => {
+    if (!Number.isInteger(t.value) || t.value <= 0 || t.value === measure.value) return;
+    pool.push(valueCard(vars, sol, {
+      label: measure.label, value: t.value, unit: measure.unit
+    }, false, t.trap || '', t.tip || ''));
+  });
+  const alts = [
+    { x: sol.y, y: sol.x },
+    { x: sol.x + 1, y: sol.y },
+    { x: sol.x, y: sol.y + 1 },
+    { x: Math.max(1, sol.x - 1), y: sol.y },
+    { x: sol.x + 1, y: Math.max(1, sol.y - 1) },
+    { x: sol.x + 2, y: sol.y - 1 }
+  ];
+  alts.forEach((pair) => {
+    if (pair.x === sol.x && pair.y === sol.y) return;
+    if (pair.x <= 0 || pair.y <= 0) return;
+    let v = measureAt(pair);
+    if (!Number.isInteger(v) || v <= 0 || v > 900 || v === measure.value) {
+      v = measure.value + pair.x;
+      if (v === measure.value) return;
+    }
+    pool.push(valueCard(vars, pair, {
+      label: measure.label, value: v, unit: measure.unit
+    }, false, '', 'That pair does not satisfy both locked equations. Substitute only the true solution.'));
+  });
+  [measure.value + 2, measure.value * 2, Math.max(1, measure.value - 3)].forEach((v) => {
+    if (v === measure.value) return;
+    pool.push(valueCard(vars, sol, {
+      label: measure.label, value: v, unit: measure.unit
+    }, false, '', 'The ordered pair is only useful after you substitute it into every labelled edge.'));
+  });
+  const cards = chooseCards(rng, sol, correct, pool);
+  if (!cards) return null;
+  for (let i = 0; i < traps.length; i++) {
+    if (traps[i].required && !cards.some((c) => c.trap === traps[i].trap)) return null;
+  }
+  return cards;
+}
+
+function plotSize() {
+  return { w: GEO.view.w - 100, h: GEO.view.h - 68 };
+}
+function pxToNorm(px, py) {
+  const s = plotSize();
+  return { x: px / s.w * 100, y: py / s.h * 100 };
+}
+function placeIso(base, height) {
+  const s = plotSize();
+  const m = 16;
+  const sc = Math.min((s.w - m * 2) / base, (s.h - m * 2) / height);
+  const bw = base * sc;
+  const bh = height * sc;
+  const left = (s.w - bw) / 2;
+  const top = (s.h - bh) / 2 + 4;
+  return {
+    A: pxToNorm(left + bw / 2, top),
+    B: pxToNorm(left, top + bh),
+    C: pxToNorm(left + bw, top + bh)
+  };
+}
+function placeRect(len, wid, slant) {
+  const s = plotSize();
+  const m = 28;
+  const availW = s.w - m * 2;
+  const availH = s.h - m * 2;
+  let sc = Math.min(availW / (len * (slant ? 1.2 : 1)), availH / wid);
+  let bw = len * sc;
+  let lean = slant ? Math.min(36, bw * 0.16) : 0;
+  if (bw + lean > availW) {
+    sc = availW / (len + len * 0.16);
+    bw = len * sc;
+    lean = slant ? Math.min(36, bw * 0.16) : 0;
+  }
+  const bh = wid * sc;
+  const left = m + (availW - bw - lean) / 2;
+  const top = m + (availH - bh) / 2;
+  return {
+    A: pxToNorm(left, top + bh),
+    B: pxToNorm(left + bw, top + bh),
+    C: pxToNorm(left + bw + lean, top),
+    D: pxToNorm(left + lean, top)
+  };
+}
+function placeAlt(half, height) {
+  const s = plotSize();
+  const m = 18;
+  const base = half * 2;
+  const sc = Math.min((s.w - m * 2) / base, (s.h - m * 2) / height);
+  const bw = base * sc;
+  const bh = height * sc;
+  const left = (s.w - bw) / 2;
+  const top = (s.h - bh) / 2 + 6;
+  return {
+    E: pxToNorm(left + bw / 2, top),
+    D: pxToNorm(left, top + bh),
+    F: pxToNorm(left + bw, top + bh),
+    G: pxToNorm(left + bw / 2, top + bh)
+  };
+}
+function placeRight(box, legX, legY) {
+  const sc = Math.min(box.w / legX, box.h / legY);
+  const bw = legX * sc;
+  const bh = legY * sc;
+  const x0 = box.x + (box.w - bw) / 2;
+  const y0 = box.y + (box.h - bh) / 2;
+  return {
+    P: pxToNorm(x0, y0),
+    R: pxToNorm(x0, y0 + bh),
+    Q: pxToNorm(x0 + bw, y0 + bh)
+  };
+}
+
+function edge(from, to, opts) {
+  return {
+    from: from,
+    to: to,
+    label: opts.label || '',
+    value: opts.value,
+    unit: opts.unit || 'cm',
+    tick: opts.tick || 0,
+    role: opts.role || '',
+    known: !!opts.known,
+    silent: !!opts.silent,
+    reveal: !!opts.reveal,
+    ghost: !!opts.ghost,
+    manual: !!opts.manual,
+    nudge: opts.nudge || null,
+    t: opts.t == null ? 0.5 : opts.t
+  };
+}
+function V(id, p) { return { id: id, x: p.x, y: p.y }; }
+
+function halfAreaTip(kind, h, expr, area) {
+  if (kind === 'tri' && h % 2 === 0) {
+    return 'Area of a triangle is 1/2 ' + TIMES + ' base ' + TIMES + ' height! Don\'t forget the 1/2: ' + (h / 2) + '(' + expr + ') = ' + area + '!';
+  }
+  if (kind === 'tri') return 'Area of a triangle is 1/2 ' + TIMES + ' base ' + TIMES + ' height! Don\'t forget the 1/2.';
+  if (kind === 'rhomb') return 'Area of a rhombus is 1/2 ' + TIMES + ' d1 ' + TIMES + ' d2! Don\'t drop the 1/2.';
+  if (kind === 'trap') return 'Area of a trapezium is 1/2 ' + TIMES + ' (sum of the parallel sides) ' + TIMES + ' height! Don\'t drop the 1/2.';
+  return 'The roof is a triangle, so its area is 1/2 ' + TIMES + ' width ' + TIMES + ' roof height. Don\'t drop that 1/2.';
+}
+function halfBaseTip(half, area, height) {
+  const full = half * 2;
+  return half + ' cm is only half the base (DG or GF)! The full base DF of \u0394DEF is ' + half + ' + ' + half + ' = ' + full + ' cm! Area = 1/2 ' + TIMES + ' ' + full + ' ' + TIMES + ' EG = ' + area + ', so EG = ' + height + ' cm.';
+}
+
+function genIso(rng) {
+  const vars = ['x', 'y'];
+  for (let attempt = 0; attempt < 90; attempt++) {
+    const sol = pickSol(rng, 2, 8);
+    const L = randInt(rng, 9, 18);
+    const B = randInt(rng, 6, Math.max(6, Math.floor(L * 1.15)));
+    if (B >= 2 * L - 2) continue;
+    const tall = Math.sqrt(L * L - (B / 2) * (B / 2));
+    if (!(tall > B * 0.28)) continue;
+    const eAB = makeExpr(rng, sol, L, [], attempt < 50);
+    const eAC = makeExpr(rng, sol, L, eAB ? [eAB] : [], attempt < 30);
+    const eBC = makeExpr(rng, sol, B, [eAB, eAC].filter(Boolean), false);
+    if (!eAB || !eAC || !eBC) continue;
+    const std1 = stdDiff(eAB, eAC);
+    const sum = addE(addE(eAB, eAC), eBC);
+    const P = 2 * L + B;
+    const std2 = stdNum(sum, P);
+    if (!validSystem(std1, std2, sol)) continue;
+    if (Math.abs(sum.a) > 16 || Math.abs(sum.b) > 16) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const eq1 = makeEqCard(
+      fmtExpr(eAB, v1, v2) + ' = ' + fmtExpr(eAC, v1, v2),
+      function (s) { return ev(eAB, s) === ev(eAC, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    pool1.push(makeEqCard(
+      fmtExpr(eAB, v1, v2) + ' = ' + fmtExpr(eBC, v1, v2),
+      function (s) { return ev(eAB, s) === ev(eBC, s); },
+      false, 'wrong-pair', 'Those are not the matching sides. The tick marks set AB = AC.', null
+    ));
+    const flip = flipExpr(eAC, eAC.a ? 'a' : 'b');
+    if (flip) {
+      pool1.push(makeEqCard(
+        fmtExpr(eAB, v1, v2) + ' = ' + fmtExpr(flip, v1, v2),
+        function (s) { return ev(eAB, s) === ev(flip, s); },
+        false, 'sign', 'Copy every sign on AC. The ticks set the two expressions equal as written.', null
+      ));
+    }
+    const two = addE(eAB, eAC);
+    pool1.push(makeEqCard(
+      fmtExpr(two, v1, v2) + ' = ' + P,
+      function (s) { return ev(two, s) === P; },
+      false, 'two-sides', 'Adding the equal sides belongs to the perimeter step, and base BC is still missing.', null
+    ));
+    const tweak = { a: eAC.a, b: eAC.b, c: eAC.c + (eAC.c >= 8 ? -3 : 3) };
+    pool1.push(makeEqCard(
+      fmtExpr(eAB, v1, v2) + ' = ' + fmtExpr(tweak, v1, v2),
+      function (s) { return ev(eAB, s) === ev(tweak, s); },
+      false, '', 'A constant on AC was changed. Lock the expressions printed on the sides.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eAC, v1, v2) + ' = ' + B,
+      function (s) { return ev(eAC, s) === B; },
+      false, '', 'That sets an equal side equal to the base length. Follow the tick marks instead.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+
+    const eq2 = makeEqCard(
+      fmtExpr(sum, v1, v2) + ' = ' + P,
+      function (s) { return ev(sum, s) === P; },
+      true, '', '', std2
+    );
+    const pool2 = [];
+    const signTip = groupTip([eAB, eAC, eBC], v1, v2);
+    [['a', eAB, 'AB'], ['b', eAC, 'AC'], ['a', eBC, 'BC'], ['b', eBC, 'BC']].forEach((spec) => {
+      const host = spec[1];
+      const flipped = flipExpr(host, spec[0]);
+      if (!flipped) return;
+      const bad = spec[2] === 'AB' ? addE(addE(flipped, eAC), eBC)
+        : spec[2] === 'AC' ? addE(addE(eAB, flipped), eBC)
+        : addE(addE(eAB, eAC), flipped);
+      pool2.push(makeEqCard(
+        fmtExpr(bad, v1, v2) + ' = ' + P,
+        function (s) { return ev(bad, s) === P; },
+        false, 'sign', signTip, null
+      ));
+    });
+    pool2.push(makeEqCard(
+      fmtExpr(two, v1, v2) + ' = ' + P,
+      function (s) { return ev(two, s) === P; },
+      false, 'two-sides', 'A perimeter adds all three sides. Base BC = ' + fmtExpr(eBC, v1, v2) + ' is missing.', null
+    ));
+    const miss = addE(eAB, eBC);
+    pool2.push(makeEqCard(
+      fmtExpr(miss, v1, v2) + ' = ' + P,
+      function (s) { return ev(miss, s) === P; },
+      false, 'two-sides', 'Count AB, AC and BC. One of the equal sides was left out of the perimeter.', null
+    ));
+    if (sum.c !== 0) {
+      const dropped = { a: sum.a, b: sum.b, c: 0 };
+      pool2.push(makeEqCard(
+        fmtExpr(dropped, v1, v2) + ' = ' + P,
+        function (s) { return ev(dropped, s) === P; },
+        false, '', 'The constants on the three sides still have to be combined.', null
+      ));
+    }
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2 || !cards2.some((c) => c.trap === 'sign') || !cards2.some((c) => c.trap === 'two-sides')) continue;
+
+    const askBase = rng() < 0.42;
+    const measure = askBase
+      ? { label: 'BC', value: B, unit: 'cm' }
+      : { label: 'AB', value: L, unit: 'cm' };
+    const measureAt = askBase ? function (s) { return ev(eBC, s); } : function (s) { return ev(eAB, s); };
+    const traps = askBase
+      ? [{ value: L, tip: 'That length is an equal side, not base BC.' }, { value: P, tip: 'That is the whole perimeter, not base BC.' }]
+      : [{ value: B, tip: 'That length is base BC, not the equal side AB.' }, { value: P, tip: 'That is the whole perimeter, not side AB.' }];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+
+    const pts = placeIso(B, tall);
+    const figure = {
+      verts: [V('A', pts.A), V('B', pts.B), V('C', pts.C)],
+      edges: [
+        edge('A', 'B', { label: fmtExpr(eAB, v1, v2), value: L, tick: 1, role: 'eq1' }),
+        edge('A', 'C', { label: fmtExpr(eAC, v1, v2), value: L, tick: 1, role: 'eq1' }),
+        edge('B', 'C', { label: fmtExpr(eBC, v1, v2), value: B, role: 'eq2' })
+      ],
+      dashes: [],
+      angles: [],
+      fills: [{ ids: ['A', 'B', 'C'], role: 'eq2' }]
+    };
+    return publish({
+      arch: 'iso',
+      name: 'ISOSCELES \u0394ABC',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'AB = AC (matching ticks).  Perimeter of \u0394ABC = ' + P + ' cm.',
+      prompts: [
+        'STEP 1 \u00b7 Tick marks set AB = AC. Lock Equation 1.',
+        'STEP 2 \u00b7 Add all three sides and combine like terms. Perimeter = ' + P + ' cm.',
+        'STEP 3 \u00b7 Solve (x, y) and find the length of ' + measure.label + '.'
+      ],
+      steps: [
+        { cards: cards1 },
+        { cards: cards2 },
+        { cards: cards3 }
+      ],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(eAB, s) === L && ev(eAC, s) === L && ev(eBC, s) === B &&
+            2 * L > B && L > 0 && B > 0 && tall > 0;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genRect(rng) {
+  const vars = ['x', 'y'];
+  for (let attempt = 0; attempt < 90; attempt++) {
+    const sol = pickSol(rng, 1, 8);
+    const L = randInt(rng, 8, 24);
+    const Wd = randInt(rng, 6, 18);
+    if (L === Wd || Math.abs(L - Wd) < 2) continue;
+    const eL = makeExpr(rng, sol, L, [], attempt < 40);
+    const eW = makeExpr(rng, sol, Wd, eL ? [eL] : [], attempt < 20);
+    if (!eL || !eW) continue;
+    const std1 = stdNum(eL, L);
+    const std2 = stdNum(eW, Wd);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const slant = rng() < 0.4;
+    const askArea = !slant && rng() < 0.55;
+    const measure = askArea
+      ? { label: 'Area', value: L * Wd, unit: 'cm\u00b2' }
+      : { label: 'Perimeter', value: 2 * (L + Wd), unit: 'cm' };
+    const eq1 = makeEqCard(
+      fmtExpr(eL, v1, v2) + ' = ' + L,
+      function (s) { return ev(eL, s) === L; },
+      true, '', '', std1
+    );
+    const pool1 = [
+      makeEqCard(fmtExpr(eL, v1, v2) + ' = ' + Wd, function (s) { return ev(eL, s) === Wd; }, false, 'wrong-pair', 'That number belongs to the double-tick pair, not the single-tick length.', null),
+      makeEqCard(fmtExpr(eW, v1, v2) + ' = ' + L, function (s) { return ev(eW, s) === L; }, false, 'wrong-pair', 'Match each expression to the opposite side with the same tick marks.', null)
+    ];
+    const flipL = flipExpr(eL, eL.b ? 'b' : 'a');
+    if (flipL) {
+      pool1.push(makeEqCard(
+        fmtExpr(flipL, v1, v2) + ' = ' + L,
+        function (s) { return ev(flipL, s) === L; },
+        false, 'sign', 'Keep the signs printed on the side. Only then set it equal to the opposite side.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(eL, v1, v2) + ' = ' + (L + Wd),
+      function (s) { return ev(eL, s) === L + Wd; },
+      false, '', 'Opposite sides match one side to one side. Do not add the width yet.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+    const eq2 = makeEqCard(
+      fmtExpr(eW, v1, v2) + ' = ' + Wd,
+      function (s) { return ev(eW, s) === Wd; },
+      true, '', '', std2
+    );
+    const pool2 = [
+      makeEqCard(fmtExpr(eW, v1, v2) + ' = ' + L, function (s) { return ev(eW, s) === L; }, false, 'wrong-pair', 'That number is the other pair. Double ticks mark the width.', null),
+      makeEqCard(fmtExpr(addE(eL, eW), v1, v2) + ' = ' + (L + Wd), function (s) { return ev(eL, s) + ev(eW, s) === L + Wd; }, false, '', 'Each pair is its own equation. Do not add the two expressions together.', null)
+    ];
+    const flipW = flipExpr(eW, eW.a ? 'a' : 'b');
+    if (flipW) {
+      pool2.push(makeEqCard(
+        fmtExpr(flipW, v1, v2) + ' = ' + Wd,
+        function (s) { return ev(flipW, s) === Wd; },
+        false, 'sign', 'A sign on the width was flipped. Read the label, then equate opposite sides.', null
+      ));
+    }
+    pool2.push(makeEqCard(
+      fmtExpr(eW, v1, v2) + ' = ' + (2 * Wd),
+      function (s) { return ev(eW, s) === 2 * Wd; },
+      false, '', 'The opposite side is ' + Wd + ' cm, not twice that length.', null
+    ));
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2) continue;
+    const measureAt = askArea
+      ? function (s) { return ev(eL, s) * ev(eW, s); }
+      : function (s) { return 2 * (ev(eL, s) + ev(eW, s)); };
+    const traps = askArea
+      ? [
+        { value: L + Wd, tip: 'Area of a rectangle is length ' + TIMES + ' width, not length + width.' },
+        { value: 2 * (L + Wd), tip: 'That is the perimeter. Area multiplies the solved sides.' },
+        { value: L * L, tip: 'Use both solved sides. Area = length ' + TIMES + ' width.' }
+      ]
+      : [
+        { value: L + Wd, trap: 'two-sides', tip: 'Perimeter uses the whole outline: 2 ' + TIMES + ' (length + width). Two adjacent sides are not enough.' },
+        { value: L * Wd, tip: 'That product is the area. The question asks for the perimeter.' },
+        { value: 2 * L + Wd, tip: 'Both widths belong in the perimeter, not just one.' }
+      ];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+    const pts = placeRect(Math.max(L, 8), Math.max(Wd, 6), slant);
+    const figure = {
+      verts: [V('A', pts.A), V('B', pts.B), V('C', pts.C), V('D', pts.D)],
+      edges: [
+        edge('A', 'B', { label: fmtExpr(eL, v1, v2), value: L, tick: 1, role: 'eq1' }),
+        edge('D', 'C', { label: String(L), value: L, tick: 1, role: 'eq1', known: true }),
+        edge('A', 'D', { label: fmtExpr(eW, v1, v2), value: Wd, tick: 2, role: 'eq2' }),
+        edge('B', 'C', { label: String(Wd), value: Wd, tick: 2, role: 'eq2', known: true })
+      ],
+      dashes: [],
+      angles: slant ? [] : [
+        { at: 'A', a: 'B', b: 'D' },
+        { at: 'B', a: 'A', b: 'C' },
+        { at: 'C', a: 'B', b: 'D' },
+        { at: 'D', a: 'A', b: 'C' }
+      ],
+      fills: []
+    };
+    return publish({
+      arch: 'rect',
+      name: slant ? 'PARALLELOGRAM ABCD' : 'RECTANGLE ABCD',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'Opposite sides are equal. Single ticks mark one pair. Double ticks mark the other pair.',
+      prompts: [
+        'STEP 1 \u00b7 Single ticks: lock the length equation.',
+        'STEP 2 \u00b7 Double ticks: lock the width equation.',
+        'STEP 3 \u00b7 Solve (x, y) and find the ' + measure.label.toLowerCase() + '.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(eL, s) === L && ev(eW, s) === Wd && L > 0 && Wd > 0 &&
+            (askArea ? measure.value === L * Wd : measure.value === 2 * (L + Wd));
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genAlt(rng) {
+  const vars = ['m', 'n'];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const tri = pickTriple(rng, function (t) {
+      return t[0] >= 5 && t[0] <= 16 && t[1] >= 4 && t[1] <= 18 && t[2] <= 30 && t[0] * t[1] <= 320;
+    });
+    if (!tri) return null;
+    const half = tri[0];
+    const height = tri[1];
+    const slant = tri[2];
+    const area = half * height;
+    if (half * half + height * height !== slant * slant) continue;
+    const sol = pickSol(rng, 2, 8);
+    const eDE = makeExpr(rng, sol, slant, [], attempt < 45);
+    const eEF = makeExpr(rng, sol, slant, eDE ? [eDE] : [], attempt < 25);
+    const eDG = makeExpr(rng, sol, half, [eDE, eEF].filter(Boolean), attempt < 35);
+    const eGF = makeExpr(rng, sol, half, [eDE, eEF, eDG].filter(Boolean), false);
+    if (!eDE || !eEF || !eDG || !eGF) continue;
+    const std1 = stdDiff(eDE, eEF);
+    const std2 = stdDiff(eDG, eGF);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const eq1 = makeEqCard(
+      fmtExpr(eDE, v1, v2) + ' = ' + fmtExpr(eEF, v1, v2),
+      function (s) { return ev(eDE, s) === ev(eEF, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    const flip = flipExpr(eEF, eEF.a ? 'a' : 'b');
+    if (flip) {
+      pool1.push(makeEqCard(
+        fmtExpr(eDE, v1, v2) + ' = ' + fmtExpr(flip, v1, v2),
+        function (s) { return ev(eDE, s) === ev(flip, s); },
+        false, 'sign', 'Match DE to EF with the signs as printed on the slanted sides.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(eDE, v1, v2) + ' = ' + fmtExpr(eDG, v1, v2),
+      function (s) { return ev(eDE, s) === ev(eDG, s); },
+      false, 'wrong-pair', 'DG is half the base, not a slanted side. Single ticks mark DE = EF.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eDG, v1, v2) + ' = ' + fmtExpr(eGF, v1, v2),
+      function (s) { return ev(eDG, s) === ev(eGF, s); },
+      false, '', 'That is the base-bisection equation. Step 1 uses the slanted ticks, DE = EF.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eDE, v1, v2) + ' = ' + area,
+      function (s) { return ev(eDE, s) === area; },
+      false, '', 'The area is not the length of DE. Use the tick marks first.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+    if (cards1.some((c) => !c.correct && c.ok(sol))) continue;
+
+    const eq2 = makeEqCard(
+      fmtExpr(eDG, v1, v2) + ' = ' + fmtExpr(eGF, v1, v2),
+      function (s) { return ev(eDG, s) === ev(eGF, s); },
+      true, '', '', std2
+    );
+    const pool2 = [];
+    const flipG = flipExpr(eGF, eGF.a ? 'a' : 'b');
+    if (flipG) {
+      pool2.push(makeEqCard(
+        fmtExpr(eDG, v1, v2) + ' = ' + fmtExpr(flipG, v1, v2),
+        function (s) { return ev(eDG, s) === ev(flipG, s); },
+        false, 'sign', 'EG \u22a5 DF bisects the base, so DG and GF are equal as labelled. Check the signs.', null
+      ));
+    }
+    pool2.push(makeEqCard(
+      '{1|2} ' + TIMES + ' ' + fmtAtom(eDG, v1, v2) + ' ' + TIMES + ' EG = ' + area,
+      function () { return false; },
+      false, 'half-base', halfBaseTip(half, area, height), null
+    ));
+    pool2.push(makeEqCard(
+      fmtExpr(eDE, v1, v2) + ' = ' + fmtExpr(eEF, v1, v2),
+      function (s) { return ev(eDE, s) === ev(eEF, s); },
+      false, '', 'DE = EF is already Equation 1. Equation 2 comes from DG = GF.', null
+    ));
+    const sumHalf = addE(eDG, eGF);
+    pool2.push(makeEqCard(
+      fmtExpr(sumHalf, v1, v2) + ' = ' + half,
+      function (s) { return ev(sumHalf, s) === half; },
+      false, '', 'DG and GF are each half of DF. Set them equal; do not add them and call the sum one half.', null
+    ));
+    pool2.push(makeEqCard(
+      fmtExpr(eDG, v1, v2) + ' = ' + (half * 2),
+      function (s) { return ev(eDG, s) === half * 2; },
+      false, 'half-base', half + ' cm labels one half only. DG = GF, and the full base is ' + (half * 2) + ' cm.', null
+    ));
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2) continue;
+
+    const measure = { label: 'EG', value: height, unit: 'cm' };
+    const measureAt = function () { return height; };
+    const traps = [
+      { value: height * 2, trap: 'half-base', required: true, tip: halfBaseTip(half, area, height) },
+      { value: half, tip: half + ' cm is DG (or GF), not the altitude EG.' },
+      { value: half * 2, tip: 'That is the full base DF, not the height EG.' },
+      { value: area, tip: 'That is the area in cm\u00b2, not the height in cm.' }
+    ];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+
+    const pts = placeAlt(half, height);
+    const figure = {
+      verts: [V('E', pts.E), V('D', pts.D), V('F', pts.F), V('G', pts.G)],
+      edges: [
+        edge('D', 'E', { label: fmtExpr(eDE, v1, v2), value: slant, tick: 1, role: 'eq1' }),
+        edge('E', 'F', { label: fmtExpr(eEF, v1, v2), value: slant, tick: 1, role: 'eq1' }),
+        edge('D', 'G', { label: fmtExpr(eDG, v1, v2), value: half, tick: 2, role: 'eq2', t: 0.28 }),
+        edge('G', 'F', { label: fmtExpr(eGF, v1, v2), value: half, tick: 2, role: 'eq2', t: 0.72 })
+      ],
+      dashes: [
+        edge('E', 'G', { label: 'EG', value: height, role: '', nudge: { x: 18, y: 0 } })
+      ],
+      angles: [{ at: 'G', a: 'D', b: 'E' }],
+      fills: [{ ids: ['D', 'E', 'F'], role: '' }]
+    };
+    return publish({
+      arch: 'alt',
+      name: 'ALTITUDE \u0394DEF',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'DE = EF.  EG \u22a5 DF and bisects DF.  Area of \u0394DEF = ' + area + ' cm\u00b2.',
+      prompts: [
+        'STEP 1 \u00b7 Single ticks: lock DE = EF.',
+        'STEP 2 \u00b7 The altitude bisects the base. Lock DG = GF.',
+        'STEP 3 \u00b7 Solve (m, n). Use the full base DF and the area to find EG.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: function (s) {
+        const hlf = ev(eDG, s);
+        if (!hlf || area % hlf !== 0) return height + s.x;
+        return area / hlf;
+      },
+      facts: {
+        check: function (s) {
+          return ev(eDE, s) === slant && ev(eEF, s) === slant &&
+            ev(eDG, s) === half && ev(eGF, s) === half &&
+            half * half + height * height === slant * slant &&
+            area === half * height &&
+            0.5 * (half * 2) * height === area;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genPaired(rng) {
+  const vars = ['p', 'q'];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const tri = pickTriple(rng, function (t) {
+      const area = t[0] * t[1] / 2;
+      return t[0] >= 5 && t[0] <= 20 && t[1] >= 5 && t[1] <= 24 && t[2] <= 32 &&
+        area >= 24 && area <= 240 && area === Math.floor(area);
+    });
+    if (!tri) return null;
+    const height = tri[0];
+    const base = tri[1];
+    const hyp = tri[2];
+    const area = height * base / 2;
+    if (height * height + base * base !== hyp * hyp) continue;
+    if (hyp <= height || hyp <= base) continue;
+    const sol = pickSol(rng, 2, 8);
+    const eQR = makeExpr(rng, sol, base, [], attempt < 40);
+    const ePQ = makeExpr(rng, sol, hyp, eQR ? [eQR] : [], attempt < 40);
+    const eST = makeExpr(rng, sol, hyp, [eQR, ePQ].filter(Boolean), attempt < 20);
+    if (!eQR || !ePQ || !eST) continue;
+    const std1 = stdDiff(ePQ, eST);
+    const std2 = stdScale(eQR, height, 2 * area);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const baseAtom = fmtAtom(eQR, v1, v2);
+    const eq1 = makeEqCard(
+      fmtExpr(ePQ, v1, v2) + ' = ' + fmtExpr(eST, v1, v2),
+      function (s) { return ev(ePQ, s) === ev(eST, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    const flip = flipExpr(eST, eST.a ? 'a' : 'b');
+    if (flip) {
+      pool1.push(makeEqCard(
+        fmtExpr(ePQ, v1, v2) + ' = ' + fmtExpr(flip, v1, v2),
+        function (s) { return ev(ePQ, s) === ev(flip, s); },
+        false, 'sign', 'PQ = ST. Copy the hypotenuse labels before you equate them.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(ePQ, v1, v2) + ' = ' + height,
+      function (s) { return ev(ePQ, s) === height; },
+      false, '', 'PR is a leg of ' + height + ' cm. The ticks equate the two hypotenuses, PQ and ST.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eQR, v1, v2) + ' = ' + fmtExpr(eST, v1, v2),
+      function (s) { return ev(eQR, s) === ev(eST, s); },
+      false, 'wrong-pair', 'QR is the base of \u0394PQR, not the side marked equal to ST.', null
+    ));
+    pool1.push(makeEqCard(
+      '{1|2} ' + TIMES + ' ' + height + ' ' + TIMES + ' ' + baseAtom + ' = ' + area,
+      function (s) { return height * ev(eQR, s) === 2 * area; },
+      false, '', 'That is the area equation. Step 1 locks the equal hypotenuses PQ = ST.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+
+    const eq2plain = '{1|2} ' + TIMES + ' ' + height + ' ' + TIMES + ' ' + baseAtom + ' = ' + area;
+    const eq2 = makeEqCard(
+      eq2plain,
+      function (s) { return height * ev(eQR, s) === 2 * area; },
+      true, '', '', std2
+    );
+    const pool2 = [];
+    pool2.push(makeEqCard(
+      height + ' ' + TIMES + ' ' + baseAtom + ' = ' + area,
+      function (s) { return height * ev(eQR, s) === area; },
+      false, 'half-area', halfAreaTip('tri', height, fmtExpr(eQR, v1, v2), area), null
+    ));
+    pool2.push(makeEqCard(
+      '{1|2} ' + TIMES + ' ' + height + ' ' + TIMES + ' ' + fmtAtom(ePQ, v1, v2) + ' = ' + area,
+      function (s) { return height * ev(ePQ, s) === 2 * area; },
+      false, '', 'Area uses the perpendicular base and height, not the hypotenuse.', null
+    ));
+    pool2.push(makeEqCard(
+      '{1|2} ' + TIMES + ' ' + height + ' ' + TIMES + ' ' + baseAtom + ' = ' + (area * 2),
+      function (s) { return height * ev(eQR, s) === 4 * area; },
+      false, '', 'The given area is ' + area + ' cm\u00b2. Do not double it before writing the equation.', null
+    ));
+    pool2.push(makeEqCard(
+      baseAtom + ' = ' + area,
+      function (s) { return ev(eQR, s) === area; },
+      false, 'half-area', 'The base is not the area. Start from 1/2 ' + TIMES + ' ' + height + ' ' + TIMES + ' base = ' + area + '.', null
+    ));
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2 || !cards2.some((c) => c.trap === 'half-area')) continue;
+
+    const askHyp = rng() < 0.6;
+    const measure = askHyp
+      ? { label: 'PQ', value: hyp, unit: 'cm' }
+      : { label: 'QR', value: base, unit: 'cm' };
+    const measureAt = askHyp ? function (s) { return ev(ePQ, s); } : function (s) { return ev(eQR, s); };
+    const forgotBase = height ? (2 * area) / height : base;
+    const traps = askHyp
+      ? [
+        { value: height, tip: 'PR is the given height, ' + height + ' cm. PQ is the hypotenuse.' },
+        { value: base, tip: 'That is base QR, not hypotenuse PQ.' }
+      ]
+      : [
+        { value: area / height, trap: 'half-area', tip: halfAreaTip('tri', height, fmtExpr(eQR, v1, v2), area) + ' So base = 2 ' + TIMES + ' Area / height = ' + forgotBase + ' cm.' },
+        { value: hyp, tip: 'That is the hypotenuse, not base QR.' }
+      ];
+    if (!askHyp && !Number.isInteger(area / height)) traps.shift();
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+
+    const size = plotSize();
+    const left = placeRight({ x: 10, y: 10, w: size.w * 0.44, h: size.h - 18 }, base, height);
+    const rightLegs = base > height ? [12, 8] : [8, 14];
+    const right = placeRight({ x: size.w * 0.54, y: 18, w: size.w * 0.42, h: size.h - 30 }, rightLegs[0], rightLegs[1]);
+    const figure = {
+      verts: [
+        V('P', left.P), V('R', left.R), V('Q', left.Q),
+        V('S', right.P), V('U', right.R), V('T', right.Q)
+      ],
+      edges: [
+        edge('P', 'R', { label: String(height), value: height, known: true, role: 'eq2' }),
+        edge('R', 'Q', { label: fmtExpr(eQR, v1, v2), value: base, role: 'eq2' }),
+        edge('P', 'Q', { label: fmtExpr(ePQ, v1, v2), value: hyp, tick: 1, role: 'eq1' }),
+        edge('S', 'U', { label: '', value: 0, silent: true, role: '' }),
+        edge('U', 'T', { label: '', value: 0, silent: true, role: '' }),
+        edge('S', 'T', { label: fmtExpr(eST, v1, v2), value: hyp, tick: 1, role: 'eq1' })
+      ],
+      dashes: [],
+      angles: [
+        { at: 'R', a: 'P', b: 'Q' },
+        { at: 'U', a: 'S', b: 'T' }
+      ],
+      fills: [{ ids: ['P', 'R', 'Q'], role: 'eq2' }]
+    };
+    return publish({
+      arch: 'paired',
+      name: 'PAIRED RIGHT \u0394s',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'Right-angled at R and U.  PR = ' + height + ' cm.  Area of \u0394PQR = ' + area + ' cm\u00b2.  PQ = ST.',
+      prompts: [
+        'STEP 1 \u00b7 The hypotenuses match. Lock PQ = ST.',
+        'STEP 2 \u00b7 Write the area of \u0394PQR. Keep the 1/2.',
+        'STEP 3 \u00b7 Solve (p, q) and find ' + measure.label + '.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(eQR, s) === base && ev(ePQ, s) === hyp && ev(eST, s) === hyp &&
+            height * height + base * base === hyp * hyp &&
+            height * base === 2 * area;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genRhombus(rng) {
+  const vars = ['x', 'y'];
+  for (let attempt = 0; attempt < 90; attempt++) {
+    const tri = pickTriple(rng, function (t) {
+      return t[0] >= 4 && t[0] <= 12 && t[1] >= 4 && t[1] <= 14 && t[2] <= 22;
+    });
+    if (!tri) return null;
+    const u = tri[0];
+    const v = tri[1];
+    const side = tri[2];
+    if (u * u + v * v !== side * side) continue;
+    const d1 = 2 * u;
+    const d2 = 2 * v;
+    const area = d1 * d2 / 2;
+    if (area !== Math.floor(area)) continue;
+    const sol = pickSol(rng, 2, 8);
+    const e1 = makeExpr(rng, sol, side, [], attempt < 40);
+    const e2 = makeExpr(rng, sol, side, e1 ? [e1] : [], attempt < 25);
+    const eD = makeExpr(rng, sol, d2, [e1, e2].filter(Boolean), attempt < 30);
+    if (!e1 || !e2 || !eD) continue;
+    const std1 = stdDiff(e1, e2);
+    const std2 = stdScale(eD, d1, 2 * area);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const eq1 = makeEqCard(
+      fmtExpr(e1, v1, v2) + ' = ' + fmtExpr(e2, v1, v2),
+      function (s) { return ev(e1, s) === ev(e2, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    const flip = flipExpr(e2, e2.a ? 'a' : 'b');
+    if (flip) {
+      pool1.push(makeEqCard(
+        fmtExpr(e1, v1, v2) + ' = ' + fmtExpr(flip, v1, v2),
+        function (s) { return ev(e1, s) === ev(flip, s); },
+        false, 'sign', 'Every side of a rhombus is equal. Keep the signs on both labels.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(e1, v1, v2) + ' = ' + d1,
+      function (s) { return ev(e1, s) === d1; },
+      false, '', 'That number is a diagonal, not a side. Equate the two ticked sides.', null
+    ));
+    pool1.push(makeEqCard(
+      '{1|2} ' + TIMES + ' ' + d1 + ' ' + TIMES + ' ' + fmtAtom(eD, v1, v2) + ' = ' + area,
+      function (s) { return d1 * ev(eD, s) === 2 * area; },
+      false, '', 'The diagonal formula is Equation 2. Equation 1 is the equal-side pair.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(e1, v1, v2) + ' = ' + fmtExpr(eD, v1, v2),
+      function (s) { return ev(e1, s) === ev(eD, s); },
+      false, 'wrong-pair', 'A diagonal is not a side. Match the two ticked edges.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+    const eq2 = makeEqCard(
+      '{1|2} ' + TIMES + ' ' + d1 + ' ' + TIMES + ' ' + fmtAtom(eD, v1, v2) + ' = ' + area,
+      function (s) { return d1 * ev(eD, s) === 2 * area; },
+      true, '', '', std2
+    );
+    const pool2 = [
+      makeEqCard(
+        d1 + ' ' + TIMES + ' ' + fmtAtom(eD, v1, v2) + ' = ' + area,
+        function (s) { return d1 * ev(eD, s) === area; },
+        false, 'half-area', halfAreaTip('rhomb', d1, fmtExpr(eD, v1, v2), area), null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' ' + d1 + ' ' + TIMES + ' ' + fmtAtom(e1, v1, v2) + ' = ' + area,
+        function (s) { return d1 * ev(e1, s) === 2 * area; },
+        false, '', 'Use the two diagonals in the area formula, not a side.', null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' ' + fmtAtom(eD, v1, v2) + ' = ' + area,
+        function (s) { return ev(eD, s) === 2 * area; },
+        false, 'half-area', 'Both diagonals belong in the formula: 1/2 ' + TIMES + ' ' + d1 + ' ' + TIMES + ' d2 = ' + area + '.', null
+      ),
+      makeEqCard(
+        fmtExpr(e1, v1, v2) + ' = ' + fmtExpr(e2, v1, v2),
+        function (s) { return ev(e1, s) === ev(e2, s); },
+        false, '', 'The equal sides are Equation 1. Equation 2 is the diagonal area.', null
+      )
+    ];
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2 || !cards2.some((c) => c.trap === 'half-area')) continue;
+    const askPeri = rng() < 0.5;
+    const measure = askPeri
+      ? { label: 'Perimeter', value: 4 * side, unit: 'cm' }
+      : { label: 'Side', value: side, unit: 'cm' };
+    const measureAt = askPeri ? function (s) { return 4 * ev(e1, s); } : function (s) { return ev(e1, s); };
+    const traps = askPeri
+      ? [
+        { value: 2 * side, trap: 'two-sides', tip: 'A rhombus has four equal sides. Perimeter = 4 ' + TIMES + ' side, not 2 ' + TIMES + ' side.' },
+        { value: area, tip: 'That is the area. The perimeter walks all four sides.' },
+        { value: d1, tip: 'That is a full diagonal, not the perimeter.' }
+      ]
+      : [
+        { value: d1, tip: 'That is diagonal ' + d1 + ' cm. The side is shorter than the longer half-diagonal span.' },
+        { value: d2, tip: 'That is the other diagonal. Substitute into a side label.' },
+        { value: 4 * side, tip: 'That is the whole perimeter. The question asks for one side.' }
+      ];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+    const size = plotSize();
+    const sc = Math.min((size.w - 36) / d2, (size.h - 28) / d1);
+    const hw = d2 * sc / 2;
+    const hh = d1 * sc / 2;
+    const cx = size.w / 2;
+    const cy = size.h / 2 + 2;
+    const top = pxToNorm(cx, cy - hh);
+    const right = pxToNorm(cx + hw, cy);
+    const bot = pxToNorm(cx, cy + hh);
+    const left = pxToNorm(cx - hw, cy);
+    const figure = {
+      verts: [V('A', top), V('B', right), V('C', bot), V('D', left), V('O', pxToNorm(cx, cy))],
+      edges: [
+        edge('A', 'B', { label: fmtExpr(e1, v1, v2), value: side, tick: 1, role: 'eq1' }),
+        edge('B', 'C', { label: fmtExpr(e2, v1, v2), value: side, tick: 1, role: 'eq1' }),
+        edge('C', 'D', { label: '', value: side, tick: 1, role: 'eq1', silent: true, reveal: true }),
+        edge('D', 'A', { label: '', value: side, tick: 1, role: 'eq1', silent: true, reveal: true })
+      ],
+      dashes: [
+        edge('A', 'C', { label: String(d1), value: d1, known: true, role: 'eq2' }),
+        edge('B', 'D', { label: fmtExpr(eD, v1, v2), value: d2, role: 'eq2' })
+      ],
+      angles: [{ at: 'O', a: 'A', b: 'B' }],
+      fills: [{ ids: ['A', 'B', 'C', 'D'], role: 'eq2' }]
+    };
+    return publish({
+      arch: 'rhombus',
+      name: 'RHOMBUS ABCD',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'All sides equal. Diagonals cross at right angles. Area = ' + area + ' cm\u00b2.',
+      prompts: [
+        'STEP 1 \u00b7 All sides of a rhombus match. Lock the side equation.',
+        'STEP 2 \u00b7 Use 1/2 ' + TIMES + ' d1 ' + TIMES + ' d2 for the area. Keep the 1/2.',
+        'STEP 3 \u00b7 Solve (x, y) and find the ' + measure.label.toLowerCase() + '.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(e1, s) === side && ev(e2, s) === side && ev(eD, s) === d2 &&
+            u * u + v * v === side * side && d1 * d2 === 2 * area;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genTrapez(rng) {
+  const vars = ['x', 'y'];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const tri = pickTriple(rng, function (t) {
+      return t[0] >= 5 && t[0] <= 14 && t[1] >= 5 && t[1] <= 16 && t[2] <= 24;
+    });
+    if (!tri) return null;
+    const O = tri[0];
+    const Hh = tri[1];
+    const S = tri[2];
+    if (O * O + Hh * Hh !== S * S) continue;
+    if ((O * Hh) % 2 !== 0) continue;
+    const T = randInt(rng, 6, 16);
+    const B = T + O;
+    const area = (T + B) * Hh / 2;
+    if (area !== Math.floor(area) || area > 520) continue;
+    const sol = pickSol(rng, 2, 8);
+    const eTop = makeExpr(rng, sol, T, [], attempt < 40);
+    const eOver = makeExpr(rng, sol, O, eTop ? [eTop] : [], false);
+    const eBot = makeExpr(rng, sol, B, [eTop, eOver].filter(Boolean), attempt < 30);
+    const eSlant = makeExpr(rng, sol, S, [eTop, eOver, eBot].filter(Boolean), false);
+    if (!eTop || !eOver || !eBot || !eSlant) continue;
+    const rhs = addE(eTop, eOver);
+    if (sameE(rhs, eBot)) continue;
+    const std1 = stdDiff(eBot, rhs);
+    const std2 = stdScale(addE(eTop, eBot), Hh, 2 * area);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const eq1 = makeEqCard(
+      fmtExpr(eBot, v1, v2) + ' = ' + fmtExpr(rhs, v1, v2),
+      function (s) { return ev(eBot, s) === ev(eTop, s) + ev(eOver, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    pool1.push(makeEqCard(
+      fmtExpr(eBot, v1, v2) + ' = ' + fmtExpr(eTop, v1, v2),
+      function (s) { return ev(eBot, s) === ev(eTop, s); },
+      false, '', 'The bottom is longer than the top by the overhang. Include that segment.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eBot, v1, v2) + ' = ' + fmtExpr(eOver, v1, v2),
+      function (s) { return ev(eBot, s) === ev(eOver, s); },
+      false, '', 'The overhang is only the extra piece, not the whole bottom.', null
+    ));
+    const flip = flipExpr(eOver, eOver.a ? 'a' : 'b');
+    if (flip) {
+      const bad = addE(eTop, flip);
+      pool1.push(makeEqCard(
+        fmtExpr(eBot, v1, v2) + ' = ' + fmtExpr(bad, v1, v2),
+        function (s) { return ev(eBot, s) === ev(bad, s); },
+        false, 'sign', 'Bottom = top + overhang. Keep the sign on the overhang label.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(eSlant, v1, v2) + ' = ' + Hh,
+      function (s) { return ev(eSlant, s) === Hh; },
+      false, '', 'The vertical side is the height ' + Hh + ' cm. It is not equal to the slant.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1 || !cards1.some((c) => c.trap === 'sign')) continue;
+
+    const topA = fmtAtom(eTop, v1, v2);
+    const botA = fmtAtom(eBot, v1, v2);
+    const eq2 = makeEqCard(
+      '{1|2} ' + TIMES + ' [' + topA + ' + ' + botA + '] ' + TIMES + ' ' + Hh + ' = ' + area,
+      function (s) { return Hh * (ev(eTop, s) + ev(eBot, s)) === 2 * area; },
+      true, '', '', std2
+    );
+    const pool2 = [
+      makeEqCard(
+        '[' + topA + ' + ' + botA + '] ' + TIMES + ' ' + Hh + ' = ' + area,
+        function (s) { return Hh * (ev(eTop, s) + ev(eBot, s)) === area; },
+        false, 'half-area', halfAreaTip('trap'), null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' ' + topA + ' ' + TIMES + ' ' + Hh + ' = ' + area,
+        function (s) { return Hh * ev(eTop, s) === 2 * area; },
+        false, '', 'A trapezium needs both parallel sides: 1/2 ' + TIMES + ' (top + bottom) ' + TIMES + ' height.', null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' ' + botA + ' ' + TIMES + ' ' + Hh + ' = ' + area,
+        function (s) { return Hh * ev(eBot, s) === 2 * area; },
+        false, '', 'Do not use only the longer base. Add the two parallel sides first.', null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' [' + topA + ' + ' + botA + '] ' + TIMES + ' ' + fmtAtom(eSlant, v1, v2) + ' = ' + area,
+        function (s) { return ev(eSlant, s) * (ev(eTop, s) + ev(eBot, s)) === 2 * area; },
+        false, '', 'The height is the perpendicular side, ' + Hh + ' cm, not the slant.', null
+      )
+    ];
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2 || !cards2.some((c) => c.trap === 'half-area')) continue;
+
+    const peri = T + B + Hh + S;
+    const measure = { label: 'Perimeter', value: peri, unit: 'cm' };
+    const measureAt = function (s) { return ev(eTop, s) + ev(eBot, s) + Hh + ev(eSlant, s); };
+    const traps = [
+      { value: T + B + Hh, trap: 'two-sides', tip: 'The perimeter walks the whole outline, including the slanted side ' + fmtExpr(eSlant, v1, v2) + '.' },
+      { value: area, tip: 'That is the area in cm\u00b2. Add the four outer edges for the perimeter.' },
+      { value: T + B + S, tip: 'The vertical height ' + Hh + ' cm is an outer edge too.' }
+    ];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+
+    const size = plotSize();
+    const sc = Math.min((size.w - 36) / B, (size.h - 28) / Hh);
+    const bw = B * sc;
+    const tw = T * sc;
+    const bh = Hh * sc;
+    const left = (size.w - bw) / 2;
+    const top = (size.h - bh) / 2 + 4;
+    const A = pxToNorm(left, top);
+    const Bp = pxToNorm(left + tw, top);
+    const G = pxToNorm(left + tw, top + bh);
+    const C = pxToNorm(left + bw, top + bh);
+    const D = pxToNorm(left, top + bh);
+    const figure = {
+      verts: [V('A', A), V('B', Bp), V('C', C), V('D', D), V('G', G)],
+      edges: [
+        edge('A', 'B', { label: fmtExpr(eTop, v1, v2), value: T, role: 'eq2' }),
+        edge('D', 'C', { label: fmtExpr(eBot, v1, v2), value: B, role: 'both', t: 0.32 }),
+        edge('A', 'D', { label: String(Hh), value: Hh, known: true, role: 'eq2' }),
+        edge('B', 'C', { label: fmtExpr(eSlant, v1, v2), value: S, role: '' })
+      ],
+      dashes: [
+        edge('B', 'G', { label: '', value: Hh, silent: true, role: '' })
+      ],
+      ghosts: [
+        edge('G', 'C', { label: fmtExpr(eOver, v1, v2), value: O, role: 'eq1', nudge: { x: 0, y: 4 } })
+      ],
+      angles: [
+        { at: 'A', a: 'B', b: 'D' },
+        { at: 'D', a: 'A', b: 'C' },
+        { at: 'G', a: 'D', b: 'B' }
+      ],
+      fills: [{ ids: ['A', 'B', 'C', 'D'], role: 'eq2' }]
+    };
+    return publish({
+      arch: 'trapez',
+      name: 'RIGHT TRAPEZIUM ABCD',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'AB \u2225 DC,  \u2220A = \u2220D = 90\u00b0.  The overhang is the extra base beyond G.  Area = ' + area + ' cm\u00b2.',
+      prompts: [
+        'STEP 1 \u00b7 Bottom = top + overhang. Lock that equation.',
+        'STEP 2 \u00b7 Write the trapezium area. Keep the 1/2.',
+        'STEP 3 \u00b7 Solve (x, y), substitute every edge, and find the perimeter.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(eTop, s) === T && ev(eBot, s) === B && ev(eOver, s) === O && ev(eSlant, s) === S &&
+            B === T + O && O * O + Hh * Hh === S * S &&
+            (T + B) * Hh === 2 * area && measure.value === T + B + Hh + S;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function genHouse(rng) {
+  const vars = ['x', 'y'];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const tri = pickTriple(rng, function (t) {
+      const even = t[0] % 2 === 0 ? t[0] : (t[1] % 2 === 0 ? t[1] : 0);
+      const other = even === t[0] ? t[1] : t[0];
+      return even >= 4 && even <= 14 && other >= 3 && other <= 12 && t[2] <= 20;
+    });
+    if (!tri) return null;
+    let Ht;
+    let u;
+    if (tri[1] % 2 === 0 && (tri[0] % 2 !== 0 || rng() < 0.5)) {
+      Ht = tri[1];
+      u = tri[0];
+    } else if (tri[0] % 2 === 0) {
+      Ht = tri[0];
+      u = tri[1];
+    } else continue;
+    const S = tri[2];
+    if (u * u + Ht * Ht !== S * S) continue;
+    if (Ht % 2 !== 0) continue;
+    const Wd = 2 * u;
+    const Hr = randInt(rng, 5, 12);
+    const K = Hr + Ht / 2;
+    const area = Wd * K;
+    if (area > 640) continue;
+    const sol = pickSol(rng, 2, 8);
+    const eW = makeExpr(rng, sol, Wd, [], attempt < 40);
+    const eS1 = makeExpr(rng, sol, S, eW ? [eW] : [], attempt < 35);
+    const eS2 = makeExpr(rng, sol, S, [eW, eS1].filter(Boolean), attempt < 20);
+    if (!eW || !eS1 || !eS2) continue;
+    const std1 = stdDiff(eS1, eS2);
+    const std2 = stdScale(eW, K, area);
+    if (!validSystem(std1, std2, sol)) continue;
+    const v1 = vars[0];
+    const v2 = vars[1];
+    const eq1 = makeEqCard(
+      fmtExpr(eS1, v1, v2) + ' = ' + fmtExpr(eS2, v1, v2),
+      function (s) { return ev(eS1, s) === ev(eS2, s); },
+      true, '', '', std1
+    );
+    const pool1 = [];
+    const flip = flipExpr(eS2, eS2.a ? 'a' : 'b');
+    if (flip) {
+      pool1.push(makeEqCard(
+        fmtExpr(eS1, v1, v2) + ' = ' + fmtExpr(flip, v1, v2),
+        function (s) { return ev(eS1, s) === ev(flip, s); },
+        false, 'sign', 'The roof ticks say the slanted edges are equal. Keep both signs.', null
+      ));
+    }
+    pool1.push(makeEqCard(
+      fmtExpr(eS1, v1, v2) + ' = ' + fmtExpr(eW, v1, v2),
+      function (s) { return ev(eS1, s) === ev(eW, s); },
+      false, 'wrong-pair', 'The width is the rectangle base, not a roof edge. Match the two ticked slants.', null
+    ));
+    pool1.push(makeEqCard(
+      fmtExpr(eW, v1, v2) + ' = ' + Hr,
+      function (s) { return ev(eW, s) === Hr; },
+      false, '', Hr + ' cm is the wall height, not the width.', null
+    ));
+    const wAtom = fmtAtom(eW, v1, v2);
+    pool1.push(makeEqCard(
+      wAtom + ' ' + TIMES + ' ' + Hr + ' + {1|2} ' + TIMES + ' ' + wAtom + ' ' + TIMES + ' ' + Ht + ' = ' + area,
+      function (s) { return ev(eW, s) * K === area; },
+      false, '', 'That composite area is Equation 2. Step 1 is the isosceles roof.', null
+    ));
+    const cards1 = chooseCards(rng, sol, eq1, pool1);
+    if (!cards1) continue;
+    const eq2 = makeEqCard(
+      wAtom + ' ' + TIMES + ' ' + Hr + ' + {1|2} ' + TIMES + ' ' + wAtom + ' ' + TIMES + ' ' + Ht + ' = ' + area,
+      function (s) { return 2 * ev(eW, s) * Hr + ev(eW, s) * Ht === 2 * area; },
+      true, '', '', std2
+    );
+    const pool2 = [
+      makeEqCard(
+        wAtom + ' ' + TIMES + ' ' + Hr + ' + ' + wAtom + ' ' + TIMES + ' ' + Ht + ' = ' + area,
+        function (s) { return ev(eW, s) * (Hr + Ht) === area; },
+        false, 'half-area', halfAreaTip('house'), null
+      ),
+      makeEqCard(
+        wAtom + ' ' + TIMES + ' ' + Hr + ' = ' + area,
+        function (s) { return ev(eW, s) * Hr === area; },
+        false, '', 'The rectangle is only the lower part. Add the triangular roof as well.', null
+      ),
+      makeEqCard(
+        '{1|2} ' + TIMES + ' ' + wAtom + ' ' + TIMES + ' ' + Ht + ' = ' + area,
+        function (s) { return ev(eW, s) * Ht === 2 * area; },
+        false, '', 'That is only the roof. The total area also includes the rectangle.', null
+      ),
+      makeEqCard(
+        wAtom + ' ' + TIMES + ' ' + (Hr + Ht) + ' = ' + area,
+        function (s) { return ev(eW, s) * (Hr + Ht) === area; },
+        false, 'half-area', 'Stacking the heights treats the roof as a rectangle. The roof needs a 1/2.', null
+      )
+    ];
+    const cards2 = chooseCards(rng, sol, eq2, pool2);
+    if (!cards2 || !cards2.some((c) => c.trap === 'half-area')) continue;
+    const peri = Wd + 2 * Hr + 2 * S;
+    const measure = { label: 'Perimeter', value: peri, unit: 'cm' };
+    const measureAt = function (s) { return ev(eW, s) + 2 * Hr + 2 * ev(eS1, s); };
+    const traps = [
+      { value: Wd + 2 * Hr + S, trap: 'two-sides', tip: 'The outline includes both roof slants, not just one.' },
+      { value: 2 * (Wd + Hr), tip: 'That is only the rectangle. The two roof edges are part of the outline, and the ceiling is internal.' },
+      { value: peri + Wd, tip: 'The ceiling between the roof and the walls is inside the figure. Do not add it to the perimeter.' },
+      { value: area, tip: 'That is the area. Add the outer edges for the perimeter.' }
+    ];
+    const cards3 = buildValueStep(rng, vars, sol, measure, measureAt, traps);
+    if (!cards3) continue;
+    const size = plotSize();
+    const sc = Math.min((size.w - 90) / Wd, (size.h - 56) / (Hr + Ht));
+    const bw = Wd * sc;
+    const wall = Hr * sc;
+    const roof = Ht * sc;
+    const left = (size.w - bw) / 2;
+    const peakY = (size.h - (wall + roof)) / 2 + 18;
+    const M = pxToNorm(left + bw / 2, peakY);
+    const A = pxToNorm(left, peakY + roof);
+    const B = pxToNorm(left + bw, peakY + roof);
+    const C = pxToNorm(left + bw, peakY + roof + wall);
+    const D = pxToNorm(left, peakY + roof + wall);
+    const figure = {
+      verts: [V('M', M), V('A', A), V('B', B), V('C', C), V('D', D)],
+      edges: [
+        edge('M', 'A', { label: fmtExpr(eS1, v1, v2), value: S, tick: 1, role: 'eq1' }),
+        edge('M', 'B', { label: fmtExpr(eS2, v1, v2), value: S, tick: 1, role: 'eq1' }),
+        edge('A', 'B', { label: '', value: Wd, silent: true, role: '' }),
+        edge('B', 'C', { label: String(Hr), value: Hr, known: true, role: '' }),
+        edge('C', 'D', { label: fmtExpr(eW, v1, v2), value: Wd, role: 'eq2', nudge: { x: 0, y: 16 } }),
+        edge('D', 'A', { label: String(Hr), value: Hr, known: true, role: '' })
+      ],
+      dashes: [],
+      angles: [
+        { at: 'A', a: 'B', b: 'D' },
+        { at: 'B', a: 'A', b: 'C' },
+        { at: 'D', a: 'A', b: 'C' },
+        { at: 'C', a: 'B', b: 'D' }
+      ],
+      fills: [
+        { ids: ['A', 'B', 'C', 'D'], role: 'eq2' },
+        { ids: ['M', 'A', 'B'], role: 'eq2' }
+      ],
+      roofH: { from: 'M', toMid: ['A', 'B'], value: Ht }
+    };
+    figure.dashes = [
+      edge('M', 'G', { label: String(Ht), value: Ht, known: true, role: 'eq2' })
+    ];
+    figure.verts.push(V('G', pxToNorm(left + bw / 2, peakY + roof)));
+    return publish({
+      arch: 'house',
+      name: 'COMPOSITE HOUSE',
+      vars: vars,
+      sol: sol,
+      std: [std1, std2],
+      givens: 'Isosceles roof on a rectangle. Wall height = ' + Hr + ' cm. Roof height = ' + Ht + ' cm. Total area = ' + area + ' cm\u00b2.',
+      prompts: [
+        'STEP 1 \u00b7 The roof ticks set the slanted edges equal. Lock Equation 1.',
+        'STEP 2 \u00b7 Rectangle area + triangular roof = ' + area + ' cm\u00b2. Keep the 1/2.',
+        'STEP 3 \u00b7 Solve (x, y) and find the outer perimeter.'
+      ],
+      steps: [{ cards: cards1 }, { cards: cards2 }, { cards: cards3 }],
+      figure: figure,
+      measure: measure,
+      measureAt: measureAt,
+      facts: {
+        check: function (s) {
+          return ev(eW, s) === Wd && ev(eS1, s) === S && ev(eS2, s) === S &&
+            u * u + Ht * Ht === S * S && Ht % 2 === 0 &&
+            ev(eW, s) * Hr + ev(eW, s) * Ht / 2 === area &&
+            measure.value === Wd + 2 * Hr + 2 * S;
+        }
+      }
+    });
+  }
+  return null;
+}
+
+function publish(p) {
+  const v1 = p.vars[0];
+  const v2 = p.vars[1];
+  const c1 = p.steps[0].cards.filter((c) => c.correct)[0];
+  const c2 = p.steps[1].cards.filter((c) => c.correct)[0];
+  p.eqs = [c1.plain, c2.plain];
+  p.key = [p.arch, v1 + v2, p.sol.x, p.sol.y, c1.plain, c2.plain, p.measure.label, p.measure.value].join('|');
+  const reason = audit(p);
+  if (reason) {
+    lastAudit = p.arch + ' ' + reason;
+    return null;
+  }
+  return p;
+}
+
+const GENS = {
+  iso: genIso,
+  rect: genRect,
+  alt: genAlt,
+  paired: genPaired,
+  rhombus: genRhombus,
+  trapez: genTrapez,
+  house: genHouse
+};
+
+function tierOf(round) {
+  if (round <= 2) return { name: 'WARM-UP', arches: ['iso', 'rect'] };
+  if (round <= 4) return { name: 'FIELD', arches: ['alt'] };
+  if (round <= 6) return { name: 'ADVANCED', arches: ['paired'] };
+  return { name: 'MASTER', arches: ['rhombus', 'trapez', 'house'] };
+}
+
+function audit(p) {
+  if (!p || !p.sol || !p.steps || p.steps.length !== 3) return 'shape';
+  if (!p.std || p.std.length !== 2) return 'std-missing';
+  if (!validSystem(p.std[0], p.std[1], p.sol)) return 'system';
+  if (!p.facts || !p.facts.check(p.sol)) return 'facts';
+  if (p.measureAt(p.sol) !== p.measure.value) return 'measure';
+  if (!Number.isInteger(p.measure.value) || p.measure.value <= 0) return 'measure-int';
+  if (!Number.isInteger(p.sol.x) || !Number.isInteger(p.sol.y)) return 'sol';
+  for (let i = 0; i < 3; i++) {
+    const cards = p.steps[i].cards;
+    if (!cards || cards.length !== 4) return 'cards-' + i;
+    const good = cards.filter((c) => c.correct);
+    if (good.length !== 1) return 'count-' + i;
+    if (!good[0].ok(p.sol)) return 'ok-' + i;
+    const seen = {};
+    for (let k = 0; k < cards.length; k++) {
+      const c = cards[k];
+      if (seen[c.plain]) return 'dup-' + i;
+      seen[c.plain] = true;
+      if (!c.correct && c.ok(p.sol)) return 'leak-' + i;
+      if (!c.correct && !c.tip) return 'tip-' + i;
+      if (!c.tokens || !c.tokens.length) return 'tokens-' + i;
+    }
+    if (i < 2) {
+      if (!proportional(good[0].std, p.std[i])) return 'prop-' + i;
+    } else if (!good[0].claim || good[0].claim.x !== p.sol.x || good[0].claim.y !== p.sol.y || good[0].claim.value !== p.measure.value) {
+      return 'claim';
+    }
+  }
+  if (p.arch === 'iso') {
+    if (!p.steps[1].cards.some((c) => c.trap === 'sign')) return 'need-sign';
+    if (!p.steps[1].cards.some((c) => c.trap === 'two-sides')) return 'need-two';
+  }
+  if (p.arch === 'alt' && !p.steps[2].cards.some((c) => c.trap === 'half-base')) return 'need-half-base';
+  if ((p.arch === 'paired' || p.arch === 'rhombus' || p.arch === 'trapez' || p.arch === 'house') &&
+      !p.steps[1].cards.some((c) => c.trap === 'half-area')) return 'need-half-area';
+  if (p.arch === 'trapez' && !p.steps[0].cards.some((c) => c.trap === 'sign')) return 'need-sign-trap';
+  const fig = p.figure;
+  if (!fig || !fig.verts || fig.verts.length < 3 || !fig.edges || fig.edges.length < 3) return 'figure';
+  const ids = {};
+  for (let i = 0; i < fig.verts.length; i++) {
+    const v = fig.verts[i];
+    if (v.x < -1 || v.x > 101 || v.y < -1 || v.y > 101) return 'vert-range';
+    ids[v.id] = true;
+  }
+  const items = fig.edges.concat(fig.dashes || [], fig.ghosts || []);
+  for (let i = 0; i < items.length; i++) {
+    if (!ids[items[i].from] || !ids[items[i].to]) return 'edge-id';
+  }
+  return '';
+}
+
+function generateProblem(round, history, rng) {
+  const random = rng || Math.random;
+  const tier = tierOf(round);
+  const recent = {};
+  (history || []).forEach((h) => { recent[h.key] = true; });
+  const last = history && history.length ? history[history.length - 1].arch : '';
+  let pool = tier.arches.slice();
+  if (last && pool.length > 1) {
+    const filtered = pool.filter((a) => a !== last);
+    if (filtered.length) pool = filtered;
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const arches = pass === 0 ? pool : tier.arches;
+    const tries = pass === 0 ? 36 : 24;
+    for (let i = 0; i < tries; i++) {
+      const arch = arches[Math.floor(random() * arches.length)];
+      const problem = GENS[arch](random);
+      if (!problem) continue;
+      if (pass === 0 && recent[problem.key]) continue;
+      if (audit(problem) !== '') continue;
+      problem.tier = tier.name;
+      return problem;
+    }
+  }
+  return null;
+}
+
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+function ensureAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio.ctx = new AC();
+  audio.master = audio.ctx.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.2;
+  audio.master.connect(audio.ctx.destination);
+  audio.music = audio.ctx.createGain();
+  audio.music.gain.value = 0.42;
+  audio.music.connect(audio.master);
+  const len = Math.floor(audio.ctx.sampleRate * 0.25);
+  audio.noise = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
+  const data = audio.noise.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+}
+function resumeAudio() {
+  try {
+    ensureAudio();
+    if (!audio.ctx) return;
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    if (!audio.started) {
+      audio.started = true;
+      audio.next = audio.ctx.currentTime + 0.05;
+    }
+  } catch (err) { /* sound is optional */ }
+}
+function toggleMute() {
+  resumeAudio();
+  audio.muted = !audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.2;
+}
+function blip(time, freq, dur, type, gain, dest, slide) {
+  if (!audio.ctx || audio.muted) return;
+  const o = audio.ctx.createOscillator();
+  const g = audio.ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), time);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(gain, time + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  o.connect(g);
+  g.connect(dest || audio.master);
+  o.start(time);
+  o.stop(time + dur + 0.03);
+}
+function noiseHit(time, dur, gain, freq) {
+  if (!audio.ctx || audio.muted || !audio.noise) return;
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = freq || 1400;
+  const g = audio.ctx.createGain();
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.master);
+  src.start(time);
+  src.stop(time + dur + 0.02);
+}
+function sfxCaliper() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 740, 0.06, 'square', 0.05);
+  blip(t + 0.05, 1180, 0.09, 'square', 0.045);
+}
+function sfxSweep() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 210, 0.32, 'sawtooth', 0.03, audio.master, 920);
+  blip(t + 0.05, 330, 0.26, 'triangle', 0.04, audio.master, 1240);
+}
+function sfxSeal() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  [523, 659, 784, 1047].forEach((f, i) => blip(t + i * 0.07, f, 0.26, 'triangle', 0.055));
+  blip(t + 0.3, 1568, 0.16, 'sine', 0.035);
+}
+function sfxBuzz() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 78, 0.2, 'sawtooth', 0.045, audio.master, 46);
+  noiseHit(t, 0.14, 0.05, 520);
+}
+function sfxUi() {
+  if (!audio.ctx) return;
+  blip(audio.ctx.currentTime, 620, 0.05, 'square', 0.035);
+}
+
+const CHORDS = [
+  [62, 65, 69],
+  [58, 62, 65],
+  [65, 69, 72],
+  [60, 64, 67]
+];
+const BASS = [38, 34, 41, 36];
+function playMusicStep(index, time) {
+  const bar = Math.floor(index / 16) % 4;
+  const chord = CHORDS[bar];
+  const step = index % 16;
+  if (step % 8 === 0) blip(time, midi(BASS[bar]), 0.2, 'triangle', 0.08, audio.music);
+  if (step % 2 === 0) {
+    const order = [0, 2, 1, 2];
+    const tone = chord[order[(step / 2) % order.length]];
+    blip(time, midi(tone + 12), 0.11, 'square', 0.028, audio.music);
+  }
+  if (step === 0 || step === 8) blip(time, 90, 0.07, 'sine', 0.05, audio.music, 46);
+  if (step === 4 || step === 12) noiseHit(time, 0.08, 0.025, 1800);
+  if (step % 2 === 1) noiseHit(time, 0.03, 0.012, 4200);
+  if (step === 14) blip(time, midi(chord[2] + 24), 0.08, 'triangle', 0.02, audio.music);
+}
+function tickMusic() {
+  if (!audio.started || !audio.ctx || audio.muted || game.paused) return;
+  const stepDur = (60 / 104) / 4;
+  let guard = 0;
+  while (audio.next < audio.ctx.currentTime + 0.12 && guard < 8) {
+    playMusicStep(audio.step, audio.next);
+    audio.step = (audio.step + 1) % 64;
+    audio.next += stepDur;
+    guard++;
+  }
+}
+
+function deckGeom() {
+  const prompt = { x: 32, y: 476, w: 820, h: 22 };
+  const role = { x: 860, y: 476, w: 388, h: 22 };
+  const tip = { x: 32, y: 504, w: 1216, h: 40 };
+  const y = 552;
+  const h = 108;
+  const cards = [];
+  for (let i = 0; i < 4; i++) cards.push({ x: 32 + i * 262, y: y, w: 252, h: h, i: i });
+  const lock = { x: 1080, y: y, w: 168, h: h };
+  const hint = { x: 180, y: 674, w: 920, h: 20 };
+  return { cards: cards, lock: lock, prompt: prompt, role: role, tip: tip, hint: hint };
+}
+function titleGeom() {
+  return [
+    { id: 'solo', x: 64, y: 236, w: 368, h: 210 },
+    { id: 'coop', x: 456, y: 236, w: 368, h: 210 },
+    { id: 'versus', x: 848, y: 236, w: 368, h: 210 }
+  ];
+}
+function hit(px, py, r) {
+  return px >= r.x && py >= r.y && px < r.x + r.w && py < r.y + r.h;
+}
+function layoutView() {
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  game.view = {
+    s: s,
+    ox: (window.innerWidth - W * s) / 2,
+    oy: (window.innerHeight - H * s) / 2
+  };
+}
+function worldFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (canvas.clientWidth / rect.width);
+  const y = (clientY - rect.top) * (canvas.clientHeight / rect.height);
+  const v = game.view;
+  return { x: (x - v.ox) / v.s, y: (y - v.oy) / v.s };
+}
+function ownerFor(step) {
+  if (game.mode !== 'coop') return -1;
+  if (step >= 2) return -1;
+  const swap = game.round % 2 === 0;
+  if (step === 0) return swap ? 1 : 0;
+  return swap ? 0 : 1;
+}
+function hoverPlayer() {
+  if (game.mode === 'solo') return 0;
+  if (game.mode === 'coop') {
+    const o = ownerFor(game.step);
+    return o < 0 ? 0 : o;
+  }
+  return 0;
+}
+function currentCards() {
+  if (!game.problem || game.step > 2) return [];
+  return game.problem.steps[game.step].cards;
+}
+function moveSel(player, dir) {
+  const cards = currentCards();
+  if (!cards.length) return;
+  let i = game.sel[player] || 0;
+  for (let k = 0; k < 4; k++) {
+    i = (i + dir + 4) % 4;
+    if (!cards[i] || !cards[i].dead) break;
+  }
+  game.sel[player] = i;
+  game.pointerDevice = 'key';
+  game.hoverLock = false;
+}
+function playerMaps() {
+  if (game.mode === 'solo') {
+    return [{
+      left: ['KeyA', 'ArrowLeft'],
+      right: ['KeyD', 'ArrowRight'],
+      up: ['KeyW', 'ArrowUp'],
+      down: ['KeyS', 'ArrowDown'],
+      fire: ['Space', 'Enter', 'KeyF']
+    }];
+  }
+  return [
+    { left: ['KeyA'], right: ['KeyD'], up: ['KeyW'], down: ['KeyS'], fire: ['KeyF', 'Space'] },
+    { left: ['ArrowLeft'], right: ['ArrowRight'], up: ['ArrowUp'], down: ['ArrowDown'], fire: ['Enter'] }
+  ];
+}
+function pressed(codes) {
+  for (let i = 0; i < codes.length; i++) if (keyEdge.has(codes[i])) return true;
+  return false;
+}
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 30 + Math.random() * 170;
+    game.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: 0.35 + Math.random() * 0.4,
+      max: 0.75,
+      color: color
+    });
+  }
+  if (game.particles.length > 90) game.particles.splice(0, game.particles.length - 90);
+}
+function floatText(x, y, text, color) {
+  game.floats.push({ x: x, y: y, text: text, life: 1.15, max: 1.15, color: color || COL.gold });
+}
+function saveBest() {
+  const mode = game.mode;
+  const prev = game.best[mode] || { score: 0, round: 0, stars: 0 };
+  const score = mode === 'versus' ? Math.max(game.pScore[0], game.pScore[1]) : game.score;
+  const stars = Math.max(game.stars[0], game.stars[1]);
+  game.best[mode] = {
+    score: Math.max(prev.score, score),
+    round: Math.max(prev.round, game.cleared),
+    stars: Math.max(prev.stars, stars)
+  };
+  try { localStorage.setItem('geo-lock-surveyor-best', JSON.stringify(game.best)); } catch (err) { /* ignore */ }
+}
+function endGame(reason) {
+  game.overReason = reason;
+  game.screen = 'over';
+  game.paused = false;
+  saveBest();
+}
+function succeed(player) {
+  const step = game.step;
+  const prevCombo = game.mode === 'versus' ? game.pCombo[player] : game.combo;
+  const base = step === 2 ? 350 : 150;
+  const streak = Math.min(prevCombo, 8) * 20;
+  const speed = game.mode === 'versus' ? 80 : 0;
+  const pts = base + streak + speed;
+  if (game.mode === 'versus') {
+    game.pScore[player] += pts;
+    game.pCombo[player] += 1;
+    if (step === 2) game.stars[player] += 1;
+  } else {
+    game.score += pts;
+    game.combo += 1;
+  }
+  game.lastAward = pts;
+  game.tip = '';
+  game.tipT = 0;
+  const deck = deckGeom();
+  const rect = deck.cards[game.sel[player]] || deck.lock;
+  burst(rect.x + rect.w / 2, rect.y + 20, step === 2 ? COL.gold : (step === 0 ? COL.cyan : COL.magenta), 16);
+  floatText(rect.x + rect.w / 2, rect.y, '+' + pts, COL.gold);
+  if (step === 0) sfxCaliper();
+  else if (step === 1) sfxSweep();
+  else sfxSeal();
+  if (step === 2) {
+    game.step = 3;
+    game.phase = 'celebrate';
+    game.celebrateT = 4.8;
+    game.cleared += 1;
+    saveBest();
+  } else {
+    game.step += 1;
+    game.sel = [0, 0];
+    game.lock = 0.16;
+  }
+}
+function fail(player, card) {
+  sfxBuzz();
+  game.combo = 0;
+  if (game.mode === 'versus') game.pCombo[player] = 0;
+  game.shake = 8;
+  game.flash = 0.4;
+  game.tip = card.tip;
+  game.tipT = 1;
+  card.dead = true;
+  const deck = deckGeom();
+  const rect = deck.cards[game.sel[player]] || deck.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + rect.h / 2, COL.bad, 18);
+  if (game.mode === 'versus') {
+    game.pShields[player] = Math.max(0, game.pShields[player] - 1);
+    if (game.pShields[player] <= 0) {
+      game.winner = player === 0 ? 'P2' : 'P1';
+      endGame((player === 0 ? 'P1' : 'P2') + ' shields collapsed. ' + game.winner + ' holds the survey.');
+    }
+  } else {
+    game.shields -= 1;
+    if (game.shields <= 0) endGame('The CAD shields are gone.');
+  }
+  const cards = currentCards();
+  if (game.pointerDevice !== 'mouse' && cards[game.sel[player]] && cards[game.sel[player]].dead) moveSel(player, 1);
+}
+function confirm(player) {
+  if (frameUsed || game.lock > 0 || game.phase !== 'play' || game.screen !== 'play') return;
+  if (game.mode === 'coop') {
+    const owner = ownerFor(game.step);
+    if (owner >= 0 && player !== owner) {
+      floatText(W / 2, 430, 'P' + (owner + 1) + ' LOCKS THIS STEP', owner === 0 ? COL.p1 : COL.p2);
+      return;
+    }
+  }
+  if (game.mode === 'versus' && game.pShields[player] <= 0) return;
+  const cards = currentCards();
+  const card = cards[game.sel[player]];
+  if (!card || card.dead) return;
+  frameUsed = true;
+  if (!card.correct) fail(player, card);
+  else succeed(player);
+}
+function remember(p) {
+  game.history.push({ key: p.key, arch: p.arch });
+  if (game.history.length > 6) game.history.shift();
+}
+function startMode(mode) {
+  resumeAudio();
+  sfxUi();
+  game.screen = 'play';
+  game.mode = mode;
+  game.round = 1;
+  game.step = 0;
+  game.phase = 'play';
+  game.shields = mode === 'coop' ? 4 : 3;
+  game.maxShields = game.shields;
+  game.pShields = [3, 3];
+  game.score = 0;
+  game.pScore = [0, 0];
+  game.stars = [0, 0];
+  game.combo = 0;
+  game.pCombo = [0, 0];
+  game.cleared = 0;
+  game.sel = [0, 0];
+  game.tip = '';
+  game.tipT = 0;
+  game.lock = 0;
+  game.celebrateT = 0;
+  game.shake = 0;
+  game.paused = false;
+  game.overReason = '';
+  game.winner = '';
+  game.particles = [];
+  game.floats = [];
+  const problem = generateProblem(1, game.history, Math.random);
+  if (!problem) {
+    game.fatal = lastAudit || 'Blueprint generator failed.';
+    game.screen = 'title';
+    return;
+  }
+  remember(problem);
+  game.problem = problem;
+}
+function finishRound() {
+  if (game.phase !== 'celebrate') return;
+  const problem = generateProblem(game.round + 1, game.history, Math.random);
+  if (!problem) {
+    endGame('No fresh blueprint passed verification.');
+    return;
+  }
+  game.round += 1;
+  game.step = 0;
+  game.phase = 'play';
+  game.sel = [0, 0];
+  game.tip = '';
+  game.tipT = 0;
+  remember(problem);
+  game.problem = problem;
+}
+
+function pollPads() {
+  const out = [null, null];
+  const list = (navigator.getGamepads && navigator.getGamepads()) || [];
+  const found = [];
+  for (let i = 0; i < list.length && found.length < 2; i++) if (list[i]) found.push(list[i]);
+  for (let p = 0; p < 2; p++) {
+    const gp = found[p];
+    const mem = padMem[p];
+    if (!gp) {
+      game.padOn[p] = false;
+      mem.buttons = [];
+      mem.dx = 0;
+      mem.dy = 0;
+      continue;
+    }
+    game.padOn[p] = true;
+    const b = [];
+    for (let i = 0; i < gp.buttons.length; i++) b[i] = !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.45));
+    const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    const ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+    const dx = (b[14] || ax < -0.55) ? -1 : (b[15] || ax > 0.55) ? 1 : 0;
+    const dy = (b[12] || ay < -0.55) ? -1 : (b[13] || ay > 0.55) ? 1 : 0;
+    out[p] = {
+      dx: dx !== 0 && mem.dx === 0 ? dx : 0,
+      dy: dy !== 0 && mem.dy === 0 ? dy : 0,
+      fire: b[0] && !mem.buttons[0],
+      start: b[9] && !mem.buttons[9]
+    };
+    mem.buttons = b;
+    mem.dx = dx;
+    mem.dy = dy;
+  }
+  return out;
+}
+function pollInput() {
+  frameUsed = false;
+  if (keyEdge.has('KeyM')) toggleMute();
+  const pads = pollPads();
+  if (pointerEdge && hit(game.mouseX, game.mouseY, GEO.mute)) {
+    toggleMute();
+    pointerEdge = false;
+  }
+  if ((pads[0] && pads[0].start) || (pads[1] && pads[1].start)) {
+    if (game.screen === 'play') game.paused = !game.paused;
+  }
+  if (game.screen === 'title') {
+    if (pressed(['ArrowLeft', 'KeyA']) || (pads[0] && pads[0].dx < 0)) game.titleSel = (game.titleSel + 2) % 3;
+    if (pressed(['ArrowRight', 'KeyD']) || (pads[0] && pads[0].dx > 0)) game.titleSel = (game.titleSel + 1) % 3;
+    if (keyEdge.has('Digit1')) startMode('solo');
+    else if (keyEdge.has('Digit2')) startMode('coop');
+    else if (keyEdge.has('Digit3')) startMode('versus');
+    else if (pressed(['Enter', 'Space']) || (pads[0] && pads[0].fire)) startMode(['solo', 'coop', 'versus'][game.titleSel]);
+    if (pointerEdge) {
+      const cards = titleGeom();
+      for (let i = 0; i < cards.length; i++) {
+        if (hit(game.mouseX, game.mouseY, cards[i])) startMode(cards[i].id);
+      }
+    }
+    return;
+  }
+  if (game.screen === 'over') {
+    const again = overGeom().again;
+    const title = overGeom().title;
+    if (pointerEdge && hit(game.mouseX, game.mouseY, title)) { game.screen = 'title'; return; }
+    if (pointerEdge && hit(game.mouseX, game.mouseY, again)) { startMode(game.mode); return; }
+    if (pressed(['Enter', 'Space']) || (pads[0] && pads[0].fire)) startMode(game.mode);
+    if (keyEdge.has('Escape')) game.screen = 'title';
+    return;
+  }
+  if (keyEdge.has('KeyP') || keyEdge.has('Escape')) {
+    if (game.screen === 'play') game.paused = !game.paused;
+  }
+  if (game.paused) {
+    if (pointerEdge && hit(game.mouseX, game.mouseY, { x: 490, y: 390, w: 300, h: 52 })) game.paused = false;
+    return;
+  }
+  if (game.phase === 'celebrate') {
+    if (pointerEdge || pressed(['Enter', 'Space', 'KeyF']) || (pads[0] && pads[0].fire) || (pads[1] && pads[1].fire)) finishRound();
+    return;
+  }
+  const maps = playerMaps();
+  const actors = [];
+  for (let p = 0; p < maps.length; p++) {
+    const map = maps[p];
+    const pad = pads[p];
+    if (pressed(map.left) || (pad && pad.dx < 0)) moveSel(p, -1);
+    if (pressed(map.right) || (pad && pad.dx > 0)) moveSel(p, 1);
+    if (pressed(map.up) || (pad && pad.dy < 0)) moveSel(p, -1);
+    if (pressed(map.down) || (pad && pad.dy > 0)) moveSel(p, 1);
+    if (pressed(map.fire) || (pad && pad.fire)) actors.push(p);
+  }
+  if (actors.length === 2 && Math.random() < 0.5) actors.reverse();
+  for (let i = 0; i < actors.length; i++) confirm(actors[i]);
+  if (pointerEdge && game.phase === 'play') {
+    const deck = deckGeom();
+    const who = hoverPlayer();
+    if (hit(game.mouseX, game.mouseY, deck.lock)) confirm(who);
+    else {
+      for (let i = 0; i < deck.cards.length; i++) {
+        if (hit(game.mouseX, game.mouseY, deck.cards[i])) {
+          game.sel[who] = i;
+          confirm(who);
+          break;
+        }
+      }
+    }
+  }
+}
+function advance(dt) {
+  game.time += dt;
+  /* Diagnostics stay until the next correct lock. */
+  if (game.lock > 0) game.lock = Math.max(0, game.lock - dt);
+  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 26);
+  if (game.flash > 0) game.flash = Math.max(0, game.flash - dt);
+  if (game.phase === 'celebrate') {
+    game.celebrateT -= dt;
+    if (game.celebrateT <= 0) finishRound();
+  }
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.life <= 0) game.particles.splice(i, 1);
+  }
+  for (let i = game.floats.length - 1; i >= 0; i--) {
+    const f = game.floats[i];
+    f.life -= dt;
+    f.y -= 28 * dt;
+    if (f.life <= 0) game.floats.splice(i, 1);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function panel(x, y, w, h, accent) {
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(6, 16, 28, 0.92)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = accent || 'rgba(120, 190, 220, 0.32)';
+  ctx.stroke();
+}
+function corners(x, y, w, h, color) {
+  const l = 12;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y + l); ctx.lineTo(x, y); ctx.lineTo(x + l, y);
+  ctx.moveTo(x + w - l, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + l);
+  ctx.moveTo(x, y + h - l); ctx.lineTo(x, y + h); ctx.lineTo(x + l, y + h);
+  ctx.moveTo(x + w - l, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - l);
+  ctx.stroke();
+}
+function text(str, x, y, font, color, align) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+function wrap(str, font, maxW) {
+  ctx.font = font;
+  const words = String(str).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function atomWidth(atom, size) {
+  if (atom.t === 'f') {
+    const fs = Math.max(10, Math.round(size * 0.62));
+    ctx.font = '700 ' + fs + 'px ' + MONO;
+    return Math.max(ctx.measureText(atom.n).width, ctx.measureText(atom.d).width) + 8;
+  }
+  ctx.font = '700 ' + size + 'px ' + MONO;
+  return ctx.measureText(atom.s).width;
+}
+function isGlue(atom) {
+  return atom.t === 't' && /[=+\u2212\u00d7]\s*$/.test(atom.s);
+}
+function wrapMath(tokens, maxW, size) {
+  const atoms = [];
+  tokens.forEach((tok) => {
+    if (tok.t === 'f') atoms.push(tok);
+    else tok.s.split(/(\s+)/).forEach((part) => { if (part) atoms.push({ t: 't', s: part }); });
+  });
+  const lines = [];
+  let line = [];
+  let w = 0;
+  function pushLine() {
+    while (line.length && line[line.length - 1].t === 't' && /^\s+$/.test(line[line.length - 1].s)) line.pop();
+    if (line.length && isGlue(line[line.length - 1]) && line.length > 1) {
+      const glue = line.pop();
+      if (line.length) lines.push(line);
+      line = [glue];
+      w = atomWidth(glue, size);
+      return;
+    }
+    if (line.length) lines.push(line);
+    line = [];
+    w = 0;
+  }
+  atoms.forEach((atom) => {
+    const aw = atomWidth(atom, size);
+    const space = atom.t === 't' && /^\s+$/.test(atom.s);
+    if (!space && w + aw > maxW && line.length) pushLine();
+    if (space && !line.length) return;
+    line.push(atom);
+    w += aw;
+  });
+  if (line.length) lines.push(line);
+  return lines.length ? lines : [[{ t: 't', s: '' }]];
+}
+function drawFrac(cx, cy, n, d, size, color) {
+  const fs = Math.max(10, Math.round(size * 0.62));
+  ctx.font = '700 ' + fs + 'px ' + MONO;
+  const w = Math.max(ctx.measureText(n).width, ctx.measureText(d).width) + 8;
+  text(n, cx, cy - fs * 0.72, '700 ' + fs + 'px ' + MONO, color, 'center');
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(cx - w / 2, cy);
+  ctx.lineTo(cx + w / 2, cy);
+  ctx.stroke();
+  text(d, cx, cy + fs * 0.78, '700 ' + fs + 'px ' + MONO, color, 'center');
+}
+function drawMathLine(line, x, y, size, color, align) {
+  let w = 0;
+  for (let i = 0; i < line.length; i++) w += atomWidth(line[i], size);
+  let cx = x;
+  if (align === 'center') cx = x - w / 2;
+  else if (align === 'right') cx = x - w;
+  for (let i = 0; i < line.length; i++) {
+    const atom = line[i];
+    const aw = atomWidth(atom, size);
+    if (atom.t === 'f') drawFrac(cx + aw / 2, y, atom.n, atom.d, size, color);
+    else text(atom.s, cx, y, '700 ' + size + 'px ' + MONO, color, 'left');
+    cx += aw;
+  }
+}
+function drawMathBox(tokens, rect, color, start) {
+  const maxW = Math.max(20, rect.w - 18);
+  let size = start || 16;
+  let lines = wrapMath(tokens, maxW, size);
+  while (size > 13 && lines.length > 1) {
+    size -= 1;
+    lines = wrapMath(tokens, maxW, size);
+  }
+  while (size > 12 && lines.length > 2) {
+    size -= 1;
+    lines = wrapMath(tokens, maxW, size);
+  }
+  const frac = lines.some((line) => line.some((a) => a.t === 'f'));
+  const gap = frac ? size * 2.05 : size * 1.28;
+  let y = rect.y + rect.h / 2 - (lines.length - 1) * gap / 2;
+  for (let i = 0; i < lines.length; i++) {
+    drawMathLine(lines[i], rect.x + rect.w / 2, y, size, color, 'center');
+    y += gap;
+  }
+}
+function drawShield(x, y, on, color) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 9);
+  ctx.lineTo(x + 7, y - 5);
+  ctx.lineTo(x + 6, y + 5);
+  ctx.lineTo(x, y + 10);
+  ctx.lineTo(x - 6, y + 5);
+  ctx.lineTo(x - 7, y - 5);
+  ctx.closePath();
+  ctx.fillStyle = on ? color : 'rgba(255,255,255,0.08)';
+  ctx.fill();
+  ctx.strokeStyle = on ? color : 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+}
+function drawStar(x, y, r, on) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = x + Math.cos(a) * rad;
+    const py = y + Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = on ? COL.gold : 'rgba(255,255,255,0.12)';
+  ctx.fill();
+}
+function drawSpeaker(x, y, muted) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = muted ? COL.dim : COL.cyan;
+  ctx.fillRect(-8, -3, 4, 6);
+  ctx.beginPath();
+  ctx.moveTo(-4, -3);
+  ctx.lineTo(2, -7);
+  ctx.lineTo(2, 7);
+  ctx.lineTo(-4, 3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = muted ? COL.dim : COL.cyan;
+  ctx.lineWidth = 1.6;
+  if (muted) {
+    ctx.beginPath();
+    ctx.moveTo(4, -6);
+    ctx.lineTo(12, 6);
+    ctx.moveTo(12, -6);
+    ctx.lineTo(4, 6);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(3, 0, 5, -0.8, 0.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(3, 0, 8, -0.7, 0.7);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawMute() {
+  const m = GEO.mute;
+  roundRect(m.x, m.y, m.w, m.h, 8);
+  ctx.fillStyle = 'rgba(8, 20, 32, 0.95)';
+  ctx.fill();
+  ctx.strokeStyle = audio.muted ? 'rgba(255,200,87,0.7)' : 'rgba(62,224,255,0.55)';
+  ctx.stroke();
+  drawSpeaker(m.x + 22, m.y + 18, audio.muted);
+  text(audio.muted ? 'OFF' : 'SFX', m.x + 40, m.y + 18, '800 11px ' + UI, audio.muted ? COL.amber : COL.cyan, 'left');
+}
+
+function drawBackground() {
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+  const drift = (game.time * 10) % 40;
+  ctx.lineWidth = 1;
+  for (let x = -40; x < W + 40; x += 40) {
+    ctx.strokeStyle = (Math.round(x / 40) % 4 === 0) ? 'rgba(62,224,255,0.07)' : 'rgba(62,224,255,0.035)';
+    ctx.beginPath();
+    ctx.moveTo(x + drift, 0);
+    ctx.lineTo(x + drift, H);
+    ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 40) {
+    ctx.strokeStyle = (Math.round(y / 40) % 4 === 0) ? 'rgba(62,224,255,0.06)' : 'rgba(62,224,255,0.03)';
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  const g = ctx.createRadialGradient(W * 0.5, H * 0.4, 80, W * 0.5, H * 0.5, 760);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.38)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+function modeLabel() {
+  if (game.mode === 'coop') return '2P CO-OP TEAM';
+  if (game.mode === 'versus') return '2P VERSUS';
+  return 'SOLO SURVEYOR';
+}
+function drawHUD() {
+  const h = GEO.hud;
+  panel(h.x, h.y, h.w, h.h, 'rgba(62,224,255,0.35)');
+  text(modeLabel(), 32, 36, '800 15px ' + UI, game.mode === 'versus' ? COL.magenta : (game.mode === 'coop' ? COL.cyan : COL.gold), 'left');
+  const tier = game.problem ? game.problem.tier : tierOf(game.round).name;
+  text('R' + game.round + '  ' + tier, 250, 36, '800 15px ' + UI, COL.ink, 'left');
+  if (game.mode === 'versus') {
+    drawPlayerHud(470, 0);
+    drawPlayerHud(820, 1);
+  } else {
+    const n = game.mode === 'coop' ? 4 : 3;
+    text(game.mode === 'coop' ? 'TEAM SHIELDS' : 'CAD SHIELDS', 470, 24, '700 10px ' + UI, COL.dim, 'left');
+    for (let i = 0; i < n; i++) drawShield(500 + i * 20, 44, i < game.shields, COL.cyan);
+    text(game.mode === 'coop' ? 'TEAM COMBO' : 'COMBO', 680, 24, '700 10px ' + UI, COL.dim, 'left');
+    text('x' + game.combo, 680, 44, '800 16px ' + MONO, game.combo ? COL.amber : COL.dim, 'left');
+    text(game.mode === 'coop' ? 'TEAM SCORE' : 'SOLO SCORE', 860, 24, '700 10px ' + UI, COL.dim, 'left');
+    text(String(game.score), 860, 44, '800 18px ' + MONO, COL.gold, 'left');
+  }
+  drawMute();
+}
+function drawPlayerHud(x, p) {
+  text('P' + (p + 1), x, 36, '800 14px ' + UI, p === 0 ? COL.p1 : COL.p2, 'left');
+  for (let i = 0; i < 3; i++) drawShield(x + 36 + i * 18, 36, i < game.pShields[p], p === 0 ? COL.p1 : COL.p2);
+  drawStar(x + 108, 36, 8, game.stars[p] > 0);
+  text(String(game.stars[p]), x + 122, 36, '800 15px ' + MONO, COL.gold, 'left');
+  text(String(game.pScore[p]), x + 160, 36, '800 15px ' + MONO, COL.ink, 'left');
+}
+function drawSpec() {
+  const s = GEO.spec;
+  panel(s.x, s.y, s.w, s.h, 'rgba(255,200,87,0.28)');
+  if (!game.problem) return;
+  text(game.problem.name, 36, 90, '800 12px ' + UI, COL.amber, 'left');
+  const lines = wrap(game.problem.givens, '700 18px ' + UI, 1180);
+  const block = lines.slice(0, 2);
+  let y = block.length === 1 ? 112 : 106;
+  for (let i = 0; i < block.length; i++) {
+    text(block[i], 36, y, '700 18px ' + UI, COL.ink, 'left');
+    y += 22;
+  }
+}
+function plotBox() {
+  const v = GEO.view;
+  return { x: v.x + 50, y: v.y + 32, w: v.w - 100, h: v.h - 68 };
+}
+function n2s(p) {
+  const b = plotBox();
+  const m = 36;
+  return {
+    x: b.x + m + (p.x / 100) * (b.w - m * 2),
+    y: b.y + m + (p.y / 100) * (b.h - m * 2)
+  };
+}
+function vertById(fig, id) {
+  for (let i = 0; i < fig.verts.length; i++) if (fig.verts[i].id === id) return fig.verts[i];
+  return fig.verts[0];
+}
+function solvedNow() { return game.step >= 3 || game.phase === 'celebrate'; }
+function glowOf(role) {
+  const s1 = game.step >= 1 || solvedNow();
+  const s2 = game.step >= 2 || solvedNow();
+  if (role === 'eq1' && s1) return 'cyan';
+  if (role === 'eq2' && s2) return 'magenta';
+  if (role === 'both' && s2) return 'magenta';
+  if (role === 'both' && s1) return 'cyan';
+  return '';
+}
+function glowColor(name) {
+  if (name === 'cyan') return COL.cyan;
+  if (name === 'magenta') return COL.magenta;
+  return 'rgba(190, 226, 244, 0.9)';
+}
+function labelOf(item) {
+  if (item.silent && !(item.reveal && solvedNow())) return '';
+  if (item.known || solvedNow()) return item.value + ' ' + item.unit;
+  return item.label || '';
+}
+function drawTicks(ax, ay, bx, by, n, color) {
+  if (!n) return;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const tx = dx / len;
+  const ty = dy / len;
+  const px = -ty;
+  const py = tx;
+  const shift = Math.min(26, len * 0.16);
+  const mx = (ax + bx) / 2 - tx * shift;
+  const my = (ay + by) / 2 - ty * shift;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.4;
+  for (let i = 0; i < n; i++) {
+    const o = (i - (n - 1) / 2) * 8;
+    ctx.beginPath();
+    ctx.moveTo(mx + tx * o - px * 10, my + ty * o - py * 10);
+    ctx.lineTo(mx + tx * o + px * 10, my + ty * o + py * 10);
+    ctx.stroke();
+  }
+}
+function drawRightAngle(fig, mark) {
+  const v = n2s(vertById(fig, mark.at));
+  const a = n2s(vertById(fig, mark.a));
+  const b = n2s(vertById(fig, mark.b));
+  let d1x = a.x - v.x;
+  let d1y = a.y - v.y;
+  let d2x = b.x - v.x;
+  let d2y = b.y - v.y;
+  const l1 = Math.hypot(d1x, d1y) || 1;
+  const l2 = Math.hypot(d2x, d2y) || 1;
+  d1x /= l1; d1y /= l1; d2x /= l2; d2y /= l2;
+  const size = 12;
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(v.x + d1x * size, v.y + d1y * size);
+  ctx.lineTo(v.x + d1x * size + d2x * size, v.y + d1y * size + d2y * size);
+  ctx.lineTo(v.x + d2x * size, v.y + d2y * size);
+  ctx.stroke();
+}
+function componentCentroid(fig, item) {
+  const adj = {};
+  const segs = (fig.edges || []).concat(fig.dashes || [], fig.ghosts || []);
+  segs.forEach((e) => {
+    if (!adj[e.from]) adj[e.from] = [];
+    if (!adj[e.to]) adj[e.to] = [];
+    adj[e.from].push(e.to);
+    adj[e.to].push(e.from);
+  });
+  const seen = {};
+  const stack = [item.from];
+  seen[item.from] = true;
+  while (stack.length) {
+    const id = stack.pop();
+    (adj[id] || []).forEach((n) => {
+      if (!seen[n]) {
+        seen[n] = true;
+        stack.push(n);
+      }
+    });
+  }
+  const keys = Object.keys(seen);
+  let x = 0;
+  let y = 0;
+  keys.forEach((id) => {
+    const v = vertById(fig, id);
+    x += v.x;
+    y += v.y;
+  });
+  return { x: x / keys.length, y: y / keys.length };
+}
+function outward(ax, ay, bx, by, cx, cy) {
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len;
+  let ny = dx / len;
+  if (nx * (mx - cx) + ny * (my - cy) < 0) { nx = -nx; ny = -ny; }
+  return { nx: nx, ny: ny };
+}
+function drawLabelPlate(x, y, str, color) {
+  if (!str) return;
+  ctx.font = '700 14px ' + MONO;
+  const w = Math.min(210, ctx.measureText(str).width + 12);
+  const h = 18;
+  roundRect(x - w / 2, y - h / 2, w, h, 4);
+  ctx.fillStyle = 'rgba(6, 14, 24, 0.88)';
+  ctx.fill();
+  let size = 14;
+  while (size > 10 && ctx.measureText(str).width > w - 8) {
+    size -= 1;
+    ctx.font = '700 ' + size + 'px ' + MONO;
+  }
+  text(str, x, y, '700 ' + size + 'px ' + MONO, color, 'center');
+}
+function drawSegment(fig, item, dashed) {
+  const a = n2s(vertById(fig, item.from));
+  const b = n2s(vertById(fig, item.to));
+  const g = glowOf(item.role);
+  const col = glowColor(g);
+  if (!item.ghost) {
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = g ? 3 : 2;
+    if (g) {
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 10;
+    }
+    if (dashed) ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  const str = labelOf(item);
+  const c = n2s(componentCentroid(fig, item));
+  const t = item.t == null ? 0.5 : item.t;
+  const px = a.x + (b.x - a.x) * t;
+  const py = a.y + (b.y - a.y) * t;
+  let lx = px;
+  let ly = py;
+  if (!dashed && !item.manual) {
+    const n = outward(a.x, a.y, b.x, b.y, c.x, c.y);
+    ctx.font = '700 14px ' + MONO;
+    const halfW = Math.min(105, (str ? ctx.measureText(str).width : 0) / 2 + 8);
+    let push = halfW * Math.abs(n.nx) + 12 * Math.abs(n.ny) + 6;
+    if (Math.abs(n.ny) > 0.85) push += 14;
+    lx += n.nx * push;
+    ly += n.ny * push;
+  } else if (dashed && !item.nudge) {
+    lx += 18;
+  }
+  if (item.nudge) {
+    lx += item.nudge.x;
+    ly += item.nudge.y;
+  }
+  const box = plotBox();
+  lx = Math.max(box.x + 28, Math.min(box.x + box.w - 28, lx));
+  ly = Math.max(box.y + 12, Math.min(box.y + box.h - 12, ly));
+  if (str) {
+    const color = solvedNow() && !item.known ? COL.gold : col;
+    drawLabelPlate(lx, ly, str, color);
+  }
+  drawTicks(a.x, a.y, b.x, b.y, item.tick, g ? col : COL.gold);
+}
+function drawCaliper(fig) {
+  const want = game.step === 0 ? 'eq1' : game.step === 1 ? 'eq2' : '';
+  const segs = [];
+  fig.edges.forEach((e) => {
+    if (!want || e.role === want || e.role === 'both') segs.push(e);
+  });
+  if (!segs.length) return;
+  const item = segs[Math.floor(game.time * 0.35) % segs.length];
+  const a = n2s(vertById(fig, item.from));
+  const b = n2s(vertById(fig, item.to));
+  const t = 0.22 + 0.56 * (0.5 + 0.5 * Math.sin(game.time * 1.6));
+  const x = a.x + (b.x - a.x) * t;
+  const y = a.y + (b.y - a.y) * t;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len;
+  const py = dx / len;
+  const col = game.step === 1 ? COL.magenta : COL.cyan;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x - px * 7, y - py * 7);
+  ctx.lineTo(x + px * 7, y + py * 7);
+  ctx.moveTo(x - dx / len * 5, y - dy / len * 5);
+  ctx.lineTo(x + dx / len * 5, y + dy / len * 5);
+  ctx.stroke();
+}
+function drawFigure() {
+  const v = GEO.view;
+  panel(v.x, v.y, v.w, v.h, 'rgba(62,224,255,0.4)');
+  corners(v.x + 6, v.y + 6, v.w - 12, v.h - 12, 'rgba(62,224,255,0.45)');
+  text('CAD VIEWPORT', v.x + 16, v.y + 16, '800 11px ' + UI, COL.cyan, 'left');
+  const fig = game.problem && game.problem.figure;
+  if (!fig) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(v.x + 8, v.y + 26, v.w - 16, v.h - 34);
+  ctx.clip();
+  const box = plotBox();
+  ctx.strokeStyle = 'rgba(62,224,255,0.05)';
+  ctx.lineWidth = 1;
+  for (let x = box.x; x < box.x + box.w; x += 22) {
+    ctx.beginPath();
+    ctx.moveTo(x, box.y);
+    ctx.lineTo(x, box.y + box.h);
+    ctx.stroke();
+  }
+  (fig.fills || []).forEach((fill) => {
+    const g = glowOf(fill.role);
+    if (!g && game.step < 2) return;
+    ctx.beginPath();
+    fill.ids.forEach((id, i) => {
+      const p = n2s(vertById(fig, id));
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = g === 'magenta' ? 'rgba(255,61,154,0.13)' : 'rgba(62,224,255,0.06)';
+    ctx.fill();
+  });
+  (fig.dashes || []).forEach((item) => drawSegment(fig, item, true));
+  fig.edges.forEach((item) => drawSegment(fig, item, false));
+  (fig.ghosts || []).forEach((item) => drawSegment(fig, item, false));
+  (fig.angles || []).forEach((mark) => drawRightAngle(fig, mark));
+  const centroid = {
+    x: fig.verts.reduce((s, vt) => s + vt.x, 0) / fig.verts.length,
+    y: fig.verts.reduce((s, vt) => s + vt.y, 0) / fig.verts.length
+  };
+  fig.verts.forEach((vt) => {
+    const p = n2s(vt);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = COL.ink;
+    ctx.fill();
+    if (vt.id === 'O') return;
+    if (vt.id === 'G' && fig.verts.some((q) => q.id === 'M')) return;
+    const c = n2s(centroid);
+    let dx = p.x - c.x;
+    let dy = p.y - c.y;
+    const len = Math.hypot(dx, dy) || 1;
+    dx = dx / len * 18;
+    dy = dy / len * 14;
+    text(vt.id, p.x + dx, p.y + dy, '800 15px ' + UI, COL.ink, 'center');
+  });
+  if (game.phase === 'play') drawCaliper(fig);
+  const scan = box.y + ((game.time * 36) % box.h);
+  ctx.fillStyle = 'rgba(62,224,255,0.05)';
+  ctx.fillRect(box.x, scan, box.w, 2);
+  ctx.restore();
+}
+function drawBus() {
+  const b = GEO.bus;
+  panel(b.x, b.y, b.w, b.h, 'rgba(255,61,154,0.35)');
+  corners(b.x + 6, b.y + 6, b.w - 12, b.h - 12, 'rgba(255,61,154,0.4)');
+  text('EQUATION BUS', b.x + 16, b.y + 16, '800 11px ' + UI, COL.magenta, 'left');
+  const stepName = game.step >= 3 ? 'SEALED' : 'STEP ' + (Math.min(game.step, 2) + 1) + ' / 3';
+  text(stepName, b.x + b.w - 16, b.y + 16, '800 11px ' + UI, COL.amber, 'right');
+  drawSlot(b.x + 16, b.y + 36, b.w - 32, 102, 0, COL.cyan, 'EQUATION 1');
+  drawSlot(b.x + 16, b.y + 148, b.w - 32, 102, 1, COL.magenta, 'EQUATION 2');
+}
+function drawSlot(x, y, w, h, index, color, title) {
+  roundRect(x, y, w, h, 8);
+  ctx.fillStyle = 'rgba(4, 12, 22, 0.72)';
+  ctx.fill();
+  const locked = game.step > index;
+  ctx.strokeStyle = locked ? color : 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = locked ? 2 : 1;
+  ctx.stroke();
+  text(title, x + 12, y + 16, '800 11px ' + UI, color, 'left');
+  if (!game.problem) return;
+  if (!locked) {
+    text('AWAITING LOCK', x + w / 2, y + 60, '700 16px ' + MONO, 'rgba(180,210,230,0.35)', 'center');
+    return;
+  }
+  const card = game.problem.steps[index].cards.filter((c) => c.correct)[0];
+  drawMathBox(card.tokens, { x: x + 8, y: y + 28, w: w - 16, h: h - 36 }, color, 16);
+}
+function drawDeck() {
+  const d = GEO.deck;
+  panel(d.x, d.y, d.w, d.h, 'rgba(130,190,220,0.28)');
+  if (!game.problem) return;
+  if (game.phase === 'celebrate') {
+    const m = game.problem.measure;
+    text('BLUEPRINT SEALED', W / 2, 500, '800 14px ' + UI, COL.cyan, 'center');
+    text('(' + game.problem.vars[0] + ', ' + game.problem.vars[1] + ') = (' + game.problem.sol.x + ', ' + game.problem.sol.y + ')', W / 2, 536, '800 28px ' + MONO, COL.ink, 'center');
+    text(m.label + ' = ' + m.value + ' ' + m.unit, W / 2, 574, '800 26px ' + MONO, COL.gold, 'center');
+    text('+' + game.lastAward + ' SURVEYOR POINTS', W / 2, 614, '800 16px ' + UI, COL.amber, 'center');
+    text('Click, Space, or Button A for the next blueprint', W / 2, 662, '700 14px ' + UI, COL.dim, 'center');
+    return;
+  }
+  const deck = deckGeom();
+  const prompt = game.problem.prompts[Math.min(game.step, 2)];
+  text(prompt, deck.prompt.x, deck.prompt.y + 11, '800 15px ' + UI, game.step === 0 ? COL.cyan : (game.step === 1 ? COL.magenta : COL.gold), 'left');
+  if (game.mode === 'coop') {
+    const owner = ownerFor(game.step);
+    const who = owner < 0 ? 'BOTH CONFIRM' : ('P' + (owner + 1) + ' LOCKS');
+    text(who, deck.role.x + deck.role.w, deck.role.y + 11, '800 14px ' + UI, owner === 1 ? COL.p2 : COL.p1, 'right');
+  } else if (game.mode === 'versus') {
+    text('FIRST LOCK TAKES THE STEP', deck.role.x + deck.role.w, deck.role.y + 11, '800 13px ' + UI, COL.amber, 'right');
+  }
+  if (game.tip) {
+    const lines = wrap(game.tip, '700 14px ' + UI, deck.tip.w);
+    const show = lines.slice(0, 2);
+    let y = deck.tip.y + (show.length === 1 ? 20 : 12);
+    show.forEach((line) => {
+      text(line, deck.tip.x, y, '700 14px ' + UI, COL.bad, 'left');
+      y += 18;
+    });
+  } else {
+    text('Wrong locks burn a CAD shield. The diagnostic stays up until the next lock.', deck.tip.x, deck.tip.y + 20, '600 13px ' + UI, COL.dim, 'left');
+  }
+  const cards = currentCards();
+  for (let i = 0; i < cards.length; i++) drawChoice(cards[i], deck.cards[i], i);
+  drawLock(deck.lock);
+  const hint = game.mode === 'solo'
+    ? 'MOUSE CLICK   \u00b7   WASD / ARROWS + SPACE   \u00b7   8BITDO A'
+    : 'P1  WASD + F / SPACE OR PAD A     P2  ARROWS + ENTER OR PAD A';
+  text(hint, W / 2, deck.hint.y + 8, '700 12px ' + UI, COL.dim, 'center');
+}
+function selectionsOn(index) {
+  const who = [];
+  const count = game.mode === 'solo' ? 1 : 2;
+  for (let p = 0; p < count; p++) if ((game.sel[p] || 0) === index) who.push(p);
+  return who;
+}
+function drawChoice(card, rect, index) {
+  const who = selectionsOn(index);
+  roundRect(rect.x, rect.y, rect.w, rect.h, 10);
+  ctx.fillStyle = card.dead ? 'rgba(48, 12, 20, 0.78)' : 'rgba(7, 16, 30, 0.96)';
+  ctx.fill();
+  ctx.lineWidth = who.length ? 2.5 : 1.2;
+  ctx.strokeStyle = card.dead ? 'rgba(255,77,106,0.4)' : (who.length ? (who[0] === 1 ? COL.p2 : (game.mode === 'solo' ? COL.cyan : COL.p1)) : 'rgba(255,255,255,0.14)');
+  ctx.stroke();
+  if (who.indexOf(1) >= 0 && who.indexOf(0) >= 0) {
+    ctx.strokeStyle = COL.p2;
+    ctx.lineWidth = 1.5;
+    roundRect(rect.x + 4, rect.y + 4, rect.w - 8, rect.h - 8, 8);
+    ctx.stroke();
+  }
+  if (!card.dead) drawMathBox(card.tokens, rect, COL.ink, 16);
+  else text('BURNED', rect.x + rect.w / 2, rect.y + rect.h / 2, '800 14px ' + UI, COL.bad, 'center');
+}
+function drawLock(rect) {
+  const hot = game.hoverLock;
+  roundRect(rect.x, rect.y, rect.w, rect.h, 10);
+  ctx.fillStyle = 'rgba(40, 28, 8, 0.92)';
+  ctx.fill();
+  ctx.lineWidth = hot ? 2.6 : 1.6;
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('LOCK', rect.x + rect.w / 2, rect.y + rect.h / 2 - 12, '800 18px ' + UI, COL.gold, 'center');
+  text('BLUEPRINT', rect.x + rect.w / 2, rect.y + rect.h / 2 + 12, '800 13px ' + UI, COL.amber, 'center');
+}
+function drawFloats() {
+  game.particles.forEach((p) => {
+    ctx.globalAlpha = Math.max(0, p.life / p.max);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 3, 3);
+    ctx.globalAlpha = 1;
+  });
+  game.floats.forEach((f) => {
+    ctx.globalAlpha = Math.max(0, f.life / f.max);
+    text(f.text, f.x, f.y, '800 18px ' + UI, f.color, 'center');
+    ctx.globalAlpha = 1;
+  });
+}
+function drawReticle(x, y, color, tag) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-14, 0); ctx.lineTo(-5, 0);
+  ctx.moveTo(5, 0); ctx.lineTo(14, 0);
+  ctx.moveTo(0, -14); ctx.lineTo(0, -5);
+  ctx.moveTo(0, 5); ctx.lineTo(0, 14);
+  ctx.stroke();
+  if (tag) text(tag, 12, -14, '800 11px ' + UI, color, 'left');
+  ctx.restore();
+}
+function cardAnchor(i) {
+  const r = deckGeom().cards[i];
+  return { x: r.x + 16, y: r.y + 16 };
+}
+function drawReticles() {
+  if (game.phase === 'celebrate') return;
+  if (game.mode === 'solo') {
+    if (game.pointerDevice === 'mouse' && game.mouseIn) drawReticle(game.mouseX, game.mouseY, COL.cyan, '');
+    else drawReticle(cardAnchor(game.sel[0] || 0).x, cardAnchor(game.sel[0] || 0).y, COL.cyan, '');
+    return;
+  }
+  for (let p = 0; p < 2; p++) {
+    let pt;
+    if (game.pointerDevice === 'mouse' && game.mouseIn && p === hoverPlayer()) pt = { x: game.mouseX, y: game.mouseY };
+    else pt = cardAnchor(game.sel[p] || 0);
+    drawReticle(pt.x, pt.y, p === 0 ? COL.p1 : COL.p2, 'P' + (p + 1));
+  }
+}
+function drawTitle() {
+  text('STRUCTURAL CAD  \u00b7  SEC 2 SIMULTANEOUS EQUATIONS', W / 2, 78, '800 13px ' + UI, COL.cyan, 'center');
+  text('GEO-LOCK SURVEYOR', W / 2, 124, '800 54px ' + UI, COL.ink, 'center');
+  text('BLUEPRINT ALGEBRA', W / 2, 168, '800 18px ' + UI, COL.magenta, 'center');
+  text('Read the figure. Lock two equations. Solve the blueprint.', W / 2, 202, '600 16px ' + UI, COL.dim, 'center');
+  const cards = titleGeom();
+  const copy = [
+    ['SOLO SURVEYOR', 'Mouse, keyboard, or one 8BitDo. Three CAD shields and your own score.', COL.gold],
+    ['2P CO-OP TEAM', 'P1 and P2 trade Equation 1 and Equation 2 each round. One team score. Four shields.', COL.cyan],
+    ['2P VERSUS', 'Same blueprint, first lock wins the step. Stars, shields, and speed points.', COL.magenta]
+  ];
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    const on = game.titleSel === i;
+    roundRect(c.x, c.y, c.w, c.h, 12);
+    ctx.fillStyle = 'rgba(6,16,28,0.94)';
+    ctx.fill();
+    ctx.lineWidth = on ? 2.5 : 1.2;
+    ctx.strokeStyle = on ? copy[i][2] : 'rgba(140,180,200,0.3)';
+    ctx.stroke();
+    text(copy[i][0], c.x + 20, c.y + 42, '800 18px ' + UI, copy[i][2], 'left');
+    const lines = wrap(copy[i][1], '600 15px ' + UI, c.w - 40);
+    lines.forEach((line, k) => text(line, c.x + 20, c.y + 84 + k * 22, '600 15px ' + UI, COL.dim, 'left'));
+    text(on ? 'PRESS A  /  ENTER' : 'SELECT', c.x + 20, c.y + c.h - 28, '800 12px ' + UI, on ? COL.gold : COL.dim, 'left');
+  }
+  const steps = [
+    ['1  EQUAL SIDES', 'Turn tick marks or a stated equality into Equation 1.'],
+    ['2  SECOND CONSTRAINT', 'Area, perimeter, or a bisected base becomes Equation 2.'],
+    ['3  SOLVE + MEASURE', 'Find the pair, substitute, and lock the length or area.']
+  ];
+  steps.forEach((s, i) => {
+    const x = 64 + i * 400;
+    text(s[0], x, 490, '800 13px ' + UI, COL.amber, 'left');
+    text(s[1], x, 514, '600 14px ' + UI, COL.dim, 'left');
+  });
+  text('Traps: missing 1/2 in a triangle area, using only half of base DF, and sign errors when a perimeter is simplified.', W / 2, 568, '600 14px ' + UI, COL.ink, 'center');
+  const best = game.best.solo;
+  if (best && (best.score || best.round)) {
+    text('BEST SOLO  ' + best.score + ' PTS   \u00b7   ' + best.round + ' BLUEPRINTS', W / 2, 608, '700 13px ' + UI, COL.gold, 'center');
+  }
+  text('1 / 2 / 3 pick a mode    \u00b7    M mutes    \u00b7    P pauses', W / 2, 662, '700 13px ' + UI, COL.dim, 'center');
+  drawMute();
+}
+function overGeom() {
+  return {
+    title: { x: 380, y: 500, w: 250, h: 52 },
+    again: { x: 650, y: 500, w: 250, h: 52 }
+  };
+}
+function drawOver() {
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.72)';
+  ctx.fillRect(0, 0, W, H);
+  panel(300, 160, 680, 430, 'rgba(255,77,106,0.45)');
+  text('SURVEY HALTED', W / 2, 206, '800 14px ' + UI, COL.bad, 'center');
+  const reasonLines = wrap(game.overReason || 'Shields gone.', '700 18px ' + UI, 600);
+  reasonLines.slice(0, 2).forEach(function (line, i) {
+    text(line, W / 2, 250 + i * 24, '700 18px ' + UI, COL.ink, 'center');
+  });
+  if (game.mode === 'versus') {
+    text('P1  ' + game.stars[0] + ' stars    ' + game.pScore[0] + ' pts', W / 2, 330, '800 20px ' + MONO, COL.p1, 'center');
+    text('P2  ' + game.stars[1] + ' stars    ' + game.pScore[1] + ' pts', W / 2, 366, '800 20px ' + MONO, COL.p2, 'center');
+    text((game.winner || 'DRAW') + '  \u00b7  ' + game.cleared + ' blueprints sealed', W / 2, 420, '700 16px ' + UI, COL.gold, 'center');
+  } else {
+    text(String(game.score), W / 2, 340, '800 48px ' + MONO, COL.gold, 'center');
+    text((game.mode === 'coop' ? 'TEAM SCORE' : 'SOLO SCORE') + '   \u00b7   ' + game.cleared + ' SEALED', W / 2, 400, '700 16px ' + UI, COL.dim, 'center');
+  }
+  const buttons = overGeom();
+  roundRect(buttons.title.x, buttons.title.y, buttons.title.w, buttons.title.h, 8);
+  ctx.fillStyle = 'rgba(8, 16, 28, 0.95)';
+  ctx.fill();
+  ctx.strokeStyle = COL.dim;
+  ctx.stroke();
+  text('TITLE', buttons.title.x + buttons.title.w / 2, buttons.title.y + 26, '800 16px ' + UI, COL.ink, 'center');
+  roundRect(buttons.again.x, buttons.again.y, buttons.again.w, buttons.again.h, 8);
+  ctx.fillStyle = 'rgba(8, 16, 28, 0.95)';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('SURVEY AGAIN', buttons.again.x + buttons.again.w / 2, buttons.again.y + 26, '800 16px ' + UI, COL.gold, 'center');
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 10, 18, 0.6)';
+  ctx.fillRect(0, 0, W, H);
+  panel(390, 240, 500, 230, COL.cyan);
+  text('SURVEY PAUSED', W / 2, 300, '800 24px ' + UI, COL.cyan, 'center');
+  text('P or Esc resumes. The blueprint stays put.', W / 2, 346, '600 15px ' + UI, COL.dim, 'center');
+  roundRect(490, 390, 300, 52, 8);
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('RESUME', W / 2, 416, '800 16px ' + UI, COL.gold, 'center');
+}
+function drawFatal() {
+  if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#3a1020';
+  ctx.fillRect(0, 0, canvas.width, 64);
+  ctx.font = '16px monospace';
+  ctx.fillStyle = '#ffd0d6';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(game.fatal).slice(0, 220), 12, 28);
+}
+
+function draw() {
+  const dpr = canvas.width / Math.max(1, window.innerWidth);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  layoutView();
+  ctx.save();
+  ctx.translate(game.view.ox, game.view.oy);
+  ctx.scale(game.view.s, game.view.s);
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.clip();
+  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  drawBackground();
+  if (game.screen === 'title') drawTitle();
+  else {
+    drawHUD();
+    drawSpec();
+    drawFigure();
+    drawBus();
+    drawDeck();
+    drawFloats();
+    if (game.flash > 0) {
+      ctx.fillStyle = 'rgba(255, 50, 80, ' + (game.flash * 0.22) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (game.screen === 'play' && !game.paused && game.phase === 'play') drawReticles();
+    if (game.screen === 'over') drawOver();
+    if (game.paused) drawPause();
+  }
+  ctx.restore();
+  const overUi = game.screen !== 'play' || game.paused || hit(game.mouseX, game.mouseY, GEO.mute);
+  canvas.style.cursor = game.screen === 'play' && !game.paused && game.pointerDevice === 'mouse' && !overUi ? 'none' : 'default';
+}
+function update(dt) {
+  layoutView();
+  pollInput();
+  if (game.screen === 'play' && !game.paused) advance(dt);
+  else game.time += dt;
+  tickMusic();
+}
+
+let lastTs = 0;
+function frame(now) {
+  const dt = Math.min(0.05, lastTs ? (now - lastTs) / 1000 : 0.016);
+  lastTs = now;
+  try {
+    update(dt);
+    draw();
+    game.fatal = '';
+  } catch (err) {
+    game.fatal = err && err.stack ? err.stack : String(err);
+    if (typeof console !== 'undefined') console.error(err);
+    try { drawFatal(); } catch (e2) { /* ignore */ }
+  }
+  keyEdge.clear();
+  pointerEdge = false;
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d', { alpha: false });
+  try {
+    const saved = localStorage.getItem('geo-lock-surveyor-best');
+    if (saved) game.best = JSON.parse(saved) || {};
+  } catch (err) { game.best = {}; }
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('keydown', function (e) {
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(e.code) >= 0) e.preventDefault();
+    if (e.repeat) return;
+    keysDown.add(e.code);
+    keyEdge.add(e.code);
+    game.pointerDevice = 'key';
+    resumeAudio();
+  });
+  window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+  canvas.addEventListener('mousemove', function (e) {
+    const p = worldFromClient(e.clientX, e.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    game.mouseIn = true;
+    game.pointerDevice = 'mouse';
+    if (game.screen === 'title') {
+      titleGeom().forEach((card, i) => { if (hit(p.x, p.y, card)) game.titleSel = i; });
+    }
+    if (game.screen === 'play' && game.phase === 'play') {
+      const deck = deckGeom();
+      const who = hoverPlayer();
+      game.hoverLock = hit(p.x, p.y, deck.lock);
+      for (let i = 0; i < deck.cards.length; i++) {
+        if (hit(p.x, p.y, deck.cards[i])) game.sel[who] = i;
+      }
+    }
+  });
+  canvas.addEventListener('mouseleave', function () { game.mouseIn = false; });
+  canvas.addEventListener('mousedown', function (e) {
+    const p = worldFromClient(e.clientX, e.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    pointerEdge = true;
+    pointerDown = true;
+    game.pointerDevice = 'mouse';
+    resumeAudio();
+  });
+  window.addEventListener('mouseup', function () { pointerDown = false; });
+  canvas.addEventListener('touchstart', function (e) {
+    const t = e.changedTouches[0];
+    const p = worldFromClient(t.clientX, t.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    game.pointerDevice = 'mouse';
+    pointerEdge = true;
+    resumeAudio();
+    e.preventDefault();
+  }, { passive: false });
+  requestAnimationFrame(frame);
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+function inside(inner, outer) {
+  return inner.x >= outer.x - 0.1 && inner.y >= outer.y - 0.1 &&
+    inner.x + inner.w <= outer.x + outer.w + 0.1 && inner.y + inner.h <= outer.y + outer.h + 0.1;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0;
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function geoTest() {
+  const fails = [];
+  const sample = solve2({ A: 2, B: 1, C: 13 }, { A: 3, B: -2, C: 9 });
+  if (!sample || sample.x !== 5 || sample.y !== 3) fails.push('solve2 textbook');
+  const pos = [0, 0, 0, 0];
+  const arches = {};
+  Object.keys(GENS).forEach((arch) => {
+    let ok = 0;
+    for (let i = 0; i < 18; i++) {
+      const p = GENS[arch](mulberry32(1000 + i * 17 + arch.length * 13));
+      if (!p) {
+        fails.push('null ' + arch + ' ' + lastAudit);
+        continue;
+      }
+      const reason = audit(p);
+      if (reason) fails.push(reason + ' ' + arch);
+      else ok += 1;
+      arches[p.arch] = (arches[p.arch] || 0) + 1;
+      p.steps.forEach((step) => {
+        const idx = step.cards.findIndex((c) => c.correct);
+        if (idx >= 0) pos[idx] += 1;
+      });
+    }
+    if (ok < 12) fails.push('thin ' + arch + ' ' + ok);
+  });
+  for (let seed = 1; seed <= 6; seed++) {
+    const rng = mulberry32(seed * 99);
+    const hist = [];
+    const seq = [];
+    for (let round = 1; round <= 16; round++) {
+      const p = generateProblem(round, hist, rng);
+      if (!p) { fails.push('play-null ' + round + ' ' + lastAudit); break; }
+      const reason = audit(p);
+      if (reason) fails.push('play ' + reason);
+      if (hist.some((h) => h.key === p.key)) fails.push('repeat ' + p.key);
+      const tier = tierOf(round);
+      if (tier.arches.indexOf(p.arch) < 0) fails.push('tier ' + round + ' ' + p.arch);
+      if (hist.length && hist[hist.length - 1].arch === p.arch && tier.arches.length > 1) fails.push('adjacent ' + p.arch);
+      hist.push({ arch: p.arch, key: p.key });
+      if (hist.length > 6) hist.shift();
+      seq.push(p.arch + ':' + p.sol.x + ',' + p.sol.y);
+    }
+    if (seed === 1 && seq.length < 16) fails.push('short-run');
+  }
+  const regions = [GEO.hud, GEO.spec, GEO.stage, GEO.deck];
+  for (let i = 0; i < regions.length; i++) {
+    const r = regions[i];
+    if (r.x < 0 || r.y < 0 || r.x + r.w > W || r.y + r.h > H) fails.push('off ' + i);
+    for (let j = i + 1; j < regions.length; j++) if (rectsOverlap(r, regions[j])) fails.push('panel ' + i + ' ' + j);
+  }
+  if (!inside(GEO.view, GEO.stage) || !inside(GEO.bus, GEO.stage)) fails.push('stage-child');
+  if (rectsOverlap(GEO.view, GEO.bus)) fails.push('view-bus');
+  if (!inside(GEO.mute, GEO.hud)) fails.push('mute');
+  const deck = deckGeom();
+  deck.cards.forEach((card, i) => {
+    if (!inside(card, GEO.deck)) fails.push('card ' + i);
+    if (rectsOverlap(card, deck.lock)) fails.push('card-lock');
+    for (let j = i + 1; j < deck.cards.length; j++) if (rectsOverlap(card, deck.cards[j])) fails.push('cards');
+  });
+  ['prompt', 'role', 'tip', 'hint', 'lock'].forEach((name) => {
+    if (!inside(deck[name], GEO.deck)) fails.push('deck-' + name);
+  });
+  if (rectsOverlap(deck.prompt, deck.tip) || rectsOverlap(deck.tip, deck.cards[0]) || rectsOverlap(deck.cards[0], deck.hint)) fails.push('deck-stack');
+  if (rectsOverlap(deck.prompt, deck.role)) fails.push('prompt-role');
+  if (pos.filter((n) => n > 0).length < 4) fails.push('slots ' + pos.join(','));
+  return { fails: fails, pos: pos, arches: arches, lastAudit: lastAudit };
+}
+
+if (typeof window !== 'undefined') {
+  window.__geoTest = geoTest;
+  window.__geo = {
+    game: game,
+    generateProblem: generateProblem,
+    audit: audit,
+    GENS: GENS,
+    startMode: startMode,
+    GEO: GEO
+  };
+  boot();
+}
+</script>
+</body>
+</html>
