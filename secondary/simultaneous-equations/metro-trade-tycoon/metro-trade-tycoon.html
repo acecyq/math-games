@@ -1,0 +1,2884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metro Trade &amp; Mixture Tycoon</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070814;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    touch-action: none;
+    background: #070814;
+  }
+  noscript {
+    color: #e7f6ff;
+    font-family: "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>Metro Trade &amp; Mixture Tycoon needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game"></canvas>
+<script>
+'use strict';
+
+/* Metro Trade & Mixture Tycoon
+   Singapore Secondary 2 G3 — formulate and solve simultaneous
+   linear equations from trade, tariff, mixture, interest, and digit problems.
+   Every contract is generated, solved, and checked before it is shown. */
+
+const W = 1280;
+const H = 720;
+const UI = '"Trebuchet MS", "Segoe UI", sans-serif';
+const MONO = 'Consolas, "Courier New", monospace';
+const MINUS = '\u2212';
+const TIMES = '\u00d7';
+
+const COL = {
+  bg: '#070814',
+  ink: '#e8f4ff',
+  dim: '#8ea4c0',
+  cyan: '#3ee7ff',
+  magenta: '#ff3d9a',
+  amber: '#ffc857',
+  good: '#5dffb0',
+  bad: '#ff4d6a',
+  gold: '#ffe08a',
+  p1: '#ff3355',
+  p2: '#3aa0ff',
+  line: 'rgba(120, 170, 210, 0.28)'
+};
+
+const GEO = {
+  hud: { x: 14, y: 8, w: 1252, h: 50 },
+  ticker: { x: 14, y: 66, w: 1252, h: 148 },
+  ledger: { x: 14, y: 230, w: 500, h: 266 },
+  sim: { x: 528, y: 230, w: 738, h: 266 },
+  deck: { x: 14, y: 508, w: 1252, h: 200 },
+  mute: { x: 1184, y: 16, w: 70, h: 34 }
+};
+
+const GENS = {
+  purchase: genPurchase,
+  split: genSplit,
+  share: genShare,
+  tariff: genTariff,
+  interest: genInterest,
+  mixture: genMixture,
+  mean: genMean,
+  vault: genVault,
+  fraction: genFraction
+};
+
+let canvas, ctx;
+const game = {
+  screen: 'title',
+  mode: 'solo',
+  round: 1,
+  step: 0,
+  phase: 'play',
+  problem: null,
+  shields: 3,
+  maxShields: 3,
+  pShields: [3, 3],
+  score: 0,
+  pScore: [0, 0],
+  stars: [0, 0],
+  combo: 0,
+  cleared: 0,
+  cursor: [0, 0],
+  armed: [-1, -1],
+  ready: [false, false],
+  titleSel: 0,
+  overSel: 0,
+  pauseSel: 0,
+  tip: '',
+  hint: '',
+  hintT: 0,
+  lock: 0,
+  lockT: 0,
+  lockStep: 0,
+  linkT: 0,
+  celebrateT: 0,
+  time: 0,
+  shake: 0,
+  particles: [],
+  floats: [],
+  history: [],
+  best: {},
+  locked: [null, null, null],
+  paused: false,
+  fatal: '',
+  overReason: '',
+  mouseX: 640,
+  mouseY: 400,
+  mouseIn: false,
+  padOn: [false, false],
+  aim: [{ x: 640, y: 400 }, { x: 780, y: 400 }],
+  ret: [{ x: 640, y: 400 }, { x: 780, y: 400 }]
+};
+
+const keysDown = new Set();
+const keyEdge = new Set();
+const acted = [false, false];
+let pointerEdge = false;
+let pointerX = 0;
+let pointerY = 0;
+
+const audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  muted: false,
+  started: false,
+  step: 0,
+  next: 0,
+  noise: null
+};
+
+const padMem = [
+  { buttons: [], ax: 0, ay: 0 },
+  { buttons: [], ax: 0, ay: 0 }
+];
+
+const city = [];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+function randInt(rng, a, b) { return a + Math.floor(rng() * (b - a + 1)); }
+function gcd(a, b) {
+  let x = Math.abs(a) | 0;
+  let y = Math.abs(b) | 0;
+  while (y) { const t = x % y; x = y; y = t; }
+  return x || 1;
+}
+function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function norm(s) {
+  return String(s).replace(/\s+/g, '').replace(/\u2212/g, '-').replace(/\$/g, '');
+}
+function close(a, b) { return Math.abs(a - b) <= 1e-4 * (1 + Math.abs(b)); }
+function holds(eq, x, y) {
+  if (eq.a == null || eq.b == null || eq.c == null) return false;
+  return Math.abs(eq.a * x + eq.b * y - eq.c) <= 1e-4 * (1 + Math.abs(eq.c));
+}
+function solveSystem(a1, b1, c1, a2, b2, c2) {
+  const det = a1 * b2 - a2 * b1;
+  if (Math.abs(det) < 1e-9) return null;
+  const x = (c1 * b2 - c2 * b1) / det;
+  const y = (a1 * c2 - a2 * c1) / det;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: x, y: y };
+}
+function trimFixed(n, digits) {
+  return n.toFixed(digits).replace(/\.?0+$/, '');
+}
+function money(cents) {
+  const neg = cents < 0;
+  const v = Math.abs(Math.round(cents));
+  const body = (v % 100 === 0) ? String(v / 100) : (v / 100).toFixed(2);
+  return (neg ? '-' : '') + '$' + body;
+}
+function money2(cents) {
+  const neg = cents < 0;
+  const v = Math.abs(Math.round(cents));
+  return (neg ? '-' : '') + '$' + (v / 100).toFixed(2);
+}
+function plain2(cents) {
+  return (Math.abs(Math.round(cents)) / 100).toFixed(2);
+}
+function cmStr(tenths) {
+  const v = Math.abs(Math.round(tenths));
+  return (v % 10 === 0) ? String(v / 10) : (v / 10).toFixed(1);
+}
+function rateStr(bps) { return trimFixed(bps / 10000, 4); }
+function pctStr(bps) { return trimFixed(bps / 100, 2) + '%'; }
+function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+function childWord(n) { return n + (n === 1 ? ' child' : ' children'); }
+function unitWord(unit, n) {
+  if (unit === 'min') return n === 1 ? 'min' : 'mins';
+  if (unit === 'hour') return n === 1 ? 'hour' : 'hours';
+  return 'km';
+}
+function fmtSigned(n) {
+  if (n < 0) return MINUS + Math.abs(n);
+  return String(n);
+}
+function fmtTerm(coeff, name, isFirst) {
+  if (!coeff) return '';
+  const neg = coeff < 0;
+  const mag = Math.abs(coeff);
+  const body = name ? (mag === 1 ? name : mag + name) : String(mag);
+  if (isFirst) return (neg ? MINUS : '') + body;
+  return (neg ? ' ' + MINUS + ' ' : ' + ') + body;
+}
+function eqLine(a, v1, b, v2, c) {
+  let left = '';
+  left += fmtTerm(a, v1, true);
+  left += fmtTerm(b, v2, !left);
+  if (!left) left = '0';
+  return left + ' = ' + fmtSigned(c);
+}
+function seg(text, clue) { return { text: text, clue: clue || 0 }; }
+function card(text, extra) {
+  const c = extra || {};
+  c.text = text;
+  c.correct = !!c.correct;
+  c.tip = c.tip || '';
+  if (c.value === undefined) c.value = null;
+  c.frac = c.frac || null;
+  return c;
+}
+
+function wrapText(ctx2, text, maxW) {
+  const words = String(text).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = line ? line + ' ' + words[i] : words[i];
+    if (line && ctx2.measureText(next).width > maxW) {
+      lines.push(line);
+      line = words[i];
+    } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
+}
+
+function makeCards(rng, correct, wrongs, sol) {
+  const cards = [card(correct.text, {
+    correct: true,
+    value: correct.value == null ? null : correct.value,
+    frac: correct.frac || null,
+    a: correct.a, b: correct.b, c: correct.c
+  })];
+  const seen = new Set([norm(correct.text)]);
+  for (let i = 0; i < wrongs.length && cards.length < 4; i++) {
+    const w = wrongs[i];
+    if (!w || !w.text) continue;
+    const key = norm(w.text);
+    if (seen.has(key)) continue;
+    if (w.a != null && sol && holds(w, sol.x, sol.y)) continue;
+    if (w.value != null && correct.value != null && close(w.value, correct.value)) continue;
+    if (w.frac && correct.frac && close(w.frac.n / w.frac.d, correct.frac.n / correct.frac.d)) continue;
+    seen.add(key);
+    cards.push(card(w.text, {
+      correct: false,
+      tip: w.tip || 'Check the clue again and match each quantity to the right unit.',
+      value: w.value == null ? null : w.value,
+      frac: w.frac || null,
+      a: w.a, b: w.b, c: w.c
+    }));
+  }
+  if (cards.length < 4) return null;
+  const chosen = shuffle(rng, cards.slice(0, 4));
+  chosen.forEach(function (c) { c.dead = false; c.deadFor = [false, false]; });
+  return chosen;
+}
+
+function finalize(rng, draft) {
+  const s1 = makeCards(rng, draft.c1, draft.w1, draft.sol);
+  const s2 = makeCards(rng, draft.c2, draft.w2, draft.sol);
+  const s3 = makeCards(rng, draft.c3, draft.w3, draft.sol);
+  if (!s1 || !s2 || !s3) return null;
+  draft.steps = [
+    { prompt: draft.prompts[0], cards: s1 },
+    { prompt: draft.prompts[1], cards: s2 },
+    { prompt: draft.prompts[2], cards: s3 }
+  ];
+  draft.key = [draft.arch, draft.eq1.text, draft.eq2.text, draft.finalText, draft.sol.x, draft.sol.y].join('|');
+  delete draft.c1; delete draft.c2; delete draft.c3;
+  delete draft.w1; delete draft.w2; delete draft.w3;
+  delete draft.prompts;
+  if (verify(draft)) return null;
+  return draft;
+}
+
+function tierOf(round) {
+  if (round <= 2) return { name: 'WARM-UP', arches: ['purchase', 'split', 'share'] };
+  if (round <= 4) return { name: 'INTERMEDIATE', arches: ['tariff', 'interest'] };
+  if (round <= 6) return { name: 'ADVANCED', arches: ['mixture', 'mean'] };
+  return { name: 'MASTER', arches: ['vault', 'fraction'] };
+}
+
+/* ---------- generators ---------- */
+
+function genPurchase(rng) {
+  const goods = [
+    ['shirt', 'jacket', 's', 'j'],
+    ['ticket', 'snack', 't', 'k'],
+    ['badge', 'lanyard', 'b', 'l'],
+    ['muffin', 'juice', 'm', 'j'],
+    ['cap', 'scarf', 'c', 'f'],
+    ['pen', 'ruler', 'p', 'r'],
+    ['bun', 'tart', 'b', 't']
+  ];
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const g = pick(rng, goods);
+    const n1 = g[0], n2 = g[1], v1 = g[2], v2 = g[3];
+    const a1 = randInt(rng, 2, 6);
+    const b1 = randInt(rng, 1, 5);
+    const a2 = randInt(rng, 1, 6);
+    const b2 = randInt(rng, 2, 6);
+    if (a1 * b2 - b1 * a2 === 0) continue;
+    const p = randInt(rng, 4, 28);
+    let q = randInt(rng, 5, 36);
+    if (q === p) q += 4;
+    const t1 = a1 * p + b1 * q;
+    const t2 = a2 * p + b2 * q;
+    if (t1 > 900 || t2 > 900) continue;
+    const sol = { x: p, y: q };
+    if (!holds({ a: a1, b: b1, c: t1 }, p, q) || !holds({ a: a2, b: b2, c: t2 }, p, q)) continue;
+    const eq1 = { a: a1, b: b1, c: t1, text: eqLine(a1, v1, b1, v2, t1) };
+    const eq2 = { a: a2, b: b2, c: t2, text: eqLine(a2, v1, b2, v2, t2) };
+    const askBundle = rng() < 0.55;
+    let k1 = randInt(rng, 1, 4);
+    let k2 = randInt(rng, 1, 4);
+    if ((k1 === a1 && k2 === b1) || (k1 === a2 && k2 === b2)) { k1 = 1; k2 = 1; }
+    const bundle = k1 * p + k2 * q;
+    const askFirst = rng() < 0.5;
+    const finalValue = askBundle ? bundle : (askFirst ? p : q);
+    const finalText = money(finalValue * 100);
+    const question = askBundle
+      ? 'Find the cost of ' + plural(k1, n1) + ' and ' + plural(k2, n2) + '.'
+      : 'Find the cost of 1 ' + (askFirst ? n1 : n2) + '.';
+    const pair = v1 + ' = ' + money(p * 100) + ', ' + v2 + ' = ' + money(q * 100);
+    const early = 'Read the final question! You found the two prices (' + pair + '). ' + question.replace(/\.$/, '') + ', which is ' + finalText + '.';
+    const units = 'Keep units consistent! Item counts stay on the left. The right side of each order is the dollar total, not the number of items.';
+    const recompute = askBundle
+      ? function (s) { return k1 * s.x + k2 * s.y; }
+      : function (s) { return askFirst ? s.x : s.y; };
+    return finalize(rng, {
+      arch: 'purchase',
+      kicker: 'DUAL-PURCHASE ORDER',
+      segments: [
+        seg('Metro Outfitters logs two bundle orders. '),
+        seg(plural(a1, n1) + ' and ' + plural(b1, n2) + ' cost ' + money(t1 * 100) + '. ', 1),
+        seg(plural(a2, n1) + ' and ' + plural(b2, n2) + ' cost ' + money(t2 * 100) + '. ', 2),
+        seg(question)
+      ],
+      vars: 'Let ' + v1 + ' = price of one ' + n1 + ' in dollars,  ' + v2 + ' = price of one ' + n2 + ' in dollars.',
+      v1: v1, v2: v2,
+      eq1: eq1, eq2: eq2, sol: sol,
+      pairText: pair,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: recompute,
+      prompts: [
+        'LOCK EQUATION 1  ·  translate the cyan order',
+        'LOCK EQUATION 2  ·  translate the magenta order',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: eq1.a, b: eq1.b, c: eq1.c },
+      c2: { text: eq2.text, a: eq2.a, b: eq2.b, c: eq2.c },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: eqLine(b1, v1, a1, v2, t1), a: b1, b: a1, c: t1, tip: 'The first order is ' + plural(a1, n1) + ' and ' + plural(b1, n2) + '. The coefficients are swapped.' },
+        { text: eqLine(a1, v1, b1, v2, t2), a: a1, b: b1, c: t2, tip: 'That dollar total belongs to the other order.' },
+        { text: eqLine(a1, v1, b1, v2, a1 + b1), a: a1, b: b1, c: a1 + b1, tip: units },
+        { text: v1 + ' + ' + v2 + ' = ' + t1, a: 1, b: 1, c: t1, tip: units }
+      ],
+      w2: [
+        { text: eqLine(b2, v1, a2, v2, t2), a: b2, b: a2, c: t2, tip: 'The second order is ' + plural(a2, n1) + ' and ' + plural(b2, n2) + '. The coefficients are swapped.' },
+        { text: eqLine(a2, v1, b2, v2, t1), a: a2, b: b2, c: t1, tip: 'That dollar total belongs to the first order.' },
+        { text: eqLine(a2, v1, b2, v2, a2 + b2), a: a2, b: b2, c: a2 + b2, tip: units },
+        { text: eq1.text, a: eq1.a, b: eq1.b, c: eq1.c, tip: 'That is the cyan order. Equation 2 is the magenta order.' }
+      ],
+      w3: [
+        { text: pair, value: p * 1000 + q, tip: early },
+        { text: money((askBundle ? t1 : (askFirst ? q : p)) * 100), value: askBundle ? t1 : (askFirst ? q : p), tip: askBundle ? 'That is the cost of the first order, not the new bundle.' : 'That is the other item.' },
+        { text: money(t2 * 100), value: t2, tip: 'That is a whole order total, not the delivery the question asks for.' },
+        { text: money((bundle + p) * 100), value: bundle + p, tip: early }
+      ],
+      visual: 'orders',
+      sfx: 'coins',
+      visualSpec: {
+        rows: [
+          { clue: 1, left: plural(a1, n1), right: plural(b1, n2), total: money(t1 * 100) },
+          { clue: 2, left: plural(a2, n1), right: plural(b2, n2), total: money(t2 * 100) }
+        ],
+        tags: [v1 + ' = one ' + n1, v2 + ' = one ' + n2]
+      }
+    });
+  }
+  return null;
+}
+
+function genSplit(rng) {
+  const items = ['notebook', 'ticket', 'bottle', 'poster', 'keychain'];
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const item = pick(rng, items);
+    const cheap = randInt(rng, 4, 18);
+    const dear = cheap + randInt(rng, 3, 14);
+    const x = randInt(rng, 8, 42);
+    const y = randInt(rng, 8, 42);
+    if (x === y) continue;
+    const n = x + y;
+    const total = cheap * x + dear * y;
+    if (n < 20 || n > 100 || total > 4000) continue;
+    const eq1 = { a: 1, b: 1, c: n, text: 'x + y = ' + n };
+    const eq2 = { a: cheap, b: dear, c: total, text: cheap + 'x + ' + dear + 'y = ' + total };
+    const mode = randInt(rng, 0, 2);
+    let finalText, finalValue, question, recompute;
+    if (mode === 0) {
+      finalText = plural(y, item);
+      finalValue = y;
+      question = 'How many ' + money(dear * 100) + ' ' + item + 's were sold?';
+      recompute = function (s) { return s.y; };
+    } else if (mode === 1) {
+      finalText = plural(x, item);
+      finalValue = x;
+      question = 'How many ' + money(cheap * 100) + ' ' + item + 's were sold?';
+      recompute = function (s) { return s.x; };
+    } else {
+      finalText = money(dear * y * 100);
+      finalValue = dear * y;
+      question = 'What is the total value of the ' + money(dear * 100) + ' ' + item + 's?';
+      recompute = function (s) { return dear * s.y; };
+    }
+    const unitsTip = 'Keep units consistent! Item count + Item count = ' + n + ' items; Dollars + Dollars = ' + money(total * 100) + '!';
+    const pair = 'x = ' + x + ', y = ' + y;
+    const early = 'Read the final question! The counts are ' + pair + '. ' + question.replace(/\?$/, '') + ': ' + finalText + '.';
+    return finalize(rng, {
+      arch: 'split',
+      kicker: 'SPLIT-INVENTORY LEDGER',
+      segments: [
+        seg('A platform stall sold '),
+        seg(n + ' ' + item + 's', 1),
+        seg(' for '),
+        seg(money(total * 100) + ' altogether. ', 2),
+        seg('Some cost ' + money(cheap * 100) + ' each and the rest cost ' + money(dear * 100) + ' each. ' + question)
+      ],
+      vars: 'Let x = number of ' + money(cheap * 100) + ' ' + item + 's,  y = number of ' + money(dear * 100) + ' ' + item + 's.',
+      v1: 'x', v2: 'y',
+      eq1: eq1, eq2: eq2,
+      sol: { x: x, y: y },
+      pairText: pair,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: recompute,
+      prompts: [
+        'LOCK EQUATION 1  ·  the item count',
+        'LOCK EQUATION 2  ·  the dollar total',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: 1, b: 1, c: n },
+      c2: { text: eq2.text, a: cheap, b: dear, c: total },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: 'x + y = ' + total, a: 1, b: 1, c: total, tip: unitsTip },
+        { text: cheap + 'x + ' + dear + 'y = ' + n, a: cheap, b: dear, c: n, tip: unitsTip },
+        { text: 'x + y = ' + (cheap + dear), a: 1, b: 1, c: cheap + dear, tip: 'The prices are dollars, not a count of ' + item + 's.' },
+        { text: 'x + y = ' + cheap, a: 1, b: 1, c: cheap, tip: unitsTip }
+      ],
+      w2: [
+        { text: cheap + 'x + ' + dear + 'y = ' + n, a: cheap, b: dear, c: n, tip: unitsTip },
+        { text: dear + 'x + ' + cheap + 'y = ' + total, a: dear, b: cheap, c: total, tip: 'x is the ' + money(cheap * 100) + ' ' + item + ' and y is the ' + money(dear * 100) + ' ' + item + '. The prices are swapped.' },
+        { text: 'x + y = ' + total, a: 1, b: 1, c: total, tip: unitsTip },
+        { text: cheap + 'x + ' + dear + 'y = ' + (cheap + dear), a: cheap, b: dear, c: cheap + dear, tip: 'The right side is the total money taken, ' + money(total * 100) + '.' }
+      ],
+      w3: [
+        { text: mode === 0 ? plural(x, item) : plural(y, item), value: mode === 0 ? x : y, tip: early },
+        { text: pair, value: x * 1000 + y, tip: early },
+        { text: money(total * 100), value: total + 0.4, tip: mode === 2 ? 'That is the money from both kinds together.' : 'The question asks for a count of ' + item + 's, not the dollar total.' },
+        { text: plural(n, item), value: n, tip: 'That is the total number sold, x + y.' }
+      ],
+      visual: 'split',
+      sfx: 'coins',
+      visualSpec: {
+        item: item, n: n, totalText: money(total * 100),
+        cheap: money(cheap * 100), dear: money(dear * 100)
+      }
+    });
+  }
+  return null;
+}
+
+function genShare(rng) {
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const surplus = rng() < 0.62;
+    let r1, r2, x, y, left, extra, short, eq1, eq2, clue1, clue2;
+    if (surplus) {
+      r1 = randInt(rng, 3, 11);
+      const d = randInt(rng, 1, 4);
+      r2 = r1 + d;
+      x = randInt(rng, 4, 20);
+      left = randInt(rng, 1, Math.min(12, d * x - 1));
+      extra = d * x - left;
+      y = r1 * x + left;
+      if (y + extra !== r2 * x) continue;
+      eq1 = { a: -r1, b: 1, c: left, text: 'y = ' + r1 + 'x + ' + left };
+      eq2 = { a: -r2, b: 1, c: -extra, text: 'y + ' + extra + ' = ' + r2 + 'x' };
+      clue1 = 'If each child receives $' + r1 + ', $' + left + ' is left over. ';
+      clue2 = 'If $' + extra + ' more is added, each child receives $' + r2 + '. ';
+    } else {
+      r2 = randInt(rng, 3, 9);
+      const d = randInt(rng, 1, 4);
+      r1 = r2 + d;
+      x = randInt(rng, 4, 20);
+      left = randInt(rng, 1, Math.min(12, d * x - 1));
+      short = d * x - left;
+      y = r2 * x + left;
+      if (y !== r1 * x - short) continue;
+      eq1 = { a: -r1, b: 1, c: -short, text: 'y = ' + r1 + 'x ' + MINUS + ' ' + short };
+      eq2 = { a: -r2, b: 1, c: left, text: 'y = ' + r2 + 'x + ' + left };
+      clue1 = 'If each child receives $' + r1 + ', the share is $' + short + ' short. ';
+      clue2 = 'If each child receives $' + r2 + ', $' + left + ' is left over. ';
+    }
+    const askKids = rng() < 0.5;
+    const finalText = askKids ? childWord(x) : money(y * 100);
+    const finalValue = askKids ? x : y;
+    const question = askKids ? 'How many children are there?' : 'How much money is shared?';
+    const pair = 'x = ' + x + ', y = ' + money(y * 100);
+    const early = 'Read the final question! You found ' + pair + '. ' + question.replace(/\?$/, '') + ': ' + finalText + '.';
+    const signTip = surplus
+      ? 'Left over means the money is more than $' + r1 + ' per child, so y = ' + r1 + 'x + ' + left + '.'
+      : 'Short means the money is less than $' + r1 + ' per child, so y = ' + r1 + 'x ' + MINUS + ' ' + short + '.';
+    const wrong1 = surplus
+      ? [
+          { text: 'y = ' + r1 + 'x ' + MINUS + ' ' + left, a: -r1, b: 1, c: -left, tip: signTip },
+          { text: 'y + ' + left + ' = ' + r1 + 'x', a: -r1, b: 1, c: -left, tip: signTip },
+          { text: 'y = ' + r1 + 'x + ' + (surplus ? extra : left), a: -r1, b: 1, c: extra, tip: 'The extra $' + extra + ' belongs to the second clue.' },
+          { text: r1 + 'x + ' + r2 + 'x = y', a: -(r1 + r2), b: 1, c: 0, tip: 'Each clue is its own equation. Do not add the two rates.' }
+        ]
+      : [
+          { text: 'y = ' + r1 + 'x + ' + short, a: -r1, b: 1, c: short, tip: signTip },
+          { text: 'y = ' + r1 + 'x', a: -r1, b: 1, c: 0, tip: 'The shortage of $' + short + ' has to appear in the equation.' },
+          { text: 'y + ' + short + ' = ' + r2 + 'x', a: -r2, b: 1, c: -short, tip: 'This clue uses $' + r1 + ' each, so y + ' + short + ' = ' + r1 + 'x.' },
+          { text: r1 + 'x + ' + r2 + 'x = y', a: -(r1 + r2), b: 1, c: 0, tip: 'Each distribution is its own equation.' }
+        ];
+    const wrong2 = surplus
+      ? [
+          { text: 'y = ' + r2 + 'x', a: -r2, b: 1, c: 0, tip: 'The extra $' + extra + ' has to be included: y + ' + extra + ' = ' + r2 + 'x.' },
+          { text: 'y ' + MINUS + ' ' + extra + ' = ' + r2 + 'x', a: -r2, b: 1, c: extra, tip: 'Adding money increases the total, so it is y + ' + extra + '.' },
+          { text: 'y + ' + extra + ' = ' + r1 + 'x', a: -r1, b: 1, c: -extra, tip: 'After the extra money, each child receives $' + r2 + ', not $' + r1 + '.' },
+          { text: eq1.text, a: eq1.a, b: eq1.b, c: eq1.c, tip: 'That is the cyan clue. Equation 2 is the magenta clue.' }
+        ]
+      : [
+          { text: 'y = ' + r2 + 'x ' + MINUS + ' ' + left, a: -r2, b: 1, c: -left, tip: 'Left over means y = ' + r2 + 'x + ' + left + '.' },
+          { text: 'y + ' + left + ' = ' + r2 + 'x', a: -r2, b: 1, c: -left, tip: 'Left over means the money is more than ' + r2 + 'x.' },
+          { text: 'y = ' + r1 + 'x + ' + left, a: -r1, b: 1, c: left, tip: 'The leftover belongs with the $' + r2 + ' share.' },
+          { text: eq1.text, a: eq1.a, b: eq1.b, c: eq1.c, tip: 'That is the cyan clue. Equation 2 is the magenta clue.' }
+        ];
+    return finalize(rng, {
+      arch: 'share',
+      kicker: surplus ? 'SHARING SURPLUS' : 'SHARING SHORTAGE',
+      segments: [
+        seg('x children share $y of metro vouchers. '),
+        seg(clue1, 1),
+        seg(clue2, 2),
+        seg(question)
+      ],
+      vars: 'Let x = number of children,  y = dollars shared.',
+      v1: 'x', v2: 'y',
+      eq1: eq1, eq2: eq2,
+      sol: { x: x, y: y },
+      pairText: pair,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: askKids ? function (s) { return s.x; } : function (s) { return s.y; },
+      prompts: [
+        'LOCK EQUATION 1  ·  the cyan share',
+        'LOCK EQUATION 2  ·  the magenta share',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: eq1.a, b: eq1.b, c: eq1.c },
+      c2: { text: eq2.text, a: eq2.a, b: eq2.b, c: eq2.c },
+      c3: { text: finalText, value: finalValue },
+      w1: wrong1,
+      w2: wrong2,
+      w3: [
+        { text: askKids ? money(y * 100) : childWord(x), value: askKids ? y : x, tip: early },
+        { text: pair, value: x * 1000 + y, tip: early },
+        { text: askKids ? childWord(x + 1) : money((y + left) * 100), value: askKids ? x + 1 : y + left, tip: 'Check the substitution once more before you deliver.' },
+        { text: '$' + left + ' left over', value: left + 0.2, tip: early }
+      ],
+      visual: 'share',
+      sfx: 'coins',
+      visualSpec: { clue1: clue1.trim(), clue2: clue2.trim(), ask: question }
+    });
+  }
+  return null;
+}
+
+function genTariff(rng) {
+  const scenes = [
+    { place: 'Metro Hub carpark', unit: 'min', noun: 'parking', qLo: 8, qHi: 32, pLo: 12, pHi: 70 },
+    { place: 'Riverside bicycle dock', unit: 'hour', noun: 'rental', qLo: 40, qHi: 180, pLo: 20, pHi: 90 },
+    { place: 'Harbour freight lane', unit: 'km', noun: 'haul', qLo: 25, qHi: 110, pLo: 25, pHi: 120 }
+  ];
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const scene = pick(rng, scenes);
+    const q = randInt(rng, scene.qLo, scene.qHi);
+    const p = randInt(rng, scene.pLo, scene.pHi) * 10;
+    const n1 = randInt(rng, scene.unit === 'hour' ? 2 : 8, scene.unit === 'hour' ? 4 : 18);
+    const n2 = n1 + randInt(rng, 8, scene.unit === 'hour' ? 8 : 22);
+    const span = n2 - n1;
+    const n3 = n1 + randInt(rng, 1, span - 1);
+    const c1 = p + n1 * q;
+    const c2 = p + n2 * q;
+    const c3 = p + n3 * q;
+    const sol = solveSystem(1, n1, c1, 1, n2, c2);
+    if (!sol || !close(sol.x, p) || !close(sol.y, q)) continue;
+    const u1 = unitWord(scene.unit, n1);
+    const u2 = unitWord(scene.unit, n2);
+    const u3 = unitWord(scene.unit, n3);
+    const eq1 = { a: 1, b: n1, c: c1, text: (n1 === 1 ? 'p + q' : 'p + ' + n1 + 'q') + ' = ' + plain2(c1) };
+    const eq2 = { a: 1, b: n2, c: c2, text: 'p + ' + n2 + 'q = ' + plain2(c2) };
+    const askN = rng() < 0.64;
+    const finalText = askN ? (n3 + ' ' + u3) : money2(c3);
+    const finalValue = askN ? n3 : c3;
+    const askWord = scene.unit === 'km' ? 'distance' : 'duration';
+    const question = askN
+      ? 'Find the ' + askWord + ' n when the charge is ' + money2(c3) + '.'
+      : 'Find the charge for ' + n3 + ' ' + u3 + '.';
+    const pair = 'p = ' + plain2(p) + ', q = ' + plain2(q);
+    const durationTip = 'Read the final question! Plug p = ' + plain2(p) + ' and q = ' + plain2(q) + ' into ' + plain2(p) + ' + ' + plain2(q) + 'n = ' + plain2(c3) + ' to find n = ' + n3 + ' ' + u3 + '!';
+    const costTip = 'Read the final question! p = ' + plain2(p) + ' and q = ' + plain2(q) + ' are only the tariff. Substitute n = ' + n3 + ' into C = p + qn to get ' + money2(c3) + '.';
+    const earlyTip = askN ? durationTip : costTip;
+    const swapN = n1 + n2 - n3;
+    return finalize(rng, {
+      arch: 'tariff',
+      kicker: 'TARIFF METER  C = p + qn',
+      segments: [
+        seg(scene.place + ' charges C = p + qn. '),
+        seg(n1 + ' ' + u1 + ' cost ' + money2(c1) + '. ', 1),
+        seg(n2 + ' ' + u2 + ' cost ' + money2(c2) + '. ', 2),
+        seg(question)
+      ],
+      vars: 'Let p = flat base fee in dollars,  q = charge per ' + (scene.unit === 'km' ? 'km' : scene.unit) + ' in dollars.',
+      v1: 'p', v2: 'q',
+      eq1: eq1, eq2: eq2,
+      sol: { x: p, y: q },
+      pairText: pair,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: askN
+        ? function (s) { return (c3 - s.x) / s.y; }
+        : function (s) { return s.x + n3 * s.y; },
+      prompts: [
+        'LOCK EQUATION 1  ·  the cyan meter reading',
+        'LOCK EQUATION 2  ·  the magenta meter reading',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: 1, b: n1, c: c1 },
+      c2: { text: eq2.text, a: 1, b: n2, c: c2 },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: 'p + ' + n2 + 'q = ' + plain2(c1), a: 1, b: n2, c: c1, tip: 'The ' + n2 + ' ' + u2 + ' reading belongs to Equation 2.' },
+        { text: 'p + ' + n1 + 'q = ' + plain2(c2), a: 1, b: n1, c: c2, tip: 'That charge belongs to the other reading.' },
+        { text: 'p + ' + n1 + 'q = ' + n1, a: 1, b: n1, c: n1, tip: 'The right side is the dollar charge, not the number of ' + u1 + '.' },
+        { text: n1 + 'p + q = ' + plain2(c1), a: n1, b: 1, c: c1, tip: 'C = p + qn means the flat fee is p and the ' + n1 + ' multiplies q.' }
+      ],
+      w2: [
+        { text: 'p + ' + n1 + 'q = ' + plain2(c2), a: 1, b: n1, c: c2, tip: 'Use the second reading: ' + n2 + ' ' + u2 + ' cost ' + money2(c2) + '.' },
+        { text: 'p + ' + n2 + 'q = ' + plain2(c1), a: 1, b: n2, c: c1, tip: 'That charge belongs to the first reading.' },
+        { text: 'p + ' + n2 + 'q = ' + plain2(c1 + c2), a: 1, b: n2, c: c1 + c2, tip: 'Do not add the two charges. Equation 2 is only the second reading.' },
+        { text: eq1.text, a: 1, b: n1, c: c1, tip: 'That is the cyan reading. Equation 2 is the magenta reading.' }
+      ],
+      w3: [
+        { text: 'p = ' + plain2(p) + ', q = ' + plain2(q), value: p * 100000 + q, tip: earlyTip },
+        { text: askN ? (n1 + ' ' + unitWord(scene.unit, n1)) : money2(c1), value: askN ? n1 : c1, tip: 'That is the first meter reading, not the delivery.' },
+        { text: askN ? (n2 + ' ' + unitWord(scene.unit, n2)) : money2(c2), value: askN ? n2 : c2, tip: 'That is the second meter reading, not the delivery.' },
+        { text: askN ? ((n3 + 2) + ' ' + unitWord(scene.unit, n3 + 2)) : money2(p + swapN * q), value: askN ? n3 + 2 : p + swapN * q, tip: earlyTip }
+      ],
+      visual: 'meter',
+      sfx: 'meter',
+      visualSpec: {
+        place: scene.place, unit: scene.unit, n1: n1, n2: n2, c1: c1, c2: c2,
+        nMax: n2 + 4, cMax: c2 + q * 2
+      }
+    });
+  }
+  return null;
+}
+
+function genInterest(rng) {
+  const rates = [100, 125, 150, 200, 250, 300, 350, 400, 500];
+  const banks = [
+    ['Bank P', 'Bank Q'],
+    ['North Vault', 'South Vault'],
+    ['Harbour Bank', 'Ridge Bank']
+  ];
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const names = pick(rng, banks);
+    const r1 = pick(rng, rates);
+    let r2 = pick(rng, rates);
+    if (r1 === r2) continue;
+    const g = gcd(r1, r2);
+    const xU = r2 / g;
+    const yU = r1 / g;
+    const options = [];
+    for (let k = 1; k <= 400; k++) {
+      const x = xU * k;
+      const y = yU * k;
+      const total = x + y;
+      if (x % 100 || y % 100) continue;
+      if ((r1 * x) % 10000 !== 0) continue;
+      if (total < 2000 || total > 20000) continue;
+      options.push([x, y, total, (r1 * x) / 10000]);
+    }
+    if (!options.length) continue;
+    const choice = pick(rng, options);
+    const x = choice[0], y = choice[1], total = choice[2], interest = choice[3];
+    if (r1 * x !== r2 * y) continue;
+    const eq1 = { a: 1, b: 1, c: total, text: 'x + y = ' + total };
+    const eq2 = { a: r1, b: -r2, c: 0, text: rateStr(r1) + 'x = ' + rateStr(r2) + 'y' };
+    const askSplit = rng() < 0.62;
+    const finalText = askSplit
+      ? names[0] + ': ' + money(x * 100) + ', ' + names[1] + ': ' + money(y * 100)
+      : money(interest * 100) + ' each';
+    const finalValue = askSplit ? x * 100000 + y : interest;
+    const question = askSplit
+      ? 'How much is deposited in each bank?'
+      : 'How much simple interest does each bank pay after 1 year?';
+    const pair = names[0] + ': ' + money(x * 100) + ', ' + names[1] + ': ' + money(y * 100);
+    const early = askSplit
+      ? 'Read the final question! The equal interest is ' + money(interest * 100) + ' each. The question asks for the deposits: ' + pair + '.'
+      : 'Read the final question! The deposits are ' + pair + '. Each bank pays ' + money(interest * 100) + ' interest.';
+    const swapped = rateStr(r2) + 'x = ' + rateStr(r1) + 'y';
+    return finalize(rng, {
+      arch: 'interest',
+      kicker: 'TWO-BANK SIMPLE INTEREST',
+      segments: [
+        seg(money(total * 100) + ' is deposited across ' + names[0] + ' and ' + names[1] + '. '),
+        seg(names[0] + ' pays ' + pctStr(r1) + ' p.a. ', 1),
+        seg(names[1] + ' pays ' + pctStr(r2) + ' p.a. ', 2),
+        seg('After 1 year the banks pay equal simple interest. ' + question)
+      ],
+      vars: 'Let x = dollars in ' + names[0] + ',  y = dollars in ' + names[1] + '.',
+      v1: 'x', v2: 'y',
+      eq1: eq1, eq2: eq2,
+      sol: { x: x, y: y },
+      pairText: pair,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: askSplit
+        ? function (s) { return Math.round(s.x) * 100000 + Math.round(s.y); }
+        : function (s) { return (r1 * s.x) / 10000; },
+      prompts: [
+        'LOCK EQUATION 1  ·  the deposit split',
+        'LOCK EQUATION 2  ·  equal simple interest',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: 1, b: 1, c: total },
+      c2: { text: eq2.text, a: r1, b: -r2, c: 0 },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: 'x + y = ' + interest, a: 1, b: 1, c: interest, tip: 'Keep units consistent! x and y are deposits in dollars, so x + y = ' + total + ', not the interest.' },
+        { text: rateStr(r1) + 'x + ' + rateStr(r2) + 'y = ' + total, a: r1, b: r2, c: total * 10000, tip: 'The rates belong in the interest equation. Equation 1 is only the deposit total.' },
+        { text: 'x + y = ' + (r1 + r2), a: 1, b: 1, c: r1 + r2, tip: 'The percentages are rates, not dollar amounts.' },
+        { text: 'x ' + MINUS + ' y = ' + total, a: 1, b: -1, c: total, tip: 'The whole sum is deposited, so the deposits add to ' + total + '.' }
+      ],
+      w2: [
+        { text: swapped, a: r2, b: -r1, c: 0, tip: names[0] + ' is x at ' + pctStr(r1) + ' and ' + names[1] + ' is y at ' + pctStr(r2) + '. The rates are swapped.' },
+        { text: rateStr(r1) + 'x + ' + rateStr(r2) + 'y = ' + total, a: r1, b: r2, c: total * 10000, tip: 'Equal interest means the two interests are equal, not that they add to the deposit.' },
+        { text: rateStr(r1) + 'x = ' + rateStr(r2) + 'y + ' + total, a: r1, b: -r2, c: total * 10000, tip: 'After 1 year the interests match, so ' + eq2.text + ' with nothing else added.' },
+        { text: eq1.text, a: 1, b: 1, c: total, tip: 'That is the cyan deposit equation. Equation 2 is the equal-interest equation.' }
+      ],
+      w3: [
+        { text: askSplit ? (money(interest * 100) + ' each') : pair, value: askSplit ? interest : x * 100000 + y, tip: early },
+        { text: names[0] + ': ' + money(x * 100), value: x + 0.3, tip: early },
+        { text: names[1] + ': ' + money(y * 100), value: y + 0.3, tip: early },
+        { text: money(total * 100), value: total + 0.3, tip: 'That is the whole deposit, x + y.' }
+      ],
+      visual: 'banks',
+      sfx: 'coins',
+      visualSpec: {
+        nameA: names[0], nameB: names[1],
+        rateA: pctStr(r1), rateB: pctStr(r2),
+        totalText: money(total * 100)
+      }
+    });
+  }
+  return null;
+}
+
+function mixtureOutcome(pA, pB, a, b) {
+  const volume = a + b;
+  const total = pA * a + pB * b;
+  if ((total * 100) % volume !== 0) return null;
+  const meanCents = (total * 100) / volume;
+  if (meanCents <= pA * 100 || meanCents >= pB * 100) return null;
+  return { volume: volume, total: total, meanCents: meanCents };
+}
+
+function genMixture(rng) {
+  const blends = [
+    { nameA: 'Paint A', nameB: 'Paint B', unit: 'L', per: 'LITRE', noun: 'litres', kicker: 'PAINT BLEND' },
+    { nameA: 'Alloy A', nameB: 'Alloy B', unit: 'kg', per: 'KG', noun: 'kilograms', kicker: 'ALLOY BLEND' },
+    { nameA: 'Juice A', nameB: 'Juice B', unit: 'L', per: 'LITRE', noun: 'litres', kicker: 'JUICE BLEND' }
+  ];
+  for (let attempt = 0; attempt < 220; attempt++) {
+    const blend = pick(rng, blends);
+    let pA, pB, a, b, got;
+    if (attempt < 200) {
+      pA = randInt(rng, 8, 24);
+      pB = pA + randInt(rng, 4, 16);
+      a = randInt(rng, 8, 40);
+      b = randInt(rng, 8, 40);
+      if (a === b) continue;
+      const volume = a + b;
+      if (volume < 20 || volume > 90) continue;
+      got = mixtureOutcome(pA, pB, a, b);
+      if (!got) continue;
+      if (got.meanCents % 100 === 0 && attempt < 140) continue;
+    } else {
+      const k = randInt(rng, 1, 2);
+      const delta = randInt(rng, 0, 6);
+      a = 18 * k; b = 22 * k;
+      pA = 18 + delta; pB = 30 + delta;
+      got = mixtureOutcome(pA, pB, a, b);
+      if (!got) continue;
+    }
+    const eq1 = { a: 1, b: 1, c: got.volume, text: 'a + b = ' + got.volume };
+    const eq2 = { a: pA, b: pB, c: got.total, text: pA + 'a + ' + pB + 'b = ' + got.total };
+    const meanText = plain2(got.meanCents);
+    const multiplyTip = '$' + meanText + ' is the price PER ' + blend.per + '! Multiply by all ' + got.volume + ' ' + blend.noun + ' for the total mixture value (' + meanText + ' ' + TIMES + ' ' + got.volume + ' = $' + got.total + ')!';
+    const finalText = a + ' ' + blend.unit + ' of A, ' + b + ' ' + blend.unit + ' of B';
+    const finalValue = a * 1000 + b;
+    const question = 'How many ' + blend.noun + ' of each are used?';
+    const early = 'Read the final question! The blend uses ' + finalText + '.';
+    return finalize(rng, {
+      arch: 'mixture',
+      kicker: blend.kicker,
+      segments: [
+        seg(blend.nameA + ' costs ' + money(pA * 100) + ' per ' + blend.unit + ' and ' + blend.nameB + ' costs ' + money(pB * 100) + ' per ' + blend.unit + '. '),
+        seg('They form a ' + got.volume + ' ' + blend.unit + ' mixture ', 1),
+        seg('sold at $' + meanText + ' per ' + blend.unit + ' with no profit or loss. ', 2),
+        seg(question)
+      ],
+      vars: 'Let a = ' + blend.noun + ' of ' + blend.nameA + ',  b = ' + blend.noun + ' of ' + blend.nameB + '.',
+      v1: 'a', v2: 'b',
+      eq1: eq1, eq2: eq2,
+      sol: { x: a, y: b },
+      pairText: finalText,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: function (s) { return Math.round(s.x) * 1000 + Math.round(s.y); },
+      prompts: [
+        'LOCK EQUATION 1  ·  total ' + blend.noun,
+        'LOCK EQUATION 2  ·  total mixture value',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: 1, b: 1, c: got.volume },
+      c2: { text: eq2.text, a: pA, b: pB, c: got.total },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: 'a + b = ' + got.total, a: 1, b: 1, c: got.total, tip: 'Keep units consistent! ' + blend.unit + ' + ' + blend.unit + ' = ' + got.volume + ' ' + blend.unit + '; dollars belong in Equation 2.' },
+        { text: 'a + b = ' + meanText, a: 1, b: 1, c: got.meanCents / 100, tip: multiplyTip },
+        { text: pA + 'a + ' + pB + 'b = ' + got.volume, a: pA, b: pB, c: got.volume, tip: 'That mixes prices with the volume. Equation 1 is only a + b = ' + got.volume + '.' },
+        { text: 'a + b = ' + (pA + pB), a: 1, b: 1, c: pA + pB, tip: 'The two prices are not a volume.' }
+      ],
+      w2: [
+        { text: pA + 'a + ' + pB + 'b = ' + meanText, a: pA, b: pB, c: got.meanCents / 100, tip: multiplyTip },
+        { text: pB + 'a + ' + pA + 'b = ' + got.total, a: pB, b: pA, c: got.total, tip: 'a is ' + blend.nameA + ' at ' + money(pA * 100) + ' and b is ' + blend.nameB + ' at ' + money(pB * 100) + '.' },
+        { text: pA + 'a + ' + pB + 'b = ' + got.volume, a: pA, b: pB, c: got.volume, tip: 'The right side is the total value, ' + meanText + ' ' + TIMES + ' ' + got.volume + ' = ' + got.total + '.' },
+        { text: eq1.text, a: 1, b: 1, c: got.volume, tip: 'That is the cyan volume equation. Equation 2 is the value equation.' }
+      ],
+      w3: [
+        { text: b + ' ' + blend.unit + ' of A, ' + a + ' ' + blend.unit + ' of B', value: b * 1000 + a, tip: 'A and B are swapped.' },
+        { text: got.volume + ' ' + blend.unit + ' altogether', value: got.volume, tip: early },
+        { text: a + ' ' + blend.unit + ' of A', value: a + 0.2, tip: early },
+        { text: '$' + meanText + ' per ' + blend.unit, value: got.meanCents / 100, tip: 'That selling price was given. The question asks for the two amounts.' }
+      ],
+      visual: 'vats',
+      sfx: 'pour',
+      visualSpec: {
+        nameA: blend.nameA, nameB: blend.nameB, unit: blend.unit,
+        priceA: money(pA * 100), priceB: money(pB * 100),
+        volume: got.volume, meanText: '$' + meanText
+      }
+    });
+  }
+  return null;
+}
+
+function genMean(rng) {
+  const groups = [
+    { thing: 'children', one: 'child' },
+    { thing: 'students', one: 'student' },
+    { thing: 'cadets', one: 'cadet' }
+  ];
+  for (let attempt = 0; attempt < 220; attempt++) {
+    const group = pick(rng, groups);
+    let hA, hB, a, b, total, meanTenths, count;
+    if (attempt < 200) {
+      hA = randInt(rng, 68, 96);
+      hB = randInt(rng, 52, hA - 6);
+      a = randInt(rng, 12, 40);
+      b = randInt(rng, 12, 48);
+      if (a === b) continue;
+      count = a + b;
+      if (count < 30 || count > 100) continue;
+      total = hA * a + hB * b;
+      if ((total * 10) % count !== 0) continue;
+      meanTenths = (total * 10) / count;
+      if (meanTenths <= hB * 10 || meanTenths >= hA * 10) continue;
+      if (meanTenths % 10 === 0 && attempt < 140) continue;
+    } else {
+      const delta = randInt(rng, 0, 5);
+      a = 36; b = 54; count = 90;
+      hA = 82 + delta; hB = 74 + delta;
+      total = hA * a + hB * b;
+      meanTenths = (total * 10) / count;
+    }
+    const meanLabel = cmStr(meanTenths);
+    const eq1 = { a: 1, b: 1, c: count, text: 'a + b = ' + count };
+    const eq2 = { a: hA, b: hB, c: total, text: hA + 'a + ' + hB + 'b = ' + total };
+    const perWho = group.one === 'child' ? 'CHILD' : group.one === 'student' ? 'STUDENT' : 'CADET';
+    const multiplyTip = meanLabel + ' cm is the mean height PER ' + perWho + '! Multiply by all ' + count + ' ' + group.thing + ' for the total (' + meanLabel + ' ' + TIMES + ' ' + count + ' = ' + total + ')!';
+    const finalText = a + ' in A, ' + b + ' in B';
+    const finalValue = a * 1000 + b;
+    const question = 'How many ' + group.thing + ' are in each group?';
+    const early = 'Read the final question! Group A has ' + a + ' and Group B has ' + b + '.';
+    return finalize(rng, {
+      arch: 'mean',
+      kicker: 'WEIGHTED GROUP MEAN',
+      segments: [
+        seg('Group A has mean height ' + hA + ' cm and Group B has mean height ' + hB + ' cm. '),
+        seg('Together there are ' + count + ' ' + group.thing + ' ', 1),
+        seg('with overall mean ' + meanLabel + ' cm. ', 2),
+        seg(question)
+      ],
+      vars: 'Let a = number in Group A,  b = number in Group B.',
+      v1: 'a', v2: 'b',
+      eq1: eq1, eq2: eq2,
+      sol: { x: a, y: b },
+      pairText: finalText,
+      finalText: finalText,
+      finalValue: finalValue,
+      recompute: function (s) { return Math.round(s.x) * 1000 + Math.round(s.y); },
+      prompts: [
+        'LOCK EQUATION 1  ·  the headcount',
+        'LOCK EQUATION 2  ·  the total of the heights',
+        'SOLVE & DELIVER  ·  ' + question
+      ],
+      c1: { text: eq1.text, a: 1, b: 1, c: count },
+      c2: { text: eq2.text, a: hA, b: hB, c: total },
+      c3: { text: finalText, value: finalValue },
+      w1: [
+        { text: 'a + b = ' + total, a: 1, b: 1, c: total, tip: 'Keep units consistent! ' + group.thing + ' + ' + group.thing + ' = ' + count + ' ' + group.thing + '. The height total belongs in Equation 2.' },
+        { text: 'a + b = ' + meanLabel, a: 1, b: 1, c: meanTenths / 10, tip: multiplyTip },
+        { text: hA + 'a + ' + hB + 'b = ' + count, a: hA, b: hB, c: count, tip: 'That mixes centimetres with the headcount.' },
+        { text: 'a + b = ' + (hA + hB), a: 1, b: 1, c: hA + hB, tip: 'The two means are not a headcount.' }
+      ],
+      w2: [
+        { text: hA + 'a + ' + hB + 'b = ' + meanLabel, a: hA, b: hB, c: meanTenths / 10, tip: multiplyTip },
+        { text: hB + 'a + ' + hA + 'b = ' + total, a: hB, b: hA, c: total, tip: 'a is Group A at ' + hA + ' cm and b is Group B at ' + hB + ' cm.' },
+        { text: hA + 'a + ' + hB + 'b = ' + count, a: hA, b: hB, c: count, tip: 'Multiply the overall mean by every ' + group.one + ': ' + meanLabel + ' ' + TIMES + ' ' + count + ' = ' + total + '.' },
+        { text: eq1.text, a: 1, b: 1, c: count, tip: 'That is the cyan headcount. Equation 2 is the height total.' }
+      ],
+      w3: [
+        { text: b + ' in A, ' + a + ' in B', value: b * 1000 + a, tip: 'The groups are swapped.' },
+        { text: count + ' ' + group.thing, value: count, tip: early },
+        { text: a + ' in A', value: a + 0.2, tip: early },
+        { text: meanLabel + ' cm', value: meanTenths / 10, tip: 'That overall mean was given. The question asks for the two counts.' }
+      ],
+      visual: 'heights',
+      sfx: 'lock',
+      visualSpec: {
+        thing: group.thing, hA: hA, hB: hB, count: count, meanText: meanLabel + ' cm'
+      }
+    });
+  }
+  return null;
+}
+
+function genVault(rng) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const tens = randInt(rng, 2, 9);
+    const units = randInt(rng, 1, tens - 1);
+    const sum = tens + units;
+    const gap = tens - units;
+    const diff = 9 * gap;
+    const number = 10 * tens + units;
+    const reversed = 10 * units + tens;
+    if (number - reversed !== diff) continue;
+    const eq1 = { a: 1, b: 1, c: sum, text: 'a + b = ' + sum };
+    const eq2 = { a: 9, b: -9, c: diff, text: '9a ' + MINUS + ' 9b = ' + diff };
+    const finalText = String(number);
+    const placeTip = "A two-digit number with tens digit 'a' and units digit 'b' equals 10a + b! Reversing gives 10b + a, so their difference is 9a " + MINUS + " 9b!";
+    const early = 'Read the final question! The digits are a = ' + tens + ' and b = ' + units + ', so the number 10a + b is ' + number + '.';
+    return finalize(rng, {
+      arch: 'vault',
+      kicker: 'DIGIT-REVERSAL VAULT',
+      segments: [
+        seg('A two-digit cargo code uses tens digit a and units digit b. '),
+        seg('The digits add to ' + sum + '. ', 1),
+        seg('Reversing the digits and subtracting from the original gives ' + diff + '. ', 2),
+        seg('Find the number.')
+      ],
+      vars: 'Let a = tens digit,  b = units digit. The number is 10a + b.',
+      v1: 'a', v2: 'b',
+      eq1: eq1, eq2: eq2,
+      sol: { x: tens, y: units },
+      pairText: 'a = ' + tens + ', b = ' + units,
+      finalText: finalText,
+      finalValue: number,
+      recompute: function (s) { return 10 * s.x + s.y; },
+      prompts: [
+        'LOCK EQUATION 1  ·  the digit sum',
+        'LOCK EQUATION 2  ·  simplified difference 9a ' + MINUS + ' 9b',
+        'SOLVE & DELIVER  ·  Find the two-digit number.'
+      ],
+      c1: { text: eq1.text, a: 1, b: 1, c: sum },
+      c2: { text: eq2.text, a: 9, b: -9, c: diff },
+      c3: { text: finalText, value: number },
+      w1: [
+        { text: 'a ' + MINUS + ' b = ' + sum, a: 1, b: -1, c: sum, tip: 'The clue is a sum, so a + b = ' + sum + '.' },
+        { text: '10a + b = ' + sum, a: 10, b: 1, c: sum, tip: 'The digit sum is a + b. 10a + b is the number itself.' },
+        { text: 'a + b = ' + diff, a: 1, b: 1, c: diff, tip: diff + ' is the difference of the number and its reverse, not the digit sum.' },
+        { text: 'a + b = ' + gap, a: 1, b: 1, c: gap, tip: 'Add the digits as the clue states: a + b = ' + sum + '.' }
+      ],
+      w2: [
+        { text: 'ab ' + MINUS + ' ba = ' + diff, tip: placeTip },
+        { text: 'a ' + MINUS + ' b = ' + diff, a: 1, b: -1, c: diff, tip: placeTip },
+        { text: '9a + 9b = ' + diff, a: 9, b: 9, c: diff, tip: placeTip },
+        { text: '9a ' + MINUS + ' 9b = ' + gap, a: 9, b: -9, c: gap, tip: 'The number gap is 9(a ' + MINUS + ' b), so the right side is ' + diff + ', not ' + gap + '.' }
+      ],
+      w3: [
+        { text: String(reversed), value: reversed, tip: early },
+        { text: 'a + b = ' + sum, value: sum + 0.2, tip: early },
+        { text: 'a = ' + tens + ', b = ' + units, value: tens * 100 + units, tip: early },
+        { text: String(number + 9), value: number + 9, tip: 'The reverse changes the number by 9(a ' + MINUS + ' b), which you have already used.' }
+      ],
+      visual: 'vault',
+      sfx: 'tumbler',
+      visualSpec: { sum: sum, diff: diff, reveal: number }
+    });
+  }
+  return null;
+}
+
+function ratioWords(n, d) {
+  if (n < d) return n + '/' + d;
+  const whole = Math.floor(n / d);
+  const rem = n % d;
+  if (!rem) return String(whole);
+  return whole + ' ' + rem + '/' + d;
+}
+
+function genFraction(rng) {
+  for (let attempt = 0; attempt < 250; attempt++) {
+    const m = randInt(rng, 2, 12);
+    const n = m + randInt(rng, 1, 12);
+    if (gcd(m, n) !== 1) continue;
+    const subM = randInt(rng, 1, m - 1);
+    const addN = randInt(rng, 1, 8);
+    const addM = randInt(rng, 1, 6);
+    const subN = randInt(rng, 1, n - 1);
+    const num1 = m - subM;
+    const den1 = n + addN;
+    const num2 = m + addM;
+    const den2 = n - subN;
+    if (num1 <= 0 || num2 <= 0 || den2 <= 0) continue;
+    const g1 = gcd(num1, den1);
+    const p = num1 / g1;
+    const q = den1 / g1;
+    const g2 = gcd(num2, den2);
+    const r = num2 / g2;
+    const s = den2 / g2;
+    const A1 = q;
+    const B1 = -p;
+    const C1 = q * subM + p * addN;
+    const A2 = s;
+    const B2 = -r;
+    const C2 = -r * subN - s * addM;
+    if (Math.abs(A1) > 12 || Math.abs(B1) > 12 || Math.abs(A2) > 12 || Math.abs(B2) > 12) continue;
+    if (Math.abs(C1) > 90 || Math.abs(C2) > 90) continue;
+    if (A1 * m + B1 * n !== C1 || A2 * m + B2 * n !== C2) continue;
+    const solved = solveSystem(A1, B1, C1, A2, B2, C2);
+    if (!solved || !close(solved.x, m) || !close(solved.y, n)) continue;
+    const eq1 = { a: A1, b: B1, c: C1, text: eqLine(A1, 'm', B1, 'n', C1) };
+    const eq2 = { a: A2, b: B2, c: C2, text: eqLine(A2, 'm', B2, 'n', C2) };
+    if (norm(eq1.text) === norm(eq2.text)) continue;
+    const leftRatio = ratioWords(p, q);
+    const rightRatio = ratioWords(r, s);
+    const clearTip = 'That proportion matches the clue, but the ledger wants the cleared linear form. Cross-multiply to get ' + eq1.text + '.';
+    const clearTip2 = 'Clear the second proportion as well. Cross-multiply to get ' + eq2.text + '.';
+    const slip = { a: A1, b: B1, c: C1 - 2 * (C1 >= 0 ? 1 : -1) };
+    if (holds(slip, m, n)) slip.c = C1 + 5;
+    const slip2 = { a: A2, b: -B2, c: C2 };
+    if (holds(slip2, m, n)) slip2.b = B2;
+    const finalText = m + '/' + n;
+    const early = 'Read the final question! m = ' + m + ' and n = ' + n + ', so the original fraction is ' + m + '/' + n + '.';
+    return finalize(rng, {
+      arch: 'fraction',
+      kicker: 'FRACTION-SHIFT LEDGER',
+      segments: [
+        seg('A fraction m/n '),
+        seg('becomes ' + leftRatio + ' when ' + subM + ' is subtracted from m and ' + addN + ' is added to n. ', 1),
+        seg('It becomes ' + rightRatio + ' when ' + addM + ' is added to m and ' + subN + ' is subtracted from n. ', 2),
+        seg('Find the original fraction.')
+      ],
+      vars: 'Let m = numerator,  n = denominator. Clear each proportion into linear form.',
+      v1: 'm', v2: 'n',
+      eq1: eq1, eq2: eq2,
+      sol: { x: m, y: n },
+      pairText: 'm = ' + m + ', n = ' + n,
+      finalText: finalText,
+      finalValue: m / n,
+      recompute: function (sol) { return sol.x / sol.y; },
+      prompts: [
+        'LOCK EQUATION 1  ·  first shift, cleared',
+        'LOCK EQUATION 2  ·  second shift, cleared',
+        'SOLVE & DELIVER  ·  Find the original fraction.'
+      ],
+      c1: { text: eq1.text, a: A1, b: B1, c: C1 },
+      c2: { text: eq2.text, a: A2, b: B2, c: C2 },
+      c3: { text: finalText, value: m / n, frac: { n: m, d: n } },
+      w1: [
+        { text: '(m ' + MINUS + ' ' + subM + ')/(n + ' + addN + ') = ' + p + '/' + q, tip: clearTip },
+        { text: eqLine(slip.a, 'm', slip.b, 'n', slip.c), a: slip.a, b: slip.b, c: slip.c, tip: 'Check the constant after you expand. The cleared equation is ' + eq1.text + '.' },
+        { text: eqLine(A1, 'm', -B1, 'n', C1), a: A1, b: -B1, c: C1, tip: 'The denominator term changes sign when you bring every letter to one side.' },
+        { text: eq2.text, a: A2, b: B2, c: C2, tip: 'That cleared form belongs to the magenta clue.' }
+      ],
+      w2: [
+        { text: '(m + ' + addM + ')/(n ' + MINUS + ' ' + subN + ') = ' + r + '/' + s, tip: clearTip2 },
+        { text: eqLine(A2, 'm', B2, 'n', -C2), a: A2, b: B2, c: -C2, tip: 'The constant picked up the wrong sign. Equation 2 is ' + eq2.text + '.' },
+        { text: eqLine(A1, 'm', B1, 'n', C1), a: A1, b: B1, c: C1, tip: 'That is the cyan equation. Equation 2 comes from the second shift.' },
+        { text: eqLine(r, 'm', -s, 'n', addM), a: r, b: -s, c: addM, tip: 'Cross-multiply both sides. Do not only copy the target fraction.' }
+      ],
+      w3: [
+        { text: n + '/' + m, value: n / m, frac: { n: n, d: m }, tip: early },
+        { text: 'm = ' + m + ', n = ' + n, value: m + n / 100, tip: early },
+        { text: p + '/' + q, value: p / q, frac: { n: p, d: q }, tip: 'That is the first shifted fraction, not the original.' },
+        { text: (m + 1) + '/' + n, value: (m + 1) / n, frac: { n: m + 1, d: n }, tip: early }
+      ],
+      visual: 'fraction',
+      sfx: 'lock',
+      visualSpec: {
+        left: leftRatio, right: rightRatio,
+        shift1: 'm ' + MINUS + ' ' + subM + ',  n + ' + addN,
+        shift2: 'm + ' + addM + ',  n ' + MINUS + ' ' + subN,
+        revealN: m, revealD: n
+      }
+    });
+  }
+  return null;
+}
+
+function tipBlob(step) {
+  return step.cards.filter(function (c) { return !c.correct; }).map(function (c) { return c.tip || ''; }).join(' ');
+}
+
+function verify(p) {
+  if (!p || !p.eq1 || !p.eq2 || !p.steps || p.steps.length !== 3) return 'shape';
+  if (!p.visual || !p.visualSpec || !p.segments || !p.segments.length) return 'presentation';
+  const sol = solveSystem(p.eq1.a, p.eq1.b, p.eq1.c, p.eq2.a, p.eq2.b, p.eq2.c);
+  if (!sol) return 'singular';
+  if (!close(sol.x, p.sol.x) || !close(sol.y, p.sol.y)) return 'solve';
+  if (!holds(p.eq1, p.sol.x, p.sol.y) || !holds(p.eq2, p.sol.x, p.sol.y)) return 'holds';
+  let target;
+  try { target = p.recompute(p.sol); } catch (err) { return 'recompute'; }
+  if (!close(target, p.finalValue)) return 'target';
+  for (let s = 0; s < 3; s++) {
+    const cards = p.steps[s].cards;
+    if (!cards || cards.length !== 4) return 'count';
+    const good = cards.filter(function (c) { return c.correct; });
+    if (good.length !== 1) return 'flag';
+    const texts = new Set(cards.map(function (c) { return norm(c.text); }));
+    if (texts.size !== 4) return 'duplicate';
+    if (s < 2) {
+      const expect = s === 0 ? p.eq1.text : p.eq2.text;
+      if (norm(good[0].text) !== norm(expect)) return 'equation-text';
+      for (let i = 0; i < cards.length; i++) {
+        if (!cards[i].correct && cards[i].a != null && holds(cards[i], p.sol.x, p.sol.y)) return 'false-wrong';
+      }
+    } else {
+      if (norm(good[0].text) !== norm(p.finalText)) return 'final-text';
+      if (good[0].value != null && !close(good[0].value, p.finalValue)) return 'final-value';
+      for (let j = 0; j < cards.length; j++) {
+        if (!cards[j].correct && cards[j].value != null && close(cards[j].value, p.finalValue)) return 'trap-value';
+      }
+    }
+  }
+  const t0 = tipBlob(p.steps[0]);
+  const t1 = tipBlob(p.steps[1]);
+  const t2 = tipBlob(p.steps[2]);
+  if (!/Read the final question/.test(t2)) return 'early-tip';
+  if (p.arch === 'split' && !/Keep units consistent/.test(t0)) return 'units-tip';
+  if ((p.arch === 'mixture' || p.arch === 'mean') && !/PER LITRE|PER KG|PER CHILD|PER STUDENT|PER CADET/.test(t1)) return 'multiply-tip';
+  if (p.arch === 'vault' && !/10a \+ b/.test(t1)) return 'place-tip';
+  return '';
+}
+
+function generateProblem(round, history, rng) {
+  const random = rng || Math.random;
+  const tier = tierOf(round);
+  const recent = new Set((history || []).map(function (h) { return h.key; }));
+  const last = history && history.length ? history[history.length - 1].arch : '';
+  let pool = tier.arches.slice();
+  if (last && pool.length > 1) {
+    const filtered = pool.filter(function (a) { return a !== last; });
+    if (filtered.length) pool = filtered;
+  }
+  for (let pass = 0; pass < 3; pass++) {
+    const arches = pass === 0 ? pool : tier.arches;
+    const tries = pass === 2 ? 36 : 22;
+    for (let i = 0; i < tries; i++) {
+      const arch = arches[Math.floor(random() * arches.length)];
+      const problem = GENS[arch](random);
+      if (!problem) continue;
+      if (pass < 2 && recent.has(problem.key)) continue;
+      problem.tier = tier.name;
+      return problem;
+    }
+  }
+  return null;
+}
+
+function checkSolver() {
+  const note = solveSystem(1, 1, 50, 12, 18, 780);
+  if (!note || !close(note.x, 20) || !close(note.y, 30)) return 'notebook';
+  const park = solveSystem(1, 15, 540, 1, 40, 990);
+  if (!park || !close(park.x, 270) || !close(park.y, 18)) return 'tariff';
+  if (!close(270 + 18 * 25, 720)) return 'tariff-n';
+  const bank = solveSystem(1, 1, 9000, 100, -125, 0);
+  if (!bank || !close(bank.x, 5000) || !close(bank.y, 4000)) return 'interest';
+  const paint = solveSystem(1, 1, 40, 18, 30, 984);
+  if (!paint || !close(paint.x, 18) || !close(paint.y, 22)) return 'paint';
+  const mean = solveSystem(1, 1, 90, 82, 74, 6948);
+  if (!mean || !close(mean.x, 36) || !close(mean.y, 54)) return 'mean';
+  const vault = solveSystem(1, 1, 11, 9, -9, 27);
+  if (!vault || !close(10 * vault.x + vault.y, 74)) return 'vault';
+  const frac = solveSystem(4, -1, 14, 2, -3, -8);
+  if (!frac || !close(frac.x, 5) || !close(frac.y, 6)) return 'fraction';
+  const share = solveSystem(-6, 1, 5, -7, 1, -3);
+  if (!share || !close(share.x, 8) || !close(share.y, 53)) return 'share';
+  return '';
+}
+
+function selfTest(cycles) {
+  const errors = [];
+  const solver = checkSolver();
+  if (solver) errors.push('solver ' + solver);
+  const hist = [];
+  const total = cycles || 48;
+  for (let n = 0; n < total; n++) {
+    const round = (n % 12) + 1;
+    let problem = null;
+    try { problem = generateProblem(round, hist, Math.random); }
+    catch (err) { errors.push('throw ' + err.message); continue; }
+    if (!problem) { errors.push('null r' + round); continue; }
+    const tier = tierOf(round);
+    if (tier.arches.indexOf(problem.arch) < 0) errors.push('tier ' + problem.arch + ' r' + round);
+    if (hist.length && hist[hist.length - 1].arch === problem.arch && tier.arches.length > 1) errors.push('arch-repeat ' + problem.arch);
+    if (hist.some(function (h) { return h.key === problem.key; })) errors.push('key-repeat');
+    const positions = problem.steps[2].cards.map(function (c) { return c.correct ? 1 : 0; }).join('');
+    if (positions.indexOf('1') < 0) errors.push('no-correct');
+    hist.push({ arch: problem.arch, key: problem.key });
+    if (hist.length > 6) hist.shift();
+  }
+  return errors;
+}
+
+/* ---------- audio ---------- */
+
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+function ensureAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio.ctx = new AC();
+  audio.master = audio.ctx.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.2;
+  audio.master.connect(audio.ctx.destination);
+  audio.music = audio.ctx.createGain();
+  audio.music.gain.value = 0.62;
+  audio.music.connect(audio.master);
+  const len = Math.floor(audio.ctx.sampleRate * 0.3);
+  audio.noise = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
+  const data = audio.noise.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+}
+
+function resumeAudio() {
+  try {
+    ensureAudio();
+    if (!audio.ctx) return;
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    if (!audio.started) {
+      audio.started = true;
+      audio.next = audio.ctx.currentTime + 0.06;
+    }
+  } catch (err) { /* sound is optional */ }
+}
+
+function toggleMute() {
+  resumeAudio();
+  audio.muted = !audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.2;
+}
+
+function blip(time, freq, dur, type, gain, dest, slide) {
+  if (!audio.ctx || audio.muted) return;
+  const osc = audio.ctx.createOscillator();
+  const amp = audio.ctx.createGain();
+  osc.type = type || 'square';
+  osc.frequency.setValueAtTime(Math.max(40, freq), time);
+  if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+  amp.gain.setValueAtTime(0.0001, time);
+  amp.gain.exponentialRampToValueAtTime(gain, time + 0.012);
+  amp.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  osc.connect(amp);
+  amp.connect(dest || audio.master);
+  osc.start(time);
+  osc.stop(time + dur + 0.03);
+}
+
+function noiseHit(time, dur, gain, freq) {
+  if (!audio.ctx || audio.muted || !audio.noise) return;
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq || 1400;
+  filter.Q.value = 0.7;
+  const amp = audio.ctx.createGain();
+  amp.gain.setValueAtTime(gain, time);
+  amp.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  src.connect(filter);
+  filter.connect(amp);
+  amp.connect(audio.master);
+  src.start(time);
+  src.stop(time + dur + 0.02);
+}
+
+function sfxLock() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 540, 0.08, 'square', 0.07);
+  blip(t + 0.07, 810, 0.12, 'square', 0.06);
+}
+function sfxPour() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  noiseHit(t, 0.28, 0.05, 520);
+  blip(t, 190, 0.22, 'sine', 0.04, audio.master, 80);
+}
+function sfxMeter() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 880, 0.07, 'square', 0.05);
+  blip(t + 0.09, 1180, 0.08, 'square', 0.04);
+}
+function sfxTumbler() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 210, 0.05, 'square', 0.06);
+  noiseHit(t, 0.05, 0.04, 1600);
+  blip(t + 0.06, 320, 0.04, 'square', 0.04);
+}
+function sfxCoins() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 1320, 0.06, 'square', 0.045);
+  blip(t + 0.07, 1760, 0.09, 'square', 0.04);
+}
+function sfxFanfare() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  [523, 659, 784, 1046].forEach(function (f, i) { blip(t + i * 0.08, f, 0.24, 'square', 0.055); });
+}
+function sfxBuzz() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 96, 0.24, 'sawtooth', 0.05, audio.master, 52);
+  noiseHit(t, 0.12, 0.04, 280);
+}
+function sfxUi() {
+  if (!audio.ctx) return;
+  blip(audio.ctx.currentTime, 690, 0.05, 'square', 0.04);
+}
+function sfxScenario(kind) {
+  if (kind === 'pour') sfxPour();
+  else if (kind === 'meter') sfxMeter();
+  else if (kind === 'tumbler') sfxTumbler();
+  else if (kind === 'coins') sfxCoins();
+  else sfxLock();
+}
+
+const BASS = [33, 33, 36, 33, 31, 28, 29, 33];
+const ARP = [57, 60, 64, 67, 69, 67, 64, 60];
+
+function playMusicStep(index, time) {
+  const i = index % 16;
+  const bar = Math.floor(index / 16) % 4;
+  if (i % 2 === 0) blip(time, midi(BASS[(i / 2 + bar) % BASS.length]), 0.2, 'triangle', 0.07, audio.music);
+  blip(time, midi(ARP[i % ARP.length] + (bar % 2) * 12), 0.11, 'square', 0.022, audio.music);
+  if (i % 4 === 0) blip(time, 78, 0.07, 'sine', 0.05, audio.music, 42);
+  if (i % 8 === 4) noiseHit(time, 0.08, 0.03, 1700);
+  if (i % 2 === 1) noiseHit(time, 0.025, 0.012, 4800);
+}
+
+function tickMusic() {
+  if (!audio.started || !audio.ctx || audio.muted || game.paused) return;
+  const stepDur = (60 / 108) / 2;
+  let guard = 0;
+  while (audio.next < audio.ctx.currentTime + 0.16 && guard < 6) {
+    playMusicStep(audio.step, audio.next);
+    audio.step = (audio.step + 1) % 64;
+    audio.next += stepDur;
+    guard++;
+  }
+}
+
+/* ---------- flow ---------- */
+
+function deckGeom() {
+  const pad = 14;
+  const x0 = GEO.deck.x + pad;
+  const y = GEO.deck.y + 34;
+  const h = GEO.deck.h - 48;
+  const gap = 12;
+  const inner = GEO.deck.w - pad * 2;
+  const cardW = (inner - gap * 3) / 4;
+  const cards = [];
+  for (let i = 0; i < 4; i++) cards.push({ x: x0 + i * (cardW + gap), y: y, w: cardW, h: h, i: i });
+  return {
+    cards: cards,
+    prompt: { x: x0, y: GEO.deck.y + 8, w: inner, h: 24 }
+  };
+}
+function titleGeom() {
+  return [
+    { id: 'solo', x: 64, y: 196, w: 368, h: 250 },
+    { id: 'coop', x: 456, y: 196, w: 368, h: 250 },
+    { id: 'versus', x: 848, y: 196, w: 368, h: 250 }
+  ];
+}
+function overGeom() {
+  return [
+    { id: 'retry', x: 390, y: 500, w: 220, h: 56 },
+    { id: 'title', x: 670, y: 500, w: 220, h: 56 }
+  ];
+}
+function pauseGeom() {
+  return [
+    { id: 'resume', x: 430, y: 400, w: 180, h: 52 },
+    { id: 'title', x: 670, y: 400, w: 180, h: 52 }
+  ];
+}
+function hit(px, py, r) {
+  return px >= r.x && py >= r.y && px < r.x + r.w && py < r.y + r.h;
+}
+function worldFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) / rect.width * W,
+    y: (clientY - rect.top) / rect.height * H
+  };
+}
+function ownerFor(step) {
+  if (game.mode !== 'coop') return -1;
+  if (step >= 2) return -1;
+  const swap = game.round % 2 === 0;
+  if (step === 0) return swap ? 1 : 0;
+  return swap ? 0 : 1;
+}
+function cursorSlot(player) {
+  return game.mode === 'versus' ? player : 0;
+}
+function isDead(card, player) {
+  if (!card) return true;
+  if (game.mode === 'versus') return !!(card.deadFor && card.deadFor[player]);
+  return !!card.dead;
+}
+function currentCards() {
+  if (!game.problem || game.step > 2) return [];
+  return game.problem.steps[game.step].cards;
+}
+function resetRoundInput() {
+  game.cursor = [0, 0];
+  game.armed = [-1, -1];
+  game.ready = [false, false];
+}
+function focusCenter(slot) {
+  const geom = deckGeom();
+  const cursor = clamp(game.cursor[slot] || 0, 0, 3);
+  const rect = geom.cards[cursor] || geom.cards[0];
+  return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+}
+function moveCursor(player, dir) {
+  if (game.mode === 'coop') {
+    const owner = ownerFor(game.step);
+    if (owner !== -1 && owner !== player) return;
+  }
+  const slot = cursorSlot(player);
+  const cards = currentCards();
+  let i = clamp(game.cursor[slot] || 0, 0, 3);
+  for (let k = 0; k < 4; k++) {
+    i = (i + dir + 4) % 4;
+    if (cards[i] && !isDead(cards[i], player)) break;
+  }
+  game.cursor[slot] = i;
+  const center = focusCenter(slot);
+  game.aim[slot].x = center.x;
+  game.aim[slot].y = center.y;
+}
+
+function award(player, step) {
+  const base = step === 2 ? 350 : 120;
+  const bonus = (Math.min(game.combo, 8)) * 25;
+  const speed = game.mode === 'versus' ? 80 : 0;
+  const pts = base + bonus + speed;
+  if (game.mode === 'versus') game.pScore[player] += pts;
+  else game.score += pts;
+  game.combo += 1;
+  if (game.mode === 'versus' && step === 2) game.stars[player] += 1;
+  game.floats.push({
+    x: game.mode === 'versus' ? (player === 0 ? 460 : 860) : 980,
+    y: 250,
+    text: '+' + pts,
+    life: 1.2,
+    max: 1.2,
+    color: COL.gold
+  });
+  saveBest();
+  return pts;
+}
+function hurt(player) {
+  game.combo = 0;
+  if (game.mode === 'versus') {
+    game.pShields[player] -= 1;
+    if (game.pShields[player] <= 0) {
+      const winner = player === 0 ? 'P2' : 'P1';
+      const loser = player === 0 ? 'P1' : 'P2';
+      endGame(winner + ' wins the exchange. ' + loser + ' lost the last capital shield.');
+    }
+  } else {
+    game.shields -= 1;
+    if (game.shields <= 0) endGame(game.mode === 'coop' ? 'The team shields are gone.' : 'Capital shields are gone. The exchange closes the books.');
+  }
+}
+function endGame(reason) {
+  game.screen = 'over';
+  game.phase = 'over';
+  game.paused = false;
+  game.overReason = reason;
+  game.overSel = 0;
+  saveBest();
+}
+function saveBest() {
+  const key = game.mode;
+  const val = game.mode === 'versus' ? Math.max(game.pScore[0], game.pScore[1]) : game.score;
+  if (val > (game.best[key] || 0)) {
+    game.best[key] = val;
+    try { localStorage.setItem('metro-trade-tycoon-best', JSON.stringify(game.best)); } catch (err) { /* ignore */ }
+  }
+}
+function loadBest() {
+  try {
+    const raw = localStorage.getItem('metro-trade-tycoon-best');
+    if (raw) game.best = JSON.parse(raw) || {};
+  } catch (err) { game.best = {}; }
+}
+function burst(x, y, color, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = speed * (0.35 + Math.random());
+    game.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * v, vy: Math.sin(a) * v - 20,
+      life: 0.4 + Math.random() * 0.45,
+      max: 0.85,
+      r: 1.6 + Math.random() * 2.4,
+      color: color
+    });
+  }
+  if (game.particles.length > 160) game.particles.splice(0, game.particles.length - 160);
+}
+
+function onCorrect(player, step) {
+  if (game.phase !== 'play' || game.screen !== 'play') return;
+  const good = game.problem.steps[step].cards.find(function (c) { return c.correct; });
+  game.locked[step] = good ? good.text : '';
+  game.tip = '';
+  game.hint = '';
+  sfxLock();
+  sfxScenario(game.problem.sfx);
+  const geom = deckGeom();
+  const slot = cursorSlot(player);
+  const idx = game.armed[slot];
+  const rect = geom.cards[idx] || geom.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + 30, COL.gold, 16, 160);
+  award(player, step);
+  resetRoundInput();
+  if (step === 2) {
+    game.phase = 'celebrate';
+    game.celebrateT = 3.6;
+    game.cleared += 1;
+    sfxFanfare();
+    burst(GEO.sim.x + GEO.sim.w / 2, GEO.sim.y + 120, COL.gold, 36, 220);
+    burst(GEO.sim.x + 120, GEO.sim.y + 80, COL.cyan, 18, 160);
+    burst(GEO.sim.x + GEO.sim.w - 120, GEO.sim.y + 80, COL.magenta, 18, 160);
+  } else if (step === 1) {
+    game.phase = 'link';
+    game.linkT = 0.72;
+    game.lockStep = 1;
+  } else {
+    game.phase = 'lock';
+    game.lockT = 0.32;
+    game.lockStep = 0;
+  }
+}
+function onWrong(player, cardObj) {
+  if (game.phase !== 'play' || game.screen !== 'play') return;
+  if (game.mode === 'versus') cardObj.deadFor[player] = true;
+  else cardObj.dead = true;
+  sfxBuzz();
+  game.shake = 8;
+  game.tip = cardObj.tip || 'Check the clue again.';
+  game.hint = '';
+  game.lock = 0.28;
+  const geom = deckGeom();
+  const slot = cursorSlot(player);
+  const rect = geom.cards[game.armed[slot]] || geom.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + 36, COL.bad, 18, 150);
+  if (game.mode === 'coop') {
+    game.ready = [false, false];
+    game.armed = [-1, -1];
+  } else if (game.armed[slot] >= 0 && isDead(currentCards()[game.armed[slot]], player)) game.armed[slot] = -1;
+  hurt(player);
+}
+function grade(player, cardObj) {
+  if (!cardObj || game.phase !== 'play') return;
+  if (cardObj.correct) onCorrect(player, game.step);
+  else onWrong(player, cardObj);
+}
+function lockChoice(player, index) {
+  const cards = currentCards();
+  const cardObj = cards[index];
+  if (!cardObj || isDead(cardObj, player)) {
+    game.hint = 'That card is already spent.';
+    game.hintT = 1.2;
+    return;
+  }
+  const slot = cursorSlot(player);
+  game.cursor[slot] = index;
+  if (game.mode === 'coop' && game.step === 2) {
+    game.armed[player] = index;
+    if (game.armed[0] >= 0 && game.armed[1] >= 0 && game.armed[0] !== game.armed[1]) {
+      game.hint = 'Pick the same card. P1 and P2 chose different answers.';
+      game.hintT = 2;
+      return;
+    }
+    if (game.armed[0] < 0 || game.armed[1] < 0) {
+      game.hint = (player === 0 ? 'P1' : 'P2') + ' chose a card. The other director clicks the same one.';
+      game.hintT = 2;
+      sfxUi();
+      return;
+    }
+  }
+  game.armed[slot] = index;
+  grade(player, cardObj);
+}
+function confirm(player) {
+  if (acted[player] || game.paused) return;
+  if (game.screen === 'title') {
+    startMode(['solo', 'coop', 'versus'][game.titleSel] || 'solo');
+    acted[player] = true;
+    return;
+  }
+  if (game.screen === 'over') {
+    if (game.overSel === 0) startMode(game.mode);
+    else goTitle();
+    acted[player] = true;
+    return;
+  }
+  if (game.phase === 'celebrate') {
+    finishRound();
+    acted[player] = true;
+    return;
+  }
+  if (game.phase !== 'play' || !game.problem || game.lock > 0) return;
+  if (game.mode === 'versus' && game.pShields[player] <= 0) return;
+  const owner = ownerFor(game.step);
+  if (owner !== -1 && owner !== player) {
+    const who = owner === 0 ? 'P1' : 'P2';
+    game.hint = who + ' locks this ledger. Roles swap every round.';
+    game.hintT = 1.5;
+    return;
+  }
+  const slot = cursorSlot(player);
+  const cursor = clamp(game.cursor[slot] || 0, 0, 3);
+  acted[player] = true;
+  lockChoice(player, cursor);
+}
+function finishRound() {
+  if (game.phase !== 'celebrate') return;
+  game.round += 1;
+  nextProblem();
+}
+function nextProblem() {
+  let problem = null;
+  for (let i = 0; i < 8 && !problem; i++) problem = generateProblem(game.round, game.history);
+  if (!problem) {
+    game.fatal = 'The exchange could not clear a new contract.';
+    game.problem = null;
+    return;
+  }
+  game.history.push({ arch: problem.arch, key: problem.key });
+  if (game.history.length > 6) game.history.shift();
+  game.problem = problem;
+  game.step = 0;
+  game.phase = 'play';
+  game.locked = [null, null, null];
+  game.tip = '';
+  game.hint = '';
+  game.fatal = '';
+  game.screen = 'play';
+  resetRoundInput();
+}
+function startMode(mode) {
+  resumeAudio();
+  sfxUi();
+  game.mode = mode;
+  game.screen = 'play';
+  game.round = 1;
+  game.cleared = 0;
+  game.combo = 0;
+  game.score = 0;
+  game.pScore = [0, 0];
+  game.stars = [0, 0];
+  game.shields = mode === 'coop' ? 4 : 3;
+  game.maxShields = game.shields;
+  game.pShields = [3, 3];
+  game.paused = false;
+  game.phase = 'play';
+  game.fatal = '';
+  game.history = [];
+  game.particles = [];
+  game.floats = [];
+  game.shake = 0;
+  game.tip = '';
+  nextProblem();
+}
+function goTitle() {
+  game.screen = 'title';
+  game.paused = false;
+  game.phase = 'play';
+  sfxUi();
+}
+
+function playerMaps() {
+  if (game.mode === 'solo' || game.screen !== 'play') {
+    return [{
+      up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'],
+      left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'],
+      fire: ['Space', 'Enter', 'KeyF']
+    }];
+  }
+  return [
+    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], fire: ['KeyF', 'Space'] },
+    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], fire: ['Enter'] }
+  ];
+}
+function edge(codes) {
+  for (let i = 0; i < codes.length; i++) if (keyEdge.has(codes[i])) return true;
+  return false;
+}
+function pollPads() {
+  const out = [null, null];
+  let pads = [];
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (err) { pads = []; }
+  for (let i = 0; i < 2; i++) {
+    const pad = pads && pads[i];
+    game.padOn[i] = !!(pad && pad.connected);
+    if (!pad) continue;
+    const prev = padMem[i];
+    const buttons = pad.buttons.map(function (b) { return !!(b && b.pressed); });
+    const ax = pad.axes && pad.axes.length ? pad.axes[0] || 0 : 0;
+    const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] || 0 : 0;
+    let dx = 0;
+    let dy = 0;
+    const dead = 0.55;
+    if (Math.abs(ax) > dead && Math.abs(prev.ax) <= dead) dx = Math.sign(ax);
+    if (Math.abs(ay) > dead && Math.abs(prev.ay) <= dead) dy = Math.sign(ay);
+    const pressed = function (idx) { return buttons[idx] && !prev.buttons[idx]; };
+    if (pressed(14)) dx = -1;
+    if (pressed(15)) dx = 1;
+    if (pressed(12)) dy = -1;
+    if (pressed(13)) dy = 1;
+    const fire = pressed(0) || pressed(1);
+    const pause = pressed(9);
+    prev.buttons = buttons;
+    prev.ax = ax;
+    prev.ay = ay;
+    out[i] = { dx: dx, dy: dy, fire: fire, pause: pause };
+  }
+  return out;
+}
+function quickPick(player, index) {
+  if (game.screen !== 'play' || game.phase !== 'play' || game.paused) return;
+  const owner = ownerFor(game.step);
+  if (owner !== -1 && owner !== player) {
+    game.hint = (owner === 0 ? 'P1' : 'P2') + ' locks this ledger.';
+    game.hintT = 1.3;
+    return;
+  }
+  const slot = cursorSlot(player);
+  game.cursor[slot] = index;
+  confirm(player);
+}
+
+function pollInput() {
+  acted[0] = false;
+  acted[1] = false;
+  if (keyEdge.has('KeyM')) toggleMute();
+  if ((keyEdge.has('KeyP') || keyEdge.has('Escape')) && game.screen === 'play' && game.phase !== 'over') {
+    game.paused = !game.paused;
+  }
+  if (pointerEdge) {
+    pointerEdge = false;
+    handlePointer(pointerX, pointerY);
+  }
+  if (game.paused) {
+    if (edge(['KeyA', 'ArrowLeft'])) game.pauseSel = 0;
+    if (edge(['KeyD', 'ArrowRight'])) game.pauseSel = 1;
+    if (edge(['Enter', 'Space', 'KeyF'])) {
+      if (game.pauseSel === 0) game.paused = false;
+      else goTitle();
+    }
+    if (keyEdge.has('KeyQ')) goTitle();
+    keyEdge.clear();
+    return;
+  }
+  if (game.screen === 'title') {
+    if (edge(['KeyA', 'ArrowLeft'])) game.titleSel = (game.titleSel + 2) % 3;
+    if (edge(['KeyD', 'ArrowRight'])) game.titleSel = (game.titleSel + 1) % 3;
+    if (keyEdge.has('Digit1')) startMode('solo');
+    else if (keyEdge.has('Digit2')) startMode('coop');
+    else if (keyEdge.has('Digit3')) startMode('versus');
+    else if (edge(['Enter', 'Space', 'KeyF'])) startMode(['solo', 'coop', 'versus'][game.titleSel]);
+    keyEdge.clear();
+    return;
+  }
+  if (game.screen === 'over') {
+    if (edge(['KeyA', 'ArrowLeft'])) game.overSel = 0;
+    if (edge(['KeyD', 'ArrowRight'])) game.overSel = 1;
+    if (edge(['Enter', 'Space', 'KeyF'])) {
+      if (game.overSel === 0) startMode(game.mode);
+      else goTitle();
+    }
+    if (keyEdge.has('KeyQ') || keyEdge.has('Escape')) goTitle();
+    keyEdge.clear();
+    return;
+  }
+  const maps = playerMaps();
+  const pads = pollPads();
+  for (let p = 0; p < maps.length; p++) {
+    const map = maps[p];
+    let dx = 0;
+    let dy = 0;
+    if (edge(map.left)) dx = -1;
+    if (edge(map.right)) dx = 1;
+    if (edge(map.up)) dy = -1;
+    if (edge(map.down)) dy = 1;
+    if (pads[p]) {
+      if (pads[p].pause && game.screen === 'play') game.paused = !game.paused;
+      if (pads[p].dx) dx = pads[p].dx;
+      if (pads[p].dy) dy = pads[p].dy;
+      if (pads[p].fire) confirm(p);
+    }
+    if (dx) moveCursor(p, dx);
+    else if (dy) moveCursor(p, dy);
+    if (edge(map.fire)) confirm(p);
+  }
+  if (game.mode !== 'coop' || ownerFor(game.step) !== 1) {
+    ['Digit1', 'Digit2', 'Digit3', 'Digit4'].forEach(function (code, idx) {
+      if (keyEdge.has(code)) quickPick(game.mode === 'versus' ? 0 : 0, idx);
+    });
+  }
+  if (game.mode !== 'solo') {
+    ['Digit7', 'Digit8', 'Digit9', 'Digit0'].forEach(function (code, idx) {
+      if (keyEdge.has(code)) quickPick(1, idx);
+    });
+  }
+  keyEdge.clear();
+}
+
+function handlePointer(x, y) {
+  if (hit(x, y, GEO.mute)) { toggleMute(); return; }
+  if (game.screen === 'title') {
+    const buttons = titleGeom();
+    for (let i = 0; i < buttons.length; i++) {
+      if (hit(x, y, buttons[i])) { game.titleSel = i; startMode(buttons[i].id); return; }
+    }
+    return;
+  }
+  if (game.paused) {
+    const buttons = pauseGeom();
+    for (let i = 0; i < buttons.length; i++) {
+      if (hit(x, y, buttons[i])) {
+        if (buttons[i].id === 'resume') game.paused = false;
+        else goTitle();
+        return;
+      }
+    }
+    return;
+  }
+  if (game.screen === 'over') {
+    const buttons = overGeom();
+    for (let i = 0; i < buttons.length; i++) {
+      if (hit(x, y, buttons[i])) {
+        if (buttons[i].id === 'retry') startMode(game.mode);
+        else goTitle();
+        return;
+      }
+    }
+    return;
+  }
+  if (game.phase === 'celebrate') { finishRound(); return; }
+  if (game.phase !== 'play') return;
+  const geom = deckGeom();
+  let cardIndex = -1;
+  for (let i = 0; i < geom.cards.length; i++) if (hit(x, y, geom.cards[i])) cardIndex = i;
+  if (cardIndex < 0) return;
+  let player = 0;
+  if (game.mode === 'coop') {
+    const owner = ownerFor(game.step);
+    if (owner >= 0) player = owner;
+    else if (game.armed[0] < 0) player = 0;
+    else if (game.armed[1] < 0) player = 1;
+  }
+  const slot = cursorSlot(player);
+  game.cursor[slot] = cardIndex;
+  confirm(player);
+}
+
+function update(dt) {
+  game.time += dt;
+  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 28);
+  if (game.lock > 0) game.lock = Math.max(0, game.lock - dt);
+  if (game.hintT > 0) {
+    game.hintT -= dt;
+    if (game.hintT <= 0) game.hint = '';
+  }
+  if (!game.paused && game.screen === 'play') {
+    if (game.phase === 'lock') {
+      game.lockT -= dt;
+      if (game.lockT <= 0) {
+        game.step = 1;
+        game.phase = 'play';
+        resetRoundInput();
+      }
+    } else if (game.phase === 'link') {
+      game.linkT -= dt;
+      if (game.linkT <= 0) {
+        game.step = 2;
+        game.phase = 'play';
+        resetRoundInput();
+      }
+    } else if (game.phase === 'celebrate') {
+      game.celebrateT -= dt;
+      if (game.celebrateT <= 0) finishRound();
+    }
+  }
+  for (let i = 0; i < 2; i++) {
+    const k = clamp(dt * 12, 0, 1);
+    game.ret[i].x += (game.aim[i].x - game.ret[i].x) * k;
+    game.ret[i].y += (game.aim[i].y - game.ret[i].y) * k;
+  }
+  for (let p = game.particles.length - 1; p >= 0; p--) {
+    const dot = game.particles[p];
+    dot.life -= dt;
+    dot.x += dot.vx * dt;
+    dot.y += dot.vy * dt;
+    dot.vy += 40 * dt;
+    if (dot.life <= 0) game.particles.splice(p, 1);
+  }
+  for (let f = game.floats.length - 1; f >= 0; f--) {
+    const floater = game.floats[f];
+    floater.life -= dt;
+    floater.y -= 28 * dt;
+    if (floater.life <= 0) game.floats.splice(f, 1);
+  }
+}
+
+/* ---------- drawing ---------- */
+
+function roundRect(x, y, w, h, r) {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+function panel(x, y, w, h, stroke, fill) {
+  ctx.save();
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = fill || 'rgba(8, 14, 28, 0.9)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = stroke || COL.line;
+  ctx.stroke();
+  ctx.restore();
+}
+function text(str, x, y, font, color, align, base) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = base || 'middle';
+  ctx.fillText(str, x, y);
+}
+function clipPanel(x, y, w, h, r) {
+  roundRect(x, y, w, h, r || 12);
+  ctx.clip();
+}
+
+function buildCity() {
+  city.length = 0;
+  let x = 0;
+  let guard = 0;
+  while (x < W + 20 && guard < 40) {
+    const w = 36 + Math.floor(Math.random() * 58);
+    const h = 64 + Math.floor(Math.random() * 150);
+    const windows = [];
+    for (let wy = 8; wy < h - 12; wy += 12) {
+      for (let wx = 6; wx < w - 8; wx += 10) {
+        if (Math.random() > 0.38) windows.push({ x: wx, y: wy, phase: Math.random() * 6 });
+      }
+    }
+    city.push({ x: x, w: w, h: h, windows: windows });
+    x += w + 8;
+    guard++;
+  }
+}
+
+function drawBackground() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#1a1030');
+  sky.addColorStop(0.45, '#0b1424');
+  sky.addColorStop(1, '#070814');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.9;
+  city.forEach(function (b) {
+    ctx.fillStyle = '#10192a';
+    ctx.fillRect(b.x, 214 - b.h, b.w, b.h);
+    b.windows.forEach(function (win) {
+      const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(game.time * 1.4 + win.phase));
+      ctx.fillStyle = Math.sin(game.time * 0.7 + win.phase) > -0.2 ? 'rgba(255, 214, 140, ' + (0.25 + tw * 0.55) + ')' : 'rgba(80, 140, 180, 0.18)';
+      ctx.fillRect(b.x + win.x, 214 - b.h + win.y, 4, 6);
+    });
+  });
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(62, 231, 255, 0.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 18; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, 430 + i * 18);
+    ctx.lineTo(W, 430 + i * 18);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRail() {
+  const y = 218;
+  ctx.fillStyle = 'rgba(8, 16, 32, 0.85)';
+  ctx.fillRect(14, y, 1252, 10);
+  ctx.fillStyle = COL.cyan;
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(14, y + 4, 1252, 2);
+  ctx.globalAlpha = 1;
+  const travel = ((game.time * 150) % 1500) - 120;
+  ctx.save();
+  ctx.translate(travel, y + 5);
+  ctx.fillStyle = '#d7fbff';
+  roundRect(-28, -7, 56, 12, 4);
+  ctx.fill();
+  ctx.fillStyle = COL.magenta;
+  ctx.fillRect(-6, -5, 10, 8);
+  ctx.fillStyle = COL.cyan;
+  ctx.fillRect(8, -5, 10, 8);
+  ctx.restore();
+}
+
+function drawShield(x, y, on, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.lineTo(7, -4);
+  ctx.lineTo(6, 4);
+  ctx.lineTo(0, 9);
+  ctx.lineTo(-6, 4);
+  ctx.lineTo(-7, -4);
+  ctx.closePath();
+  ctx.fillStyle = on ? color : 'rgba(180, 210, 230, 0.14)';
+  ctx.fill();
+  ctx.strokeStyle = on ? 'rgba(255,255,255,0.7)' : 'rgba(180, 210, 230, 0.55)';
+  ctx.lineWidth = 1.25;
+  ctx.stroke();
+  ctx.restore();
+}
+function drawStar(x, y, on, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? 7 : 3;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = Math.cos(a) * rad;
+    const py = Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = on ? color : 'rgba(255,255,255,0.1)';
+  ctx.fill();
+  ctx.restore();
+}
+function drawMuteIcon(x, y, muted) {
+  panel(x, y, 70, 34, muted ? COL.bad : COL.cyan, 'rgba(8, 18, 32, 0.95)');
+  text(muted ? 'MUTED' : 'LIVE', x + 35, y + 17, '700 12px ' + UI, muted ? COL.bad : COL.cyan, 'center', 'middle');
+}
+
+function modeLabel() {
+  if (game.mode === 'coop') return '2P CO-OP TEAM';
+  if (game.mode === 'versus') return '2P VERSUS';
+  return 'SOLO TYCOON';
+}
+
+function drawHUD() {
+  const h = GEO.hud;
+  panel(h.x, h.y, h.w, h.h, 'rgba(62, 231, 255, 0.35)');
+  ctx.save();
+  clipPanel(h.x, h.y, h.w, h.h, 12);
+  text(modeLabel(), 32, 33, '700 16px ' + UI, COL.ink, 'left', 'middle');
+  const tier = game.problem ? game.problem.tier : tierOf(game.round).name;
+  text('ROUND ' + game.round + '  ·  ' + tier, 230, 33, '700 15px ' + UI, COL.amber, 'left', 'middle');
+  if (game.mode === 'versus') {
+    text('P1', 500, 33, '700 13px ' + UI, COL.p1, 'left', 'middle');
+    for (let i = 0; i < 3; i++) drawShield(540 + i * 18, 33, i < game.pShields[0], COL.p1);
+    drawStar(608, 33, game.stars[0] > 0, COL.gold);
+    text(String(game.stars[0]), 624, 33, '700 14px ' + MONO, COL.gold, 'left', 'middle');
+    text(String(game.pScore[0]), 660, 33, '700 14px ' + MONO, COL.ink, 'left', 'middle');
+    text('P2', 760, 33, '700 13px ' + UI, COL.p2, 'left', 'middle');
+    for (let j = 0; j < 3; j++) drawShield(800 + j * 18, 33, j < game.pShields[1], COL.p2);
+    drawStar(868, 33, game.stars[1] > 0, COL.gold);
+    text(String(game.stars[1]), 884, 33, '700 14px ' + MONO, COL.gold, 'left', 'middle');
+    text(String(game.pScore[1]), 920, 33, '700 14px ' + MONO, COL.ink, 'left', 'middle');
+  } else {
+    text(game.mode === 'coop' ? 'TEAM SHIELDS' : 'SHIELDS', 520, 33, '700 12px ' + UI, COL.dim, 'left', 'middle');
+    const max = game.maxShields;
+    for (let s = 0; s < max; s++) drawShield(640 + s * 20, 33, s < game.shields, COL.cyan);
+    text('COMBO ' + game.combo, 820, 33, '700 15px ' + UI, game.combo > 1 ? COL.gold : COL.dim, 'left', 'middle');
+    text((game.mode === 'coop' ? 'TEAM SCORE ' : 'SCORE ') + game.score, 960, 33, '700 16px ' + UI, COL.gold, 'left', 'middle');
+  }
+  ctx.restore();
+  drawMuteIcon(GEO.mute.x, GEO.mute.y, audio.muted);
+}
+
+function drawWrappedSegments(segments, x, y, maxW, maxLines, font, baseColor, lineH) {
+  ctx.font = font;
+  const space = ctx.measureText(' ').width;
+  const lines = [];
+  let line = [];
+  let width = 0;
+  segments.forEach(function (part) {
+    const bits = part.text.split(/\s+/).filter(function (w) { return w.length; });
+    bits.forEach(function (word, idx) {
+      const w = ctx.measureText(word).width;
+      const extra = line.length ? space : 0;
+      if (line.length && width + extra + w > maxW) {
+        lines.push(line);
+        line = [];
+        width = 0;
+      }
+      if (line.length) width += space;
+      line.push({ text: word, clue: part.clue });
+      width += w;
+      if (idx < bits.length - 1 && width + space > maxW) {
+        lines.push(line);
+        line = [];
+        width = 0;
+      }
+    });
+  });
+  if (line.length) lines.push(line);
+  const shown = lines.slice(0, maxLines);
+  shown.forEach(function (row, ri) {
+    let cx = x;
+    row.forEach(function (word, wi) {
+      if (wi) cx += space;
+      const color = word.clue === 1 ? COL.cyan : word.clue === 2 ? COL.magenta : baseColor;
+      text(word.text, cx, y + ri * (lineH || 18), font, color, 'left', 'middle');
+      cx += ctx.measureText(word.text).width;
+    });
+  });
+}
+
+function drawTicker() {
+  const t = GEO.ticker;
+  panel(t.x, t.y, t.w, t.h, 'rgba(255, 61, 154, 0.28)');
+  if (!game.problem) {
+    text(game.fatal || 'Waiting for a contract…', t.x + 24, t.y + 48, '700 20px ' + UI, COL.ink, 'left', 'middle');
+    return;
+  }
+  const p = game.problem;
+  ctx.save();
+  clipPanel(t.x, t.y, t.w, t.h, 12);
+  text(p.kicker, t.x + 20, t.y + 18, '700 12px ' + UI, COL.amber, 'left', 'middle');
+  const stepName = ['STEP 1 · QUANTITY', 'STEP 2 · VALUE', 'STEP 3 · DELIVER'][game.step] || 'STEP';
+  text(stepName, t.x + t.w - 20, t.y + 18, '700 12px ' + UI, game.step === 2 ? COL.gold : COL.cyan, 'right', 'middle');
+  drawWrappedSegments(p.segments, t.x + 20, t.y + 38, t.w - 40, 3, '700 15px ' + UI, COL.ink, 16);
+  text(p.vars, t.x + 20, t.y + 90, '600 14px ' + MONO, COL.cyan, 'left', 'middle');
+  const message = game.tip || game.hint;
+  if (message) {
+    ctx.font = '700 12px ' + UI;
+    const lines = wrapText(ctx, (game.tip ? 'MARKET ALERT  ·  ' : '') + message, t.w - 52).slice(0, 2);
+    const boxH = lines.length > 1 ? 36 : 22;
+    const boxY = t.y + t.h - boxH - 6;
+    roundRect(t.x + 12, boxY, t.w - 24, boxH, 6);
+    ctx.fillStyle = game.tip ? 'rgba(255, 77, 106, 0.18)' : 'rgba(255, 200, 87, 0.12)';
+    ctx.fill();
+    lines.forEach(function (line, i) {
+      const ly = lines.length === 1 ? boxY + boxH / 2 : boxY + 11 + i * 15;
+      text(line, t.x + 22, ly, '700 12px ' + UI, game.tip ? COL.bad : COL.amber, 'left', 'middle');
+    });
+  }
+  ctx.restore();
+}
+
+function ledgerSlots() {
+  const L = GEO.ledger;
+  const gap = 10;
+  const h = (L.h - 28 - gap) / 2;
+  return [
+    { x: L.x + 12, y: L.y + 12, w: L.w - 24, h: h, color: COL.cyan, title: 'EQUATION 1  ·  CYAN BUS', index: 0 },
+    { x: L.x + 12, y: L.y + 12 + h + gap, w: L.w - 24, h: h, color: COL.magenta, title: 'EQUATION 2  ·  MAGENTA BUS', index: 1 }
+  ];
+}
+
+function drawLedgers() {
+  const slots = ledgerSlots();
+  slots.forEach(function (slot) {
+    const active = game.step === slot.index && game.phase === 'play';
+    const hot = game.locked[slot.index] || (game.phase !== 'play' && game.step > slot.index);
+    panel(slot.x, slot.y, slot.w, slot.h, active ? slot.color : 'rgba(140,170,200,0.25)', 'rgba(6, 12, 24, 0.92)');
+    if (active) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.25 * Math.sin(game.time * 5);
+      ctx.strokeStyle = slot.color;
+      ctx.lineWidth = 2;
+      roundRect(slot.x + 3, slot.y + 3, slot.w - 6, slot.h - 6, 10);
+      ctx.stroke();
+      ctx.restore();
+    }
+    text(slot.title, slot.x + 14, slot.y + 18, '700 11px ' + UI, slot.color, 'left', 'middle');
+    const shown = game.locked[slot.index];
+    if (shown) {
+      ctx.font = '700 22px ' + MONO;
+      const lines = wrapText(ctx, shown, slot.w - 28);
+      lines.forEach(function (line, i) {
+        text(line, slot.x + slot.w / 2, slot.y + slot.h / 2 + 8 + (i - (lines.length - 1) / 2) * 26, '700 22px ' + MONO, COL.ink, 'center', 'middle');
+      });
+    } else {
+      text(hot ? 'LINKED' : 'AWAITING LOCK', slot.x + slot.w / 2, slot.y + slot.h / 2 + 8, '700 16px ' + UI, 'rgba(232,244,255,0.35)', 'center', 'middle');
+    }
+  });
+  if (game.phase === 'link') {
+    ctx.save();
+    ctx.strokeStyle = COL.gold;
+    ctx.globalAlpha = 0.45 + 0.4 * Math.sin(game.time * 16);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(GEO.ledger.x + GEO.ledger.w - 8, GEO.ledger.y + GEO.ledger.h / 2);
+    ctx.lineTo(GEO.sim.x + 8, GEO.sim.y + GEO.sim.h / 2);
+    ctx.stroke();
+    ctx.restore();
+    text('SOLVER ONLINE', GEO.ledger.x + GEO.ledger.w / 2, GEO.ledger.y + GEO.ledger.h / 2, '700 13px ' + UI, COL.gold, 'center', 'middle');
+  }
+}
+
+function simInner() {
+  const s = GEO.sim;
+  return { x: s.x + 16, y: s.y + 40, w: s.w - 32, h: s.h - 78 };
+}
+
+function drawTelemetry() {
+  const s = GEO.sim;
+  const y = s.y + s.h - 30;
+  text('LIVE TELEMETRY', s.x + 18, y + 8, '700 10px ' + UI, COL.dim, 'left', 'middle');
+  ctx.beginPath();
+  for (let i = 0; i < 48; i++) {
+    const x = s.x + 140 + i * 11;
+    const wave = Math.sin(game.time * 2.2 + i * 0.45) * 7 + Math.sin(game.time * 0.8 + i) * 3;
+    if (i === 0) ctx.moveTo(x, y + 8 + wave);
+    else ctx.lineTo(x, y + 8 + wave);
+  }
+  ctx.strokeStyle = COL.cyan;
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+function drawSimFrame(title) {
+  const s = GEO.sim;
+  panel(s.x, s.y, s.w, s.h, 'rgba(255, 200, 87, 0.28)');
+  text(title, s.x + 18, s.y + 20, '700 12px ' + UI, COL.amber, 'left', 'middle');
+}
+
+function drawOrders(spec, rect) {
+  spec.rows.forEach(function (row, i) {
+    const y = rect.y + 16 + i * 78;
+    const color = row.clue === 1 ? COL.cyan : COL.magenta;
+    panel(rect.x, y, rect.w, 68, color, 'rgba(10,16,30,0.75)');
+    text(row.left, rect.x + 16, y + 24, '700 16px ' + UI, COL.ink, 'left', 'middle');
+    text(row.right, rect.x + 16, y + 46, '700 16px ' + UI, COL.ink, 'left', 'middle');
+    text(row.total, rect.x + rect.w - 16, y + 34, '700 22px ' + MONO, color, 'right', 'middle');
+  });
+  text(spec.tags[0] + '    ' + spec.tags[1], rect.x, rect.y + rect.h - 8, '600 13px ' + MONO, COL.dim, 'left', 'middle');
+}
+
+function drawSplit(spec, rect) {
+  text(spec.n + ' ' + spec.item + 's   ·   ' + spec.totalText, rect.x, rect.y + 12, '700 16px ' + UI, COL.ink, 'left', 'middle');
+  const y = rect.y + 48;
+  const w = rect.w;
+  roundRect(rect.x, y, w, 36, 8);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fill();
+  const cut = 0.42 + 0.08 * Math.sin(game.time * 1.4);
+  roundRect(rect.x, y, w * cut, 36, 8);
+  ctx.fillStyle = 'rgba(62, 231, 255, 0.85)';
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255, 61, 154, 0.85)';
+  ctx.fillRect(rect.x + w * cut, y, w * (1 - cut) - 8, 36);
+  text(spec.cheap, rect.x, y + 56, '700 16px ' + MONO, COL.cyan, 'left', 'middle');
+  text(spec.dear, rect.x + w, y + 56, '700 16px ' + MONO, COL.magenta, 'right', 'middle');
+  text('The split is still sealed. Build both equations.', rect.x, rect.y + rect.h - 16, '600 13px ' + UI, COL.dim, 'left', 'middle');
+}
+
+function drawShare(spec, rect) {
+  [spec.clue1, spec.clue2].forEach(function (line, i) {
+    const y = rect.y + i * 78;
+    panel(rect.x, y, rect.w, 68, i === 0 ? COL.cyan : COL.magenta, 'rgba(10,16,30,0.7)');
+    ctx.font = '700 15px ' + UI;
+    const lines = wrapText(ctx, line, rect.w - 28);
+    lines.slice(0, 2).forEach(function (bit, li) {
+      text(bit, rect.x + 14, y + 24 + li * 20, '700 15px ' + UI, COL.ink, 'left', 'middle');
+    });
+  });
+}
+
+function drawMeter(spec, rect) {
+  const left = rect.x + 36;
+  const bottom = rect.y + rect.h - 28;
+  const width = rect.w - 56;
+  const height = rect.h - 48;
+  ctx.strokeStyle = 'rgba(232,244,255,0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(left, rect.y + 8);
+  ctx.lineTo(left, bottom);
+  ctx.lineTo(left + width, bottom);
+  ctx.stroke();
+  function px(n) { return left + (n / spec.nMax) * width; }
+  function py(c) { return bottom - (c / spec.cMax) * height; }
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(px(0), py(spec.c1 - spec.n1 * ((spec.c2 - spec.c1) / (spec.n2 - spec.n1))));
+  ctx.lineTo(px(spec.n2), py(spec.c2));
+  ctx.stroke();
+  [[spec.n1, spec.c1, COL.cyan], [spec.n2, spec.c2, COL.magenta]].forEach(function (pt) {
+    ctx.fillStyle = pt[2];
+    ctx.beginPath();
+    ctx.arc(px(pt[0]), py(pt[1]), 6, 0, Math.PI * 2);
+    ctx.fill();
+    text(pt[0] + ', ' + plain2(pt[1]), px(pt[0]) + 8, py(pt[1]) - 12, '700 12px ' + MONO, pt[2], 'left', 'middle');
+  });
+  const travel = (Math.sin(game.time * 1.3) + 1) / 2;
+  const n = spec.n2 * travel;
+  const c = spec.c1 + (spec.c2 - spec.c1) * ((n - spec.n1) / (spec.n2 - spec.n1));
+  if (n >= 0 && n <= spec.n2) {
+    ctx.fillStyle = COL.gold;
+    ctx.beginPath();
+    ctx.arc(px(n), py(c), 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  text('C = p + qn', rect.x + rect.w - 4, rect.y + 4, '700 14px ' + MONO, COL.gold, 'right', 'middle');
+}
+
+function drawBanks(spec, rect) {
+  const w = (rect.w - 20) / 2;
+  [0, 1].forEach(function (i) {
+    const x = rect.x + i * (w + 20);
+    panel(x, rect.y, w, rect.h - 10, i === 0 ? COL.cyan : COL.magenta, 'rgba(10,16,30,0.72)');
+    text(i === 0 ? spec.nameA : spec.nameB, x + 14, rect.y + 22, '700 16px ' + UI, i === 0 ? COL.cyan : COL.magenta, 'left', 'middle');
+    text(i === 0 ? spec.rateA + ' p.a.' : spec.rateB + ' p.a.', x + 14, rect.y + 46, '700 14px ' + MONO, COL.ink, 'left', 'middle');
+    const coins = 4 + Math.floor((Math.sin(game.time * 2 + i) + 1) * 2);
+    for (let c = 0; c < coins; c++) {
+      ctx.fillStyle = COL.gold;
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, rect.y + rect.h - 36 - c * 8, 16, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  text('Deposit ' + spec.totalText + '  ·  equal interest', rect.x, rect.y + rect.h - 4, '600 13px ' + UI, COL.dim, 'left', 'middle');
+}
+
+function drawVats(spec, rect) {
+  function vat(x, color, name, price) {
+    roundRect(x, rect.y + 10, 70, 110, 8);
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    const level = 36 + Math.sin(game.time * 2) * 6;
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(x + 6, rect.y + 10 + level, 58, 110 - level - 6);
+    ctx.globalAlpha = 1;
+    text(name, x + 35, rect.y + 132, '700 12px ' + UI, color, 'center', 'middle');
+    text(price, x + 35, rect.y + 148, '700 12px ' + MONO, COL.ink, 'center', 'middle');
+    return x + 35;
+  }
+  const ax = vat(rect.x + 10, COL.cyan, spec.nameA, spec.priceA);
+  const bx = vat(rect.x + rect.w - 80, COL.magenta, spec.nameB, spec.priceB);
+  const tx = rect.x + rect.w / 2 - 70;
+  roundRect(tx, rect.y + 70, 140, 78, 10);
+  ctx.fillStyle = 'rgba(10,16,30,0.8)';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255, 200, 87, 0.75)';
+  ctx.fillRect(tx + 8, rect.y + 100, 124, 40);
+  text(spec.volume + ' ' + spec.unit, tx + 70, rect.y + 92, '700 16px ' + MONO, COL.gold, 'center', 'middle');
+  text(spec.meanText + ' / ' + spec.unit, tx + 70, rect.y + 118, '700 13px ' + MONO, COL.ink, 'center', 'middle');
+  [ax, bx].forEach(function (sx, i) {
+    for (let d = 0; d < 5; d++) {
+      const p = (game.time * 0.7 + d / 5) % 1;
+      const y = rect.y + 40 + p * 40;
+      const x = sx + (tx + 70 - sx) * p;
+      ctx.fillStyle = i === 0 ? COL.cyan : COL.magenta;
+      ctx.fillRect(x, y, 3, 7);
+    }
+  });
+}
+
+function drawHeights(spec, rect) {
+  text('A ' + spec.hA + ' cm', rect.x, rect.y + 8, '700 14px ' + MONO, COL.cyan, 'left', 'middle');
+  text('B ' + spec.hB + ' cm', rect.x + rect.w, rect.y + 8, '700 14px ' + MONO, COL.magenta, 'right', 'middle');
+  const base = rect.y + rect.h - 36;
+  const hA = 70 + (spec.hA % 20);
+  const hB = 50 + (spec.hB % 18);
+  ctx.fillStyle = 'rgba(62, 231, 255, 0.8)';
+  ctx.fillRect(rect.x + 40, base - hA, 70, hA);
+  ctx.fillStyle = 'rgba(255, 61, 154, 0.8)';
+  ctx.fillRect(rect.x + rect.w - 110, base - hB, 70, hB);
+  ctx.strokeStyle = COL.gold;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(rect.x, base - 60);
+  ctx.lineTo(rect.x + rect.w, base - 60);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  text(spec.count + ' ' + spec.thing + '  ·  mean ' + spec.meanText, rect.x, rect.y + rect.h - 12, '600 14px ' + UI, COL.ink, 'left', 'middle');
+}
+
+function drawVault(spec, rect) {
+  const reveal = game.phase === 'celebrate';
+  const digits = reveal ? String(spec.reveal).padStart(2, '0').split('') : ['?', '?'];
+  digits.forEach(function (digit, i) {
+    const x = rect.x + 80 + i * 150;
+    panel(x, rect.y + 10, 110, 120, COL.gold, 'rgba(8,12,24,0.85)');
+    const bob = reveal ? 0 : Math.sin(game.time * 6 + i) * 8;
+    text(digit, x + 55, rect.y + 70 + bob, '700 54px ' + MONO, COL.gold, 'center', 'middle');
+  });
+  text('10a + b', rect.x + rect.w - 10, rect.y + 30, '700 20px ' + MONO, COL.cyan, 'right', 'middle');
+  text('reverse  10b + a', rect.x + rect.w - 10, rect.y + 58, '700 16px ' + MONO, COL.magenta, 'right', 'middle');
+  text('Digit sum ' + spec.sum + '   ·   gap ' + spec.diff, rect.x, rect.y + rect.h - 8, '600 14px ' + UI, COL.dim, 'left', 'middle');
+}
+
+function drawStacked(cx, cy, num, den, size, color) {
+  ctx.fillStyle = color;
+  ctx.font = '700 ' + size + 'px ' + MONO;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = Math.max(ctx.measureText(String(num)).width, ctx.measureText(String(den)).width) + 10;
+  ctx.fillText(String(num), cx, cy - size * 0.62);
+  ctx.fillRect(cx - w / 2, cy - 1, w, 2);
+  ctx.fillText(String(den), cx, cy + size * 0.68);
+}
+
+function drawFraction(spec, rect) {
+  const reveal = game.phase === 'celebrate';
+  if (reveal) drawStacked(rect.x + 70, rect.y + 70, spec.revealN, spec.revealD, 32, COL.gold);
+  else {
+    text('m', rect.x + 70, rect.y + 48, '700 28px ' + MONO, COL.ink, 'center', 'middle');
+    ctx.fillStyle = COL.ink;
+    ctx.fillRect(rect.x + 48, rect.y + 68, 44, 2);
+    text('n', rect.x + 70, rect.y + 90, '700 28px ' + MONO, COL.ink, 'center', 'middle');
+  }
+  panel(rect.x + 170, rect.y + 8, rect.w - 180, 64, COL.cyan, 'rgba(10,16,30,0.7)');
+  panel(rect.x + 170, rect.y + 82, rect.w - 180, 64, COL.magenta, 'rgba(10,16,30,0.7)');
+  text('becomes  ' + spec.left, rect.x + 184, rect.y + 28, '700 16px ' + UI, COL.cyan, 'left', 'middle');
+  text(spec.shift1, rect.x + 184, rect.y + 50, '600 13px ' + MONO, COL.dim, 'left', 'middle');
+  text('becomes  ' + spec.right, rect.x + 184, rect.y + 102, '700 16px ' + UI, COL.magenta, 'left', 'middle');
+  text(spec.shift2, rect.x + 184, rect.y + 124, '600 13px ' + MONO, COL.dim, 'left', 'middle');
+}
+
+function drawSim() {
+  if (!game.problem) return;
+  const titles = {
+    orders: 'ORDER SCALES',
+    split: 'INVENTORY SPLIT',
+    share: 'VOUCHER SHARE',
+    meter: 'TARIFF METER',
+    banks: 'INTEREST VAULTS',
+    vats: 'BLEND TANKS',
+    heights: 'HEIGHT SURVEY',
+    vault: 'DIGIT VAULT',
+    fraction: 'FRACTION SHIFT'
+  };
+  drawSimFrame(titles[game.problem.visual] || 'SIMULATOR');
+  const rect = simInner();
+  const spec = game.problem.visualSpec;
+  ctx.save();
+  clipPanel(rect.x - 8, rect.y - 8, rect.w + 16, rect.h + 16, 8);
+  if (game.problem.visual === 'orders') drawOrders(spec, rect);
+  else if (game.problem.visual === 'split') drawSplit(spec, rect);
+  else if (game.problem.visual === 'share') drawShare(spec, rect);
+  else if (game.problem.visual === 'meter') drawMeter(spec, rect);
+  else if (game.problem.visual === 'banks') drawBanks(spec, rect);
+  else if (game.problem.visual === 'vats') drawVats(spec, rect);
+  else if (game.problem.visual === 'heights') drawHeights(spec, rect);
+  else if (game.problem.visual === 'vault') drawVault(spec, rect);
+  else if (game.problem.visual === 'fraction') drawFraction(spec, rect);
+  ctx.restore();
+  drawTelemetry();
+}
+
+function drawCard(cardObj, rect, index, hot, mark, dead) {
+  const stroke = dead ? 'rgba(255,77,106,0.35)' : hot ? COL.cyan : 'rgba(140,170,200,0.3)';
+  panel(rect.x, rect.y, rect.w, rect.h, stroke, dead ? 'rgba(40, 10, 18, 0.72)' : 'rgba(8, 14, 28, 0.94)');
+  text(String(index + 1).padStart(2, '0'), rect.x + 10, rect.y + 14, '700 11px ' + UI, COL.dim, 'left', 'middle');
+  if (mark) text(mark, rect.x + rect.w - 10, rect.y + 14, '700 11px ' + UI, COL.gold, 'right', 'middle');
+  if (cardObj && cardObj.frac) {
+    drawStacked(rect.x + rect.w / 2, rect.y + rect.h / 2 + 8, cardObj.frac.n, cardObj.frac.d, 22, dead ? COL.dim : COL.ink);
+    return;
+  }
+  const body = cardObj ? cardObj.text : '';
+  let size = 16;
+  ctx.font = '700 ' + size + 'px ' + MONO;
+  let lines = wrapText(ctx, body, rect.w - 18);
+  while (lines.length > 4 && size > 12) {
+    size -= 1;
+    ctx.font = '700 ' + size + 'px ' + MONO;
+    lines = wrapText(ctx, body, rect.w - 18);
+  }
+  const top = rect.y + rect.h / 2 + 6 - ((lines.length - 1) * (size + 3)) / 2;
+  lines.forEach(function (line, i) {
+    text(line, rect.x + rect.w / 2, top + i * (size + 3), '700 ' + size + 'px ' + MONO, dead ? COL.dim : COL.ink, 'center', 'middle');
+  });
+}
+
+function roleLine() {
+  if (!game.problem) return '';
+  if (game.phase === 'celebrate') return 'Click anywhere for the next contract';
+  if (game.mode !== 'coop') return '';
+  if (game.step >= 2) return 'Both directors click the same card';
+  const owner = ownerFor(game.step);
+  const who = owner === 0 ? 'P1 RED' : 'P2 BLUE';
+  return who + ' clicks ' + (game.step === 0 ? 'Equation 1' : 'Equation 2');
+}
+
+function drawDeck() {
+  const d = GEO.deck;
+  panel(d.x, d.y, d.w, d.h, 'rgba(94, 255, 176, 0.22)');
+  const geom = deckGeom();
+  const prompt = game.problem && game.phase === 'play' ? game.problem.steps[game.step].prompt : (game.phase === 'celebrate' ? 'TRADE CLEARED' : 'LINKING THE LEDGERS');
+  text(prompt, geom.prompt.x, geom.prompt.y + 10, '700 13px ' + UI, COL.ink, 'left', 'middle');
+  const role = roleLine();
+  if (role) text(role, geom.prompt.x + geom.prompt.w, geom.prompt.y + 10, '700 12px ' + UI, COL.amber, 'right', 'middle');
+  const cards = currentCards();
+  for (let i = 0; i < 4; i++) {
+    const slot0 = game.cursor[0] === i;
+    const slot1 = game.mode === 'versus' && game.cursor[1] === i;
+    const votes = [];
+    if (game.mode === 'coop' && game.step === 2) {
+      if (game.armed[0] === i) votes.push('P1');
+      if (game.armed[1] === i) votes.push('P2');
+    }
+    const dead = cards[i] && (game.mode === 'versus' ? (cards[i].deadFor[0] && cards[i].deadFor[1]) : cards[i].dead);
+    drawCard(cards[i], geom.cards[i], i, slot0 || slot1, votes.join(' '), dead);
+    if (slot0) strokeCursor(geom.cards[i], game.mode === 'coop' ? (ownerFor(game.step) === 1 ? COL.p2 : COL.p1) : (game.mode === 'versus' ? COL.p1 : COL.cyan));
+    if (slot1) strokeCursor(geom.cards[i], COL.p2);
+  }
+}
+
+function strokeCursor(rect, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.globalAlpha = 0.85;
+  roundRect(rect.x - 3, rect.y - 3, rect.w + 6, rect.h + 6, 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawReticle(x, y, color) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(x, y, 9, 0, Math.PI * 2);
+  ctx.moveTo(x - 14, y); ctx.lineTo(x - 5, y);
+  ctx.moveTo(x + 5, y); ctx.lineTo(x + 14, y);
+  ctx.moveTo(x, y - 14); ctx.lineTo(x, y - 5);
+  ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawParticles() {
+  game.particles.forEach(function (dot) {
+    ctx.globalAlpha = Math.max(0, dot.life / dot.max);
+    ctx.fillStyle = dot.color;
+    ctx.beginPath();
+    ctx.arc(dot.x, dot.y, dot.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+function drawFloats() {
+  game.floats.forEach(function (floater) {
+    ctx.globalAlpha = Math.max(0, floater.life / floater.max);
+    text(floater.text, floater.x, floater.y, '700 22px ' + UI, floater.color, 'center', 'middle');
+  });
+  ctx.globalAlpha = 1;
+}
+
+function drawCelebrate() {
+  if (!game.problem) return;
+  const s = GEO.sim;
+  const x = s.x + 16;
+  const y = s.y + 36;
+  const w = s.w - 32;
+  const h = s.h - 78;
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = '#07140f';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('TRADE CLEARED', x + w / 2, y + 28, '700 18px ' + UI, COL.gold, 'center', 'middle');
+  text(game.locked[0] || '', x + w / 2, y + 58, '700 16px ' + MONO, COL.cyan, 'center', 'middle');
+  text(game.locked[1] || '', x + w / 2, y + 84, '700 16px ' + MONO, COL.magenta, 'center', 'middle');
+  const good = game.problem.steps[2].cards.find(function (c) { return c.correct; });
+  if (good && good.frac) drawStacked(x + w / 2, y + 128, good.frac.n, good.frac.d, 20, COL.gold);
+  else text(game.locked[2] || '', x + w / 2, y + 118, '700 22px ' + MONO, COL.gold, 'center', 'middle');
+  text('+350 TYCOON POINTS', x + w / 2, y + h - 22, '700 13px ' + UI, COL.good, 'center', 'middle');
+}
+
+function drawTitle() {
+  text('NEON HARBOUR EXCHANGE', W / 2, 48, '700 13px ' + UI, COL.cyan, 'center', 'middle');
+  text('METRO TRADE', W / 2, 92, '700 54px ' + UI, COL.ink, 'center', 'middle');
+  text('& MIXTURE TYCOON', W / 2, 138, '700 28px ' + UI, COL.magenta, 'center', 'middle');
+  text('Secondary 2  ·  simultaneous equations from trade, tariffs, mixtures, interest, and digit vaults', W / 2, 172, '600 14px ' + UI, COL.dim, 'center', 'middle');
+  const buttons = titleGeom();
+  const copy = [
+    ['SOLO TYCOON', 'Mouse, keyboard, or one 8BitDo. Three capital shields, your combo, and your score.', 'Best ' + (game.best.solo || 0)],
+    ['2P CO-OP TEAM', 'P1 and P2 swap Equation 1 and Equation 2 each round. Four shared shields. One team score only.', 'Best ' + (game.best.coop || 0)],
+    ['2P VERSUS', 'Same contract, separate shields. First correct lock takes the step. Step 3 awards the tycoon star.', 'Best ' + (game.best.versus || 0)]
+  ];
+  buttons.forEach(function (btn, i) {
+    const on = game.titleSel === i;
+    panel(btn.x, btn.y, btn.w, btn.h, on ? COL.gold : COL.line, 'rgba(8,14,28,0.92)');
+    text(i + 1 + '   ' + copy[i][0], btn.x + 20, btn.y + 42, '700 20px ' + UI, on ? COL.gold : COL.ink, 'left', 'middle');
+    ctx.font = '600 15px ' + UI;
+    wrapText(ctx, copy[i][1], btn.w - 40).slice(0, 4).forEach(function (line, li) {
+      text(line, btn.x + 20, btn.y + 88 + li * 22, '600 15px ' + UI, COL.dim, 'left', 'middle');
+    });
+    text(copy[i][2], btn.x + 20, btn.y + btn.h - 28, '700 13px ' + MONO, COL.cyan, 'left', 'middle');
+  });
+  const help = 'Solo: mouse click, or WASD / arrows + Space.    Co-op & versus: P1 WASD + F, P2 arrows + Enter.    8BitDo: D-pad or stick, A confirms.    M mutes.    1–4 and 7–0 quick-pick cards.';
+  ctx.font = '600 13px ' + UI;
+  wrapText(ctx, help, 1100).forEach(function (line, i) {
+    text(line, W / 2, 500 + i * 20, '600 13px ' + UI, COL.dim, 'center', 'middle');
+  });
+  text('Click a card to lock the answer. A wrong translation costs one capital shield and names the trap.', W / 2, 560, '600 14px ' + UI, COL.ink, 'center', 'middle');
+  drawMuteIcon(GEO.mute.x, GEO.mute.y, audio.muted);
+}
+
+function drawOver() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(4, 6, 14, 0.72)';
+  ctx.fillRect(0, 0, W, H);
+  panel(300, 150, 680, 430, COL.gold, 'rgba(8, 12, 24, 0.96)');
+  text('EXCHANGE CLOSED', W / 2, 196, '700 16px ' + UI, COL.bad, 'center', 'middle');
+  text(modeLabel(), W / 2, 236, '700 28px ' + UI, COL.ink, 'center', 'middle');
+  ctx.font = '600 16px ' + UI;
+  wrapText(ctx, game.overReason || '', 580).forEach(function (line, i) {
+    text(line, W / 2, 278 + i * 22, '600 16px ' + UI, COL.dim, 'center', 'middle');
+  });
+  if (game.mode === 'versus') {
+    text('P1  ' + game.pScore[0] + '    stars ' + game.stars[0], W / 2, 360, '700 20px ' + MONO, COL.p1, 'center', 'middle');
+    text('P2  ' + game.pScore[1] + '    stars ' + game.stars[1], W / 2, 392, '700 20px ' + MONO, COL.p2, 'center', 'middle');
+  } else {
+    text((game.mode === 'coop' ? 'TEAM SCORE  ' : 'SCORE  ') + game.score, W / 2, 360, '700 28px ' + MONO, COL.gold, 'center', 'middle');
+    text('Contracts cleared  ' + game.cleared, W / 2, 398, '700 16px ' + UI, COL.ink, 'center', 'middle');
+  }
+  const buttons = overGeom();
+  ['RETRY SAME MODE', 'TITLE'].forEach(function (label, i) {
+    const btn = buttons[i];
+    panel(btn.x, btn.y, btn.w, btn.h, game.overSel === i ? COL.gold : COL.line);
+    text(label, btn.x + btn.w / 2, btn.y + btn.h / 2, '700 16px ' + UI, COL.ink, 'center', 'middle');
+  });
+  ctx.restore();
+}
+
+function drawPause() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(4, 6, 14, 0.62)';
+  ctx.fillRect(0, 0, W, H);
+  panel(360, 220, 560, 260, COL.cyan, 'rgba(8,12,24,0.96)');
+  text('MARKET PAUSED', W / 2, 268, '700 28px ' + UI, COL.ink, 'center', 'middle');
+  text('Esc resumes. Q returns to the title.', W / 2, 312, '600 15px ' + UI, COL.dim, 'center', 'middle');
+  const buttons = pauseGeom();
+  ['RESUME', 'TITLE'].forEach(function (label, i) {
+    const btn = buttons[i];
+    panel(btn.x, btn.y, btn.w, btn.h, game.pauseSel === i ? COL.gold : COL.line);
+    text(label, btn.x + btn.w / 2, btn.y + btn.h / 2, '700 16px ' + UI, COL.ink, 'center', 'middle');
+  });
+  ctx.restore();
+}
+
+function draw() {
+  ctx.save();
+  if (game.shake > 0) {
+    const mag = game.shake;
+    ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+  }
+  drawBackground();
+  if (game.screen === 'title') {
+    drawTitle();
+  } else {
+    drawHUD();
+    drawTicker();
+    drawRail();
+    drawLedgers();
+    drawSim();
+    drawDeck();
+    drawParticles();
+    drawFloats();
+    if (game.screen === 'play' && !game.paused) {
+      if (game.mode !== 'versus') drawReticle(game.ret[0].x, game.ret[0].y, game.mode === 'coop' ? (ownerFor(game.step) === 1 ? COL.p2 : COL.p1) : COL.cyan);
+      else {
+        drawReticle(game.ret[0].x, game.ret[0].y, COL.p1);
+        drawReticle(game.ret[1].x, game.ret[1].y, COL.p2);
+      }
+    }
+    if (game.phase === 'celebrate' && game.screen === 'play') drawCelebrate();
+    if (game.paused) drawPause();
+    if (game.screen === 'over') drawOver();
+  }
+  ctx.restore();
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = Math.round(W * scale) + 'px';
+  canvas.style.height = Math.round(H * scale) + 'px';
+  canvas.width = Math.max(1, Math.round(W * scale * dpr));
+  canvas.height = Math.max(1, Math.round(H * scale * dpr));
+  ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d');
+  loadBest();
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('keydown', function (e) {
+    const block = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+    if (block.indexOf(e.code) >= 0) e.preventDefault();
+    if (e.repeat) return;
+    keysDown.add(e.code);
+    keyEdge.add(e.code);
+  });
+  window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+  canvas.addEventListener('pointermove', function (e) {
+    const pos = worldFromClient(e.clientX, e.clientY);
+    game.mouseX = pos.x;
+    game.mouseY = pos.y;
+    game.mouseIn = true;
+    if (game.screen === 'title') {
+      titleGeom().forEach(function (btn, i) { if (hit(pos.x, pos.y, btn)) game.titleSel = i; });
+    } else if (game.screen === 'play' && game.mode !== 'versus') {
+      game.aim[0].x = pos.x;
+      game.aim[0].y = pos.y;
+      const geom = deckGeom();
+      for (let i = 0; i < 4; i++) if (hit(pos.x, pos.y, geom.cards[i])) game.cursor[0] = i;
+    } else if (game.screen === 'play' && game.mode === 'versus') {
+      game.aim[0].x = pos.x;
+      game.aim[0].y = pos.y;
+      const geom = deckGeom();
+      for (let i = 0; i < 4; i++) if (hit(pos.x, pos.y, geom.cards[i])) game.cursor[0] = i;
+    }
+  });
+  canvas.addEventListener('pointerdown', function (e) {
+    const pos = worldFromClient(e.clientX, e.clientY);
+    pointerX = pos.x;
+    pointerY = pos.y;
+    pointerEdge = true;
+    resumeAudio();
+  });
+  canvas.addEventListener('pointerleave', function () { game.mouseIn = false; });
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+    try {
+      if (!game.paused) pollInput();
+      else pollInput();
+      update(dt);
+      tickMusic();
+      draw();
+    } catch (err) {
+      game.fatal = err && err.message ? err.message : 'render error';
+      console.error(err);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+buildCity();
+if (typeof document !== 'undefined' && document && document.getElementById) boot();
+</script>
+</body>
+</html>
