@@ -1,0 +1,2994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sub-Core Matrix: Variable Injector</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; background: #050814; overflow: hidden;
+    user-select: none; -webkit-user-select: none; touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #mute {
+    position: fixed;
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    z-index: 5;
+    background: #10182e;
+    color: #ffcc4d;
+    border: 1px solid rgba(255, 204, 77, 0.85);
+    border-radius: 999px;
+    font: 700 12px/1 "Avenir Next", "Segoe UI", sans-serif;
+    letter-spacing: 0.14em;
+    padding: 9px 12px;
+    cursor: pointer;
+  }
+  #mute:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Sub-Core Matrix Variable Injector"></canvas>
+<button id="mute" type="button">MUTE</button>
+<script>
+'use strict';
+
+const MATH_FONT = 'Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif';
+const UI_FONT = '"Avenir Next", "Segoe UI", sans-serif';
+const MONO_FONT = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+
+/* ------------------------------------------------------------------ math */
+
+function gcd(a, b) {
+  a = Math.abs(a | 0); b = Math.abs(b | 0);
+  if (!a) return b || 1;
+  if (!b) return a || 1;
+  while (b) { const t = a % b; a = b; b = t; }
+  return a || 1;
+}
+function Fr(n, d) {
+  if (d === undefined) d = 1;
+  n = Math.trunc(n); d = Math.trunc(d);
+  if (!d) throw new Error('zero denominator');
+  if (d < 0) { n = -n; d = -d; }
+  const g = gcd(n, d);
+  return { n: n / g, d: d / g };
+}
+function fAdd(a, b) { return Fr(a.n * b.d + b.n * a.d, a.d * b.d); }
+function fSub(a, b) { return Fr(a.n * b.d - b.n * a.d, a.d * b.d); }
+function fMul(a, b) { return Fr(a.n * b.n, a.d * b.d); }
+function fDiv(a, b) {
+  if (!b.n) throw new Error('div0');
+  return Fr(a.n * b.d, a.d * b.n);
+}
+function fNeg(a) { return Fr(-a.n, a.d); }
+function fEq(a, b) { return !!a && !!b && a.n === b.n && a.d === b.d; }
+function fIsZero(a) { return a.n === 0; }
+function fKey(a) { return a.n + '/' + a.d; }
+function fAbsVal(a) { return Math.abs(a.n) / a.d; }
+function bounded(fr, den, mag) { return fr.d <= den && fAbsVal(fr) <= mag + 1e-9; }
+
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function fmtCoefVar(coef, v) {
+  const neg = coef.n < 0;
+  const n = Math.abs(coef.n);
+  const d = coef.d;
+  let body;
+  if (!v) body = d === 1 ? String(n) : n + '/' + d;
+  else if (n === 1 && d === 1) body = v;
+  else if (n === 1) body = v + '/' + d;
+  else body = (d === 1 ? String(n) : n + '/' + d) + v;
+  return (neg ? '−' : '') + body;
+}
+function fmtNum(fr) { return fmtCoefVar(fr, null); }
+function withPlus(coef, v) {
+  return coef.n < 0 ? fmtCoefVar(coef, v) : '+' + fmtCoefVar(coef, v);
+}
+function binomialParts(A, B, free) {
+  const c = { coef: A, v: null };
+  const vr = { coef: B, v: free };
+  const varFirst = A.n < 0 && B.n > 0;
+  return (varFirst ? [vr, c] : [c, vr]).filter(p => !fIsZero(p.coef));
+}
+function fmtBinomial(A, B, free) {
+  const parts = binomialParts(A, B, free);
+  let s = '';
+  parts.forEach((p, i) => {
+    if (i === 0) s += fmtCoefVar(p.coef, p.v);
+    else {
+      s += p.coef.n < 0 ? ' − ' : ' + ';
+      s += fmtCoefVar(Fr(Math.abs(p.coef.n), p.coef.d), p.v);
+    }
+  });
+  return s;
+}
+function fmtIso(iso, A, B, free) {
+  return iso + ' = ' + fmtBinomial(A, B, free);
+}
+
+/* --------------------------------------------------------------- expr AST */
+
+const E = {
+  s: (s) => ({ k: 's', s: String(s) }),
+  gap: (em) => ({ k: 'gap', em }),
+  row: (parts) => ({ k: 'row', parts: parts.filter(Boolean) }),
+  frac: (n, d) => ({ k: 'f', n, d }),
+  sqrt: (e) => ({ k: 'sqrt', e }),
+  paren: (e) => ({ k: 'paren', e }),
+  mark: (id, e) => ({ k: 'mark', id, e }),
+  socket: (name) => ({ k: 'socket', name, color: '#ffcc4d' })
+};
+
+function numExpr(fr) {
+  if (fr.n < 0) return E.row([E.s('−'), absNumExpr(fNeg(fr))]);
+  return absNumExpr(fr);
+}
+function absNumExpr(fr) {
+  if (fr.d === 1) return E.s(String(fr.n));
+  return E.frac(E.s(String(fr.n)), E.s(String(fr.d)));
+}
+function unitExpr(abs, unit) {
+  if (!unit) return abs.d === 1 ? E.s(String(abs.n)) : E.frac(E.s(String(abs.n)), E.s(String(abs.d)));
+  if (abs.n === 1 && abs.d === 1) return unit;
+  if (abs.n === 1) return E.frac(unit, E.s(String(abs.d)));
+  const num = abs.d === 1 ? E.s(String(abs.n)) : E.frac(E.s(String(abs.n)), E.s(String(abs.d)));
+  return E.row([num, unit]);
+}
+function pieces(coef, unit, leading) {
+  const neg = coef.n < 0;
+  const abs = Fr(Math.abs(coef.n), coef.d);
+  const out = [];
+  if (!leading) out.push(E.gap(0.28), E.s(neg ? '−' : '+'), E.gap(0.22));
+  else if (neg) out.push(E.s('−'), E.gap(0.06));
+  out.push(unitExpr(abs, unit));
+  return out;
+}
+function coefPieces(coef, leading, markId) {
+  const neg = coef.n < 0;
+  const abs = Fr(Math.abs(coef.n), coef.d);
+  const out = [];
+  if (!leading) out.push(E.gap(0.28), E.s(neg ? '−' : '+'), E.gap(0.22));
+  else if (neg) out.push(E.s('−'), E.gap(0.06));
+  const num = abs.d === 1 ? E.s(String(abs.n)) : E.frac(E.s(String(abs.n)), E.s(String(abs.d)));
+  out.push(markId ? E.mark(markId, num) : num);
+  return out;
+}
+function varUnit(name) { return name ? E.s(name) : null; }
+function eqExpr(eq) {
+  const terms = eq.terms.filter(t => !fIsZero(t.c));
+  const nodes = [];
+  if (!terms.length) nodes.push(E.s('0'));
+  terms.forEach((t, i) => nodes.push(...pieces(t.c, varUnit(t.v), i === 0)));
+  nodes.push(E.gap(0.4), E.s('='), E.gap(0.4), numExpr(eq.rhs));
+  return E.row(nodes);
+}
+function binomialExpr(parts) {
+  const nodes = [];
+  parts.forEach((p, i) => nodes.push(...pieces(p.coef, varUnit(p.v), i === 0)));
+  return E.row(nodes);
+}
+function isolationExpr(iso, parts) {
+  return E.row([E.s(iso), E.gap(0.32), E.s('='), E.gap(0.32), binomialExpr(parts)]);
+}
+function valueExpr(name, fr) {
+  return E.row([E.s(name), E.gap(0.32), E.s('='), E.gap(0.32), numExpr(fr)]);
+}
+function pairExpr(names, values) {
+  const side = (a, b) => E.paren(E.row([a, E.s(','), E.gap(0.2), b]));
+  return E.row([
+    side(E.s(names[0]), E.s(names[1])),
+    E.gap(0.35), E.s('='), E.gap(0.35),
+    side(numExpr(values[0]), numExpr(values[1]))
+  ]);
+}
+function markedBinomial(parts) {
+  const nodes = [];
+  parts.forEach((p, i) => {
+    nodes.push(E.mark('in' + i, E.row(pieces(p.coef, varUnit(p.v), i === 0))));
+  });
+  return E.row(nodes);
+}
+
+function measureExpr(ctx, node, size) {
+  if (!node) return { w: 0, h: size, ax: size / 2 };
+  if (node.k === 'gap') {
+    const h = size * 0.4;
+    return { w: node.em * size, h, ax: h / 2 };
+  }
+  if (node.k === 's') {
+    ctx.font = '600 ' + size + 'px ' + MATH_FONT;
+    return { w: ctx.measureText(node.s).width, h: size, ax: size * 0.5 };
+  }
+  if (node.k === 'mark' || node.k === 'color') return measureExpr(ctx, node.e, size);
+  if (node.k === 'row') {
+    let w = 0, ascent = 0, descent = 0;
+    node.parts.forEach(p => {
+      const m = measureExpr(ctx, p, size);
+      w += m.w;
+      ascent = Math.max(ascent, m.ax);
+      descent = Math.max(descent, m.h - m.ax);
+    });
+    if (!node.parts.length) return { w: 0, h: size, ax: size / 2 };
+    return { w, h: Math.max(size * 0.4, ascent + descent), ax: ascent };
+  }
+  if (node.k === 'f') {
+    const ns = size * 0.72;
+    const a = measureExpr(ctx, node.n, ns);
+    const b = measureExpr(ctx, node.d, ns);
+    const gap = Math.max(1.5, size * 0.08);
+    const bar = Math.max(1, size * 0.05);
+    const h = a.h + gap + bar + gap + b.h;
+    return { w: Math.max(a.w, b.w) + size * 0.32, h, ax: a.h + gap + bar / 2 };
+  }
+  if (node.k === 'sqrt') {
+    const im = measureExpr(ctx, node.e, size);
+    const extra = size * 0.22;
+    const hook = size * 0.78;
+    return { w: im.w + hook + size * 0.12, h: im.h + extra, ax: im.ax + extra };
+  }
+  if (node.k === 'paren') {
+    const im = measureExpr(ctx, node.e, size);
+    const pw = Math.max(size * 0.34, im.h * 0.18);
+    return { w: im.w + pw * 2 + size * 0.16, h: im.h, ax: im.ax };
+  }
+  if (node.k === 'socket') {
+    ctx.font = '700 ' + size + 'px ' + MATH_FONT;
+    const w = ctx.measureText('[' + node.name + ']').width + size * 0.55;
+    return { w, h: size * 1.15, ax: size * 0.58 };
+  }
+  return { w: 0, h: size, ax: size / 2 };
+}
+
+function drawExpr(ctx, node, x, top, size, color, marks) {
+  if (!node) return;
+  const col = node.color || color;
+  if (node.k === 'gap') return;
+  if (node.k === 'mark') {
+    const m = measureExpr(ctx, node.e, size);
+    drawExpr(ctx, node.e, x, top, size, col, marks);
+    if (marks) marks[node.id] = { x, top, w: m.w, h: m.h, ax: m.ax };
+    return;
+  }
+  if (node.k === 's') {
+    ctx.fillStyle = col;
+    ctx.font = '600 ' + size + 'px ' + MATH_FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(node.s, x, top + size * 0.5);
+    return;
+  }
+  if (node.k === 'row') {
+    const row = measureExpr(ctx, node, size);
+    let cx = x;
+    node.parts.forEach(p => {
+      const pm = measureExpr(ctx, p, size);
+      drawExpr(ctx, p, cx, top + row.ax - pm.ax, size, col, marks);
+      cx += pm.w;
+    });
+    return;
+  }
+  if (node.k === 'f') {
+    const m = measureExpr(ctx, node, size);
+    const ns = size * 0.72;
+    const a = measureExpr(ctx, node.n, ns);
+    const b = measureExpr(ctx, node.d, ns);
+    const gap = Math.max(1.5, size * 0.08);
+    const bar = Math.max(1, size * 0.05);
+    drawExpr(ctx, node.n, x + (m.w - a.w) / 2, top, ns, col, marks);
+    const barY = top + a.h + gap + bar / 2;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1, size * 0.045);
+    ctx.beginPath();
+    ctx.moveTo(x + size * 0.06, barY);
+    ctx.lineTo(x + m.w - size * 0.06, barY);
+    ctx.stroke();
+    drawExpr(ctx, node.d, x + (m.w - b.w) / 2, top + a.h + gap + bar + gap, ns, col, marks);
+    return;
+  }
+  if (node.k === 'sqrt') {
+    const im = measureExpr(ctx, node.e, size);
+    const extra = size * 0.22;
+    const hook = size * 0.78;
+    const innerTop = top + extra;
+    const axis = innerTop + im.ax;
+    const vinculum = innerTop - size * 0.04;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1, size * 0.05);
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + hook * 0.08, axis);
+    ctx.lineTo(x + hook * 0.38, innerTop + im.h);
+    ctx.lineTo(x + hook * 0.72, vinculum);
+    ctx.lineTo(x + hook + im.w + size * 0.08, vinculum);
+    ctx.stroke();
+    drawExpr(ctx, node.e, x + hook, innerTop, size, col, marks);
+    return;
+  }
+  if (node.k === 'paren') {
+    const im = measureExpr(ctx, node.e, size);
+    const pm = measureExpr(ctx, node, size);
+    const pw = Math.max(size * 0.34, im.h * 0.18);
+    const innerX = x + pw + size * 0.08;
+    const h = Math.max(im.h, size);
+    const mid = top + pm.ax;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(1, size * 0.055);
+    strokeParen(ctx, x + pw * 0.15, mid, h, pw, 1);
+    strokeParen(ctx, innerX + im.w + size * 0.04, mid, h, pw, -1);
+    drawExpr(ctx, node.e, innerX, top + pm.ax - im.ax, size, col, marks);
+    return;
+  }
+  if (node.k === 'socket') {
+    const m = measureExpr(ctx, node, size);
+    roundRect(ctx, x, top + 1, m.w, m.h - 2, 6);
+    ctx.fillStyle = 'rgba(255, 204, 77, 0.1)';
+    ctx.fill();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.font = '700 ' + size + 'px ' + MATH_FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('[' + node.name + ']', x + m.w / 2, top + m.ax);
+  }
+}
+
+function strokeParen(ctx, x, mid, h, w, side) {
+  ctx.beginPath();
+  if (side === 1) {
+    ctx.moveTo(x + w * 0.85, mid - h * 0.5);
+    ctx.bezierCurveTo(x - w * 0.15, mid - h * 0.18, x - w * 0.15, mid + h * 0.18, x + w * 0.85, mid + h * 0.5);
+  } else {
+    ctx.moveTo(x, mid - h * 0.5);
+    ctx.bezierCurveTo(x + w, mid - h * 0.18, x + w, mid + h * 0.18, x, mid + h * 0.5);
+  }
+  ctx.stroke();
+}
+
+function clipFit(expr, rect, color, maxSize, minSize) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
+  drawFitted(ctx, expr, rect, color, maxSize, minSize);
+  ctx.restore();
+}
+function drawFitted(ctx, expr, rect, color, maxSize, minSize) {
+  if (!expr) return;
+  let size = maxSize;
+  let m = measureExpr(ctx, expr, size);
+  while ((m.w > rect.w || m.h > rect.h) && size > minSize) {
+    size = Math.max(minSize, size * 0.9);
+    m = measureExpr(ctx, expr, size);
+    if (size === minSize) break;
+  }
+  const x = rect.x + Math.max(0, (rect.w - m.w) / 2);
+  const top = rect.y + Math.max(0, (rect.h - m.h) / 2);
+  drawExpr(ctx, expr, x, top, size, color, null);
+}
+
+/* -------------------------------------------------------------- generator */
+
+let plannedAdv = null;
+let round6Kind = null;
+let lastGenError = null;
+
+function resetPlanner() { plannedAdv = null; round6Kind = null; }
+
+function tierOf(round) {
+  if (round <= 2) return 'warmup';
+  if (round <= 4) return 'intermediate';
+  if (round <= 6) return 'advanced';
+  return 'master';
+}
+function tierLabel(tier) {
+  return { warmup: 'WARM-UP', intermediate: 'INTERMEDIATE', advanced: 'ADVANCED', master: 'MASTER HACKER' }[tier] || tier;
+}
+
+function plugEq(eq, env) {
+  let s = Fr(0);
+  for (const t of eq.terms) {
+    if (!t.v) s = fAdd(s, t.c);
+    else {
+      if (!env[t.v]) return null;
+      s = fAdd(s, fMul(t.c, env[t.v]));
+    }
+  }
+  return s;
+}
+function satisfies(eq, env) {
+  const s = plugEq(eq, env);
+  return !!s && fEq(s, eq.rhs);
+}
+function interpret(eq, variable) {
+  let coef = Fr(0);
+  let constant = Fr(0);
+  for (const t of eq.terms) {
+    if (!t.v) constant = fAdd(constant, t.c);
+    else if (t.v === variable) coef = fAdd(coef, t.c);
+    else return null;
+  }
+  if (fIsZero(coef)) return null;
+  return fDiv(fSub(eq.rhs, constant), coef);
+}
+function eqKey(eq) {
+  const terms = eq.terms.filter(t => !fIsZero(t.c));
+  return terms.map(t => fKey(t.c) + (t.v || '#')).join(',') + '=' + fKey(eq.rhs);
+}
+
+function expandEq(eq, iso, parts, mode) {
+  const terms = [];
+  for (const t of eq.terms) {
+    if (t.v !== iso) {
+      terms.push({ c: t.c, v: t.v, src: 'outer' });
+      continue;
+    }
+    parts.forEach((part, i) => {
+      let c = fMul(t.c, part.coef);
+      if (mode === 'dropped' && (parts.length === 1 || i > 0)) c = part.coef;
+      if (mode === 'sign' && i === parts.length - 1) c = fNeg(fMul(t.c, part.coef));
+      terms.push({ c, v: part.v, src: 'in' });
+    });
+  }
+  let rhs = eq.rhs;
+  if (mode === 'rhs') rhs = fAdd(eq.rhs, Fr(eq.rhs.n >= 0 ? 2 : -2));
+  if (mode === 'outer') {
+    const idx = terms.findIndex(t => t.src === 'outer');
+    if (idx < 0) return null;
+    terms[idx] = { c: fNeg(terms[idx].c), v: terms[idx].v, src: 'outer' };
+  }
+  return { terms: terms.map(t => ({ c: t.c, v: t.v })), rhs };
+}
+
+function buildEq2(iso, free, B, isoVal, freeVal, m, cFree, order) {
+  if (Math.abs(m.n) < 2 * m.d) return null;
+  if (fIsZero(cFree)) return null;
+  const denom = fAdd(fMul(m, B), cFree);
+  if (fIsZero(denom)) return null;
+  const rhs = fAdd(fMul(m, isoVal), fMul(cFree, freeVal));
+  if (!bounded(rhs, 12, 80)) return null;
+  const terms = order === 'free-first'
+    ? [{ c: cFree, v: free }, { c: m, v: iso }]
+    : [{ c: m, v: iso }, { c: cFree, v: free }];
+  return { terms, rhs };
+}
+function randomEq2(iso, free, B, isoVal, freeVal) {
+  const order = Math.random() < 0.5 ? 'iso-first' : 'free-first';
+  const ms = [-6, -5, -4, -3, -2, 2, 3, 4, 5, 6];
+  const cs = [-6, -5, -4, -3, -2, -1, 1, 2, 3, 4, 5, 6];
+  for (let i = 0; i < 40; i++) {
+    const eq = buildEq2(iso, free, B, isoVal, freeVal, Fr(pick(ms)), Fr(pick(cs)), order);
+    if (eq) return eq;
+  }
+  return null;
+}
+
+function defaultSignTip(iso, free, A, B) {
+  const left = fNeg(B);
+  return 'Moving ' + withPlus(left, free) + ' across the equals sign changes its sign to '
+    + withPlus(fNeg(left), free) + ' → ' + fmtIso(iso, A, B, free) + '!';
+}
+function makeBracketTip(eq, iso, parts) {
+  const host = eq.terms.find(t => t.v === iso);
+  const forgotten = parts.length >= 2 ? parts[1] : parts[0];
+  const product = fMul(host.c, forgotten.coef);
+  const inside = forgotten.v ? fmtCoefVar(forgotten.coef, forgotten.v) : fmtNum(forgotten.coef);
+  const prod = forgotten.v ? fmtCoefVar(product, forgotten.v) : fmtNum(product);
+  const mtxt = fmtNum(host.c);
+  return 'Always wrap the injected expression in brackets! Multiply EVERY term inside: '
+    + mtxt + ' × (' + inside + ') = ' + prod + '!';
+}
+
+function solutionKey(p) {
+  return p.finalNames.map((n, i) => n + '=' + fKey(p.finalValues[i])).join(',');
+}
+
+function buildCore(spec) {
+  const iso = spec.iso;
+  const free = spec.free;
+  const A = spec.A;
+  const B = spec.B;
+  const isoVal = spec.isoVal;
+  const freeVal = spec.freeVal;
+  if (fIsZero(B)) return null;
+  if (!fEq(isoVal, fAdd(A, fMul(B, freeVal)))) return null;
+  if (!bounded(isoVal, 8, 200) || !bounded(freeVal, 8, 40)) return null;
+  const eq1 = { terms: [{ c: Fr(1), v: iso }, { c: fNeg(B), v: free }], rhs: A };
+  let eq2 = null;
+  if (spec.m && spec.cFree) {
+    eq2 = buildEq2(iso, free, B, isoVal, freeVal, spec.m, spec.cFree, spec.order || 'iso-first');
+  } else eq2 = randomEq2(iso, free, B, isoVal, freeVal);
+  if (!eq2) return null;
+  const env = {};
+  env[iso] = isoVal;
+  env[free] = freeVal;
+  if (!satisfies(eq1, env) || !satisfies(eq2, env)) return null;
+  const parts = binomialParts(A, B, free);
+  if (!parts.length) return null;
+  const expanded = expandEq(eq2, iso, parts, 'correct');
+  const solved = interpret(expanded, free);
+  if (!solved || !fEq(solved, freeVal)) return null;
+  const back = fAdd(A, fMul(B, freeVal));
+  if (!fEq(back, isoVal)) return null;
+  for (const t of expanded.terms) if (!bounded(t.c, 12, 120)) return null;
+  const puzzle = {
+    kind: spec.kind,
+    tier: spec.tier,
+    preisolated: !!spec.preisolated,
+    iso, free, A, B, isoVal, freeVal, parts, eq1, eq2,
+    finalNames: spec.finalNames,
+    finalValues: spec.finalValues,
+    sourceExpr: spec.sourceExpr || eqExpr(eq1),
+    briefing: spec.briefing || null,
+    note: spec.note || '',
+    traceText: spec.traceText || '',
+    signTip: spec.signTip || defaultSignTip(iso, free, A, B),
+    bracketTip: spec.bracketTip || makeBracketTip(eq2, iso, parts),
+    invertTip: spec.invertTip || '',
+    badgeCorrect: spec.badgeCorrect || null,
+    badgeWrong: spec.badgeWrong || null,
+    badgeKeyCorrect: spec.badgeKeyCorrect || '',
+    badgeKeyWrong: spec.badgeKeyWrong || '',
+    transformTip: spec.transformTip || '',
+    extraStep1: spec.extraStep1 || [],
+    extraStep3: spec.extraStep3 || [],
+    checks: spec.checks || [],
+    meta: spec.meta || { kind: spec.preisolated ? 'pre' : (spec.kind || 'linear') },
+    chipExpr: E.row([E.s('['), E.gap(0.12), binomialExpr(parts), E.gap(0.12), E.s(']')])
+  };
+  if (!puzzle.briefing) puzzle.briefing = [puzzle.sourceExpr, eqExpr(eq2)];
+  else {
+    if (!puzzle.briefing[0]) puzzle.briefing[0] = puzzle.sourceExpr;
+    if (!puzzle.briefing[1]) puzzle.briefing[1] = eqExpr(eq2);
+  }
+  puzzle.key = solutionKey(puzzle);
+  return puzzle;
+}
+
+function optKey(o) { return o.key; }
+
+function pushUnique(list, opt) {
+  if (!opt) return;
+  if (list.some(x => x.key === opt.key)) return;
+  list.push(opt);
+}
+function selectOptions(cands, required, preferred) {
+  const correct = cands.find(c => c.correct);
+  if (!correct) return null;
+  const chosen = [];
+  const used = new Set();
+  function take(c) {
+    if (!c) return false;
+    if (used.has(c.key)) return false;
+    used.add(c.key);
+    chosen.push(c);
+    return true;
+  }
+  if (!take(correct)) return null;
+  for (const trap of required) {
+    if (!take(cands.find(x => !x.correct && x.trap === trap && !used.has(x.key)))) return null;
+  }
+  for (const trap of preferred) {
+    if (chosen.length >= 4) break;
+    take(cands.find(x => !x.correct && x.trap === trap && !used.has(x.key)));
+  }
+  for (const c of cands) {
+    if (chosen.length >= 4) break;
+    if (!c.correct) take(c);
+  }
+  if (chosen.length < 4) return null;
+  return shuffle(chosen);
+}
+
+function attachChoices(p) {
+  const step1 = [];
+  const correctBadge = p.badgeCorrect;
+  const correctKeyB = p.badgeKeyCorrect;
+  function isoOpt(A, B, trap, tip, badge, badgeKey, correct) {
+    const parts = binomialParts(A, B, p.free);
+    if (!parts.length) return null;
+    const key = 'iso|' + badgeKey + '|' + p.iso + '|' + parts.map(t => fKey(t.coef) + (t.v || '#')).join(',');
+    return {
+      correct: !!correct, trap, tip, kind: 'iso', key,
+      expr: isolationExpr(p.iso, parts),
+      badge: badge || null
+    };
+  }
+  pushUnique(step1, isoOpt(p.A, p.B, null, '', correctBadge, correctKeyB, true));
+  pushUnique(step1, isoOpt(p.A, fNeg(p.B), 'sign', p.signTip, correctBadge, correctKeyB, false));
+  if (!fIsZero(p.A) && !fEq(fNeg(p.A), p.A)) {
+    pushUnique(step1, isoOpt(fNeg(p.A), p.B, 'calc',
+      'The constant keeps its sign too. The chip is ' + fmtIso(p.iso, p.A, p.B, p.free) + '!',
+      correctBadge, correctKeyB, false));
+  }
+  if (Math.abs(p.B.n) !== p.B.d) {
+    const bare = Fr(p.B.n < 0 ? -1 : 1, 1);
+    pushUnique(step1, isoOpt(p.A, bare, 'calc',
+      'Keep the coefficient on ' + p.free + '. The chip is ' + fmtIso(p.iso, p.A, p.B, p.free) + '!',
+      correctBadge, correctKeyB, false));
+  }
+  pushUnique(step1, isoOpt(p.A, fAdd(p.B, Fr(p.B.n < 0 ? -1 : 1)), 'calc',
+    'Recount the coefficient of ' + p.free + ' before you forge the chip. Correct chip: ' + fmtIso(p.iso, p.A, p.B, p.free) + '!',
+    correctBadge, correctKeyB, false));
+  if (p.badgeWrong) {
+    pushUnique(step1, isoOpt(p.A, p.B, 'transform', p.transformTip, p.badgeWrong, p.badgeKeyWrong, false));
+  }
+  p.extraStep1.forEach(ex => {
+    pushUnique(step1, isoOpt(ex.A, ex.B, ex.trap, ex.tip, ex.badge || correctBadge, ex.badgeKey || correctKeyB, false));
+  });
+  const preferred1 = ['clear', 'transform', 'calc'];
+  const c1 = selectOptions(step1, ['sign'], preferred1);
+  if (!c1) return false;
+
+  const step2 = [];
+  function expOpt(mode, trap, tip, correct) {
+    const eq = expandEq(p.eq2, p.iso, p.parts, mode);
+    if (!eq) return null;
+    const flat = { terms: eq.terms.filter(t => !fIsZero(t.c)), rhs: eq.rhs };
+    if (!flat.terms.length) return null;
+    const value = interpret(flat, p.free);
+    if (correct) {
+      if (!value || !fEq(value, p.freeVal)) return null;
+    } else if (value && fEq(value, p.freeVal)) return null;
+    const key = 'exp|' + eqKey(flat) + '|' + (value ? fKey(value) : 'none');
+    return {
+      correct: !!correct, trap, tip, kind: 'exp', key,
+      expr: eqExpr(flat),
+      resultExpr: value ? valueExpr(p.free, value) : null
+    };
+  }
+  pushUnique(step2, expOpt('correct', null, '', true));
+  pushUnique(step2, expOpt('dropped', 'brackets', p.bracketTip, false));
+  pushUnique(step2, expOpt('sign', 'dist',
+    'Distribute the outer factor with its sign onto every term inside the brackets. ' + p.bracketTip,
+    false));
+  pushUnique(step2, expOpt('outer', 'calc',
+    'Copy every term outside the brackets with its original sign. Only the injected chip is new.',
+    false));
+  pushUnique(step2, expOpt('rhs', 'calc',
+    'The right-hand side stays ' + fmtNum(p.eq2.rhs) + '. Expand the brackets, then move constants across.',
+    false));
+  const c2 = selectOptions(step2, ['brackets'], ['dist', 'outer', 'rhs', 'calc']);
+  if (!c2) return false;
+
+  const step3 = [];
+  function pairOpt(names, values, trap, tip, correct) {
+    if (!values[0] || !values[1]) return null;
+    const key = 'pair|' + names[0] + fKey(values[0]) + '|' + names[1] + fKey(values[1]);
+    return { correct: !!correct, trap, tip, kind: 'pair', key, expr: pairExpr(names, values) };
+  }
+  const fn = p.finalNames;
+  const fv = p.finalValues;
+  pushUnique(step3, pairOpt(fn, fv, null, '', true));
+  p.extraStep3.forEach(ex => pushUnique(step3, pairOpt(ex.names || fn, ex.values, ex.trap, ex.tip, false)));
+  if (!fEq(fv[0], fv[1])) {
+    pushUnique(step3, pairOpt(fn, [fv[1], fv[0]], 'calc',
+      'Check the order. ' + fn[0] + ' and ' + fn[1] + ' are not interchangeable.', false));
+  }
+  pushUnique(step3, pairOpt(fn, [fNeg(fv[0]), fv[1]], 'calc',
+    'A sign slipped on ' + fn[0] + '. Recompute the back-substitution.', false));
+  pushUnique(step3, pairOpt(fn, [fv[0], fNeg(fv[1])], 'calc',
+    'A sign slipped on ' + fn[1] + '. Recompute the back-substitution.', false));
+  pushUnique(step3, pairOpt(fn, [fAdd(fv[0], Fr(1)), fv[1]], 'calc',
+    'The pair is off by one. Substitute the locked value back into the chip and simplify again.', false));
+  const req3 = (p.kind === 'radical' || p.kind === 'reciprocal') ? ['invert'] : [];
+  const c3 = selectOptions(step3, req3, ['invert', 'partial', 'given', 'calc']);
+  if (!c3) return false;
+  p.choices = { 1: c1, 2: c2, 3: c3 };
+  return true;
+}
+
+function verifyPuzzle(p) {
+  if (!p || !p.choices) return 'missing';
+  const env = {};
+  env[p.iso] = p.isoVal;
+  env[p.free] = p.freeVal;
+  if (!satisfies(p.eq1, env)) return 'eq1';
+  if (!satisfies(p.eq2, env)) return 'eq2';
+  const expanded = expandEq(p.eq2, p.iso, p.parts, 'correct');
+  const solved = interpret(expanded, p.free);
+  if (!fEq(solved, p.freeVal)) return 'solve';
+  if (!fEq(fAdd(p.A, fMul(p.B, p.freeVal)), p.isoVal)) return 'back';
+  if (p.finalNames.length !== 2 || p.finalValues.length !== 2) return 'final';
+  for (const ch of p.checks) {
+    const msg = ch();
+    if (msg !== true) return msg || 'check';
+  }
+  for (const step of [1, 2, 3]) {
+    const opts = p.choices[step];
+    if (!opts || opts.length !== 4) return 'count' + step;
+    if (new Set(opts.map(o => o.key)).size !== 4) return 'dup' + step;
+    if (opts.filter(o => o.correct).length !== 1) return 'correct' + step;
+  }
+  const sign = p.choices[1].find(o => o.trap === 'sign');
+  if (!sign || !/sign/i.test(sign.tip)) return 'signtip';
+  const br = p.choices[2].find(o => o.trap === 'brackets');
+  if (!br || !/bracket/i.test(br.tip)) return 'brackettip';
+  if (p.kind === 'radical' || p.kind === 'reciprocal') {
+    const inv = p.choices[3].find(o => o.trap === 'invert');
+    if (!inv || !/intermediate core/i.test(inv.tip)) return 'inverttip';
+    if (p.kind === 'radical' && !/Square t/.test(inv.tip)) return 'squaretip';
+  }
+  const dropped = expandEq(p.eq2, p.iso, p.parts, 'dropped');
+  if (eqKey(dropped) === eqKey(expanded)) return 'drop-same';
+  const g1 = guideFor(p, 1);
+  const chip = fmtIso(p.iso, p.A, p.B, p.free);
+  if (!g1.length || g1[g1.length - 1].indexOf(chip) < 0) return 'guide1';
+  const g2 = guideFor(p, 2);
+  if (!g2.some(line => line.indexOf(p.free + ' = ' + fmtNum(p.freeVal)) >= 0)) return 'guide2';
+  const g3 = guideFor(p, 3);
+  const pairBit = fmtNum(p.finalValues[0]);
+  if (!g3.some(line => line.indexOf(pairBit) >= 0)) return 'guide3';
+  return true;
+}
+
+function xyPair(x, y) { return { finalNames: ['x', 'y'], finalValues: [x, y] }; }
+
+function tryPre() {
+  const isoX = Math.random() < 0.5;
+  const B = Fr(pick([-2, -1, 1, 2]));
+  const A = Fr(randInt(-5, 5));
+  const freeVal = Fr(randInt(-4, 4));
+  const isoVal = fAdd(A, fMul(B, freeVal));
+  if (!bounded(isoVal, 1, 14) || (isoVal.n === 0 && freeVal.n === 0)) return null;
+  const iso = isoX ? 'x' : 'y';
+  const free = isoX ? 'y' : 'x';
+  const x = isoX ? isoVal : freeVal;
+  const y = isoX ? freeVal : isoVal;
+  const tip = 'This source is already isolated. Copy every sign unchanged → ' + fmtIso(iso, A, B, free) + '!';
+  return buildCore(Object.assign({
+    kind: 'linear', tier: 'warmup', preisolated: true,
+    iso, free, A, B, isoVal, freeVal,
+    sourceExpr: isolationExpr(iso, binomialParts(A, B, free)),
+    signTip: tip,
+    meta: { kind: 'pre' },
+    note: 'Warm-up: match every sign.',
+    checks: [() => fEq(iso === 'x' ? x : y, isoVal) || 'pre']
+  }, xyPair(x, y)));
+}
+
+function tryUnit(negStyle) {
+  const isoX = Math.random() < 0.5;
+  let B = Fr(pick([-4, -3, -2, -1, 1, 2, 3, 4]));
+  const freeVal = Fr(randInt(-5, 5));
+  const isoVal = Fr(randInt(-6, 6));
+  if (isoVal.n === 0 && freeVal.n === 0) return null;
+  let A = fSub(isoVal, fMul(B, freeVal));
+  if (!bounded(A, 1, 24)) return null;
+  if (negStyle) {
+    if (B.n <= 0) B = Fr(Math.abs(B.n) || 2);
+    A = fSub(isoVal, fMul(B, freeVal));
+    if (A.n >= 0) return null;
+    if (!bounded(A, 1, 24)) return null;
+  }
+  const iso = isoX ? 'x' : 'y';
+  const free = isoX ? 'y' : 'x';
+  const x = isoX ? isoVal : freeVal;
+  const y = isoX ? freeVal : isoVal;
+  let signTip = null;
+  let sourceExpr = null;
+  let shown = '';
+  if (negStyle) {
+    const rhs = fNeg(A);
+    shown = fmtCoefVar(B, free) + ' − ' + iso + ' = ' + fmtNum(rhs);
+    signTip = '−' + iso + ' sits in ' + shown + '. Moving −' + iso
+      + ' across the equals sign flips the other signs → ' + fmtIso(iso, A, B, free) + '!';
+    const srcParts = [];
+    srcParts.push(...pieces(B, E.s(free), true));
+    srcParts.push(...pieces(Fr(-1), E.s(iso), false));
+    sourceExpr = E.row(srcParts.concat([E.gap(0.4), E.s('='), E.gap(0.4), numExpr(rhs)]));
+  }
+  return buildCore(Object.assign({
+    kind: 'linear', tier: 'warmup',
+    iso, free, A, B, isoVal, freeVal,
+    sourceExpr: sourceExpr || undefined,
+    signTip: signTip || undefined,
+    meta: negStyle ? { kind: 'neg', shown: shown } : { kind: 'unit' },
+    note: negStyle
+      ? 'The clean variable is negative. Move it across and flip every sign.'
+      : 'Move the other term across the equals sign and flip its sign.'
+  }, xyPair(x, y)));
+}
+
+function tryFracX() {
+  const d = pick([2, 3, 4, 5]);
+  const y = Fr(randInt(-4, 4));
+  const k = Fr(randInt(-4, 4));
+  const x = fMul(Fr(d), fSub(k, y));
+  if (!bounded(x, 1, 24)) return null;
+  if (x.n === 0 && y.n === 0) return null;
+  const A = fMul(Fr(d), k);
+  const B = Fr(-d);
+  const pretty = E.row([
+    E.frac(E.s('x'), E.s(String(d))),
+    E.gap(0.28), E.s('+'), E.gap(0.22), E.s('y'),
+    E.gap(0.4), E.s('='), E.gap(0.4), numExpr(k)
+  ]);
+  const signTip = 'Multiply every term by ' + d + ' first: x + ' + d + 'y = ' + fmtNum(A)
+    + '. Moving +' + d + 'y across the equals sign changes its sign to −' + d + 'y → '
+    + fmtIso('x', A, B, 'y') + '!';
+  const clearA = k;
+  return buildCore({
+    kind: 'fraction', tier: 'intermediate',
+    iso: 'x', free: 'y', A, B, isoVal: x, freeVal: y,
+    sourceExpr: pretty,
+    briefing: [pretty, null],
+    signTip,
+    meta: { kind: 'fracx', d: d },
+    note: 'Clear the denominator, then isolate x.',
+    extraStep1: fEq(clearA, A) ? [] : [{
+      A: clearA, B, trap: 'clear',
+      tip: 'The denominator multiplies every term, including the constant. Multiply by ' + d + ' before you move +' + d + 'y.'
+    }],
+    finalNames: ['x', 'y'], finalValues: [x, y],
+    checks: [() => fEq(fAdd(fDiv(x, Fr(d)), y), k) || 'fracx']
+  });
+}
+
+function tryFracY() {
+  const d = pick([2, 3, 4, 5]);
+  const x = Fr(randInt(-4, 4));
+  const k = Fr(randInt(-3, 6));
+  const y = fMul(Fr(d), fSub(k, x));
+  if (!bounded(y, 1, 28)) return null;
+  if (x.n === 0 && y.n === 0) return null;
+  const A = fMul(Fr(d), k);
+  const B = Fr(-d);
+  const pretty = E.row([
+    E.s('x'), E.gap(0.28), E.s('+'), E.gap(0.22),
+    E.frac(E.s('y'), E.s(String(d))),
+    E.gap(0.4), E.s('='), E.gap(0.4), numExpr(k)
+  ]);
+  const signTip = 'Multiply every term by ' + d + ' first: ' + d + 'x + y = ' + fmtNum(A)
+    + '. Moving +' + d + 'x across the equals sign changes its sign to −' + d + 'x → '
+    + fmtIso('y', A, B, 'x') + '!';
+  return buildCore({
+    kind: 'fraction', tier: 'intermediate',
+    iso: 'y', free: 'x', A, B, isoVal: y, freeVal: x,
+    sourceExpr: pretty,
+    signTip,
+    meta: { kind: 'fracy', d: d },
+    note: 'Clear the denominator, then isolate y.',
+    extraStep1: fEq(k, A) ? [] : [{
+      A: k, B, trap: 'clear',
+      tip: 'Multiply the constant by ' + d + ' as well. Clearing y/' + d + ' gives y = ' + fmtBinomial(A, B, 'x') + '.'
+    }],
+    finalNames: ['x', 'y'], finalValues: [x, y],
+    checks: [() => fEq(fAdd(x, fDiv(y, Fr(d))), k) || 'fracy']
+  });
+}
+
+function proportionCatalog() {
+  const out = [];
+  for (let m = 2; m <= 8; m++) {
+    for (let n = 2; n <= 8; n++) {
+      if (m === n) continue;
+      const den = m - n;
+      const num = m + n;
+      if (num % den !== 0) continue;
+      const B = num / den;
+      if (B !== 0 && Math.abs(B) <= 6) out.push({ m, n, B });
+    }
+  }
+  return out;
+}
+const PROPORTIONS = proportionCatalog();
+
+function tryProportion() {
+  const item = pick(PROPORTIONS);
+  const y = Fr(pick([-3, -2, -1, 1, 2, 3]));
+  const x = Fr(item.B * y.n);
+  if (!bounded(x, 1, 18)) return null;
+  const A = Fr(0);
+  const B = Fr(item.B);
+  const m = item.m;
+  const n = item.n;
+  const left = E.frac(E.paren(E.row([E.s('x'), E.gap(0.15), E.s('+'), E.gap(0.15), E.s('y')])), E.s(String(m)));
+  const right = E.frac(E.paren(E.row([E.s('x'), E.gap(0.15), E.s('−'), E.gap(0.15), E.s('y')])), E.s(String(n)));
+  const pretty = E.row([left, E.gap(0.4), E.s('='), E.gap(0.4), right]);
+  const signTip = 'Cross-multiply ' + m + ' and ' + n + ', then collect x. Watch the sign: you should get '
+    + fmtIso('x', A, B, 'y') + ', not the sign-flipped chip!';
+  return buildCore({
+    kind: 'fraction', tier: 'intermediate',
+    iso: 'x', free: 'y', A, B, isoVal: x, freeVal: y,
+    sourceExpr: pretty,
+    signTip,
+    meta: { kind: 'proportion', m: m, n: n },
+    note: 'Cross-multiply, then isolate x.',
+    finalNames: ['x', 'y'], finalValues: [x, y],
+    checks: [() => {
+      const L = fMul(Fr(n), fAdd(x, y));
+      const R = fMul(Fr(m), fSub(x, y));
+      return fEq(L, R) || 'proportion';
+    }]
+  });
+}
+
+function tryHalf() {
+  const y = Fr(pick([-7, -5, -3, -1, 1, 3, 5, 7]), 2);
+  const c = pick([-6, -4, -2, 2, 4, 6]);
+  const x = Fr(randInt(-6, 8));
+  if (x.n === 0 && y.n === 0) return null;
+  const B = Fr(-c);
+  const A = fSub(x, fMul(B, y));
+  if (!bounded(A, 1, 30) || A.d !== 1) return null;
+  const note = 'Halves are allowed. Isolate the unit variable.';
+  return buildCore({
+    kind: 'linear', tier: 'intermediate',
+    iso: 'x', free: 'y', A, B, isoVal: x, freeVal: y,
+    note,
+    meta: { kind: 'half' },
+    finalNames: ['x', 'y'], finalValues: [x, y],
+    checks: [() => (y.d === 2 && x.d === 1) || 'half']
+  });
+}
+
+function radicalBrief(d, A, k, m, rhs) {
+  const tTerm = (den) => E.frac(E.sqrt(E.s('x')), E.s(String(den)));
+  const eqA = E.row([
+    tTerm(d), E.gap(0.28), E.s('−'), E.gap(0.22), E.s('y'),
+    E.gap(0.4), E.s('='), E.gap(0.4), numExpr(fNeg(A))
+  ]);
+  const coefT = Fr(1, k);
+  const left = [];
+  left.push(...pieces(coefT, E.sqrt(E.s('x')), true));
+  left.push(...pieces(m, E.s('y'), false));
+  const eqB = E.row(left.concat([E.gap(0.4), E.s('='), E.gap(0.4), numExpr(rhs)]));
+  return [eqA, eqB];
+}
+
+function tryRadical(forced) {
+  let d, t, A, k, m;
+  if (forced) {
+    d = forced.d; t = forced.t; A = forced.A; k = forced.k; m = forced.m;
+  } else if (Math.random() < 0.62) {
+    d = pick([2, 4, 5, 10]);
+    const mult = randInt(1, Math.max(1, Math.floor(12 / d)));
+    t = Fr(d * mult);
+    A = Fr(randInt(-3, 5));
+    k = pick([1, 2, 4, 5, 10]);
+    m = Fr(pick([2, 3, 4, 5, -2, -3, -4, -5]));
+  } else {
+    d = pick([2, 5, 10]);
+    t = Fr(pick([3, 5, 7, 9, 15, 25]), 2);
+    A = Fr(randInt(-2, 5));
+    k = pick([2, 4, 5, 10]);
+    m = Fr(pick([2, 3, 4, -2, -3, -4]));
+  }
+  if (!(t.n > 0)) return null;
+  if (t.n === t.d) return null;
+  const B = Fr(1, d);
+  const y = fAdd(A, fDiv(t, Fr(d)));
+  if (!bounded(y, 4, 30)) return null;
+  const x = fMul(t, t);
+  if (!bounded(x, 8, 200)) return null;
+  if (fEq(x, t)) return null;
+  const cFree = Fr(1, k);
+  const eq2 = buildEq2('y', 't', B, y, t, m, cFree, Math.random() < 0.5 ? 'free-first' : 'iso-first');
+  if (!eq2) return null;
+  const signTip = 'Let t = √x. In √x/' + d + ' − y = ' + fmtNum(fNeg(A))
+    + ', moving −y across the equals sign changes the other signs → ' + fmtIso('y', A, B, 't') + '!';
+  const invertTip = 't = √x is only the intermediate core! Square t (t²) to unlock the true value of x!';
+  const briefing = radicalBrief(d, A, k, m, eq2.rhs);
+  const badgeCorrect = E.row([E.s('t'), E.gap(0.2), E.s('='), E.gap(0.2), E.sqrt(E.s('x'))]);
+  const badgeWrong = E.row([E.s('t'), E.gap(0.2), E.s('='), E.gap(0.2), E.s('x²')]);
+  return buildCore({
+    kind: 'radical', tier: 'advanced',
+    iso: 'y', free: 't', A, B, isoVal: y, freeVal: t,
+    m, cFree, order: eq2.terms[0].v === 't' ? 'free-first' : 'iso-first',
+    sourceExpr: eqExpr({ terms: [{ c: Fr(1), v: 'y' }, { c: fNeg(B), v: 't' }], rhs: A }),
+    briefing,
+    signTip,
+    invertTip,
+    badgeCorrect, badgeWrong,
+    badgeKeyCorrect: 'sqrt', badgeKeyWrong: 'square',
+    transformTip: 't stands for √x, not x². You square t only at the end, after the linear core is solved.',
+    meta: { kind: 'radical', d: d },
+    note: 't = √x. Solve for t, then square t to recover x.',
+    finalNames: ['x', 'y'], finalValues: [x, y],
+    extraStep3: [
+      {
+        trap: 'invert',
+        tip: invertTip,
+        values: [t, y]
+      },
+      {
+        trap: 'partial',
+        tip: 'y is already finished, but x is still hiding under the radical. Square t to unlock x.',
+        values: [t, fAdd(y, Fr(1))]
+      }
+    ],
+    checks: [() => {
+      if (!fEq(x, fMul(t, t))) return 'square';
+      if (!fEq(y, fAdd(A, fDiv(t, Fr(d))))) return 'yrad';
+      const left = fSub(fDiv(t, Fr(d)), y);
+      if (!fEq(left, fNeg(A))) return 'rad1';
+      return true;
+    }]
+  });
+}
+
+function recipTerm(coef, which, leading) {
+  const inner = which === 'sum'
+    ? E.row([E.s('u'), E.gap(0.12), E.s('+'), E.gap(0.12), E.s('v')])
+    : E.row([E.s('u'), E.gap(0.12), E.s('−'), E.gap(0.12), E.s('v')]);
+  const unit = E.frac(E.s('1'), E.paren(inner));
+  return pieces(coef, unit, leading);
+}
+function tryRecip() {
+  const pool = [-4, -3, -2, -1, 1, 2, 3, 4];
+  const a = Fr(pick(pool));
+  let b = Fr(pick(pool));
+  if (fEq(a, b) || fEq(a, fNeg(b))) b = Fr(pick(pool.filter(n => n !== a.n && n !== -a.n)));
+  if (fEq(a, b) || !b.n) return null;
+  const sum = fDiv(Fr(1), a);
+  const diff = fDiv(Fr(1), b);
+  const u = fDiv(fAdd(sum, diff), Fr(2));
+  const v = fDiv(fSub(sum, diff), Fr(2));
+  if (fIsZero(u) || fIsZero(v)) return null;
+  if (!bounded(u, 8, 8) || !bounded(v, 8, 8)) return null;
+  const c = pick([-3, -2, -1, 1, 2, 3]);
+  const A = fAdd(a, fMul(Fr(c), b));
+  const B = Fr(-c);
+  if (!bounded(A, 1, 24)) return null;
+  const iso = 'a';
+  const free = 'b';
+  const mChoices = [-5, -4, -3, -2, 2, 3, 4, 5];
+  const kChoices = [-4, -3, -2, -1, 1, 2, 3, 4];
+  let eq2 = null;
+  for (let i = 0; i < 30 && !eq2; i++) {
+    eq2 = buildEq2(iso, free, B, a, b, Fr(pick(mChoices)), Fr(pick(kChoices)), Math.random() < 0.5 ? 'iso-first' : 'free-first');
+  }
+  if (!eq2) return null;
+  const coefB1 = fNeg(B);
+  const brief1 = E.row(recipTerm(Fr(1), 'sum', true).concat(recipTerm(coefB1, 'diff', false)).concat([
+    E.gap(0.35), E.s('='), E.gap(0.35), numExpr(A)
+  ]));
+  const cA = eq2.terms.find(t => t.v === 'a').c;
+  const cB = eq2.terms.find(t => t.v === 'b').c;
+  const firstIsA = eq2.terms[0].v === 'a';
+  const brief2 = E.row((firstIsA
+    ? recipTerm(cA, 'sum', true).concat(recipTerm(cB, 'diff', false))
+    : recipTerm(cB, 'diff', true).concat(recipTerm(cA, 'sum', false))
+  ).concat([E.gap(0.35), E.s('='), E.gap(0.35), numExpr(eq2.rhs)]));
+  const invertTip = 'a and b are only the intermediate core! Invert them — u+v = 1/a and u−v = 1/b — then solve for u and v.';
+  const badgeCorrect = E.s('a = 1/(u+v) ,  b = 1/(u−v)');
+  const badgeWrong = E.s('a = u+v ,  b = u−v');
+  const halfU = fAdd(sum, diff);
+  const halfV = fSub(sum, diff);
+  return buildCore({
+    kind: 'reciprocal', tier: 'advanced',
+    iso, free, A, B, isoVal: a, freeVal: b,
+    m: eq2.terms.find(t => t.v === 'a').c,
+    cFree: eq2.terms.find(t => t.v === 'b').c,
+    order: firstIsA ? 'iso-first' : 'free-first',
+    briefing: [brief1, brief2],
+    invertTip,
+    badgeCorrect, badgeWrong,
+    badgeKeyCorrect: 'recip', badgeKeyWrong: 'plain',
+    transformTip: 'Use the reciprocal substitution a = 1/(u+v) and b = 1/(u−v), then isolate.',
+    meta: { kind: 'reciprocal' },
+    note: 'Invert (a, b) to unlock (u, v).',
+    finalNames: ['u', 'v'], finalValues: [u, v],
+    extraStep3: [
+      { trap: 'invert', tip: invertTip, values: [a, b] },
+      { trap: 'partial', tip: '1/a and 1/b are u+v and u−v, not u and v yet. Add and subtract those, then divide by 2.', values: [sum, diff] },
+      { trap: 'partial', tip: 'You added 1/a and 1/b but forgot to divide by 2. u and v are the averages.', values: [halfU, halfV] }
+    ],
+    checks: [() => {
+      if (!fEq(a, fDiv(Fr(1), fAdd(u, v)))) return 'arec';
+      if (!fEq(b, fDiv(Fr(1), fSub(u, v)))) return 'brec';
+      return true;
+    }]
+  });
+}
+
+function monoProduct(coef, letters, leading) {
+  return pieces(coef, E.row(letters.map(ch => E.s(ch))), leading);
+}
+function tryParameter() {
+  const isolateQ = Math.random() < 0.5;
+  const Bint = pick([-4, -3, -2, -1, 1, 2, 3, 4]);
+  const Aint = randInt(-6, 6);
+  const freeInt = randInt(-4, 4);
+  const isoInt = Aint + Bint * freeInt;
+  if (Math.abs(isoInt) > 12) return null;
+  if (freeInt === 0 && isoInt === 0) return null;
+  const A = Fr(Aint);
+  const B = Fr(Bint);
+  const divisors = [];
+  for (let d = -5; d <= 5; d++) if (d !== 0 && Bint % d === 0) divisors.push(d);
+  if (!divisors.length) return null;
+  let x, y, m1, n1, postP, postQ, rhs1;
+  const pVal = isolateQ ? Fr(freeInt) : Fr(isoInt);
+  const qVal = isolateQ ? Fr(isoInt) : Fr(freeInt);
+  if (isolateQ) {
+    y = pick([-1, 1]);
+    x = pick(divisors);
+    m1 = -Bint / x;
+    n1 = y;
+    postP = -Bint;
+    postQ = 1;
+    rhs1 = Aint;
+  } else {
+    x = pick([-1, 1]);
+    y = pick(divisors);
+    m1 = x;
+    n1 = -Bint / y;
+    postP = 1;
+    postQ = -Bint;
+    rhs1 = Aint;
+  }
+  if (!m1 || !n1) return null;
+  const M = pick([-6, -5, -4, -3, -2, 2, 3, 4, 5, 6]);
+  const m2 = pick([-3, -2, -1, 1, 2, 3]);
+  const C = isolateQ ? m2 * x : m2 * x;
+  const n2 = M * y;
+  if (!n2) return null;
+  const postP2 = isolateQ ? C : m2 * x;
+  const postQ2 = isolateQ ? M : n2 * y;
+  if (postQ2 !== M && isolateQ) return null;
+  if (isolateQ) {
+    if (postP2 + M * Bint === 0) return null;
+  } else if (postP2 * 0 === 0) {
+    const denom = postP2 * 0;
+    void denom;
+  }
+  const pN = pVal.n;
+  const qN = qVal.n;
+  let coefIso, coefFree, rhs2n;
+  if (isolateQ) {
+    if (C + M * Bint === 0) return null;
+    coefIso = Fr(M);
+    coefFree = Fr(C);
+    rhs2n = M * qN + C * pN;
+  } else {
+    if (m2 * x + M * Bint === 0) return null;
+    coefIso = Fr(m2 * x);
+    coefFree = Fr(M);
+    if (Math.abs(coefIso.n) < 2) return null;
+    rhs2n = coefIso.n * pN + M * qN;
+  }
+  if (Math.abs(rhs2n) > 80) return null;
+  const iso = isolateQ ? 'q' : 'p';
+  const free = isolateQ ? 'p' : 'q';
+  const isoVal = isolateQ ? qVal : pVal;
+  const freeVal = isolateQ ? pVal : qVal;
+  const order = Math.random() < 0.5 ? 'iso-first' : 'free-first';
+  const eq2 = buildEq2(iso, free, B, isoVal, freeVal, coefIso, coefFree, order);
+  if (!eq2) return null;
+  if (!fEq(eq2.rhs, Fr(rhs2n)) && isolateQ) {
+    /* rhs is recomputed from values; keep eq2 */
+  }
+  const original1 = E.row(monoProduct(Fr(m1), ['p', 'x'], true).concat(monoProduct(Fr(n1), ['q', 'y'], false)).concat([
+    E.gap(0.35), E.s('='), E.gap(0.35), numExpr(Fr(rhs1))
+  ]));
+  const original2 = E.row(monoProduct(Fr(m2), ['p', 'x'], true).concat(monoProduct(Fr(n2), ['q', 'y'], false)).concat([
+    E.gap(0.35), E.s('='), E.gap(0.35), numExpr(Fr(m2 * pN * x + n2 * qN * y))
+  ]));
+  const trace = 'Known values:  x = ' + fmtNum(Fr(x)) + ',   y = ' + fmtNum(Fr(y));
+  const baseTip = defaultSignTip(iso, free, A, B);
+  const signTip = 'After injecting x = ' + fmtNum(Fr(x)) + ' and y = ' + fmtNum(Fr(y)) + ', '
+    + baseTip.charAt(0).toLowerCase() + baseTip.slice(1);
+  const givenTip = '(x, y) = (' + fmtNum(Fr(x)) + ', ' + fmtNum(Fr(y)) + ') was given to you. The unknowns to lock are (p, q)!';
+  const extras = [];
+  if (!(pN === x && qN === y)) extras.push({ trap: 'given', tip: givenTip, names: ['p', 'q'], values: [Fr(x), Fr(y)] });
+  return buildCore({
+    kind: 'parameter', tier: 'master',
+    iso, free, A, B, isoVal, freeVal,
+    m: coefIso, cFree: coefFree, order,
+    briefing: [original1, original2],
+    signTip,
+    traceText: trace,
+    meta: { kind: 'parameter', x: Fr(x), y: Fr(y) },
+    note: 'Plug in the known (x, y), then solve for (p, q).',
+    finalNames: ['p', 'q'], finalValues: [pVal, qVal],
+    extraStep3: extras,
+    checks: [() => {
+      const left1 = m1 * pN * x + n1 * qN * y;
+      if (left1 !== rhs1) return 'param1';
+      const left2 = m2 * pN * x + n2 * qN * y;
+      const rhs2 = m2 * pN * x + n2 * qN * y;
+      if (left2 !== rhs2) return 'param2';
+      const env = { p: pVal, q: qVal };
+      if (isolateQ) {
+        if (!fEq(qVal, fAdd(A, fMul(B, pVal)))) return 'qiso';
+      } else if (!fEq(pVal, fAdd(A, fMul(B, qVal)))) return 'piso';
+      if (!env.p) return 'env';
+      return true;
+    }]
+  });
+}
+
+function tryForRound(round) {
+  const tier = tierOf(round);
+  try {
+    if (tier === 'warmup') return Math.random() < 0.4 ? tryPre() : tryUnit(Math.random() < 0.45);
+    if (tier === 'intermediate') {
+      const r = Math.random();
+      if (r < 0.28) return tryFracX();
+      if (r < 0.56) return tryFracY();
+      if (r < 0.8) return tryProportion();
+      return tryHalf();
+    }
+    if (tier === 'advanced') {
+      let kind;
+      if (round === 5) {
+        if (!plannedAdv) plannedAdv = Math.random() < 0.5 ? 'radical' : 'reciprocal';
+        kind = plannedAdv;
+      } else if (round === 6) {
+        if (!round6Kind) {
+          round6Kind = plannedAdv === 'radical' ? 'reciprocal'
+            : plannedAdv === 'reciprocal' ? 'radical'
+              : (Math.random() < 0.5 ? 'radical' : 'reciprocal');
+        }
+        kind = round6Kind;
+      } else kind = Math.random() < 0.5 ? 'radical' : 'reciprocal';
+      return kind === 'radical' ? tryRadical() : tryRecip();
+    }
+    const r = Math.random();
+    if (r < 0.52) return tryParameter();
+    if (r < 0.72) return tryRadical();
+    if (r < 0.86) return tryRecip();
+    if (r < 0.94) return tryHalf();
+    return tryProportion();
+  } catch (err) {
+    lastGenError = String(err && err.stack || err);
+    return null;
+  }
+}
+
+function generatePuzzle(round, history) {
+  const hist = history || [];
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const raw = tryForRound(round);
+    if (!raw) continue;
+    raw.tier = tierOf(round);
+    if (attempt < 70 && hist.indexOf(raw.key) !== -1) continue;
+    if (!attachChoices(raw)) continue;
+    const verdict = verifyPuzzle(raw);
+    if (verdict !== true) {
+      lastGenError = verdict;
+      continue;
+    }
+    return raw;
+  }
+  return null;
+}
+
+function runMathAudit() {
+  const fails = [];
+  const counts = {};
+  const sample = tryRadical({ d: 10, t: Fr(25, 2), A: Fr(3), k: 5, m: Fr(2) });
+  if (!sample) fails.push('famous radical did not build');
+  else {
+    sample.tier = 'advanced';
+    if (!attachChoices(sample)) fails.push('famous choices');
+    else {
+      const v = verifyPuzzle(sample);
+      if (v !== true) fails.push('famous ' + v);
+      if (!fEq(sample.freeVal, Fr(25, 2)) || !fEq(sample.finalValues[0], Fr(625, 4)) || !fEq(sample.finalValues[1], Fr(17, 4))) {
+        fails.push('famous values ' + fKey(sample.freeVal) + ' x=' + fKey(sample.finalValues[0]) + ' y=' + fKey(sample.finalValues[1]));
+      }
+    }
+  }
+  const classic = buildCore({
+    kind: 'linear', tier: 'warmup',
+    iso: 'x', free: 'y', A: Fr(3), B: Fr(-3), isoVal: Fr(6), freeVal: Fr(-1),
+    m: Fr(5), cFree: Fr(-2), order: 'iso-first',
+    finalNames: ['x', 'y'], finalValues: [Fr(6), Fr(-1)]
+  });
+  if (!classic || !attachChoices(classic)) fails.push('classic build');
+  else {
+    const v = verifyPuzzle(classic);
+    if (v !== true) fails.push('classic ' + v);
+    if (!fEq(classic.eq2.rhs, Fr(32))) fails.push('classic rhs');
+    const br = classic.choices[2].find(o => o.trap === 'brackets');
+    if (!br || br.tip.indexOf('−15y') === -1) fails.push('classic tip ' + (br && br.tip));
+    const sg = classic.choices[1].find(o => o.trap === 'sign');
+    if (!sg || sg.tip.indexOf('+3y') === -1 || sg.tip.indexOf('−3y') === -1) fails.push('classic sign ' + (sg && sg.tip));
+    if (fmtIso('x', Fr(3), Fr(-3), 'y') !== 'x = 3 − 3y') fails.push('fmt ' + fmtIso('x', Fr(3), Fr(-3), 'y'));
+  }
+  for (let g = 0; g < 12; g++) {
+    resetPlanner();
+    const local = [];
+    const kinds = [];
+    for (let r = 1; r <= 10; r++) {
+      const p = generatePuzzle(r, local);
+      if (!p) { fails.push('null r' + r + ' ' + (lastGenError || '')); continue; }
+      if (local.indexOf(p.key) !== -1) fails.push('repeat ' + p.key);
+      local.push(p.key);
+      if (local.length > 6) local.shift();
+      counts[p.kind] = (counts[p.kind] || 0) + 1;
+      kinds.push(p.kind);
+      const verdict = verifyPuzzle(p);
+      if (verdict !== true) fails.push(verdict + ' r' + r + ' ' + p.kind);
+      if (tierOf(r) === 'warmup') {
+        p.finalValues.forEach(val => { if (val.d !== 1) fails.push('warmup frac'); });
+      }
+    }
+    if (kinds[4] && kinds[5] && kinds[4] === kinds[5] && (kinds[4] === 'radical' || kinds[4] === 'reciprocal')) {
+      fails.push('advanced pair ' + kinds[4]);
+    }
+    if (kinds[4] && kinds[4] !== 'radical' && kinds[4] !== 'reciprocal') fails.push('r5 ' + kinds[4]);
+    if (kinds[5] && kinds[5] !== 'radical' && kinds[5] !== 'reciprocal') fails.push('r6 ' + kinds[5]);
+  }
+  return {
+    fails,
+    counts,
+    summary: fails.length ? ('FAIL ' + fails.length) : ('PASS ' + JSON.stringify(counts))
+  };
+}
+
+/* ------------------------------------------------------------------ audio */
+
+const AudioBus = {
+  ctx: null, master: null, music: null, sfx: null, noise: null,
+  muted: false, started: false, next: 0, step: 0
+};
+
+function ensureAudio() {
+  if (AudioBus.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC();
+  const master = ctx.createGain();
+  master.gain.value = AudioBus.muted ? 0 : 0.85;
+  master.connect(ctx.destination);
+  const music = ctx.createGain();
+  music.gain.value = 0.22;
+  music.connect(master);
+  const sfx = ctx.createGain();
+  sfx.gain.value = 0.8;
+  sfx.connect(master);
+  const len = Math.floor(ctx.sampleRate * 0.25);
+  const noise = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = noise.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  AudioBus.ctx = ctx;
+  AudioBus.master = master;
+  AudioBus.music = music;
+  AudioBus.sfx = sfx;
+  AudioBus.noise = noise;
+}
+function resumeAudio() {
+  if (typeof window === 'undefined') return;
+  ensureAudio();
+  if (AudioBus.ctx.state === 'suspended') AudioBus.ctx.resume();
+  AudioBus.started = true;
+  if (!AudioBus.next || AudioBus.next < AudioBus.ctx.currentTime) AudioBus.next = AudioBus.ctx.currentTime + 0.05;
+}
+function setMuted(flag) {
+  AudioBus.muted = flag;
+  try { localStorage.setItem('subcore-matrix-muted', flag ? '1' : '0'); } catch (e) { /* ignore */ }
+  const btn = typeof document !== 'undefined' && document.getElementById('mute');
+  if (btn) btn.textContent = flag ? 'UNMUTE' : 'MUTE';
+  if (AudioBus.master) AudioBus.master.gain.value = flag ? 0 : 0.85;
+  if (!flag) resumeAudio();
+}
+function tone(dest, freq, when, dur, type, gain) {
+  const ctx = AudioBus.ctx;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, when);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.001, gain), when + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  o.connect(g); g.connect(dest);
+  o.start(when); o.stop(when + dur + 0.02);
+}
+function noiseHit(when, dur, gain, freq) {
+  const ctx = AudioBus.ctx;
+  const src = ctx.createBufferSource();
+  src.buffer = AudioBus.noise;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = freq || 1800;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(gain, when + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  src.connect(filter); filter.connect(g); g.connect(AudioBus.sfx);
+  src.start(when); src.stop(when + dur + 0.02);
+}
+function sfxClick() {
+  if (!AudioBus.ctx || AudioBus.muted) return;
+  tone(AudioBus.sfx, 740, AudioBus.ctx.currentTime, 0.06, 'square', 0.12);
+}
+function sfxLatch() {
+  if (!AudioBus.ctx || AudioBus.muted) return;
+  const t = AudioBus.ctx.currentTime;
+  tone(AudioBus.sfx, 420, t, 0.09, 'square', 0.1);
+  tone(AudioBus.sfx, 640, t + 0.07, 0.12, 'square', 0.1);
+}
+function sfxZap() {
+  if (!AudioBus.ctx || AudioBus.muted) return;
+  const t = AudioBus.ctx.currentTime;
+  tone(AudioBus.sfx, 880, t, 0.08, 'square', 0.08);
+  tone(AudioBus.sfx, 1320, t + 0.06, 0.1, 'square', 0.08);
+  noiseHit(t, 0.08, 0.15, 2400);
+}
+function sfxFanfare() {
+  if (!AudioBus.ctx || AudioBus.muted) return;
+  const t = AudioBus.ctx.currentTime;
+  [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(AudioBus.sfx, f, t + i * 0.09, 0.22, 'square', 0.11));
+  tone(AudioBus.sfx, 196, t, 0.4, 'triangle', 0.12);
+}
+function sfxBuzz() {
+  if (!AudioBus.ctx || AudioBus.muted) return;
+  const t = AudioBus.ctx.currentTime;
+  tone(AudioBus.sfx, 78, t, 0.28, 'sawtooth', 0.08);
+  noiseHit(t, 0.18, 0.12, 400);
+}
+function pumpMusic() {
+  if (!AudioBus.started || AudioBus.muted || !AudioBus.ctx) return;
+  const ctx = AudioBus.ctx;
+  const lead = [261.63, 311.13, 349.23, 392, 466.16, 523.25, 622.25, 698.46];
+  const bass = [65.41, 77.78, 98, 87.31];
+  const pattern = [4, 6, 7, 6, 4, 3, 4, 6, 2, 4, 3, 2, 4, 6, 7, 4];
+  const bassPat = [0, 0, 2, 1];
+  const stepDur = (60 / 132) / 2;
+  while (AudioBus.next < ctx.currentTime + 0.28) {
+    const s = AudioBus.step % 16;
+    const when = AudioBus.next;
+    tone(AudioBus.music, lead[pattern[s]], when, stepDur * 0.9, 'square', s % 4 === 0 ? 0.09 : 0.06);
+    if (s % 4 === 0) tone(AudioBus.music, bass[bassPat[(s / 4) | 0]], when, stepDur * 3.2, 'triangle', 0.16);
+    if (s % 2 === 1) noiseHit(when, 0.04, 0.05, 2500);
+    if (s % 8 === 0) tone(AudioBus.music, 180, when, 0.08, 'sine', 0.08);
+    AudioBus.step++;
+    AudioBus.next += stepDur;
+  }
+}
+
+/* -------------------------------------------------------------------- game */
+
+const state = {
+  screen: 'title',
+  mode: 'solo',
+  round: 1,
+  step: 1,
+  puzzle: null,
+  history: [],
+  shared: { shields: 3, score: 0, combo: 0 },
+  p1: null,
+  p2: null,
+  feedback: null,
+  floats: [],
+  particles: [],
+  shake: 0,
+  flash: null,
+  fly: null,
+  toast: '',
+  toastT: 0,
+  menuIndex: 0,
+  overIndex: 0,
+  endTitle: '',
+  endDetail: '',
+  lastTip: '',
+  time: 0,
+  fps: 60,
+  calibrating: 0
+};
+
+function makePilot(name, color) {
+  return { name, color, shields: 3, score: 0, combo: 0, stars: 0, alive: true, focus: 0, selected: -1 };
+}
+function resetPilots() {
+  state.p1 = makePilot('P1', '#ff5a6a');
+  state.p2 = makePilot('P2', '#5aa6ff');
+}
+
+function stepOwner(step) {
+  if (state.mode !== 'coop') return 'both';
+  if (step === 3) return 'both';
+  const flip = state.round % 2 === 0;
+  if (step === 1) return flip ? 'p2' : 'p1';
+  return flip ? 'p1' : 'p2';
+}
+function canControl(pid) {
+  if (state.screen !== 'play' || state.feedback || !state.puzzle) return false;
+  if (state.mode === 'versus' && !state[pid].alive) return false;
+  if (state.mode === 'solo') return pid === 'p1';
+  const owner = stepOwner(state.step);
+  return owner === 'both' || owner === pid;
+}
+function mousePilot() {
+  if (state.mode === 'coop') {
+    const owner = stepOwner(state.step);
+    return owner === 'p2' ? 'p2' : 'p1';
+  }
+  return 'p1';
+}
+
+function signedJoin(terms) {
+  const live = terms.filter(t => t && !fIsZero(t.c));
+  if (!live.length) return '0';
+  return live.map((t, i) => {
+    if (i === 0) return fmtCoefVar(t.c, t.v);
+    return (t.c.n < 0 ? ' − ' : ' + ') + fmtCoefVar(Fr(Math.abs(t.c.n), t.c.d), t.v);
+  }).join('');
+}
+function eqLine(eq) {
+  return signedJoin(eq.terms) + ' = ' + fmtNum(eq.rhs);
+}
+function coefChip(coef, chip) {
+  if (fEq(coef, Fr(1))) return chip;
+  if (fEq(coef, Fr(-1))) return '−' + chip;
+  return fmtNum(coef) + chip;
+}
+function bracketLine(p) {
+  const chip = '(' + fmtBinomial(p.A, p.B, p.free) + ')';
+  let s = '';
+  p.eq2.terms.forEach((t, i) => {
+    const piece = t.v === p.iso ? coefChip(t.c, chip) : fmtCoefVar(t.c, t.v);
+    if (i === 0) s += piece;
+    else if (piece.charAt(0) === '−') s += ' − ' + piece.slice(1);
+    else s += ' + ' + piece;
+  });
+  return s + ' = ' + fmtNum(p.eq2.rhs);
+}
+function chipWithValue(p) {
+  const parts = binomialParts(p.A, p.B, p.free);
+  let s = '';
+  parts.forEach((part, i) => {
+    const abs = Fr(Math.abs(part.coef.n), part.coef.d);
+    const sign = i === 0 ? (part.coef.n < 0 ? '−' : '') : (part.coef.n < 0 ? ' − ' : ' + ');
+    let body;
+    if (!part.v) body = fmtNum(abs);
+    else if (fEq(abs, Fr(1))) body = '(' + fmtNum(p.freeVal) + ')';
+    else body = fmtNum(abs) + '(' + fmtNum(p.freeVal) + ')';
+    s += sign + body;
+  });
+  return p.iso + ' = ' + s + ' = ' + fmtNum(p.isoVal);
+}
+function moveSentence(p) {
+  const onLeft = fNeg(p.B);
+  return 'Move ' + withPlus(onLeft, p.free) + ' across the equals sign. Its sign flips.';
+}
+function guideFor(p, step) {
+  if (!p) return [];
+  const chip = fmtIso(p.iso, p.A, p.B, p.free);
+  const meta = p.meta || {};
+  if (step === 1) {
+    if (meta.kind === 'pre') return ['The source is already a chip. Copy every sign.', 'Match this chip: ' + chip];
+    if (meta.kind === 'neg') return ['Source: ' + meta.shown, 'The variable is negative. Move it across and flip every other sign.', 'Match this chip: ' + chip];
+    if (meta.kind === 'fracx') {
+      return [
+        'Multiply every term by ' + meta.d + '.',
+        'x + ' + meta.d + 'y = ' + fmtNum(p.A),
+        moveSentence(p),
+        'Match this chip: ' + chip
+      ];
+    }
+    if (meta.kind === 'fracy') {
+      return [
+        'Multiply every term by ' + meta.d + '.',
+        meta.d + 'x + y = ' + fmtNum(p.A),
+        moveSentence(p),
+        'Match this chip: ' + chip
+      ];
+    }
+    if (meta.kind === 'proportion') {
+      const m = meta.m;
+      const n = meta.n;
+      const expanded = signedJoin([{ c: Fr(n), v: 'x' }, { c: Fr(n), v: 'y' }]) + ' = ' + signedJoin([{ c: Fr(m), v: 'x' }, { c: Fr(-m), v: 'y' }]);
+      const cx = n - m;
+      const cy = -m - n;
+      const gathered = signedJoin([{ c: Fr(n), v: 'x' }, { c: Fr(-m), v: 'x' }])
+        + ' = ' + signedJoin([{ c: Fr(-m), v: 'y' }, { c: Fr(-n), v: 'y' }]);
+      const collected = fmtCoefVar(Fr(cx), 'x') + ' = ' + fmtCoefVar(Fr(cy), 'y');
+      const lines = [
+        'Cross-multiply: ' + n + '(x + y) = ' + m + '(x − y)',
+        'Expand: ' + expanded,
+        'x terms left, y terms right: ' + gathered
+      ];
+      if (collected !== chip) lines.push(collected);
+      lines.push('Match this chip: ' + chip);
+      return lines;
+    }
+    if (meta.kind === 'radical') {
+      return [
+        'Let t = √x. Replace every √x with t.',
+        'Source in t: ' + eqLine(p.eq1),
+        moveSentence(p),
+        'Match this chip: ' + chip
+      ];
+    }
+    if (meta.kind === 'reciprocal') {
+      return [
+        'Let a = 1/(u+v) and b = 1/(u−v).',
+        'Source in a, b: ' + eqLine(p.eq1),
+        moveSentence(p),
+        'Match this chip: ' + chip
+      ];
+    }
+    if (meta.kind === 'parameter') {
+      return [
+        'Known: x = ' + fmtNum(meta.x) + ', y = ' + fmtNum(meta.y) + '. Plug those in.',
+        'Source bus: ' + eqLine(p.eq1),
+        moveSentence(p),
+        'Match this chip: ' + chip
+      ];
+    }
+    return ['Source: ' + eqLine(p.eq1), moveSentence(p), 'Match this chip: ' + chip];
+  }
+  if (step === 2) {
+    const host = p.eq2.terms.find(t => t.v === p.iso);
+    const products = p.parts.map(part => {
+      const inside = part.v ? fmtCoefVar(part.coef, part.v) : fmtNum(part.coef);
+      const prod = fMul(host.c, part.coef);
+      const out = part.v ? fmtCoefVar(prod, part.v) : fmtNum(prod);
+      return fmtNum(host.c) + ' × (' + inside + ') = ' + out;
+    }).join(',  ');
+    const expanded = expandEq(p.eq2, p.iso, p.parts, 'correct');
+    return [
+      'Brackets on: ' + bracketLine(p),
+      products,
+      'Write every product: ' + eqLine(expanded),
+      'Match: ' + p.free + ' = ' + fmtNum(p.freeVal)
+    ];
+  }
+  const pair = '(' + p.finalNames[0] + ', ' + p.finalNames[1] + ') = (' + fmtNum(p.finalValues[0]) + ', ' + fmtNum(p.finalValues[1]) + ')';
+  if (meta.kind === 'radical') {
+    return [
+      p.free + ' = ' + fmtNum(p.freeVal) + ', and ' + chip,
+      'x = t² = (' + fmtNum(p.freeVal) + ')² = ' + fmtNum(p.finalValues[0]),
+      'Match the pair ' + pair
+    ];
+  }
+  if (meta.kind === 'reciprocal') {
+    const sum = fDiv(Fr(1), p.isoVal);
+    const diff = fDiv(Fr(1), p.freeVal);
+    return [
+      'a = ' + fmtNum(p.isoVal) + ', b = ' + fmtNum(p.freeVal),
+      'u + v = 1/a = ' + fmtNum(sum) + ',   u − v = 1/b = ' + fmtNum(diff),
+      'Add those and divide by 2.',
+      'Match the pair ' + pair
+    ];
+  }
+  return [
+    p.free + ' = ' + fmtNum(p.freeVal),
+    'Put it into the chip: ' + chipWithValue(p),
+    'Match the pair ' + pair
+  ];
+}
+
+function instructionFor(p, step) {
+  if (!p) return '';
+  if (step === 1) {
+    if (p.kind === 'parameter') return 'Inject the known (x, y), then forge the isolated parameter chip.';
+    if (p.kind === 'radical') return 'Set t = √x and isolate a clean chip from the source bus.';
+    if (p.kind === 'reciprocal') return 'Set a = 1/(u+v) and b = 1/(u−v), then isolate a clean chip.';
+    if (p.kind === 'fraction') return 'Clear denominators, then isolate the variable whose coefficient is ±1.';
+    if (p.preisolated) return 'The source bus is already a chip. Copy it with every sign intact.';
+    return 'Isolate the variable with coefficient 1 or −1. Flip the sign of each term you move.';
+  }
+  if (step === 2) return 'Inject the chip inside brackets. Multiply the outer factor by EVERY inner term, then solve.';
+  if (p.kind === 'radical') return 'Square the intermediate t (x = t²) and lock the true pair (x, y).';
+  if (p.kind === 'reciprocal') return 'Invert a and b, then lock the true pair (u, v).';
+  if (p.kind === 'parameter') return 'Back-substitute and lock the parameter pair (p, q).';
+  return 'Back-substitute into the chip and lock the solution pair (x, y).';
+}
+function roleLine() {
+  if (state.mode !== 'coop') {
+    if (state.mode === 'versus') return 'RACE — first correct lock scores the step';
+    return 'SOLO HACKER';
+  }
+  const owner = stepOwner(state.step);
+  if (state.step === 3) return 'BOTH ENGINEERS — lock the pair together';
+  const who = owner === 'p1' ? 'P1 RED' : 'P2 BLUE';
+  const job = state.step === 1 ? 'ISOLATOR' : 'INJECTOR';
+  return who + ' ' + job + (state.round % 2 === 0 ? '  ·  roles swapped' : '');
+}
+
+function comboOf(pid) {
+  return state.mode === 'versus' ? state[pid].combo : state.shared.combo;
+}
+function award(pid, step, speed) {
+  const combo = comboOf(pid);
+  const base = step === 3 ? 350 : step === 2 ? 150 : 100;
+  const pts = base + combo * 20 + (speed ? 150 : 0);
+  if (state.mode === 'versus') {
+    state[pid].score += pts;
+    state[pid].combo += 1;
+    if (step === 3) state[pid].stars += 1;
+  } else {
+    state.shared.score += pts;
+    state.shared.combo += 1;
+  }
+  return pts;
+}
+function hurt(pid) {
+  if (state.mode === 'versus') {
+    const p = state[pid];
+    p.shields = Math.max(0, p.shields - 1);
+    p.combo = 0;
+    if (p.shields <= 0) p.alive = false;
+  } else {
+    state.shared.shields = Math.max(0, state.shared.shields - 1);
+    state.shared.combo = 0;
+  }
+}
+function shieldsLeft() {
+  if (state.mode === 'versus') return state.p1.shields + state.p2.shields;
+  return state.shared.shields;
+}
+function matchDead() {
+  if (state.mode === 'versus') return !state.p1.alive || !state.p2.alive;
+  return state.shared.shields <= 0;
+}
+
+function loadRound(resetCal) {
+  const puzzle = generatePuzzle(state.round, state.history);
+  if (!puzzle) {
+    state.puzzle = null;
+    state.calibrating = (state.calibrating || 0) + 1;
+    return;
+  }
+  state.calibrating = 0;
+  state.history.push(puzzle.key);
+  if (state.history.length > 6) state.history.shift();
+  state.puzzle = puzzle;
+  state.step = 1;
+  state.stepT = 0;
+  state.p1.selected = -1;
+  state.p2.selected = -1;
+  state.p1.focus = 0;
+  state.p2.focus = 0;
+  state.fly = null;
+  if (resetCal) state.toast = '';
+}
+function startGame(mode) {
+  resetPlanner();
+  state.mode = mode;
+  state.round = 1;
+  state.screen = 'play';
+  state.feedback = null;
+  state.shared = { shields: mode === 'coop' ? 4 : 3, score: 0, combo: 0 };
+  resetPilots();
+  state.p1.shields = 3;
+  state.p2.shields = 3;
+  state.floats = [];
+  state.particles = [];
+  state.lastTip = '';
+  loadRound(true);
+}
+function finishFeedback() {
+  const fb = state.feedback;
+  state.feedback = null;
+  if (!fb) return;
+  if (fb.ok) {
+    if (state.step < 3) {
+      state.step += 1;
+      state.stepT = 0;
+      state.p1.selected = -1;
+      state.p2.selected = -1;
+    } else {
+      state.round += 1;
+      if (state.round === 7) { plannedAdv = null; round6Kind = null; }
+      loadRound(true);
+    }
+  } else if (matchDead()) {
+    openGameOver();
+  } else if (fb.pilot && state[fb.pilot]) {
+    state[fb.pilot].selected = -1;
+  }
+}
+function openGameOver() {
+  state.screen = 'over';
+  state.overIndex = 0;
+  if (state.mode === 'versus') {
+    const winner = state.p1.alive && !state.p2.alive ? 'P1'
+      : state.p2.alive && !state.p1.alive ? 'P2'
+        : (state.p1.score === state.p2.score ? 'DRAW' : (state.p1.score > state.p2.score ? 'P1' : 'P2'));
+    state.endTitle = winner === 'DRAW' ? 'DUEL DRAWN' : winner + ' CONTROLS THE CORE';
+    state.endDetail = 'P1  ' + state.p1.stars + ' stars   ' + state.p1.score + ' pts     P2  ' + state.p2.stars + ' stars   ' + state.p2.score + ' pts';
+  } else {
+    state.endTitle = 'FIREWALL COLLAPSED';
+    state.endDetail = 'Reached round ' + state.round + '   ·   score ' + state.shared.score;
+  }
+}
+
+function submit(pid) {
+  if (!canControl(pid) || !state.puzzle) return;
+  const pilot = state[pid];
+  const sel = pilot.selected;
+  if (sel < 0) {
+    state.toast = 'SELECT A CHIP FIRST';
+    state.toastT = 1.1;
+    sfxBuzz();
+    return;
+  }
+  const opt = state.puzzle.choices[state.step][sel];
+  if (!opt) return;
+  if (opt.correct) {
+    const speed = state.mode === 'versus';
+    const pts = award(pid, state.step, speed);
+    const label = state.step === 3 ? 'QUANTUM CORE UNLOCKED' : (state.step === 2 ? 'EXPANSION STABLE' : 'CHIP LATCHED');
+    state.feedback = { life: state.step === 3 ? 2.4 : 0.62, max: state.step === 3 ? 2.4 : 0.62, ok: true, text: label + '   +' + pts, card: sel, pilot: pid };
+    state.floats.push({ text: '+' + pts, x: pointer.x || W * 0.5, y: pointer.y || H * 0.4, life: 1, color: '#ffcc4d' });
+    if (state.step === 1) {
+      sfxLatch();
+      const card = layout && layout.cards ? layout.cards[sel] : null;
+      state.fly = { t: 0, expr: state.puzzle.chipExpr, x: card ? card.x + card.w / 2 : W / 2, y: card ? card.y : H * 0.8 };
+    } else if (state.step === 2) sfxZap();
+    else {
+      sfxFanfare();
+      burst(W / 2, H * 0.42, '#ffcc4d', 70, 4.2);
+      burst(W / 2, H * 0.42, '#3ee7ff', 30, 2.4);
+    }
+  } else {
+    hurt(pid);
+    state.lastTip = opt.tip || 'Recalculate that step.';
+    state.feedback = { life: 5.4, max: 5.4, ok: false, text: state.lastTip, card: sel, pilot: pid };
+    state.shake = 9;
+    state.flash = { color: 'rgba(255,40,70,0.28)', life: 0.35 };
+    sfxBuzz();
+    const card = layout && layout.cards ? layout.cards[sel] : null;
+    burst(card ? card.x + card.w / 2 : W / 2, card ? card.y + card.h / 2 : H * 0.7, '#ff3355', 36, 3.4);
+    burst(card ? card.x + card.w / 2 : W / 2, card ? card.y + card.h / 2 : H * 0.7, '#ffe29a', 12, 2);
+  }
+}
+function activate(pid) {
+  if (state.screen === 'title') {
+    startGame(['solo', 'coop', 'versus'][state.menuIndex] || 'solo');
+    sfxLatch();
+    return;
+  }
+  if (state.screen === 'over') {
+    if (state.overIndex === 0) startGame(state.mode);
+    else state.screen = 'title';
+    return;
+  }
+  if (state.feedback) {
+    if (state.feedback.max - state.feedback.life > 0.55) finishFeedback();
+    return;
+  }
+  if (!canControl(pid)) return;
+  const pilot = state[pid];
+  if (pilot.focus === 4) { submit(pid); return; }
+  if (pilot.selected === pilot.focus) submit(pid);
+  else {
+    pilot.selected = pilot.focus;
+    sfxClick();
+  }
+}
+function moveFocus(pid, dx, dy) {
+  if (state.screen === 'title') {
+    if (dy) state.menuIndex = clamp(state.menuIndex + dy, 0, 2);
+    return;
+  }
+  if (state.screen === 'over') {
+    if (dx || dy) state.overIndex = state.overIndex ? 0 : 1;
+    return;
+  }
+  if (!canControl(pid) || !layout) return;
+  const pilot = state[pid];
+  const cols = layout.cols;
+  const rows = cols === 2 ? 2 : 1;
+  if (pilot.focus === 4) {
+    if (dy < 0) pilot.focus = pilot.selected >= 0 ? pilot.selected : 0;
+    return;
+  }
+  let r = Math.floor(pilot.focus / cols);
+  let c = pilot.focus % cols;
+  if (dx) c = clamp(c + dx, 0, cols - 1);
+  if (dy > 0) {
+    if (r + 1 < rows) r += 1;
+    else { pilot.focus = 4; return; }
+  }
+  if (dy < 0 && r > 0) r -= 1;
+  pilot.focus = r * cols + c;
+}
+
+function burst(x, y, color, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.35 + Math.random());
+    state.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.7 + Math.random() * 0.4, color, r: 1.5 + Math.random() * 2.2 });
+  }
+}
+
+/* -------------------------------------------------------------------- input */
+
+const keysDown = {};
+const keyQueue = [];
+const pointer = { x: 0, y: 0, inside: false, queue: [], moved: false };
+const gpPrev = [{}, {}];
+const gpStick = [{ t: 0, x: 0, y: 0 }, { t: 0, x: 0, y: 0 }];
+
+const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+function eventCode(e) {
+  if (e.code && e.code !== 'Unidentified') return e.code;
+  const map = {
+    Enter: 'Enter', ' ': 'Space', Escape: 'Escape',
+    ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
+    m: 'KeyM', M: 'KeyM', f: 'KeyF', F: 'KeyF',
+    w: 'KeyW', a: 'KeyA', s: 'KeyS', d: 'KeyD',
+    W: 'KeyW', A: 'KeyA', S: 'KeyS', D: 'KeyD'
+  };
+  return map[e.key] || '';
+}
+
+function bootInput() {
+  window.addEventListener('keydown', (e) => {
+    if (e.target && e.target.id === 'mute') return;
+    const code = eventCode(e);
+    if (!code) return;
+    const useful = MOVE_KEYS.has(code) || code === 'Space' || code === 'Enter' || code === 'KeyF' || code === 'KeyM' || code === 'Escape';
+    if (useful) e.preventDefault();
+    keysDown[code] = true;
+    if (e.repeat && !MOVE_KEYS.has(code)) return;
+    keyQueue.push(code);
+    resumeAudio();
+  });
+  window.addEventListener('keyup', (e) => { keysDown[eventCode(e)] = false; });
+  const canvas = document.getElementById('game');
+  canvas.addEventListener('pointermove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    pointer.x = e.clientX - r.left;
+    pointer.y = e.clientY - r.top;
+    pointer.inside = true;
+    pointer.moved = true;
+  });
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.focus();
+    const r = canvas.getBoundingClientRect();
+    pointer.queue.push({ x: e.clientX - r.left, y: e.clientY - r.top });
+    resumeAudio();
+  });
+  canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+  document.getElementById('mute').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setMuted(!AudioBus.muted);
+    canvas.focus();
+  });
+}
+
+function drainKeys() {
+  const q = keyQueue.splice(0, keyQueue.length);
+  q.forEach(code => {
+    if (code === 'KeyM') { setMuted(!AudioBus.muted); return; }
+    if (code === 'Escape' && state.screen === 'play' && !state.feedback) {
+      state.screen = 'title';
+      return;
+    }
+    const p1k = code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' || code === 'KeyF' || code === 'Space';
+    const p2k = code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight' || code === 'Enter';
+    if (state.mode === 'solo') {
+      if (code === 'KeyW' || code === 'ArrowUp') moveFocus('p1', 0, -1);
+      else if (code === 'KeyS' || code === 'ArrowDown') moveFocus('p1', 0, 1);
+      else if (code === 'KeyA' || code === 'ArrowLeft') moveFocus('p1', -1, 0);
+      else if (code === 'KeyD' || code === 'ArrowRight') moveFocus('p1', 1, 0);
+      else if (code === 'Space' || code === 'Enter' || code === 'KeyF') activate('p1');
+      return;
+    }
+    if (p1k) {
+      if (code === 'KeyW') moveFocus('p1', 0, -1);
+      else if (code === 'KeyS') moveFocus('p1', 0, 1);
+      else if (code === 'KeyA') moveFocus('p1', -1, 0);
+      else if (code === 'KeyD') moveFocus('p1', 1, 0);
+      else activate('p1');
+    }
+    if (p2k) {
+      if (code === 'ArrowUp') moveFocus('p2', 0, -1);
+      else if (code === 'ArrowDown') moveFocus('p2', 0, 1);
+      else if (code === 'ArrowLeft') moveFocus('p2', -1, 0);
+      else if (code === 'ArrowRight') moveFocus('p2', 1, 0);
+      else activate('p2');
+    }
+  });
+}
+function pollPads() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (let i = 0; i < 2; i++) {
+    const gp = pads[i];
+    if (!gp) continue;
+    const pid = i === 0 ? 'p1' : 'p2';
+    if (state.mode === 'solo' && pid === 'p2') continue;
+    const prev = gpPrev[i];
+    const buttons = gp.buttons || [];
+    const pressed = (idx) => buttons[idx] && buttons[idx].pressed;
+    [0, 1].forEach(idx => {
+      const down = !!pressed(idx);
+      if (down && !prev[idx]) activate(pid);
+      prev[idx] = down;
+    });
+    let dx = 0, dy = 0;
+    if (pressed(14)) dx -= 1;
+    if (pressed(15)) dx += 1;
+    if (pressed(12)) dy -= 1;
+    if (pressed(13)) dy += 1;
+    const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    const ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+    if (!dx && Math.abs(ax) > 0.55) dx = ax > 0 ? 1 : -1;
+    if (!dy && Math.abs(ay) > 0.55) dy = ay > 0 ? 1 : -1;
+    const stick = gpStick[i];
+    if (dx || dy) {
+      if (stick.x !== dx || stick.y !== dy || stick.t <= 0) {
+        moveFocus(pid, dx, 0);
+        moveFocus(pid, 0, dy);
+        stick.t = stick.x === dx && stick.y === dy ? 0.16 : 0.28;
+      }
+      stick.t -= 1 / 60;
+    } else stick.t = 0;
+    stick.x = dx; stick.y = dy;
+    if (pressed(0) || pressed(1) || dx || dy) resumeAudio();
+  }
+}
+function drainPointer() {
+  if (pointer.moved && layout) {
+    const pid = mousePilot();
+    if (state.screen === 'title') {
+      const hit = hitRect(pointer.x, pointer.y, layout.modes || []);
+      if (hit) state.menuIndex = hit.index;
+    } else if (state.screen === 'play' && canControl(pid)) {
+      const cards = layout.cards || [];
+      for (let i = 0; i < cards.length; i++) {
+        if (inside(pointer.x, pointer.y, cards[i])) state[pid].focus = i;
+      }
+      if (inside(pointer.x, pointer.y, layout.exec)) state[pid].focus = 4;
+    }
+    pointer.moved = false;
+  }
+  const clicks = pointer.queue.splice(0, pointer.queue.length);
+  clicks.forEach(c => {
+    if (state.screen === 'title') {
+      const hit = hitRect(c.x, c.y, layout.modes || []);
+      if (hit) { state.menuIndex = hit.index; activate('p1'); }
+      return;
+    }
+    if (state.screen === 'over') {
+      if (inside(c.x, c.y, layout.again)) { state.overIndex = 0; activate('p1'); }
+      else if (inside(c.x, c.y, layout.titleBtn)) { state.overIndex = 1; activate('p1'); }
+      return;
+    }
+    if (state.feedback) {
+      if (state.feedback.max - state.feedback.life > 0.55) finishFeedback();
+      return;
+    }
+    if (layout.menu && inside(c.x, c.y, layout.menu)) { state.screen = 'title'; return; }
+    const pid = mousePilot();
+    if (!canControl(pid)) return;
+    const cards = layout.cards || [];
+    for (let i = 0; i < cards.length; i++) {
+      if (inside(c.x, c.y, cards[i])) {
+        state[pid].focus = i;
+        if (state[pid].selected === i) submit(pid);
+        else { state[pid].selected = i; sfxClick(); }
+        return;
+      }
+    }
+    if (inside(c.x, c.y, layout.exec)) {
+      state[pid].focus = 4;
+      submit(pid);
+    }
+  });
+}
+function inside(x, y, r) {
+  return r && x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+}
+function hitRect(x, y, rects) {
+  for (let i = 0; i < rects.length; i++) if (inside(x, y, rects[i])) return { index: i, rect: rects[i] };
+  return null;
+}
+
+/* -------------------------------------------------------------------- render */
+
+let canvas, ctx, W = 800, H = 600, layout = null;
+let traces = [];
+let dpr = 1;
+
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  W = Math.max(320, window.innerWidth);
+  H = Math.max(420, window.innerHeight);
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  traces = makeTraces(W, H);
+}
+function makeTraces(w, h) {
+  const out = [];
+  let seed = 90125;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed % 10000) / 10000; };
+  for (let i = 0; i < 16; i++) {
+    const pts = [];
+    let x = rnd() * w;
+    let y = rnd() * h;
+    pts.push([x, y]);
+    for (let k = 0; k < 4; k++) {
+      const nx = clamp(x + (rnd() - 0.5) * w * 0.45, 8, w - 8);
+      const ny = clamp(y + (rnd() - 0.5) * h * 0.28, 8, h - 8);
+      pts.push([nx, y]);
+      pts.push([nx, ny]);
+      x = nx; y = ny;
+    }
+    out.push({ pts, gold: i % 3 !== 0, phase: rnd() * 10 });
+  }
+  return out;
+}
+function roundRect(ctx2, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx2.beginPath();
+  ctx2.moveTo(x + rr, y);
+  ctx2.arcTo(x + w, y, x + w, y + h, rr);
+  ctx2.arcTo(x + w, y + h, x, y + h, rr);
+  ctx2.arcTo(x, y + h, x, y, rr);
+  ctx2.arcTo(x, y, x + w, y, rr);
+  ctx2.closePath();
+}
+function wrapText(ctx2, text, maxW) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let cur = '';
+  words.forEach(word => {
+    const trial = cur ? cur + ' ' + word : word;
+    if (ctx2.measureText(trial).width > maxW && cur) { lines.push(cur); cur = word; }
+    else cur = trial;
+  });
+  if (cur) lines.push(cur);
+  return lines;
+}
+function ellipsize(ctx2, text, maxW) {
+  if (ctx2.measureText(text).width <= maxW) return text;
+  let s = text;
+  while (s.length > 1 && ctx2.measureText(s + '…').width > maxW) s = s.slice(0, -1);
+  return s.replace(/\s+$/, '') + '…';
+}
+function panel(x, y, w, h, stroke, fill) {
+  roundRect(ctx, x, y, w, h, 14);
+  ctx.fillStyle = fill || 'rgba(8, 14, 32, 0.97)';
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+}
+function drawArena(t) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#07101f');
+  g.addColorStop(1, '#050814');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = '#123';
+  const gap = 28;
+  for (let y = 12; y < H; y += gap) {
+    for (let x = 12; x < W; x += gap) {
+      ctx.fillRect(x, y, 1.4, 1.4);
+    }
+  }
+  ctx.restore();
+  traces.forEach(tr => {
+    ctx.beginPath();
+    tr.pts.forEach((p, i) => { if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]); });
+    ctx.strokeStyle = tr.gold ? 'rgba(212, 160, 54, 0.28)' : 'rgba(40, 180, 210, 0.22)';
+    ctx.lineWidth = tr.gold ? 3.2 : 2.2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.strokeStyle = tr.gold ? 'rgba(255, 214, 120, 0.85)' : 'rgba(120, 240, 255, 0.7)';
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+    const phase = (t * 0.18 + tr.phase) % 1;
+    const seg = Math.min(tr.pts.length - 1, Math.floor(phase * (tr.pts.length - 1)));
+    const a = tr.pts[seg];
+    const b = tr.pts[Math.min(tr.pts.length - 1, seg + 1)];
+    const u = (phase * (tr.pts.length - 1)) - seg;
+    const px = a[0] + (b[0] - a[0]) * u;
+    const py = a[1] + (b[1] - a[1]) * u;
+    ctx.beginPath();
+    ctx.fillStyle = tr.gold ? '#ffe7a3' : '#bff8ff';
+    ctx.arc(px, py, 2.3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+function hexPath(x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + i * Math.PI / 3;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+function drawStar(x, y, r, color) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const px = x + Math.cos(a) * rad;
+    const py = y + Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+function drawShields(x, y, n, max, color) {
+  for (let i = 0; i < max; i++) {
+    hexPath(x + i * 18, y, 7);
+    ctx.fillStyle = i < n ? color : 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    ctx.strokeStyle = i < n ? color : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+}
+
+function computeLayout() {
+  if (state.screen === 'title') {
+    const bw = Math.min(560, W - 36);
+    const gap = H < 560 ? 8 : 12;
+    const bh = clamp(H * 0.105, 50, 76);
+    const titleH = Math.min(118, H * 0.24);
+    const helpH = 24;
+    const block = bh * 3 + gap * 2;
+    const total = titleH + 12 + block + 18 + helpH;
+    const yStart = Math.max(12, (H - total) / 2);
+    const x = (W - bw) / 2;
+    const y0 = yStart + titleH;
+    const modes = [0, 1, 2].map(i => ({ x, y: y0 + i * (bh + gap), w: bw, h: bh, index: i }));
+    const helpY = modes[2].y + bh + 22;
+    layout = { modes, titleY: yStart + titleH * 0.34, helpY, panel: { x: x - 18, y: yStart - 8, w: bw + 36, h: helpY - yStart + 28 } };
+    return;
+  }
+  if (state.screen === 'over') {
+    const bw = Math.min(360, W * 0.42);
+    layout = {
+      again: { x: W / 2 - bw - 10, y: H * 0.62, w: bw, h: 54 },
+      titleBtn: { x: W / 2 + 10, y: H * 0.62, w: bw, h: 54 }
+    };
+    return;
+  }
+  const pad = clamp(W * 0.016, 8, 18);
+  let hudH = clamp(H * 0.08, 48, 68);
+  let briefH = clamp(H * 0.26, 128, 176);
+  let deckH = clamp(H * 0.32, 136, 252);
+  let stageFit = H - hudH - briefH - deckH;
+  if (stageFit < 104) {
+    const cut = 104 - stageFit;
+    briefH = Math.max(84, briefH - cut * 0.4);
+    deckH = Math.max(124, deckH - cut * 0.6);
+    stageFit = H - hudH - briefH - deckH;
+  }
+  const briefY = hudH;
+  const stageY = briefY + briefH;
+  const stageH = Math.max(72, H - stageY - deckH);
+  const deckY = stageY + stageH;
+  const cols = (W < 560 || (W < 980 && H >= 620)) ? 2 : 4;
+  const rows = cols === 2 ? 2 : 1;
+  const gap = clamp(W * 0.01, 8, 14);
+  const execH = clamp(deckH * 0.18, 42, 54);
+  const cardsBlock = deckH - execH - gap - 16;
+  const cardH = (cardsBlock - gap * (rows - 1)) / rows;
+  const cardW = (W - pad * 2 - gap * (cols - 1)) / cols;
+  const cards = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      cards.push({ x: pad + c * (cardW + gap), y: deckY + 8 + r * (cardH + gap), w: cardW, h: cardH });
+    }
+  }
+  const execW = Math.min(460, W - pad * 2);
+  const exec = { x: (W - execW) / 2, y: deckY + 8 + cardsBlock + gap, w: execW, h: execH };
+  const busGap = 8;
+  const header = 28;
+  let scaffoldWant = state.step === 3 ? Math.min(58, Math.max(34, stageH * 0.16)) : 0;
+  let leftover = stageH - header - scaffoldWant - busGap;
+  if (leftover < 88) {
+    scaffoldWant = Math.max(0, stageH - header - busGap - 88);
+    leftover = stageH - header - scaffoldWant - busGap;
+  }
+  const busH = Math.min(100, Math.max(34, leftover / 2));
+  const busW = Math.min(980, W - pad * 2);
+  const busX = (W - busW) / 2;
+  const bus1 = { x: busX, y: stageY + header, w: busW, h: busH };
+  const bus2 = { x: busX, y: bus1.y + busH + busGap, w: busW, h: busH };
+  const room = stageY + stageH - (bus2.y + busH) - 6;
+  const scaffold = scaffoldWant && room >= 30
+    ? { x: busX, y: bus2.y + busH + 6, w: busW, h: Math.min(scaffoldWant, room) }
+    : null;
+  layout = {
+    pad, hudH, brief: { x: pad, y: briefY + 4, w: W - pad * 2, h: briefH - 10 },
+    stageY, stageH, deckY, cards, cols, exec, bus1, bus2, scaffold,
+    menu: { x: pad, y: 10, w: 62, h: 24 }
+  };
+}
+
+function drawHud() {
+  const hudH = layout.hudH || 64;
+  ctx.save();
+  ctx.fillStyle = 'rgba(5, 10, 22, 0.82)';
+  ctx.fillRect(0, 0, W, hudH);
+  ctx.strokeStyle = 'rgba(255, 204, 77, 0.45)';
+  ctx.beginPath();
+  ctx.moveTo(0, hudH - 0.5);
+  ctx.lineTo(W, hudH - 0.5);
+  ctx.stroke();
+  ctx.font = '700 11px ' + MONO_FONT;
+  roundRect(ctx, layout.menu.x, layout.menu.y, layout.menu.w, layout.menu.h, 8);
+  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.stroke();
+  ctx.fillStyle = '#d5e4ff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('MENU', layout.menu.x + layout.menu.w / 2, layout.menu.y + layout.menu.h / 2);
+  const tier = state.puzzle ? tierLabel(state.puzzle.tier) : '';
+  const right = W - 100;
+  if (state.mode === 'versus') {
+    const mid = W * 0.5;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffcc4d';
+    ctx.font = '700 13px ' + MONO_FONT;
+    ctx.fillText('2P VERSUS', mid, hudH * 0.38);
+    ctx.fillStyle = '#9eb6d8';
+    ctx.font = '600 12px ' + UI_FONT;
+    ctx.fillText('R' + state.round + '  ' + tier, mid, hudH * 0.72);
+    drawPilotHud(layout.menu.x + layout.menu.w + 16, hudH, state.p1, 'P1');
+    drawPilotHudRight(right, hudH, state.p2, 'P2');
+  } else {
+    const fullTier = state.puzzle ? tierLabel(state.puzzle.tier) : '';
+    const shortTier = { warmup: 'WARM', intermediate: 'MID', advanced: 'ADV', master: 'CORE' }[state.puzzle && state.puzzle.tier] || fullTier;
+    const fullMode = state.mode === 'coop' ? '2P CO-OP TEAM' : 'SOLO HACKER';
+    const shortMode = state.mode === 'coop' ? 'CO-OP' : 'SOLO';
+    const comboN = state.shared.combo;
+    const scoreLabel = (state.mode === 'coop' ? 'TEAM SCORE ' : 'SCORE ') + state.shared.score;
+    const nameX = layout.menu.x + layout.menu.w + 14;
+    const shieldCount = state.mode === 'coop' ? 4 : 3;
+    const shieldSpan = shieldCount * 18;
+    ctx.font = '700 16px ' + UI_FONT;
+    const scoreLeft = right - ctx.measureText(scoreLabel).width;
+    ctx.font = '600 13px ' + UI_FONT;
+    let comboLabel = 'COMBO x' + comboN;
+    const comboRoom = scoreLeft - 20 - shieldSpan - 160 - nameX;
+    if (ctx.measureText(comboLabel).width > Math.max(36, comboRoom)) comboLabel = 'x' + comboN;
+    const comboW = ctx.measureText(comboLabel).width;
+    const comboX = scoreLeft - 20 - comboW;
+    const shieldX = comboX - 12 - shieldSpan;
+    const room = shieldX - 14 - nameX;
+    const pairs = [
+      [fullMode, 'R' + state.round + '  ' + fullTier],
+      [fullMode, 'R' + state.round + '  ' + shortTier],
+      [shortMode, 'R' + state.round + ' ' + shortTier]
+    ];
+    let pair = pairs[pairs.length - 1];
+    pairs.forEach(p => {
+      ctx.font = '700 15px ' + MONO_FONT;
+      const nw = ctx.measureText(p[0]).width;
+      ctx.font = '600 13px ' + UI_FONT;
+      const rw = ctx.measureText(p[1]).width;
+      if (nw + 12 + rw <= room && pair === pairs[pairs.length - 1]) pair = p;
+    });
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffcc4d';
+    ctx.font = '700 15px ' + MONO_FONT;
+    ctx.fillText(pair[0], nameX, hudH * 0.5);
+    const nameW = ctx.measureText(pair[0]).width;
+    ctx.font = '600 13px ' + UI_FONT;
+    ctx.fillStyle = '#d5e6ff';
+    ctx.fillText(pair[1], nameX + nameW + 12, hudH * 0.5);
+    drawShields(shieldX, hudH * 0.5, state.shared.shields, shieldCount, '#7dffa6');
+    ctx.fillStyle = '#ffe3a1';
+    ctx.fillText(comboLabel, comboX, hudH * 0.5);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff';
+    ctx.font = '700 16px ' + UI_FONT;
+    ctx.fillText(scoreLabel, right, hudH * 0.5);
+  }
+  ctx.restore();
+}
+function drawPilotHud(x, hudH, pilot, label) {
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = pilot.color;
+  ctx.font = '700 13px ' + MONO_FONT;
+  ctx.fillText(label, x, hudH * 0.38);
+  drawShields(x + 34, hudH * 0.38, pilot.shields, 3, pilot.color);
+  for (let i = 0; i < Math.min(pilot.stars, 6); i++) drawStar(x + 34 + i * 15, hudH * 0.72, 5.5, '#ffcc4d');
+  ctx.fillStyle = '#fff';
+  ctx.font = '600 12px ' + UI_FONT;
+  ctx.fillText(pilot.score + ' pts', x + 34 + Math.min(pilot.stars, 6) * 15 + 8, hudH * 0.72);
+}
+function drawPilotHudRight(right, hudH, pilot, label) {
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.font = '600 12px ' + UI_FONT;
+  ctx.fillText(pilot.score + ' pts', right, hudH * 0.72);
+  const scoreW = ctx.measureText(pilot.score + ' pts').width;
+  for (let i = 0; i < Math.min(pilot.stars, 6); i++) {
+    drawStar(right - scoreW - 16 - i * 15, hudH * 0.72, 5.5, '#ffcc4d');
+  }
+  ctx.fillStyle = pilot.color;
+  ctx.font = '700 13px ' + MONO_FONT;
+  ctx.fillText(label, right, hudH * 0.38);
+  const labelW = ctx.measureText(label).width;
+  for (let i = 0; i < 3; i++) {
+    const hx = right - labelW - 16 - i * 18;
+    hexPath(hx, hudH * 0.38, 7);
+    ctx.fillStyle = i < pilot.shields ? pilot.color : 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    ctx.strokeStyle = i < pilot.shields ? pilot.color : 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+}
+
+function makeTargetExpr(p, injected) {
+  const nodes = [];
+  p.eq2.terms.forEach(t => {
+    const leading = nodes.length === 0;
+    if (t.v === p.iso) {
+      nodes.push(...coefPieces(t.c, leading, injected ? 'mult' : null));
+      if (injected) nodes.push(E.mark('chip', E.paren(markedBinomial(p.parts))));
+      else nodes.push(E.socket(p.iso));
+    } else nodes.push(...pieces(t.c, varUnit(t.v), leading));
+  });
+  nodes.push(E.gap(0.4), E.s('='), E.gap(0.4), numExpr(p.eq2.rhs));
+  return E.row(nodes);
+}
+
+function drawBriefing() {
+  const b = layout.brief;
+  panel(b.x, b.y, b.w, b.h, 'rgba(120, 170, 255, 0.28)');
+  ctx.save();
+  ctx.beginPath();
+  roundRect(ctx, b.x, b.y, b.w, b.h, 14);
+  ctx.clip();
+  const p = state.puzzle;
+  ctx.font = '700 11px ' + MONO_FONT;
+  ctx.fillStyle = '#8eb4ff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('MISSION BRIEF', b.x + 14, b.y + 8);
+  ctx.fillStyle = '#ffcc4d';
+  ctx.textAlign = 'right';
+  ctx.fillText(roleLine(), b.x + b.w - 14, b.y + 8);
+  if (!p) {
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    ctx.font = '600 16px ' + UI_FONT;
+    ctx.fillText('Calibrating a fresh circuit…', b.x + 14, b.y + 40);
+    ctx.restore();
+    return;
+  }
+  const split = b.w > 620;
+  const top = b.y + 28;
+  const bodyH = b.h - 36;
+  if (split) {
+    const eqW = b.w * 0.52;
+    const lineH = bodyH / 2;
+    clipFit(p.briefing[0], { x: b.x + 14, y: top, w: eqW, h: lineH - 2 }, '#e7f6ff', 24, 12);
+    if (p.briefing[1]) clipFit(p.briefing[1], { x: b.x + 14, y: top + lineH, w: eqW, h: lineH - 4 }, '#ffd6f6', 24, 12);
+    const noteX = b.x + eqW + 28;
+    const noteW = b.w - eqW - 46;
+    drawGuide(noteX, top, noteW, bodyH, guideFor(p, state.step));
+  } else {
+    const lineH = Math.max(28, bodyH * 0.28);
+    clipFit(p.briefing[0], { x: b.x + 12, y: top, w: b.w - 24, h: lineH }, '#e7f6ff', 22, 11);
+    if (p.briefing[1]) clipFit(p.briefing[1], { x: b.x + 12, y: top + lineH, w: b.w - 24, h: lineH }, '#ffd6f6', 22, 11);
+    ctx.font = '600 13px ' + UI_FONT;
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    const iy = top + lineH * 2 + 2;
+    drawGuide(b.x + 12, iy, b.w - 24, b.y + b.h - iy - 8, guideFor(p, state.step));
+  }
+  ctx.restore();
+}
+
+function drawGuide(x, y, w, h, lines) {
+  if (!lines || !lines.length || h < 16 || w < 40) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.font = '700 11px ' + MONO_FONT;
+  ctx.fillStyle = '#8eb4ff';
+  ctx.fillText('WORKING', x, y);
+  const size = h < 78 ? 13 : 15;
+  const lh = size + 4;
+  const max = Math.max(1, Math.floor((h - 16) / lh));
+  const shown = lines.length <= max ? lines : lines.slice(0, max - 1).concat(lines[lines.length - 1]);
+  let cy = y + 15;
+  shown.forEach((ln, i) => {
+    const last = i === shown.length - 1;
+    ctx.font = (last ? '700 ' : '600 ') + size + 'px ' + MATH_FONT;
+    ctx.fillStyle = last ? '#ffe7a8' : '#f4fbff';
+    const parts = wrapText(ctx, ln, w).slice(0, last ? 2 : 1);
+    parts.forEach(part => {
+      if (cy + size > y + h + 1) return;
+      ctx.fillText(part, x, cy);
+      cy += lh;
+    });
+  });
+  ctx.restore();
+}
+
+function drawArc(a, b, color, width) {
+  const x1 = a.x + a.w / 2;
+  const y1 = a.top + a.h * 0.15;
+  const x2 = b.x + b.w / 2;
+  const y2 = b.top;
+  const cpx = (x1 + x2) / 2;
+  const cpy = Math.min(y1, y2) - 28;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.quadraticCurveTo(cpx, cpy, x2, y2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
+  const ang = Math.atan2(y2 - cpy, x2 - cpx);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - Math.cos(ang - 0.4) * 8, y2 - Math.sin(ang - 0.4) * 8);
+  ctx.lineTo(x2 - Math.cos(ang + 0.4) * 8, y2 - Math.sin(ang + 0.4) * 8);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function drawStage() {
+  const p = state.puzzle;
+  ctx.font = '700 12px ' + MONO_FONT;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  const labels = ['1  ISOLATE', '2  INJECT', '3  LOCK'];
+  ctx.fillStyle = 'rgba(5, 8, 18, 0.82)';
+  ctx.fillRect(layout.bus1.x, layout.stageY + 2, Math.min(460, layout.bus1.w), 22);
+  labels.forEach((lb, i) => {
+    const on = state.step === i + 1;
+    ctx.fillStyle = on ? '#ffcc4d' : 'rgba(255,255,255,0.45)';
+    ctx.fillText(lb, layout.bus1.x + 8 + i * 148, layout.stageY + 13);
+  });
+  if (!p) return;
+  panel(layout.bus1.x, layout.bus1.y, layout.bus1.w, layout.bus1.h, 'rgba(80, 230, 255, 0.85)', 'rgba(6, 18, 32, 0.97)');
+  panel(layout.bus2.x, layout.bus2.y, layout.bus2.w, layout.bus2.h, 'rgba(255, 79, 216, 0.8)', 'rgba(28, 8, 24, 0.97)');
+  ctx.font = '700 11px ' + MONO_FONT;
+  ctx.fillStyle = '#7eecff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('SOURCE BUS  ·  ISOLATE ' + p.iso.toUpperCase(), layout.bus1.x + 12, layout.bus1.y + 6);
+  ctx.fillStyle = '#ff8ae2';
+  ctx.fillText('TARGET SOCKET  ·  [' + p.iso + ']', layout.bus2.x + 12, layout.bus2.y + 6);
+  const injected = state.step >= 2;
+  const target = makeTargetExpr(p, injected);
+  drawFitted(ctx, p.sourceExpr, {
+    x: layout.bus1.x + 12, y: layout.bus1.y + 22, w: layout.bus1.w - 24, h: layout.bus1.h - 30
+  }, '#d8fbff', 32, 13);
+  const marks = {};
+  const slot = { x: layout.bus2.x + 12, y: layout.bus2.y + 22, w: layout.bus2.w - 24, h: layout.bus2.h - 30 };
+  let size = 32;
+  let m = measureExpr(ctx, target, size);
+  while ((m.w > slot.w || m.h > slot.h) && size > 13) {
+    size = Math.max(13, size * 0.9);
+    m = measureExpr(ctx, target, size);
+    if (size === 13) break;
+  }
+  const ex = slot.x + Math.max(0, (slot.w - m.w) / 2);
+  const ey = slot.y + Math.max(0, (slot.h - m.h) / 2);
+  if (injected && marks) {
+    /* glow is stroked after the draw using recorded chip box */
+  }
+  drawExpr(ctx, target, ex, ey, size, '#ffd0f4', marks);
+  if (marks.chip) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 214, 120, 0.9)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, marks.chip.x - 4, marks.chip.top - 3, marks.chip.w + 8, marks.chip.h + 6, 8);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (injected && state.stepT > 0.15 && marks.mult) {
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ['in0', 'in1'].forEach(id => { if (marks[id]) drawArc(marks.mult, marks[id], '#ffe08a', 2.4); });
+    ctx.restore();
+  }
+  if (!injected && marks.socket) {
+    const pulse = 0.35 + 0.35 * Math.sin(state.time * 4);
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.strokeStyle = '#ffcc4d';
+    ctx.lineWidth = 2;
+    roundRect(ctx, marks.socket.x - 3, marks.socket.top - 2, marks.socket.w + 6, marks.socket.h + 4, 8);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (layout.scaffold && state.step === 3) {
+    const s = layout.scaffold;
+    panel(s.x, s.y, s.w, s.h, 'rgba(255,204,77,0.55)', 'rgba(20,16,6,0.9)');
+    ctx.font = '700 12px ' + MONO_FONT;
+    ctx.fillStyle = '#ffcc4d';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('BACK-SUB CORE', s.x + 12, s.y + s.h / 2);
+    const chip = valueExpr(p.free, p.freeVal);
+    const iso = isolationExpr(p.iso, p.parts);
+    drawFitted(ctx, chip, { x: s.x + 150, y: s.y + 6, w: s.w * 0.28, h: s.h - 12 }, '#9af7ff', 22, 12);
+    drawFitted(ctx, iso, { x: s.x + 150 + s.w * 0.3, y: s.y + 6, w: s.w * 0.48, h: s.h - 12 }, '#fff', 22, 12);
+  }
+  if (state.fly && state.fly.t < 1) {
+    const endX = layout.bus2.x + layout.bus2.w * 0.55;
+    const endY = layout.bus2.y + layout.bus2.h * 0.5;
+    const u = state.fly.t;
+    const e = 1 - Math.pow(1 - u, 3);
+    const x = state.fly.x + (endX - state.fly.x) * e;
+    const y = state.fly.y + (endY - state.fly.y) * e;
+    ctx.save();
+    ctx.globalAlpha = 1 - u * 0.2;
+    panel(x - 70, y - 22, 140, 44, '#ffcc4d', 'rgba(40,28,6,0.92)');
+    drawFitted(ctx, state.fly.expr, { x: x - 64, y: y - 16, w: 128, h: 32 }, '#fff6d2', 18, 11);
+    ctx.restore();
+  }
+}
+
+function drawCards() {
+  const p = state.puzzle;
+  if (!p) return;
+  const opts = p.choices[state.step];
+  layout.cards.forEach((card, i) => {
+    const opt = opts[i];
+    const fb = state.feedback && state.feedback.card === i;
+    let stroke = 'rgba(90, 120, 190, 0.8)';
+    let fill = 'rgba(8, 12, 28, 0.98)';
+    if (state.p1.selected === i) { stroke = state.mode === 'versus' || state.mode === 'coop' ? state.p1.color : '#ffcc4d'; fill = 'rgba(36, 28, 8, 0.98)'; }
+    if (state.mode !== 'solo' && state.p2.selected === i) { stroke = state.p2.color; fill = 'rgba(8, 22, 44, 0.98)'; }
+    if (fb && state.feedback.ok) { stroke = '#5dff9a'; fill = 'rgba(8, 36, 22, 0.98)'; }
+    if (fb && !state.feedback.ok) { stroke = '#ff4d6a'; fill = 'rgba(46, 8, 16, 0.98)'; }
+    if (state.p1.focus === i && canControl('p1')) stroke = state.mode === 'solo' ? '#ffe7a8' : state.p1.color;
+    roundRect(ctx, card.x, card.y, card.w, card.h, 12);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = state.p1.focus === i || state.p2.focus === i ? 2.4 : 1.4;
+    ctx.stroke();
+    pinRow(card.x + 8, card.y - 3, card.w - 16);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(ctx, card.x + 4, card.y + 4, card.w - 8, card.h - 8, 8);
+    ctx.clip();
+    ctx.font = '700 10px ' + MONO_FONT;
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('CHIP ' + 'ABCD'[i], card.x + 10, card.y + 6);
+    if (!opt) { ctx.restore(); return; }
+    const lines = [];
+    if (opt.badge) lines.push(opt.badge);
+    lines.push(opt.expr);
+    if (opt.resultExpr) lines.push(opt.resultExpr);
+    const innerTop = card.y + 20;
+    const innerH = card.h - 28;
+    const slotH = innerH / lines.length;
+    lines.forEach((expr, li) => {
+      const col = li === 0 && opt.badge ? '#ffcc4d' : (expr === opt.resultExpr ? '#8ef6ff' : '#f4fbff');
+      drawFitted(ctx, expr, { x: card.x + 8, y: innerTop + li * slotH, w: card.w - 16, h: slotH - 2 }, col, li === lines.length - 1 && lines.length > 1 ? 18 : 22, 10);
+    });
+    ctx.restore();
+    if (state.mode !== 'solo') {
+      if (state.p1.focus === i && canControl('p1')) reticle(card, state.p1.color, -6);
+      if (state.p2.focus === i && canControl('p2')) reticle(card, state.p2.color, 6);
+    }
+  });
+  const exec = layout.exec;
+  const armed = state.p1.selected >= 0 || (state.mode !== 'solo' && state.p2.selected >= 0);
+  roundRect(ctx, exec.x, exec.y, exec.w, exec.h, 12);
+  ctx.fillStyle = armed ? 'rgba(48, 36, 8, 0.98)' : 'rgba(10, 14, 28, 0.98)';
+  ctx.fill();
+  ctx.strokeStyle = armed ? '#ffcc4d' : 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = armed ? '#ffe7a8' : '#c5d4ea';
+  ctx.font = '700 16px ' + MONO_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const execLabel = state.step === 3 ? 'LOCK SOLUTION' : state.step === 2 ? 'EXECUTE EXPANSION' : 'EXECUTE INJECTION';
+  ctx.fillText(execLabel, exec.x + exec.w / 2, exec.y + exec.h / 2);
+  if (state.p1.focus === 4 && canControl('p1')) reticle(exec, state.mode === 'solo' ? '#ffcc4d' : state.p1.color, 0);
+  if (state.mode !== 'solo' && state.p2.focus === 4 && canControl('p2')) reticle(exec, state.p2.color, 0);
+}
+function pinRow(x, y, w) {
+  ctx.fillStyle = '#d7b15a';
+  const n = Math.max(3, Math.floor(w / 18));
+  for (let i = 0; i < n; i++) ctx.fillRect(x + (i + 0.3) * (w / n), y, 6, 4);
+}
+function reticle(rect, color, offset) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  const x = rect.x - 4 + offset;
+  const y = rect.y - 4;
+  const w = rect.w + 8;
+  const h = rect.h + 8;
+  const s = 12;
+  ctx.beginPath();
+  ctx.moveTo(x, y + s); ctx.lineTo(x, y); ctx.lineTo(x + s, y);
+  ctx.moveTo(x + w - s, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + s);
+  ctx.moveTo(x, y + h - s); ctx.lineTo(x, y + h); ctx.lineTo(x + s, y + h);
+  ctx.moveTo(x + w - s, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - s);
+  ctx.stroke();
+}
+
+function drawFeedback() {
+  if (!state.feedback) return;
+  const fb = state.feedback;
+  const w = Math.min(820, W - 40);
+  const h = Math.min(168, Math.max(96, layout.stageH * 0.42));
+  const x = (W - w) / 2;
+  const y = layout.bus1.y + 8;
+  roundRect(ctx, x, y, w, h, 16);
+  ctx.fillStyle = fb.ok ? 'rgba(8, 28, 18, 0.94)' : 'rgba(36, 8, 14, 0.95)';
+  ctx.fill();
+  ctx.strokeStyle = fb.ok ? '#5dff9a' : '#ff4d6a';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = fb.ok ? '#b9ffd4' : '#ffd0d8';
+  ctx.font = '700 13px ' + MONO_FONT;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText(fb.ok ? 'CORE STABLE' : 'SHORT CIRCUIT', x + 16, y + 12);
+  ctx.font = '600 16px ' + UI_FONT;
+  ctx.fillStyle = '#fff';
+  const lines = wrapText(ctx, fb.text, w - 32);
+  lines.slice(0, 4).forEach((ln, i) => ctx.fillText(ln, x + 16, y + 36 + i * 22));
+  if (fb.max - fb.life > 0.55) {
+    ctx.font = '700 11px ' + MONO_FONT;
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fillText('TAP OR PRESS TO CONTINUE', x + 16, y + h - 18);
+  }
+}
+function drawTitle() {
+  const plate = layout.panel;
+  if (plate) {
+    roundRect(ctx, plate.x, plate.y, plate.w, plate.h, 22);
+    ctx.fillStyle = '#070b16';
+    ctx.fill();
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffcc4d';
+  ctx.font = '700 ' + clamp(W * 0.048, 26, 60) + 'px ' + MONO_FONT;
+  ctx.textBaseline = 'middle';
+  ctx.fillText('SUB-CORE MATRIX', W / 2, layout.titleY);
+  ctx.fillStyle = '#9adfff';
+  ctx.font = '600 ' + clamp(W * 0.02, 13, 22) + 'px ' + UI_FONT;
+  ctx.fillText('VARIABLE INJECTOR', W / 2, layout.titleY + clamp(H * 0.055, 22, 40));
+  ctx.fillStyle = '#d5e2f5';
+  ctx.font = '500 ' + (H < 520 ? 13 : 15) + 'px ' + UI_FONT;
+  ctx.fillText('Simultaneous equations by substitution  ·  Secondary 2', W / 2, layout.titleY + clamp(H * 0.055, 22, 40) + 22);
+  const names = [
+    ['SOLO HACKER', 'Mouse, keyboard, or one 8BitDo. Three firewall shields.'],
+    ['2P CO-OP TEAM', 'Shared shields and one team score. Roles swap each round.'],
+    ['2P VERSUS', 'Same circuit, first lock wins the step and the master star.']
+  ];
+  layout.modes.forEach((rect, i) => {
+    const on = state.menuIndex === i;
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 14);
+    ctx.fillStyle = on ? 'rgba(42, 32, 8, 0.96)' : 'rgba(8, 14, 30, 0.96)';
+    ctx.fill();
+    ctx.strokeStyle = on ? '#ffcc4d' : 'rgba(130,160,210,0.7)';
+    ctx.lineWidth = on ? 2.4 : 1.4;
+    ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = on ? '#ffe7a8' : '#fff';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 ' + (rect.h < 58 ? 15 : 18) + 'px ' + MONO_FONT;
+    ctx.fillText(names[i][0], rect.x + 18, rect.y + rect.h * 0.36);
+    ctx.fillStyle = '#c5d4ea';
+    ctx.font = '500 ' + (rect.h < 58 ? 12 : 13) + 'px ' + UI_FONT;
+    ctx.fillText(names[i][1], rect.x + 18, rect.y + rect.h * 0.72);
+  });
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(210,226,245,0.8)';
+  ctx.font = '500 13px ' + UI_FONT;
+  if (layout.helpY < H - 8) {
+    ctx.fillText('P1: WASD + F/Space or Pad 0 A    ·    P2: Arrows + Enter or Pad 1 A    ·    M mute', W / 2, layout.helpY);
+  }
+}
+function drawOver() {
+  const top = H * 0.22;
+  const plate = { x: Math.max(18, W / 2 - 390), y: top, w: Math.min(780, W - 36), h: H * 0.56 };
+  roundRect(ctx, plate.x, plate.y, plate.w, plate.h, 20);
+  ctx.fillStyle = '#070b16';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 204, 77, 0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffcc4d';
+  ctx.font = '700 36px ' + MONO_FONT;
+  ctx.fillText(state.endTitle, W / 2, top + 52);
+  ctx.fillStyle = '#fff';
+  ctx.font = '600 18px ' + UI_FONT;
+  ctx.fillText(state.endDetail, W / 2, top + 92);
+  if (state.lastTip && state.mode !== 'versus') {
+    ctx.font = '500 15px ' + UI_FONT;
+    ctx.fillStyle = '#ffd0d8';
+    wrapText(ctx, state.lastTip, plate.w - 48).slice(0, 2).forEach((ln, i) => {
+      ctx.fillText(ln, W / 2, top + 132 + i * 22);
+    });
+  }
+  drawButton(layout.again, 'RESTART', state.overIndex === 0);
+  drawButton(layout.titleBtn, 'TITLE', state.overIndex === 1);
+}
+function drawButton(rect, label, on) {
+  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 12);
+  ctx.fillStyle = on ? 'rgba(32, 24, 8, 0.96)' : 'rgba(8, 12, 22, 0.96)';
+  ctx.fill();
+  ctx.strokeStyle = on ? '#ffcc4d' : 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '700 16px ' + MONO_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+}
+function drawMouseReticle() {
+  if (!pointer.inside || state.mode !== 'solo' || state.screen !== 'play') return;
+  const x = pointer.x;
+  const y = pointer.y;
+  ctx.save();
+  ctx.strokeStyle = '#e8fff7';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(x, y, 11, 0, Math.PI * 2);
+  ctx.moveTo(x - 18, y); ctx.lineTo(x - 5, y);
+  ctx.moveTo(x + 5, y); ctx.lineTo(x + 18, y);
+  ctx.moveTo(x, y - 18); ctx.lineTo(x, y - 5);
+  ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 18);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawParticles() {
+  state.particles.forEach(p => {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+}
+function drawFloats() {
+  ctx.textAlign = 'center';
+  ctx.font = '700 20px ' + MONO_FONT;
+  state.floats.forEach(f => {
+    ctx.globalAlpha = Math.max(0, f.life);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.globalAlpha = 1;
+  });
+}
+function drawToast() {
+  if (state.toastT <= 0) return;
+  ctx.globalAlpha = Math.min(1, state.toastT);
+  ctx.fillStyle = '#ffe7a8';
+  ctx.font = '700 14px ' + MONO_FONT;
+  ctx.textAlign = 'center';
+  ctx.fillText(state.toast, W / 2, layout && layout.exec ? layout.exec.y - 8 : H - 20);
+  ctx.globalAlpha = 1;
+}
+
+function render() {
+  computeLayout();
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  if (state.shake > 0.4) ctx.translate((Math.random() - 0.5) * state.shake, (Math.random() - 0.5) * state.shake);
+  drawArena(state.time);
+  if (state.screen === 'title') drawTitle();
+  else if (state.screen === 'over') drawOver();
+  else {
+    drawHud();
+    drawBriefing();
+    drawStage();
+    drawCards();
+    drawFeedback();
+    drawToast();
+    drawMouseReticle();
+  }
+  drawParticles();
+  drawFloats();
+  if (state.flash && state.flash.life > 0) {
+    ctx.fillStyle = state.flash.color;
+    ctx.globalAlpha = state.flash.life;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function update(dt) {
+  state.time += dt;
+  state.stepT = (state.stepT || 0) + dt;
+  state.shake = Math.max(0, state.shake - dt * 16);
+  if (state.flash) {
+    state.flash.life -= dt;
+    if (state.flash.life <= 0) state.flash = null;
+  }
+  state.toastT = Math.max(0, state.toastT - dt);
+  if (state.fly) {
+    state.fly.t += dt / 0.7;
+    if (state.fly.t > 1.2) state.fly = null;
+  }
+  state.particles.forEach(p => {
+    p.x += p.vx * dt * 60;
+    p.y += p.vy * dt * 60;
+    p.vy += dt * 8;
+    p.life -= dt;
+  });
+  state.particles = state.particles.filter(p => p.life > 0);
+  state.floats.forEach(f => { f.y -= dt * 28; f.life -= dt; });
+  state.floats = state.floats.filter(f => f.life > 0);
+  if (state.feedback) {
+    state.feedback.life -= dt;
+    if (state.feedback.life <= 0) finishFeedback();
+  }
+  if (state.screen === 'play' && !state.puzzle && state.calibrating < 8) loadRound(false);
+  pumpMusic();
+}
+
+let lastTs = 0;
+function frame(ts) {
+  try {
+    const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0.016);
+    lastTs = ts;
+    state.fps = state.fps * 0.9 + (1 / Math.max(0.001, dt)) * 0.1;
+    drainKeys();
+    pollPads();
+    drainPointer();
+    update(dt);
+    render();
+  } catch (err) {
+    console.error(err);
+  }
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d');
+  resetPilots();
+  try {
+    if (localStorage.getItem('subcore-matrix-muted') === '1') setMuted(true);
+  } catch (e) { /* ignore */ }
+  bootInput();
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.focus();
+  requestAnimationFrame(frame);
+}
+
+if (typeof document === 'undefined') {
+  const report = runMathAudit();
+  console.log(report.summary);
+  if (report.fails.length) {
+    console.log(report.fails.slice(0, 24).join('\n'));
+    if (typeof process !== 'undefined') process.exitCode = 1;
+  }
+} else {
+  boot();
+}
+</script>
+</body>
+</html>
