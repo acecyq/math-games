@@ -1,0 +1,2316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vector Intercept: Linear Beam Grid</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%2339e7ff' stroke-width='1.2'/%3E%3Cpath stroke='%23ff3ec9' stroke-width='1.2' d='M1 11 L15 5'/%3E%3Cpath stroke='%2339e7ff' stroke-width='1.2' d='M2 4 L14 10'/%3E%3Ccircle cx='8.2' cy='7.2' r='1.3' fill='%23ffc857'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #050814;
+    --panel: rgba(8, 14, 28, 0.94);
+    --line: rgba(80, 210, 230, 0.28);
+    --cyan: #39e7ff;
+    --magenta: #ff3ec9;
+    --gold: #ffc857;
+    --text: #e7f6ff;
+    --dim: #8ea6bd;
+    --p1: #ff4d6d;
+    --p2: #4aa3ff;
+    --danger: #ff4d6a;
+    --ok: #c6ff5a;
+    --ink: #10182a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(ellipse at 12% 0%, rgba(57, 231, 255, 0.08), transparent 42%),
+      radial-gradient(ellipse at 100% 100%, rgba(255, 62, 201, 0.08), transparent 40%),
+      var(--bg);
+    color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+    user-select: none;
+  }
+  button { font-family: inherit; color: inherit; cursor: pointer; }
+  #app { height: 100dvh; min-height: 0; display: flex; flex-direction: column; }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(4, 8, 18, 0.96);
+    flex-wrap: wrap;
+    z-index: 2;
+  }
+  .brand { display: flex; flex-direction: column; line-height: 1.05; min-width: 168px; }
+  .brand strong { letter-spacing: 0.14em; font-size: 13px; }
+  .brand span { color: var(--cyan); font-size: 10px; letter-spacing: 0.16em; }
+  #hud-stats { display: flex; flex-wrap: wrap; gap: 8px 14px; flex: 1; align-items: center; }
+  .stat { font-size: 10px; letter-spacing: 0.12em; color: var(--dim); }
+  .stat b {
+    display: block;
+    color: var(--text);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+    font-weight: 700;
+  }
+  .pips { display: flex; gap: 4px; margin-top: 4px; }
+  .pips i { width: 9px; height: 9px; border-radius: 99px; background: #243246; display: block; }
+  .pips i.on { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .pips i.on.p1 { background: var(--p1); box-shadow: 0 0 8px var(--p1); }
+  .pips i.on.p2 { background: var(--p2); box-shadow: 0 0 8px var(--p2); }
+  .star { color: var(--gold); }
+  #mute, #menu, .ghost {
+    border: 1px solid var(--line);
+    background: #10182a;
+    color: var(--cyan);
+    letter-spacing: 0.12em;
+    font-weight: 700;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  #mute[data-muted="1"] { color: var(--gold); border-color: rgba(255, 200, 87, 0.55); }
+  body[data-screen="title"] #menu,
+  body[data-screen="title"] #hud-stats { visibility: hidden; }
+  #title {
+    flex: 1;
+    overflow: auto;
+    padding: 28px 16px 40px;
+  }
+  body[data-screen="play"] #title { display: none; }
+  .title-wrap { width: min(980px, 100%); margin: 0 auto; }
+  .eyebrow { letter-spacing: 0.22em; color: var(--cyan); font-size: 12px; margin: 0 0 6px; }
+  h1 {
+    margin: 0;
+    font-size: clamp(38px, 7vw, 68px);
+    letter-spacing: 0.06em;
+    line-height: 0.9;
+  }
+  h1 em { font-style: normal; color: var(--magenta); }
+  .tagline { margin: 8px 0 0; letter-spacing: 0.22em; color: var(--gold); font-weight: 700; font-size: 13px; }
+  .lede { max-width: 68ch; color: var(--dim); line-height: 1.45; }
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
+  .mode {
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 14px;
+    min-height: 148px;
+  }
+  .mode strong { display: block; letter-spacing: 0.08em; margin-bottom: 6px; }
+  .mode span { display: block; color: var(--dim); font-size: 14px; line-height: 1.4; font-weight: 500; }
+  .mode.solo strong { color: var(--gold); }
+  .mode.coop strong { color: var(--cyan); }
+  .mode.versus strong { color: var(--magenta); }
+  .mode:hover { border-color: var(--cyan); }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .steps article, .help article {
+    background: rgba(8, 14, 28, 0.75);
+    border: 1px solid var(--line);
+    padding: 12px;
+  }
+  .steps h3, .help h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; color: var(--gold); }
+  .steps p, .help p, .footnote { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.4; }
+  .help { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+  .footnote { margin-top: 14px; font-size: 13px; }
+  #play { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  body[data-screen="title"] #play { display: none; }
+  #stage {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    overflow: hidden;
+  }
+  #console {
+    border-right: 1px solid var(--line);
+    background: rgba(6, 10, 22, 0.96);
+    padding: 12px 14px 16px;
+    overflow: auto;
+    min-height: 0;
+  }
+  #kicker { margin: 0; color: var(--magenta); letter-spacing: 0.16em; font-size: 11px; font-weight: 700; }
+  #mission { margin: 4px 0 6px; font-size: 22px; line-height: 1.1; }
+  #objective, #turnline { margin: 0 0 8px; color: var(--dim); line-height: 1.4; font-size: 14px; }
+  #turnline { color: var(--gold); }
+  .eq {
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    margin: 0 0 8px;
+    background: #0b1222;
+  }
+  .eq.live { box-shadow: inset 0 0 0 1px currentColor; }
+  .eq.cyan { color: var(--cyan); }
+  .eq.magenta { color: var(--magenta); }
+  .eq .tag { font-size: 10px; letter-spacing: 0.14em; font-weight: 800; }
+  .eq .math {
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1.35;
+    margin-top: 4px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .eq .cleared, .subline, #grads, #anchors, #coordread {
+    color: var(--dim);
+    font-size: 13px;
+    line-height: 1.45;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  #alert {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    font-size: 14px;
+    line-height: 1.4;
+    display: none;
+  }
+  #alert.show { display: block; }
+  #alert.bad { border-color: var(--danger); background: rgba(80, 12, 28, 0.55); color: #ffd5df; }
+  #alert.ok { border-color: var(--ok); background: rgba(24, 48, 10, 0.55); color: #e7ffc4; }
+  #board { position: relative; min-height: 0; min-width: 0; background: #04070f; overflow: hidden; }
+  canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+  #board.shake { animation: shake 0.32s linear; }
+  @keyframes shake {
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(4px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+  }
+  #dock {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(150px, 0.8fr);
+    gap: 8px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--line);
+    background: rgba(4, 8, 18, 0.98);
+  }
+  .card, #lock {
+    min-height: 56px;
+    border: 1px solid var(--line);
+    background: var(--ink);
+    color: var(--text);
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    font-size: 15px;
+    line-height: 1.25;
+    padding: 8px;
+  }
+  .card { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; overflow: hidden; }
+  .card .hint { display: block; color: var(--dim); font-size: 10px; letter-spacing: 0.14em; font-weight: 700; margin-bottom: 4px; }
+  .card.focus { box-shadow: inset 0 0 0 2px var(--gold); }
+  .card.focus-p2 { box-shadow: inset 0 0 0 2px var(--p2); }
+  .card.bad { border-color: var(--danger); background: #2a1020; }
+  .card.good { border-color: var(--gold); background: #2a2208; }
+  .card.used { opacity: 0.4; }
+  #lock {
+    background: linear-gradient(180deg, #ffe08a, #e39b12);
+    color: #1a1200;
+    letter-spacing: 0.12em;
+    font-size: 14px;
+  }
+  #lock:disabled, .card:disabled { cursor: default; filter: grayscale(0.3); }
+  #hint {
+    grid-column: 1 / -1;
+    color: var(--dim);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(3, 6, 14, 0.72);
+    display: none;
+    place-items: center;
+    z-index: 4;
+    padding: 16px;
+  }
+  #overlay.show { display: grid; }
+  .modal {
+    width: min(480px, 100%);
+    background: #0c1424;
+    border: 1px solid var(--gold);
+    padding: 20px;
+  }
+  .modal h2 { margin: 0 0 8px; letter-spacing: 0.08em; }
+  .modal p { color: var(--dim); line-height: 1.45; }
+  .modal .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .modal button {
+    border: 0;
+    background: var(--gold);
+    color: #1a1200;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    padding: 12px 14px;
+  }
+  .modal button.alt { background: transparent; color: var(--cyan); border: 1px solid var(--line); }
+  .fr {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    vertical-align: middle;
+    margin: 0 2px;
+    line-height: 1;
+    font-size: 0.72em;
+    position: relative;
+    top: -0.05em;
+  }
+  .fr b { display: block; width: 100%; height: 1px; background: currentColor; margin: 1px 0; }
+  .fr i { font-style: normal; padding: 0 2px; }
+  #live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  @media (max-height: 560px) {
+    header { padding: 6px 10px; }
+    #console { padding: 8px 10px 10px; }
+    #mission { font-size: 18px; margin: 2px 0 4px; }
+    #objective { display: none; }
+    #turnline { font-size: 13px; margin-bottom: 4px; }
+    .eq { padding: 5px 8px; margin-bottom: 5px; }
+    .eq .math { font-size: 18px; }
+    .eq .cleared, #grads, #anchors, #coordread { font-size: 12px; }
+    #dock { padding: 6px 8px 8px; gap: 6px; }
+  }
+  @media (max-width: 900px) {
+    .modes, .steps, .help { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    #stage { grid-template-columns: 1fr; grid-template-rows: minmax(128px, 36%) minmax(0, 1fr); }
+    #console { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  }
+  @media (max-width: 560px) {
+    #dock { grid-template-columns: 1fr 1fr; }
+    #lock { grid-column: 1 / -1; }
+    h1 { letter-spacing: 0.04em; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #board.shake { animation: none; }
+  }
+</style>
+</head>
+<body data-screen="title">
+<div id="app">
+  <header>
+    <div class="brand">
+      <strong>VECTOR INTERCEPT</strong>
+      <span>LINEAR BEAM GRID</span>
+    </div>
+    <div id="hud-stats"></div>
+    <button id="mute" type="button" aria-pressed="false">MUTE</button>
+    <button id="menu" type="button">MENU</button>
+  </header>
+  <section id="title">
+    <div class="title-wrap">
+      <p class="eyebrow">SINGAPORE SECONDARY 2 · GRAPHICAL METHOD</p>
+      <h1>VECTOR<br /><em>INTERCEPT</em></h1>
+      <p class="tagline">LINEAR BEAM GRID</p>
+      <p class="lede">Two linear beams cross on a Cartesian radar. Plot each equation with two lattice points, then lock the exact intersection — or recognise parallel beams and coincident beams.</p>
+      <div class="modes">
+        <button class="mode solo" type="button" data-mode="solo"><strong>1 · SOLO TACTICIAN</strong><span>Mouse, keyboard, or one 8BitDo. Three radar shields. Your score and combo.</span></button>
+        <button class="mode coop" type="button" data-mode="coop"><strong>2 · 2P CO-OP TEAM</strong><span>P1 plots one beam, P2 the other. Four shared shields and one team score only.</span></button>
+        <button class="mode versus" type="button" data-mode="versus"><strong>3 · 2P VERSUS</strong><span>Same radar, separate shields. First player to plot both beams and lock the intercept takes the star.</span></button>
+      </div>
+      <div class="steps">
+        <article><h3>STEP 1 · CYAN</h3><p>Place two points that satisfy Beam 1. The cyan laser fires across the grid.</p></article>
+        <article><h3>STEP 2 · MAGENTA</h3><p>Place two points that satisfy Beam 2. Check a point by substituting into the equation.</p></article>
+        <article><h3>STEP 3 · LOCK</h3><p>Lock the crossing (x, y). Parallel beams have no intersection. The same line has infinite solutions.</p></article>
+      </div>
+      <div class="help">
+        <article><h3>SOLO</h3><p>Mouse snaps to the grid. WASD or arrows move. Space or Enter plots and locks. Keys 1–4 fire cards. 8BitDo pad 1: D-pad or stick, A locks, LB/RB cycles cards, X fires the card.</p></article>
+        <article><h3>CO-OP</h3><p>P1 red reticle: WASD + F/Space, pad 1. P2 blue reticle: arrows + Enter, pad 2. Operators swap beams each round. The score is the team score.</p></article>
+        <article><h3>VERSUS</h3><p>Same controls. P1 cards are keys 1–4. P2 cards are 7, 8, 9, 0. A lock counts only after that player has plotted both beams. 8BitDo works best in XInput / standard mode.</p></article>
+      </div>
+      <p class="footnote">Rounds 1–2 stay in the first quadrant. Rounds 3–4 cross into negative coordinates. Rounds 5–6 use fraction forms and half-unit intersections. Round 7 onward mixes parallel beams, coincident beams, and parameter recovery. A wrong point costs one shield. Every third intercept in a row restores one shield. Press 1, 2, or 3 to launch.</p>
+    </div>
+  </section>
+  <div id="play">
+    <div id="stage">
+      <aside id="console">
+        <p id="kicker">STEP 1 OF 3</p>
+        <h2 id="mission">PLOT BEAM 1</h2>
+        <p id="turnline"></p>
+        <p id="objective"></p>
+        <div id="equations"></div>
+        <div id="grads"></div>
+        <div id="anchors"></div>
+        <div id="coordread">Reticle (0, 0)</div>
+        <div id="alert"></div>
+      </aside>
+      <div id="board">
+        <canvas id="radar" aria-label="Cartesian radar from negative 10 to positive 10"></canvas>
+        <div id="overlay">
+          <div class="modal">
+            <h2 id="over-title">RADAR OFFLINE</h2>
+            <p id="over-body"></p>
+            <div class="row">
+              <button id="again" type="button">PLAY AGAIN</button>
+              <button id="back" class="alt" type="button">TITLE</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="dock">
+      <button class="card" type="button" data-i="0"></button>
+      <button class="card" type="button" data-i="1"></button>
+      <button class="card" type="button" data-i="2"></button>
+      <button class="card" type="button" data-i="3"></button>
+      <button id="lock" type="button">LOCK INTERCEPT</button>
+      <div id="hint"></div>
+    </div>
+  </div>
+</div>
+<div id="live" aria-live="polite"></div>
+<script>
+(function () {
+  "use strict";
+
+  const EPS = 1e-4;
+  const cardButtons = Array.from(document.querySelectorAll(".card"));
+  const canvas = document.getElementById("radar");
+  const ctx = canvas.getContext("2d");
+  const board = document.getElementById("board");
+  const memory = { keys: [], sols: [], deck: [] };
+  const view = { w: 800, h: 600, originX: 400, originY: 300, scale: 24 };
+  const padMem = [
+    { a: false, x: false, lb: false, rb: false, sig: "", next: 0 },
+    { a: false, x: false, lb: false, rb: false, sig: "", next: 0 }
+  ];
+
+  const state = {
+    screen: "title",
+    mode: "solo",
+    round: 1,
+    score: 0,
+    combo: 0,
+    shields: 3,
+    maxShields: 3,
+    step: 1,
+    puzzle: null,
+    anchors1: [],
+    anchors2: [],
+    cards: [],
+    focus: { p1: -1, p2: -1 },
+    reticle: { p1: { x: 0, y: 0 }, p2: { x: 2, y: 0 } },
+    versus: freshVersus(),
+    busy: false,
+    over: false,
+    alert: "",
+    alertOk: false,
+    toast: "",
+    toastUntil: 0,
+    staticUntil: 0,
+    penaltyUntil: 0,
+    shock: null,
+    reveal: null,
+    cardMark: null,
+    token: 0
+  };
+
+  let timer = 0;
+  const audio = { ctx: null, master: null, music: null, sfx: null, muted: false, step: 0, next: 0 };
+
+  function freshVersus() {
+    return {
+      p1: { anchors1: [], anchors2: [], shields: 3, stars: 0 },
+      p2: { anchors1: [], anchors2: [], shields: 3, stars: 0 }
+    };
+  }
+
+  function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function randChoice(list) { return list[Math.floor(Math.random() * list.length)]; }
+  function randNonZero(a, b) {
+    let n = 0;
+    let guard = 0;
+    while (n === 0 && guard++ < 20) n = randInt(a, b);
+    return n || 1;
+  }
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function gcd(a, b) {
+    a = Math.abs(Math.round(a));
+    b = Math.abs(Math.round(b));
+    if (!a && !b) return 1;
+    while (b) { const t = a % b; a = b; b = t; }
+    return a || 1;
+  }
+  function almostInt(v) { return Math.abs(v - Math.round(v)) < 1e-6; }
+  function isInt(v) { return Math.abs(v - Math.round(v)) < EPS; }
+  function near(a, b) { return Math.abs(a - b) < EPS; }
+  function round3(v) {
+    const r = Math.round(v * 1000) / 1000;
+    return Object.is(r, -0) ? 0 : r;
+  }
+  function snap(v, step) {
+    const s = step || 1;
+    return round3(Math.round(v / s) * s);
+  }
+  function reduceFrac(n, d) {
+    if (d < 0) { n = -n; d = -d; }
+    const g = gcd(n, d);
+    return { n: n / g, d: d / g };
+  }
+  function toFrac(value) {
+    const sign = value < 0 ? -1 : 1;
+    const v = Math.abs(value);
+    for (let d = 1; d <= 12; d++) {
+      const n = Math.round(v * d);
+      if (Math.abs(n / d - v) < 1e-4) return { n: sign * n, d };
+    }
+    return { n: sign * Math.round(v * 2), d: 2 };
+  }
+  function fracPlain(n, d) {
+    if (d < 0) { n = -n; d = -d; }
+    const g = gcd(n, d);
+    n /= g; d /= g;
+    if (d === 1) return String(n).replace("-", "−");
+    if (n < 0) return "−" + Math.abs(n) + "/" + d;
+    return n + "/" + d;
+  }
+  function fracHTML(n, d) {
+    if (d < 0) { n = -n; d = -d; }
+    const g = gcd(n, d);
+    n /= g; d /= g;
+    if (d === 1) return String(n).replace("-", "−");
+    const neg = n < 0;
+    const body = '<span class="fr"><i>' + Math.abs(n) + '</i><b></b><i>' + d + "</i></span>";
+    return neg ? "−" + body : body;
+  }
+  function fmtPlain(v) {
+    if (!isFinite(v) || Math.abs(v) < 1e-8) return "0";
+    if (Math.abs(v - Math.round(v)) < 1e-4) return String(Math.round(v)).replace("-", "−");
+    const f = toFrac(v);
+    return fracPlain(f.n, f.d);
+  }
+  function numberHTML(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "0";
+    if (Math.abs(value - Math.round(value)) < 1e-4) return String(Math.round(value)).replace("-", "−");
+    const f = toFrac(value);
+    return fracHTML(f.n, f.d);
+  }
+  function fmtCoord(x, y) { return "(" + fmtPlain(x) + ", " + fmtPlain(y) + ")"; }
+  function coordKey(x, y) { return round3(x) + "," + round3(y); }
+
+  function reduceEq(a, b, c) {
+    a = Math.round(a); b = Math.round(b); c = Math.round(c);
+    const g = gcd(gcd(a, b), c);
+    a /= g; b /= g; c /= g;
+    if (a < 0 || (a === 0 && b < 0)) { a = -a; b = -b; c = -c; }
+    return { a: a, b: b, c: c };
+  }
+  function onLine(eq, x, y) {
+    return Math.abs(eq.a * x + eq.b * y - eq.c) < EPS;
+  }
+  function isParallel(e1, e2) {
+    return Math.abs(e1.a * e2.b - e2.a * e1.b) < 1e-6;
+  }
+  function sameLine(e1, e2) {
+    if (!isParallel(e1, e2)) return false;
+    if (e1.a === 0 && e1.b === 0) return false;
+    const k = e1.a !== 0 ? e2.a / e1.a : e2.b / e1.b;
+    return Math.abs(e1.b * k - e2.b) < 1e-6 && Math.abs(e1.c * k - e2.c) < 1e-6;
+  }
+  function solve(e1, e2) {
+    const det = e1.a * e2.b - e2.a * e1.b;
+    if (Math.abs(det) < 1e-8) return null;
+    return {
+      x: (e1.c * e2.b - e2.c * e1.b) / det,
+      y: (e1.a * e2.c - e2.a * e1.c) / det
+    };
+  }
+  function anchors(eq, step, lo, hi) {
+    const pts = [];
+    const seen = new Set();
+    const add = (x, y) => {
+      x = snap(x, step);
+      y = snap(y, step);
+      if (x < lo - EPS || x > hi + EPS || y < lo - EPS || y > hi + EPS) return;
+      if (!onLine(eq, x, y)) return;
+      const key = coordKey(x, y);
+      if (seen.has(key)) return;
+      seen.add(key);
+      pts.push({ x: x, y: y });
+    };
+    const n = Math.round((hi - lo) / step);
+    for (let i = 0; i <= n; i++) {
+      const x = round3(lo + i * step);
+      if (eq.b !== 0) {
+        const y = (eq.c - eq.a * x) / eq.b;
+        if (Math.abs(y - snap(y, step)) < EPS) add(x, y);
+      } else if (Math.abs(eq.a * x - eq.c) < EPS) {
+        for (let j = 0; j <= n; j++) add(x, round3(lo + j * step));
+      }
+    }
+    return pts;
+  }
+  function gradientPlain(eq) {
+    if (eq.b === 0) return "undefined";
+    const f = reduceFrac(-eq.a, eq.b);
+    return fracPlain(f.n, f.d);
+  }
+  function flippedOnLine(eq, x, y) {
+    if (onLine(eq, x, y)) return false;
+    const A = eq.a, B = eq.b, C = eq.c;
+    if (Math.abs(A * x - B * y - C) < EPS) return true;
+    if (Math.abs(-A * x + B * y - C) < EPS) return true;
+    if (C !== 0 && Math.abs(A * x + B * y + C) < EPS) return true;
+    return false;
+  }
+
+  function leadingCoef(coef, v) {
+    const neg = coef < -1e-8;
+    const a = Math.abs(coef);
+    const core = Math.abs(a - 1) < 1e-8 ? v : numberHTML(a) + v;
+    return (neg ? "−" : "") + core;
+  }
+  function nextCoef(coef, v) {
+    const neg = coef < -1e-8;
+    const a = Math.abs(coef);
+    const core = Math.abs(a - 1) < 1e-8 ? v : numberHTML(a) + v;
+    return (neg ? " − " : " + ") + core;
+  }
+  function termsHTML(a, b, yFirst) {
+    const terms = yFirst ? [["y", b], ["x", a]] : [["x", a], ["y", b]];
+    let html = "";
+    let first = true;
+    for (let i = 0; i < terms.length; i++) {
+      const v = terms[i][0];
+      const coef = terms[i][1];
+      if (Math.abs(coef) < 1e-8) continue;
+      html += first ? leadingCoef(coef, v) : nextCoef(coef, v);
+      first = false;
+    }
+    return html || "0";
+  }
+  function htmlStandard(f) {
+    return termsHTML(f.a, f.b, !!f.yFirst) + " = " + numberHTML(f.c);
+  }
+  function htmlMx(n, d) {
+    const neg = n < 0;
+    n = Math.abs(n);
+    let core;
+    if (d === 1) core = n === 1 ? "x" : n + "x";
+    else if (n === 1) core = "x/" + d;
+    else core = fracHTML(n, d) + "x";
+    return (neg ? "−" : "") + core;
+  }
+  function htmlSlope(f) {
+    if (f.mn === 0) return "y = " + fracHTML(f.kn, f.kd);
+    let s = "y = " + htmlMx(f.mn, f.md);
+    if (f.kn !== 0) {
+      s += f.kn < 0 ? " − " : " + ";
+      s += fracHTML(Math.abs(f.kn), Math.abs(f.kd));
+    }
+    return s;
+  }
+  function htmlDiv(f) {
+    return "(" + termsHTML(f.a, f.b, false) + ")/" + f.d + " = " + numberHTML(f.rhs);
+  }
+  function fracVar(n, d, v, leading) {
+    if (n === 0) return "";
+    const neg = n < 0;
+    n = Math.abs(n);
+    let core;
+    if (d === 1) core = n === 1 ? v : n + v;
+    else if (n === 1) core = v + "/" + d;
+    else core = fracHTML(n, d) + v;
+    if (leading) return (neg ? "−" : "") + core;
+    return (neg ? " − " : " + ") + core;
+  }
+  function htmlTerm(f) {
+    const parts = [];
+    if (f.an !== 0) parts.push([f.an, f.ad, "x"]);
+    if (f.bn !== 0) parts.push([f.bn, f.bd, "y"]);
+    let s = "";
+    for (let i = 0; i < parts.length; i++) s += fracVar(parts[i][0], parts[i][1], parts[i][2], i === 0);
+    return s + " = " + numberHTML(f.rhs);
+  }
+  function htmlFromForm(f) {
+    if (f.type === "slope") return htmlSlope(f);
+    if (f.type === "div") return htmlDiv(f);
+    if (f.type === "term") return htmlTerm(f);
+    return htmlStandard(f);
+  }
+  function evalForm(f, x, y) {
+    if (f.type === "slope") return { lhs: y, rhs: f.m * x + f.k };
+    if (f.type === "div") return { lhs: (f.a * x + f.b * y) / f.d, rhs: f.rhs };
+    if (f.type === "term") return { lhs: (f.an / f.ad) * x + (f.bn / f.bd) * y, rhs: f.rhs };
+    return { lhs: f.a * x + f.b * y, rhs: f.c };
+  }
+  function formAgrees(geo, form) {
+    const samples = [[0, 0], [1, 0], [0, 1], [2, -1], [-2, 3], [4, 0.5], [-1.5, 2], [3, -2]];
+    for (let i = 0; i < samples.length; i++) {
+      const x = samples[i][0];
+      const y = samples[i][1];
+      const geoOn = Math.abs(geo.a * x + geo.b * y - geo.c) < 2e-3;
+      const v = evalForm(form, x, y);
+      const formOn = Math.abs(v.lhs - v.rhs) < 2e-3;
+      if (geoOn !== formOn) return false;
+    }
+    return true;
+  }
+  function trySlopeForm(src) {
+    if (src.b === 0) return null;
+    const m = reduceFrac(-src.a, src.b);
+    const k = reduceFrac(src.c, src.b);
+    if (Math.abs(m.d) > 6 || Math.abs(k.d) > 6) return null;
+    if (Math.abs(m.n) > 8 || Math.abs(k.n) > 24) return null;
+    const integer = m.d === 1 && k.d === 1;
+    return {
+      type: "slope",
+      m: m.n / m.d,
+      k: k.n / k.d,
+      mn: m.n, md: m.d, kn: k.n, kd: k.d,
+      style: integer ? "slope" : "slopefrac"
+    };
+  }
+  function tryTermForm(src) {
+    let best = null;
+    for (let t = 2; t <= 12; t++) {
+      if (src.c % t !== 0) continue;
+      const rhs = src.c / t;
+      if (rhs === 0 || Math.abs(rhs) > 6) continue;
+      const fa = reduceFrac(src.a, t);
+      const fb = reduceFrac(src.b, t);
+      if (fa.d === 1 && fb.d === 1) continue;
+      if (fa.d === fb.d) continue;
+      if (fa.d > 6 || fb.d > 6) continue;
+      if (Math.abs(fa.n) > 4 || Math.abs(fb.n) > 4) continue;
+      const score = (Math.abs(rhs) === 1 ? 6 : 2) + (Math.abs(fa.n) === 1 ? 2 : 0) + (Math.abs(fb.n) === 1 ? 2 : 0);
+      if (!best || score > best.score) {
+        best = {
+          score: score,
+          form: { type: "term", an: fa.n, ad: fa.d, bn: fb.n, bd: fb.d, rhs: rhs, style: "frac" }
+        };
+      }
+    }
+    return best ? best.form : null;
+  }
+  function tryDivForm(src) {
+    let best = null;
+    for (let d = 2; d <= 8; d++) {
+      if (src.c % d !== 0) continue;
+      if (src.a % d === 0 && src.b % d === 0) continue;
+      const rhs = src.c / d;
+      if (rhs === 0 || Math.abs(rhs) > 8) continue;
+      let score = 0;
+      if (Math.abs(rhs) <= 4) score += 4;
+      if (d <= 5) score += 3;
+      if (Math.abs(src.a) <= 4 && Math.abs(src.b) <= 4) score += 3;
+      if (Math.abs(rhs) > 6) score -= 3;
+      if (!best || score > best.score) {
+        best = { score: score, form: { type: "div", a: src.a, b: src.b, d: d, rhs: rhs, style: "frac" } };
+      }
+    }
+    return best && best.score >= 6 ? best.form : null;
+  }
+  function tryHalfForm(src) {
+    if (src.a % 2 || src.b % 2 || src.c % 2 === 0) return null;
+    return { type: "standard", a: src.a / 2, b: src.b / 2, c: src.c / 2, yFirst: false, style: "frac" };
+  }
+  function isFracForm(f) { return f.style === "frac" || f.style === "slopefrac"; }
+  function tidyForm(form) {
+    if (!form) return form;
+    if (form.type === "standard") {
+      const lead = Math.abs(form.yFirst ? form.b : form.a) > 1e-8 ? (form.yFirst ? form.b : form.a) : (form.yFirst ? form.a : form.b);
+      if (lead < 0) return { type: form.type, a: -form.a, b: -form.b, c: -form.c, yFirst: !!form.yFirst, style: form.style };
+    }
+    if (form.type === "div") {
+      const lead = Math.abs(form.a) > 1e-8 ? form.a : form.b;
+      if (lead < 0) return { type: "div", a: -form.a, b: -form.b, d: form.d, rhs: -form.rhs, style: form.style };
+    }
+    if (form.type === "term") {
+      const lead = form.an !== 0 ? form.an : form.bn;
+      if (lead < 0) return { type: "term", an: -form.an, ad: form.ad, bn: -form.bn, bd: form.bd, rhs: -form.rhs, style: form.style };
+    }
+    return form;
+  }
+  function chooseForm(geo, tier) {
+    const sources = [geo];
+    if (tier >= 3) {
+      const scales = [2, 3, 4, 5, 6, 8, 10, 12];
+      for (let i = 0; i < scales.length; i++) {
+        const k = scales[i];
+        sources.push({ a: geo.a * k, b: geo.b * k, c: geo.c * k });
+      }
+    }
+    const candidates = [];
+    for (let s = 0; s < sources.length; s++) {
+      const src = sources[s];
+      const found = [trySlopeForm(src), tryTermForm(src), tryDivForm(src), tryHalfForm(src)];
+      for (let i = 0; i < found.length; i++) {
+        if (found[i] && formAgrees(geo, found[i])) candidates.push(found[i]);
+      }
+    }
+    const std = { type: "standard", a: geo.a, b: geo.b, c: geo.c, yFirst: false, style: "standard" };
+    const yf = { type: "standard", a: geo.a, b: geo.b, c: geo.c, yFirst: true, style: "standard" };
+    candidates.push(std, yf);
+    const pool = candidates.filter(function (f) {
+      if (tier === 1) {
+        if (f.yFirst) return false;
+        if (isFracForm(f) || f.type === "div" || f.type === "term") return false;
+        if (f.type === "slope") return f.style === "slope";
+        return Math.abs(f.a) <= 2 && Math.abs(f.b) <= 2 && Math.abs(f.c) <= 20;
+      }
+      if (f.yFirst && f.b <= 0) return false;
+      if (tier === 2) return !isFracForm(f) && f.type !== "div" && f.type !== "term";
+      return true;
+    });
+    const fr = pool.filter(isFracForm);
+    let chosen = std;
+    if (tier >= 3) {
+      if (fr.length) chosen = randChoice(fr);
+      else {
+        const backup = tidyForm({ type: "div", a: geo.a, b: geo.b, d: 2, rhs: geo.c / 2, style: "frac" });
+        if (formAgrees(geo, backup)) chosen = backup;
+      }
+    } else if (tier === 1) {
+      const slopes = pool.filter(function (f) { return f.type === "slope"; });
+      chosen = slopes.length && Math.random() < 0.7 ? randChoice(slopes) : randChoice(pool.length ? pool : [std]);
+    } else if (tier === 2 && yf.b > 0 && Math.random() < 0.35) chosen = yf;
+    else chosen = randChoice(pool.length ? pool : [std]);
+    const tidy = tidyForm(chosen);
+    return formAgrees(geo, tidy) ? tidy : chosen;
+  }
+  function pack(geo, form) {
+    return {
+      a: geo.a, b: geo.b, c: geo.c,
+      form: form,
+      style: form.style,
+      html: htmlFromForm(form),
+      cleared: htmlStandard({ a: geo.a, b: geo.b, c: geo.c, yFirst: false })
+    };
+  }
+  function lhsCompare(eq, x, y) {
+    const v = evalForm(eq.form, x, y);
+    if (Math.abs(v.lhs - v.rhs) < 2e-3) return "LHS = " + fmtPlain(v.rhs) + " = RHS ✔";
+    return "LHS = " + fmtPlain(v.lhs) + " ≠ " + fmtPlain(v.rhs);
+  }
+
+  function randGrid(step) {
+    const n = Math.round(16 / step);
+    return round3(-8 + randInt(0, n) * step);
+  }
+  function pickPoint(tier) {
+    if (tier === 1) return { x: randInt(1, 6), y: randInt(1, 6) };
+    if (tier === 2) {
+      let x = randInt(0, 7);
+      let y = randInt(0, 7);
+      const roll = Math.random();
+      if (roll < 0.34) x = -randInt(1, 7);
+      else if (roll < 0.67) y = -randInt(1, 7);
+      else { x = -randInt(1, 6); y = -randInt(1, 6); }
+      if (Math.random() < 0.12) {
+        if (Math.random() < 0.5) x = 0; else y = 0;
+      }
+      if (x >= 0 && y >= 0) x = -Math.max(1, Math.abs(x));
+      return { x: x, y: y };
+    }
+    if (tier === 4 && Math.random() < 0.3) {
+      let x = randNonZero(-7, 7);
+      let y = randNonZero(-7, 7);
+      if (x > 0 && y > 0) x = -x;
+      return { x: x, y: y };
+    }
+    let x = 0;
+    let y = 0;
+    for (let i = 0; i < 12; i++) {
+      x = randInt(-12, 12) / 2;
+      y = randInt(-12, 12) / 2;
+      if (!isInt(x) || !isInt(y)) break;
+    }
+    if (isInt(x) && isInt(y)) x = snap(x + 0.5, 0.5);
+    if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) x = 2.5;
+    if (tier >= 3 && Math.random() < 0.6 && x > 0 && y > 0) {
+      if (Math.random() < 0.5) x = -x; else y = -y;
+    }
+    return { x: snap(x, 0.5), y: snap(y, 0.5) };
+  }
+  function acceptPoint(x, y, tier) {
+    if (Math.abs(x) > 8 || Math.abs(y) > 8) return false;
+    if (tier === 1) return isInt(x) && isInt(y) && x >= 1 && x <= 7 && y >= 1 && y <= 7;
+    if (tier === 2) return isInt(x) && isInt(y) && (x < 0 || y < 0);
+    if (tier === 3) return (!isInt(x) || !isInt(y)) && Math.abs(x * 2 - Math.round(x * 2)) < EPS && Math.abs(y * 2 - Math.round(y * 2)) < EPS;
+    return Math.abs(x * 2 - Math.round(x * 2)) < EPS && Math.abs(y * 2 - Math.round(y * 2)) < EPS;
+  }
+  function lineThrough(x, y, tier) {
+    const limit = tier === 1 ? 2 : tier === 2 ? 5 : 6;
+    const step = tier >= 3 ? 0.5 : 1;
+    for (let i = 0; i < 30; i++) {
+      let a;
+      let b;
+      if (tier === 1 && Math.random() < 0.6) {
+        const m = randChoice([-2, -1, 0, 1, 2, 1, -1]);
+        a = -m;
+        b = 1;
+      } else {
+        a = randInt(-limit, limit);
+        b = randInt(-limit, limit);
+        if (a === 0 && b === 0) continue;
+        if (tier === 1 && b === 0) continue;
+      }
+      const raw = a * x + b * y;
+      let A, B, C;
+      if (almostInt(raw)) { A = a; B = b; C = Math.round(raw); }
+      else if (almostInt(raw * 2)) { A = a * 2; B = b * 2; C = Math.round(raw * 2); }
+      else continue;
+      if (A === 0 && B === 0) continue;
+      const geo = reduceEq(A, B, C);
+      if (geo.a === 0 && geo.b === 0) continue;
+      if (Math.abs(geo.c) > (tier === 1 ? 22 : 70)) continue;
+      if (!onLine(geo, x, y)) continue;
+      if (anchors(geo, step, -8, 8).length < 2) continue;
+      return geo;
+    }
+    return null;
+  }
+  function makeUnique(tier) {
+    const step = tier >= 3 ? 0.5 : 1;
+    for (let attempt = 0; attempt < 90; attempt++) {
+      const pt = pickPoint(tier);
+      const g1 = lineThrough(pt.x, pt.y, tier);
+      const g2 = lineThrough(pt.x, pt.y, tier);
+      if (!g1 || !g2) continue;
+      if (isParallel(g1, g2) || sameLine(g1, g2)) continue;
+      const hit = solve(g1, g2);
+      if (!hit) continue;
+      const x = snap(hit.x, step);
+      const y = snap(hit.y, step);
+      if (!onLine(g1, x, y) || !onLine(g2, x, y)) continue;
+      if (!acceptPoint(x, y, tier)) continue;
+      if (anchors(g1, step, -8, 8).length < 2 || anchors(g2, step, -8, 8).length < 2) continue;
+      const f1 = chooseForm(g1, tier === 4 ? 3 : tier);
+      const f2 = chooseForm(g2, tier === 4 ? 3 : tier);
+      if (!formAgrees(g1, f1) || !formAgrees(g2, f2)) continue;
+      const frac = isFracForm(f1) || isFracForm(f2);
+      if (tier === 1 && frac) continue;
+      if (tier === 1) {
+        const slope = f1.type === "slope" || f2.type === "slope";
+        const simple = function (f) { return f.type === "standard" && Math.abs(f.a) <= 2 && Math.abs(f.b) <= 2; };
+        if (!slope && !(simple(f1) && simple(f2))) continue;
+      }
+      if (tier === 2 && frac) continue;
+      if ((tier === 3 || tier === 4) && !frac) continue;
+      if (tier === 4 && x >= 0 && y >= 0 && isInt(x) && isInt(y)) continue;
+      const eq1 = pack(g1, f1);
+      const eq2 = pack(g2, f2);
+      if (eq1.html === eq2.html) continue;
+      return { kind: "unique", tier: tier, step: step, x: x, y: y, eq1: eq1, eq2: eq2 };
+    }
+    return null;
+  }
+  function makeParallel() {
+    for (let i = 0; i < 140; i++) {
+      let a = randNonZero(-4, 4);
+      let b = randInt(-4, 4);
+      const g = gcd(a, b);
+      a /= g; b /= g;
+      if (a < 0 || (a === 0 && b < 0)) { a = -a; b = -b; }
+      const c1 = randInt(-6, 8);
+      const k = randChoice([2, 3, -2, 4]);
+      const c2 = randInt(-12, 12);
+      if (c2 === k * c1) continue;
+      const g1 = reduceEq(a, b, c1);
+      const g2 = reduceEq(k * a, k * b, c2);
+      if (!isParallel(g1, g2) || sameLine(g1, g2)) continue;
+      if (anchors(g1, 1, -8, 8).length < 2 || anchors(g2, 1, -8, 8).length < 2) continue;
+      const f1 = chooseForm(g1, 2);
+      const f2 = chooseForm(g2, 2);
+      if (!formAgrees(g1, f1) || !formAgrees(g2, f2)) continue;
+      const eq1 = pack(g1, f1);
+      const eq2 = pack(g2, f2);
+      if (eq1.html === eq2.html) continue;
+      return { kind: "parallel", tier: 4, step: 0.5, eq1: eq1, eq2: eq2 };
+    }
+    return null;
+  }
+  function makeCoincident() {
+    for (let i = 0; i < 100; i++) {
+      const geo = lineThrough(randInt(-4, 4), randInt(-4, 4), 2);
+      if (!geo) continue;
+      if (anchors(geo, 1, -8, 8).length < 2) continue;
+      const k = randChoice([2, 3, -2, 4, 5]);
+      let da = geo.a * k, db = geo.b * k, dc = geo.c * k;
+      if (da < 0 || (da === 0 && db < 0)) { da = -da; db = -db; dc = -dc; }
+      if (da === geo.a && db === geo.b && dc === geo.c) continue;
+      const slope = trySlopeForm(geo);
+      const form1 = slope && slope.style === "slope" ? slope : { type: "standard", a: geo.a, b: geo.b, c: geo.c, yFirst: false, style: "standard" };
+      const form2 = { type: "standard", a: da, b: db, c: dc, yFirst: Math.random() < 0.45, style: "standard" };
+      if (!formAgrees(geo, form1) || !formAgrees(geo, form2)) continue;
+      const eq1 = pack(geo, form1);
+      const eq2 = pack(geo, form2);
+      if (eq1.html === eq2.html) continue;
+      return { kind: "coincident", tier: 4, step: 0.5, eq1: eq1, eq2: eq2 };
+    }
+    return null;
+  }
+  function solve2(a1, b1, c1, a2, b2, c2) {
+    const det = a1 * b2 - a2 * b1;
+    if (det === 0) return null;
+    const x = (c1 * b2 - c2 * b1) / det;
+    const y = (a1 * c2 - a2 * c1) / det;
+    if (!almostInt(x) || !almostInt(y)) return null;
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+  function signedLeading(n, v) {
+    const neg = n < 0;
+    const a = Math.abs(n);
+    return (neg ? "−" : "") + (a === 1 ? "" : String(a)) + v;
+  }
+  function signedNext(n, v) {
+    const neg = n < 0;
+    const a = Math.abs(n);
+    return (neg ? " − " : " + ") + (a === 1 ? "" : String(a)) + v;
+  }
+  function signedBare(n, v) {
+    if (n < 0) return "−" + (Math.abs(n) === 1 ? "" : String(Math.abs(n))) + v;
+    return (n === 1 ? "" : String(n)) + v;
+  }
+  function joinLinear(c1, v1, c2, v2) {
+    const parts = [];
+    if (c1 !== 0) parts.push([c1, v1]);
+    if (c2 !== 0) parts.push([c2, v2]);
+    if (!parts.length) return "0";
+    let s = signedLeading(parts[0][0], parts[0][1]);
+    for (let i = 1; i < parts.length; i++) s += signedNext(parts[i][0], parts[i][1]);
+    return s;
+  }
+  function makeReverse() {
+    for (let i = 0; i < 280; i++) {
+      const x = randNonZero(-6, 6);
+      const y = randNonZero(-6, 6);
+      const p = randNonZero(-4, 4);
+      const q = randNonZero(-4, 4);
+      if (p === x && q === y) continue;
+      const A = randInt(1, 4);
+      const B = randInt(1, 3);
+      const C = randNonZero(-3, 3);
+      const E = randNonZero(-3, 3);
+      const numer = E * p - C * q * x;
+      if (numer % y !== 0) continue;
+      const D = numer / y;
+      if (D === 0 || Math.abs(D) > 12) continue;
+      const R = A * p * x - B * q * y;
+      if (R === 0 || Math.abs(R) > 72) continue;
+      const det = (A * x) * (C * x) - (B * y * E);
+      if (det === 0) continue;
+      const solved = solve2(A * x, -B * y, R, -E, C * x, -D * y);
+      if (!solved || solved.x !== p || solved.y !== q) continue;
+      const g1 = reduceEq(A * p, -B * q, R);
+      const g2 = reduceEq(C * q, D, E * p);
+      if ((g1.a === 0 && g1.b === 0) || (g2.a === 0 && g2.b === 0)) continue;
+      const hit = solve(g1, g2);
+      if (!hit || !near(hit.x, x) || !near(hit.y, y)) continue;
+      const f1 = chooseForm(g1, 2);
+      const f2 = chooseForm(g2, 2);
+      if (!formAgrees(g1, f1) || !formAgrees(g2, f2)) continue;
+      const qCoef = C * x;
+      const constant = D * y;
+      let direct = signedLeading(qCoef, "q");
+      direct += constant < 0 ? " − " + Math.abs(constant) : " + " + constant;
+      direct += " = " + signedBare(E, "p");
+      return {
+        kind: "reverse",
+        tier: 4,
+        step: 1,
+        x: x, y: y, p: p, q: q,
+        A: A, B: B, C: C, D: D, E: E, R: R,
+        eq1: pack(g1, f1),
+        eq2: pack(g2, f2),
+        paramHtml1: (A === 1 ? "" : A) + "px − " + (B === 1 ? "" : B) + "qy = " + String(R).replace("-", "−"),
+        paramHtml2: joinLinear(C, "qx", D, "y") + " = " + signedBare(E, "p"),
+        subHtml1: joinLinear(A * x, "p", -B * y, "q") + " = " + String(R).replace("-", "−"),
+        subHtml2: direct
+      };
+    }
+    return null;
+  }
+  function makeFallback() {
+    const x = randInt(2, 5);
+    const y = randInt(2, 5);
+    const g1 = reduceEq(-1, 1, y - x);
+    const g2 = reduceEq(1, 1, x + y);
+    const f1 = trySlopeForm(g1) || { type: "standard", a: g1.a, b: g1.b, c: g1.c, yFirst: false, style: "standard" };
+    const f2 = { type: "standard", a: g2.a, b: g2.b, c: g2.c, yFirst: false, style: "standard" };
+    return { kind: "unique", tier: 1, step: 1, x: x, y: y, eq1: pack(g1, f1), eq2: pack(g2, f2), fallback: true };
+  }
+  function puzzleKey(puz) {
+    if (puz.kind === "reverse") return "rev:" + puz.x + "," + puz.y + ":" + puz.p + "," + puz.q;
+    const a = puz.eq1.a + "," + puz.eq1.b + "," + puz.eq1.c;
+    const b = puz.eq2.a + "," + puz.eq2.b + "," + puz.eq2.c;
+    return puz.kind + ":" + [a, b].sort().join("~");
+  }
+  function seen(mem, puz) {
+    if (mem.keys.indexOf(puzzleKey(puz)) !== -1) return true;
+    if (puz.kind === "unique" && mem.sols.indexOf(coordKey(puz.x, puz.y)) !== -1) return true;
+    if (puz.kind === "reverse" && mem.sols.indexOf("pq" + puz.p + "," + puz.q) !== -1) return true;
+    return false;
+  }
+  function remember(mem, puz) {
+    mem.keys.push(puzzleKey(puz));
+    while (mem.keys.length > 6) mem.keys.shift();
+    if (puz.kind === "unique") {
+      mem.sols.push(coordKey(puz.x, puz.y));
+      while (mem.sols.length > 6) mem.sols.shift();
+    } else if (puz.kind === "reverse") {
+      mem.sols.push("pq" + puz.p + "," + puz.q);
+      while (mem.sols.length > 6) mem.sols.shift();
+    }
+  }
+  function takeMaster(mem) {
+    if (!mem.deck.length) {
+      mem.deck = shuffle(["unique", "unique", "unique", "unique", "parallel", "parallel", "coincident", "reverse", "reverse", "reverse"]);
+    }
+    return mem.deck.pop();
+  }
+  function tierName(round) {
+    if (round <= 2) return "WARM-UP";
+    if (round <= 4) return "QUADRANT OPS";
+    if (round <= 6) return "FRACTION GRID";
+    return "MASTER TACTICIAN";
+  }
+  function createPuzzle(round, mem) {
+    let tier = 1;
+    let kind = "unique";
+    if (round <= 2) tier = 1;
+    else if (round <= 4) tier = 2;
+    else if (round <= 6) tier = 3;
+    else { tier = 4; kind = takeMaster(mem); }
+    let puz = null;
+    for (let i = 0; i < 24; i++) {
+      if (kind === "parallel") puz = makeParallel();
+      else if (kind === "coincident") puz = makeCoincident();
+      else if (kind === "reverse") puz = makeReverse();
+      else puz = makeUnique(tier);
+      if (puz && !seen(mem, puz)) break;
+      puz = null;
+    }
+    if (!puz) {
+      for (let i = 0; i < 24; i++) {
+        puz = makeUnique(tier) || makeUnique(tier > 1 ? tier - 1 : 1);
+        if (puz && !seen(mem, puz)) break;
+        puz = null;
+      }
+    }
+    if (!puz) puz = makeFallback();
+    puz.tierLabel = tierName(round);
+    remember(mem, puz);
+    return puz;
+  }
+
+  function cardKey(c) {
+    if (!c) return "";
+    if (c.type === "point") return "pt:" + coordKey(c.x, c.y);
+    if (c.type === "param") return "pq:" + c.p + ":" + c.q;
+    return c.type;
+  }
+  function cardLabel(c) {
+    if (c.type === "none") return "NO INTERSECTION";
+    if (c.type === "infinite") return "INFINITE SOLUTIONS";
+    if (c.type === "param") return "(p, q) = " + fmtCoord(c.p, c.q);
+    return fmtCoord(c.x, c.y);
+  }
+  function spread(points) {
+    if (points.length <= 2) return points.slice();
+    let bi = 0, bj = 1, bd = -1;
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        const d = (points[i].x - points[j].x) ** 2 + (points[i].y - points[j].y) ** 2;
+        if (d > bd) { bd = d; bi = i; bj = j; }
+      }
+    }
+    return [points[bi], points[bj]];
+  }
+  function correctTemplate(puz) {
+    if (puz.kind === "parallel") return { type: "none", correct: true };
+    if (puz.kind === "coincident") return { type: "infinite", correct: true };
+    if (puz.kind === "reverse") return { type: "param", p: puz.p, q: puz.q, correct: true };
+    return { type: "point", x: puz.x, y: puz.y, correct: true };
+  }
+  function paramWorks(puz, p, q) {
+    const left1 = puz.A * p * puz.x - puz.B * q * puz.y;
+    const left2 = puz.C * q * puz.x + puz.D * puz.y;
+    return left1 === puz.R && left2 === puz.E * p;
+  }
+  function makePlotCards(puz, step) {
+    const eq = step === 1 ? puz.eq1 : puz.eq2;
+    let pool = anchors(eq, puz.step, -8, 8);
+    if (puz.kind === "unique") {
+      const filtered = pool.filter(function (pt) { return !near(pt.x, puz.x) || !near(pt.y, puz.y); });
+      if (filtered.length >= 2) pool = filtered;
+    }
+    const cards = spread(pool).map(function (pt) {
+      return { type: "point", x: pt.x, y: pt.y, correct: true };
+    });
+    let guard = 0;
+    while (cards.length < 4 && guard++ < 50) {
+      const x = randGrid(puz.step);
+      const y = randGrid(puz.step);
+      if (onLine(eq, x, y)) continue;
+      if (cards.some(function (c) { return c.type === "point" && near(c.x, x) && near(c.y, y); })) continue;
+      cards.push({ type: "point", x: x, y: y, correct: false });
+    }
+    return finishCards(cards, puz);
+  }
+  function makeAnswerCards(puz) {
+    const cards = [correctTemplate(puz)];
+    if (puz.kind === "unique") {
+      const traps = [];
+      const add = function (x, y) {
+        x = snap(x, puz.step);
+        y = snap(y, puz.step);
+        if (Math.abs(x) > 10 || Math.abs(y) > 10) return;
+        if (near(x, puz.x) && near(y, puz.y)) return;
+        if (traps.some(function (t) { return near(t.x, x) && near(t.y, y); })) return;
+        traps.push({ type: "point", x: x, y: y, correct: false });
+      };
+      add(puz.y, puz.x);
+      add(puz.x, -puz.y);
+      add(-puz.x, puz.y);
+      add(-puz.x, -puz.y);
+      add(puz.x + puz.step, puz.y);
+      add(puz.x, puz.y + puz.step);
+      const only1 = anchors(puz.eq1, puz.step, -8, 8).find(function (pt) { return !onLine(puz.eq2, pt.x, pt.y); });
+      const only2 = anchors(puz.eq2, puz.step, -8, 8).find(function (pt) { return !onLine(puz.eq1, pt.x, pt.y); });
+      if (only1) add(only1.x, only1.y);
+      if (only2) add(only2.x, only2.y);
+      shuffle(traps).forEach(function (t) { if (cards.length < 3) cards.push(t); });
+      if (cards.length < 4) cards.push({ type: "none", correct: false });
+      if (cards.length < 4) cards.push({ type: "infinite", correct: false });
+    } else if (puz.kind === "parallel") {
+      cards.push({ type: "infinite", correct: false });
+      const a = anchors(puz.eq1, 1, -8, 8)[0];
+      const b = anchors(puz.eq2, 1, -8, 8)[0];
+      if (a) cards.push({ type: "point", x: a.x, y: a.y, correct: false });
+      if (b && (!a || !near(a.x, b.x) || !near(a.y, b.y))) cards.push({ type: "point", x: b.x, y: b.y, correct: false });
+    } else if (puz.kind === "coincident") {
+      cards.push({ type: "none", correct: false });
+      const pts = anchors(puz.eq1, 1, -8, 8);
+      if (pts[0]) cards.push({ type: "point", x: pts[0].x, y: pts[0].y, correct: false });
+      if (pts[1]) cards.push({ type: "point", x: pts[1].x, y: pts[1].y, correct: false });
+    } else if (puz.kind === "reverse") {
+      const push = function (p, q) {
+        if (p === puz.p && q === puz.q) return;
+        if (cards.some(function (c) { return c.type === "param" && c.p === p && c.q === q; })) return;
+        if (paramWorks(puz, p, q)) return;
+        cards.push({ type: "param", p: p, q: q, correct: false });
+      };
+      push(puz.q, puz.p);
+      push(puz.p, -puz.q);
+      push(-puz.p, puz.q);
+      push(puz.p + 1, puz.q);
+      push(puz.p, puz.q + 1);
+      push(puz.x, puz.y);
+      push(-puz.p, -puz.q);
+    }
+    return finishCards(cards, puz);
+  }
+  function finishCards(cards, puz) {
+    const out = [];
+    cards.forEach(function (c) {
+      if (!out.some(function (o) { return cardKey(o) === cardKey(c); })) out.push(c);
+    });
+    if (!out.some(function (c) { return c.correct; })) out.unshift(correctTemplate(puz));
+    let n = 1;
+    while (out.length < 4 && n < 12) {
+      let filler = null;
+      if (puz.kind === "reverse") filler = { type: "param", p: puz.p + n + 1, q: puz.q - n, correct: false };
+      else if (n === 1 && puz.kind !== "parallel") filler = { type: "none", correct: false };
+      else if (n === 2 && puz.kind !== "coincident") filler = { type: "infinite", correct: false };
+      else {
+        const x = clamp(snap((puz.x || 0) + n, puz.step || 1), -8, 8);
+        const y = clamp(snap((puz.y || 1) - n, puz.step || 1), -8, 8);
+        filler = { type: "point", x: x, y: y, correct: false };
+        if (puz.kind === "unique" && near(x, puz.x) && near(y, puz.y)) filler = null;
+      }
+      if (filler && filler.type === "param" && paramWorks(puz, filler.p, filler.q)) filler = null;
+      if (filler && !out.some(function (o) { return cardKey(o) === cardKey(filler); })) out.push(filler);
+      n++;
+    }
+    while (out.length > 4) {
+      const idx = out.findIndex(function (c) { return !c.correct; });
+      if (idx < 0) break;
+      out.splice(idx, 1);
+    }
+    return shuffle(out);
+  }
+  function dealCards() {
+    const puz = state.puzzle;
+    if (!puz) return;
+    if (state.mode === "versus" || puz.kind === "reverse" || state.step === 3) state.cards = makeAnswerCards(puz);
+    else state.cards = makePlotCards(puz, state.step);
+    state.focus.p1 = -1;
+    state.focus.p2 = -1;
+    state.cardMark = null;
+  }
+
+  function ensureAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audio.ctx) {
+      const ctx = new AC();
+      audio.ctx = ctx;
+      audio.master = ctx.createGain();
+      audio.master.gain.value = 0.9;
+      audio.master.connect(ctx.destination);
+      audio.music = ctx.createGain();
+      audio.music.gain.value = audio.muted ? 0 : 0.18;
+      audio.music.connect(audio.master);
+      audio.sfx = ctx.createGain();
+      audio.sfx.gain.value = audio.muted ? 0 : 0.8;
+      audio.sfx.connect(audio.master);
+      audio.next = ctx.currentTime + 0.05;
+    }
+    if (audio.ctx.state === "suspended") audio.ctx.resume();
+  }
+  function tone(dest, opts) {
+    if (!audio.ctx || audio.muted) return;
+    const t = opts.t || audio.ctx.currentTime;
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = opts.type || "sine";
+    o.frequency.setValueAtTime(Math.max(40, opts.freq), t);
+    if (opts.freq2) o.frequency.exponentialRampToValueAtTime(Math.max(40, opts.freq2), t + opts.dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(opts.gain || 0.08, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + opts.dur);
+    o.connect(g); g.connect(dest);
+    o.start(t); o.stop(t + opts.dur + 0.03);
+  }
+  function noise(dest, t, dur, gainV, hp) {
+    if (!audio.ctx || audio.muted) return;
+    const n = Math.max(1, Math.floor(audio.ctx.sampleRate * dur));
+    const buf = audio.ctx.createBuffer(1, n, audio.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+    const src = audio.ctx.createBufferSource();
+    src.buffer = buf;
+    const g = audio.ctx.createGain();
+    g.gain.setValueAtTime(gainV, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    if (hp) {
+      const f = audio.ctx.createBiquadFilter();
+      f.type = "highpass";
+      f.frequency.value = hp;
+      src.connect(f); f.connect(g);
+    } else src.connect(g);
+    g.connect(dest);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+  function sfxTick() { tone(audio.sfx, { type: "square", freq: 880, dur: 0.03, gain: 0.03 }); }
+  function sfxPlace() { tone(audio.sfx, { type: "triangle", freq: 520, freq2: 760, dur: 0.08, gain: 0.05 }); }
+  function sfxLaser() {
+    tone(audio.sfx, { type: "sawtooth", freq: 180, freq2: 720, dur: 0.28, gain: 0.045 });
+    tone(audio.sfx, { type: "sine", freq: 540, freq2: 880, dur: 0.22, gain: 0.04 });
+  }
+  function sfxWin() {
+    tone(audio.sfx, { type: "sine", freq: 523, dur: 0.18, gain: 0.07 });
+    tone(audio.sfx, { type: "sine", freq: 659, dur: 0.2, gain: 0.06, t: audio.ctx && audio.ctx.currentTime + 0.08 });
+    tone(audio.sfx, { type: "sine", freq: 784, dur: 0.28, gain: 0.06, t: audio.ctx && audio.ctx.currentTime + 0.16 });
+    tone(audio.sfx, { type: "sine", freq: 120, freq2: 42, dur: 0.4, gain: 0.1 });
+    if (audio.ctx) noise(audio.sfx, audio.ctx.currentTime, 0.22, 0.08, 0);
+  }
+  function sfxBad() {
+    if (audio.ctx) noise(audio.sfx, audio.ctx.currentTime, 0.22, 0.12, 400);
+    tone(audio.sfx, { type: "sawtooth", freq: 90, freq2: 50, dur: 0.2, gain: 0.05 });
+  }
+  const BASS = [110, 0, 110, 130.81, 98, 0, 146.83, 110, 110, 0, 164.81, 130.81, 98, 0, 146.83, 82.41];
+  const ARP = [440, 523.25, 659.25, 783.99, 659.25, 523.25, 440, 392];
+  function musicTick() {
+    if (!audio.ctx || audio.muted) return;
+    const look = 0.25;
+    const spb = 60 / 104 / 2;
+    while (audio.next < audio.ctx.currentTime + look) {
+      const i = audio.step % 16;
+      const t = audio.next;
+      if (i % 4 === 0) tone(audio.music, { type: "sine", freq: 150, freq2: 48, dur: 0.12, gain: 0.5, t: t });
+      if (i % 8 === 4) noise(audio.music, t, 0.08, 0.12, 800);
+      if (i % 2 === 0) noise(audio.music, t, 0.03, i % 4 === 0 ? 0.05 : 0.025, 4000);
+      if (BASS[i]) tone(audio.music, { type: "square", freq: BASS[i], dur: 0.16, gain: 0.08, t: t });
+      if (i % 2 === 1) tone(audio.music, { type: "triangle", freq: ARP[(i >> 1) % ARP.length], dur: 0.12, gain: 0.035, t: t });
+      if (i === 0) tone(audio.music, { type: "sine", freq: 1320, freq2: 660, dur: 0.35, gain: 0.04, t: t });
+      audio.next += spb;
+      audio.step = (audio.step + 1) % 16;
+    }
+  }
+  function setMuted(flag) {
+    audio.muted = flag;
+    try { localStorage.setItem("vector-intercept-mute", flag ? "1" : "0"); } catch (err) { /* ignore */ }
+    if (audio.music) audio.music.gain.value = flag ? 0 : 0.18;
+    if (audio.sfx) audio.sfx.gain.value = flag ? 0 : 0.8;
+    const btn = document.getElementById("mute");
+    btn.dataset.muted = flag ? "1" : "0";
+    btn.setAttribute("aria-pressed", flag ? "true" : "false");
+    btn.textContent = flag ? "SOUND OFF" : "MUTE";
+  }
+
+  function owner(step) {
+    if (state.mode !== "coop") return "any";
+    if (!state.puzzle || state.puzzle.kind === "reverse" || step === 3) return "any";
+    const p1First = state.round % 2 === 1;
+    if (step === 1) return p1First ? "p1" : "p2";
+    return p1First ? "p2" : "p1";
+  }
+  function mousePlayer() {
+    if (state.mode !== "coop") return "p1";
+    const need = owner(state.step);
+    return need === "any" ? "p1" : need;
+  }
+  function playerStep(player) {
+    const puz = state.puzzle;
+    if (!puz) return 1;
+    if (puz.kind === "reverse") return 3;
+    if (state.mode === "versus") {
+      const p = state.versus[player];
+      if (p.anchors1.length < 2) return 1;
+      if (p.anchors2.length < 2) return 2;
+      return 3;
+    }
+    return state.step;
+  }
+  function anchorList(player, step) {
+    if (state.mode === "versus") {
+      const p = state.versus[player];
+      return step === 1 ? p.anchors1 : p.anchors2;
+    }
+    return step === 1 ? state.anchors1 : state.anchors2;
+  }
+  function readyToLock(player) {
+    if (!state.puzzle) return false;
+    if (state.puzzle.kind === "reverse") return true;
+    if (state.mode === "versus") {
+      const p = state.versus[player];
+      return p.anchors1.length >= 2 && p.anchors2.length >= 2;
+    }
+    return state.step === 3;
+  }
+  function canInput() {
+    return state.screen === "play" && !state.busy && !state.over && performance.now() >= state.penaltyUntil;
+  }
+  function nudgeReticles() {
+    const puz = state.puzzle;
+    ["p1", "p2"].forEach(function (id) {
+      const r = state.reticle[id];
+      r.x = snap(r.x, puz.step);
+      r.y = snap(r.y, puz.step);
+      r.x = clamp(r.x, -10, 10);
+      r.y = clamp(r.y, -10, 10);
+      if (puz.kind === "unique" && near(r.x, puz.x) && near(r.y, puz.y)) {
+        r.x = clamp(snap(r.x + puz.step, puz.step), -10, 10);
+      }
+    });
+  }
+  function later(fn, ms) {
+    const my = ++state.token;
+    clearTimeout(timer);
+    timer = setTimeout(function () { if (my === state.token) fn(); }, ms);
+  }
+  function toast(text) {
+    state.toast = text;
+    state.toastUntil = performance.now() + 1300;
+  }
+  function setAlert(text, ok) {
+    state.alert = text;
+    state.alertOk = !!ok;
+    const el = document.getElementById("alert");
+    el.className = text ? (ok ? "show ok" : "show bad") : "";
+    el.textContent = text || "";
+    document.getElementById("live").textContent = text || "";
+  }
+  function beginRound() {
+    state.step = 1;
+    state.anchors1 = [];
+    state.anchors2 = [];
+    state.versus.p1.anchors1 = [];
+    state.versus.p1.anchors2 = [];
+    state.versus.p2.anchors1 = [];
+    state.versus.p2.anchors2 = [];
+    state.puzzle = createPuzzle(state.round, memory);
+    if (state.puzzle.kind === "reverse") state.step = 3;
+    state.reveal = null;
+    state.shock = null;
+    state.busy = false;
+    nudgeReticles();
+    dealCards();
+    setAlert("", false);
+    renderAll();
+  }
+  function startGame(mode) {
+    ensureAudio();
+    state.screen = "play";
+    state.mode = mode;
+    state.round = 1;
+    state.score = 0;
+    state.combo = 0;
+    state.maxShields = mode === "coop" ? 4 : 3;
+    state.shields = state.maxShields;
+    state.versus = freshVersus();
+    state.reticle.p1 = { x: 0, y: 0 };
+    state.reticle.p2 = { x: 2, y: 0 };
+    state.over = false;
+    state.busy = false;
+    document.body.dataset.screen = "play";
+    document.getElementById("overlay").classList.remove("show");
+    beginRound();
+  }
+  function showMenu() {
+    state.token++;
+    clearTimeout(timer);
+    state.screen = "title";
+    state.over = false;
+    state.busy = false;
+    document.body.dataset.screen = "title";
+    document.getElementById("overlay").classList.remove("show");
+  }
+  function endMatch(reason) {
+    state.over = true;
+    state.busy = true;
+    const title = document.getElementById("over-title");
+    const body = document.getElementById("over-body");
+    if (state.mode === "versus") {
+      const a = state.versus.p1.stars;
+      const b = state.versus.p2.stars;
+      title.textContent = a === b ? "DUEL DRAWN" : (a > b ? "P1 TAKES THE RADAR" : "P2 TAKES THE RADAR");
+      body.textContent = "Stars  P1 " + a + "  ·  P2 " + b + ". " + (reason || "");
+    } else if (state.mode === "coop") {
+      title.textContent = "TEAM RADAR OFFLINE";
+      body.textContent = "Rounds cleared: " + Math.max(0, state.round - 1) + ". Team score " + state.score + ".";
+    } else {
+      title.textContent = "RADAR OFFLINE";
+      body.textContent = "Rounds cleared: " + Math.max(0, state.round - 1) + ". Solo score " + state.score + ".";
+    }
+    document.getElementById("overlay").classList.add("show");
+    renderAll();
+  }
+  function damage(player) {
+    if (state.mode === "versus") {
+      const p = state.versus[player];
+      p.shields -= 1;
+      if (p.shields <= 0) endMatch((player === "p1" ? "P1" : "P2") + " lost the last shield.");
+    } else {
+      state.shields -= 1;
+      if (state.shields <= 0) endMatch("Shields depleted.");
+    }
+  }
+  function succeed(player) {
+    const puz = state.puzzle;
+    state.busy = true;
+    state.reveal = puz.kind === "unique" || puz.kind === "reverse" ? { x: puz.x, y: puz.y } : null;
+    const anchor = state.mode === "versus" ? state.versus[player].anchors1[0] : state.anchors1[0];
+    const sx = state.reveal ? state.reveal.x : (anchor ? anchor.x : 0);
+    const sy = state.reveal ? state.reveal.y : (anchor ? anchor.y : 0);
+    state.shock = { x: sx, y: sy, t: performance.now() };
+    sfxWin();
+    if (state.mode === "versus") {
+      state.versus[player].stars += 1;
+      toast((player === "p1" ? "P1" : "P2") + " ACE STAR");
+      setAlert(successText(), true);
+      renderAll();
+      later(function () { state.round += 1; beginRound(); }, 1550);
+      return;
+    }
+    state.combo += 1;
+    const gain = 350 + (state.combo - 1) * 50;
+    state.score += gain;
+    let extra = "";
+    if (state.combo % 3 === 0 && state.shields < state.maxShields) {
+      state.shields += 1;
+      extra = " Shield restored.";
+    }
+    toast("INTERCEPT LOCKED +" + gain);
+    setAlert(successText() + extra, true);
+    renderAll();
+    later(function () { state.round += 1; beginRound(); }, 1650);
+  }
+  function successText() {
+    const p = state.puzzle;
+    if (p.kind === "unique") {
+      return "Intercept " + fmtCoord(p.x, p.y) + " verified. Beam 1: " + lhsCompare(p.eq1, p.x, p.y) + ". Beam 2: " + lhsCompare(p.eq2, p.x, p.y) + ".";
+    }
+    if (p.kind === "parallel") return "No intersection. Both gradients are " + gradientPlain(p.eq1) + ", and the intercepts differ. 0 solutions.";
+    if (p.kind === "coincident") return "Infinite solutions. Beam 2 is a multiple of Beam 1, so every point on the beam works.";
+    return "Parameters recovered (p, q) = " + fmtCoord(p.p, p.q) + ". Both parametric beams balance at " + fmtCoord(p.x, p.y) + ".";
+  }
+  function diagnose(card) {
+    const p = state.puzzle;
+    if (p.kind === "parallel") {
+      return "Both lines have the exact same gradient! Parallel laser beams never cross -> 0 Solutions! Gradients m₁ = " + gradientPlain(p.eq1) + " and m₂ = " + gradientPlain(p.eq2) + ".";
+    }
+    if (p.kind === "coincident") {
+      if (card.type === "point") {
+        return "These equations are multiples of each other, so the beams are the same line. Every point on the beam is a solution: Infinite Solutions. " + lhsCompare(p.eq1, card.x, card.y) + ".";
+      }
+      return "The equations are multiples of each other. The beams coincide, so there are Infinite Solutions, not zero.";
+    }
+    if (p.kind === "reverse") {
+      if (card.type === "param" && card.p === p.q && card.q === p.p && p.p !== p.q) {
+        return "Check parameter order! Solve for p first, then q: (p, q) = " + fmtCoord(p.p, p.q) + "!";
+      }
+      if (card.type === "param" && card.p === p.x && card.q === p.y) {
+        return "That pair is the known intercept " + fmtCoord(p.x, p.y) + ", not (p, q). Substitute the intercept into both beams.";
+      }
+      if (card.type === "param") {
+        const lhs1 = p.A * card.p * p.x - p.B * card.q * p.y;
+        const lhs2 = p.C * card.q * p.x + p.D * p.y;
+        return "Test your parameters in both equations. Beam 1 gives " + fmtPlain(lhs1) + " ≠ " + fmtPlain(p.R) + " or the second beam gives " + fmtPlain(lhs2) + " compared with " + fmtPlain(p.E * card.p) + ".";
+      }
+      return "Choose a parameter pair (p, q). The gold marker is the known intercept " + fmtCoord(p.x, p.y) + ".";
+    }
+    if (card.type === "none") {
+      return "These beams have different gradients (m₁ = " + gradientPlain(p.eq1) + ", m₂ = " + gradientPlain(p.eq2) + "), so they cross exactly once.";
+    }
+    if (card.type === "infinite") {
+      return "The equations are not multiples of each other. There is one intersection, not a whole line of solutions.";
+    }
+    const swap = !near(p.x, p.y) && near(card.x, p.y) && near(card.y, p.x);
+    const detail = "Beam 1: " + lhsCompare(p.eq1, card.x, card.y) + ". Beam 2: " + lhsCompare(p.eq2, card.x, card.y) + ".";
+    if (swap) {
+      return "Check coordinate order! Read the horizontal x-axis first, then the vertical y-axis: (x, y) = " + fmtCoord(p.x, p.y) + "! " + detail;
+    }
+    return "Test your point in the equation! Plugging x and y into BOTH equations must make Left-Hand Side = Right-Hand Side! " + detail;
+  }
+  function fail(player, message) {
+    if (state.busy || state.over) return;
+    state.combo = 0;
+    state.staticUntil = performance.now() + 420;
+    state.penaltyUntil = performance.now() + 480;
+    board.classList.remove("shake");
+    void board.offsetWidth;
+    board.classList.add("shake");
+    sfxBad();
+    setAlert(message, false);
+    toast("SHIELD −1");
+    damage(player);
+    renderAll();
+  }
+  function tryPlace(player, step, x, y) {
+    const puz = state.puzzle;
+    const eq = step === 1 ? puz.eq1 : puz.eq2;
+    const list = anchorList(player, step);
+    x = snap(x, puz.step);
+    y = snap(y, puz.step);
+    if (Math.abs(x) > 10 || Math.abs(y) > 10) return;
+    if (list.some(function (pt) { return near(pt.x, x) && near(pt.y, y); })) {
+      toast("Anchor already set.");
+      return;
+    }
+    if (!onLine(eq, x, y)) {
+      const banner = lhsCompare(eq, x, y);
+      const msg = flippedOnLine(eq, x, y)
+        ? banner + ". Test your point in the equation! Plugging x and y into BOTH equations must make Left-Hand Side = Right-Hand Side!"
+        : banner + ". That grid point is not on this beam.";
+      fail(player, msg);
+      return;
+    }
+    list.push({ x: x, y: y });
+    sfxPlace();
+    if (list.length >= 2) {
+      sfxLaser();
+      toast(step === 1 ? "CYAN BEAM ONLINE" : "MAGENTA BEAM ONLINE");
+      if (state.mode !== "versus") {
+        state.step = Math.min(3, step + 1);
+        dealCards();
+      }
+    } else {
+      toast("Anchor set. One more point.");
+    }
+    renderAll();
+  }
+  function submitAnswer(player, card) {
+    const puz = state.puzzle;
+    let ok = false;
+    if (puz.kind === "unique") ok = card.type === "point" && near(card.x, puz.x) && near(card.y, puz.y);
+    else if (puz.kind === "parallel") ok = card.type === "none";
+    else if (puz.kind === "coincident") ok = card.type === "infinite";
+    else if (puz.kind === "reverse") ok = card.type === "param" && card.p === puz.p && card.q === puz.q;
+    const idx = state.cards.findIndex(function (c) { return cardKey(c) === cardKey(card); });
+    state.cardMark = { index: idx, ok: ok, until: performance.now() + 700 };
+    if (ok) succeed(player);
+    else fail(player, diagnose(card));
+  }
+  function gatePlayer(player) {
+    if (state.mode === "versus" && state.versus[player].shields <= 0) return false;
+    if (state.mode === "coop") {
+      const need = owner(playerStep(player));
+      if (need !== "any" && need !== player) {
+        toast((need === "p1" ? "P1 RED" : "P2 BLUE") + " plots this beam.");
+        return false;
+      }
+    }
+    return true;
+  }
+  function confirmReticle(player, fromGrid) {
+    if (!canInput() || !gatePlayer(player)) return;
+    const puz = state.puzzle;
+    if (puz.kind === "reverse") {
+      if (fromGrid) {
+        setAlert("The gold marker is the known intercept " + fmtCoord(puz.x, puz.y) + ". Choose a (p, q) card — keys 1–4, or LB/RB then X.", false);
+        return;
+      }
+      if (state.focus[player] < 0) {
+        setAlert("Highlight a (p, q) card with Q and E, or press 1–4.", false);
+        return;
+      }
+      activateCard(player, state.focus[player]);
+      return;
+    }
+    const step = playerStep(player);
+    const r = state.reticle[player];
+    if (step < 3) tryPlace(player, step, r.x, r.y);
+    else if (!readyToLock(player)) toast("Plot both beams before you lock.");
+    else submitAnswer(player, { type: "point", x: r.x, y: r.y });
+  }
+  function activateCard(player, index) {
+    if (!canInput() || !gatePlayer(player)) return;
+    const card = state.cards[index];
+    if (!card) return;
+    if (state.mode === "versus") {
+      if (state.puzzle.kind !== "reverse" && !readyToLock(player)) {
+        toast("Plot both beams on the radar before you lock a card.");
+        return;
+      }
+      submitAnswer(player, card);
+      return;
+    }
+    const step = playerStep(player);
+    if (step < 3) {
+      if (card.type !== "point") {
+        toast("Special cases unlock after both beams are plotted.");
+        return;
+      }
+      if (card.correct === false && !onLine(step === 1 ? state.puzzle.eq1 : state.puzzle.eq2, card.x, card.y)) {
+        tryPlace(player, step, card.x, card.y);
+        return;
+      }
+      tryPlace(player, step, card.x, card.y);
+      return;
+    }
+    submitAnswer(player, card);
+  }
+  function moveReticle(player, dx, dy) {
+    if (state.screen !== "play" || state.over || !state.puzzle) return;
+    const step = state.puzzle.step;
+    const r = state.reticle[player];
+    const nx = clamp(snap(r.x + dx * step, step), -10, 10);
+    const ny = clamp(snap(r.y + dy * step, step), -10, 10);
+    if (nx === r.x && ny === r.y) return;
+    r.x = nx;
+    r.y = ny;
+    sfxTick();
+    paintCoord();
+  }
+  function cycleFocus(player, dir) {
+    const n = state.cards.length || 1;
+    if (state.focus[player] < 0) state.focus[player] = dir > 0 ? 0 : n - 1;
+    else state.focus[player] = (state.focus[player] + dir + n) % n;
+    renderCards();
+  }
+  function teamActor() {
+    if (state.mode !== "coop") return "p1";
+    const need = owner(state.step);
+    return need === "any" ? "p1" : need;
+  }
+
+  function pointFromEvent(e, player) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const x = (sx - view.originX) / view.scale;
+    const y = (view.originY - sy) / view.scale;
+    const step = state.puzzle ? state.puzzle.step : 1;
+    const r = state.reticle[player];
+    const nx = clamp(snap(x, step), -10, 10);
+    const ny = clamp(snap(y, step), -10, 10);
+    if (nx !== r.x || ny !== r.y) {
+      r.x = nx;
+      r.y = ny;
+      sfxTick();
+      paintCoord();
+    }
+  }
+
+  function worldToScreen(x, y) {
+    return [view.originX + x * view.scale, view.originY - y * view.scale];
+  }
+  function lineHits(eq) {
+    const lim = 10;
+    const pts = [];
+    const push = function (x, y) {
+      if (x < -lim - EPS || x > lim + EPS || y < -lim - EPS || y > lim + EPS) return;
+      x = clamp(x, -lim, lim);
+      y = clamp(y, -lim, lim);
+      if (pts.some(function (p) { return Math.abs(p.x - x) < 1e-3 && Math.abs(p.y - y) < 1e-3; })) return;
+      pts.push({ x: x, y: y });
+    };
+    if (Math.abs(eq.b) > 1e-8) {
+      push(-lim, (eq.c - eq.a * -lim) / eq.b);
+      push(lim, (eq.c - eq.a * lim) / eq.b);
+    }
+    if (Math.abs(eq.a) > 1e-8) {
+      push((eq.c - eq.b * -lim) / eq.a, -lim);
+      push((eq.c - eq.b * lim) / eq.a, lim);
+    }
+    return pts;
+  }
+  function beamOn(which) {
+    const puz = state.puzzle;
+    if (!puz) return false;
+    if (puz.kind === "reverse") return true;
+    if (state.mode === "versus") {
+      return ["p1", "p2"].some(function (id) {
+        const p = state.versus[id];
+        return (which === 1 ? p.anchors1 : p.anchors2).length >= 2;
+      });
+    }
+    return (which === 1 ? state.anchors1 : state.anchors2).length >= 2;
+  }
+  function measure() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.max(1, Math.round(rect.width * dpr));
+    const bh = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    view.w = rect.width;
+    view.h = rect.height;
+    const pad = 36;
+    const side = Math.max(80, Math.min(view.w, view.h) - pad * 2);
+    view.scale = side / 20;
+    view.originX = view.w / 2;
+    view.originY = view.h / 2;
+  }
+  function draw(now) {
+    measure();
+    const w = view.w;
+    const h = view.h;
+    ctx.clearRect(0, 0, w, h);
+    const g = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h) * 0.6);
+    g.addColorStop(0, "#0a1424");
+    g.addColorStop(1, "#04070f");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    const step = state.puzzle ? state.puzzle.step : 1;
+    ctx.save();
+    ctx.beginPath();
+    const left = worldToScreen(-10, 10);
+    const right = worldToScreen(10, -10);
+    ctx.rect(left[0], left[1], right[0] - left[0], right[1] - left[1]);
+    ctx.clip();
+    if (step < 1) {
+      ctx.strokeStyle = "rgba(120, 210, 230, 0.2)";
+      ctx.lineWidth = 1;
+      for (let v = -10; v <= 10; v += 0.5) {
+        if (Math.abs(v - Math.round(v)) < EPS) continue;
+        const a = worldToScreen(v, -10);
+        const b = worldToScreen(v, 10);
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        const c = worldToScreen(-10, v);
+        const d = worldToScreen(10, v);
+        ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
+      }
+    } else if (step === 0.5) {
+      ctx.strokeStyle = "rgba(80, 170, 190, 0.1)";
+      ctx.lineWidth = 1;
+      for (let v = -10; v <= 10; v += 0.5) {
+        if (isInt(v)) continue;
+        strokeGrid(v);
+      }
+    }
+    ctx.strokeStyle = "rgba(120, 190, 210, 0.22)";
+    ctx.lineWidth = 1;
+    for (let v = -10; v <= 10; v++) strokeGrid(v);
+    ctx.restore();
+    drawAxes();
+    if (state.puzzle) {
+      if (beamOn(1)) drawBeam(state.puzzle.eq1, "#39e7ff", false);
+      if (beamOn(2)) drawBeam(state.puzzle.eq2, "#ff3ec9", state.puzzle.kind === "coincident");
+      drawAnchorLayer();
+      if (state.puzzle.kind === "reverse") drawKnown(state.puzzle.x, state.puzzle.y);
+      if (state.reveal) drawKnown(state.reveal.x, state.reveal.y);
+      if (state.shock) drawShock(now);
+    }
+    drawPlayers();
+    if (now < state.staticUntil) drawStatic();
+    drawToast(now);
+  }
+  function strokeGrid(v) {
+    ctx.beginPath();
+    const a = worldToScreen(v, -10);
+    const b = worldToScreen(v, 10);
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+    ctx.beginPath();
+    const c = worldToScreen(-10, v);
+    const d = worldToScreen(10, v);
+    ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]);
+    ctx.stroke();
+  }
+  function drawAxes() {
+    ctx.strokeStyle = "rgba(230, 246, 255, 0.9)";
+    ctx.lineWidth = 1.6;
+    const x0 = worldToScreen(-10, 0);
+    const x1 = worldToScreen(10, 0);
+    const y0 = worldToScreen(0, -10);
+    const y1 = worldToScreen(0, 10);
+    ctx.beginPath();
+    ctx.moveTo(x0[0], x0[1]); ctx.lineTo(x1[0], x1[1]);
+    ctx.moveTo(y0[0], y0[1]); ctx.lineTo(y1[0], y1[1]);
+    ctx.stroke();
+    ctx.fillStyle = "#d5e7f2";
+    ctx.font = "12px ui-monospace, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    const labelStep = view.scale < 18 ? 2 : 1;
+    for (let v = -10; v <= 10; v += labelStep) {
+      if (v === 0) continue;
+      const p = worldToScreen(v, 0);
+      haloText(String(v), p[0], p[1] + 4);
+      const q = worldToScreen(0, v);
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      haloText(String(v), q[0] - 6, q[1]);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+    }
+    const o = worldToScreen(0, 0);
+    ctx.textAlign = "left";
+    haloText("0", o[0] + 4, o[1] + 4);
+    ctx.fillStyle = "#ffc857";
+    ctx.beginPath();
+    ctx.arc(o[0], o[1], 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function haloText(text, x, y) {
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(4, 7, 15, 0.85)";
+    ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
+  }
+  function drawBeam(eq, color, dashed) {
+    const pts = lineHits(eq);
+    if (pts.length < 2) return;
+    const a = worldToScreen(pts[0].x, pts[0].y);
+    const b = worldToScreen(pts[1].x, pts[1].y);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.28;
+    ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 2.2;
+    if (dashed) ctx.setLineDash([8, 7]);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.restore();
+  }
+  function drawNode(x, y, fill, ring) {
+    const p = worldToScreen(x, y);
+    ctx.beginPath();
+    ctx.fillStyle = fill;
+    ctx.arc(p[0], p[1], 5, 0, Math.PI * 2);
+    ctx.fill();
+    if (ring) {
+      ctx.strokeStyle = ring;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+  function drawAnchorLayer() {
+    const paint = function (list, fill, ring) {
+      list.forEach(function (pt) { drawNode(pt.x, pt.y, fill, ring); });
+    };
+    if (state.mode === "versus") {
+      paint(state.versus.p1.anchors1, "#39e7ff", "#ff4d6d");
+      paint(state.versus.p1.anchors2, "#ff3ec9", "#ff4d6d");
+      paint(state.versus.p2.anchors1, "#39e7ff", "#4aa3ff");
+      paint(state.versus.p2.anchors2, "#ff3ec9", "#4aa3ff");
+    } else {
+      paint(state.anchors1, "#39e7ff", "#e7f6ff");
+      paint(state.anchors2, "#ff3ec9", "#e7f6ff");
+    }
+  }
+  function drawKnown(x, y) {
+    const p = worldToScreen(x, y);
+    const pulse = 8 + Math.sin(performance.now() / 180) * 3;
+    ctx.strokeStyle = "#ffc857";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "#ffc857";
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function drawShock(now) {
+    const age = (now - state.shock.t) / 1000;
+    if (age > 1.3) return;
+    const p = worldToScreen(state.shock.x, state.shock.y);
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+      const r = 8 + age * 90 + i * 16;
+      ctx.globalAlpha = Math.max(0, 0.7 - age - i * 0.15);
+      ctx.strokeStyle = "#ffc857";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawPlayers() {
+    if (state.mode === "solo") drawReticle(state.reticle.p1, "#ffc857", "SOLO", false);
+    else {
+      drawReticle(state.reticle.p1, "#ff4d6d", "P1", false);
+      drawReticle(state.reticle.p2, "#4aa3ff", "P2", true);
+    }
+  }
+  function drawReticle(pt, color, tag, below) {
+    const p = worldToScreen(pt.x, pt.y);
+    const r = 11;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+    ctx.moveTo(p[0] - r - 7, p[1]); ctx.lineTo(p[0] - 3, p[1]);
+    ctx.moveTo(p[0] + 3, p[1]); ctx.lineTo(p[0] + r + 7, p[1]);
+    ctx.moveTo(p[0], p[1] - r - 7); ctx.lineTo(p[0], p[1] - 3);
+    ctx.moveTo(p[0], p[1] + 3); ctx.lineTo(p[0], p[1] + r + 7);
+    ctx.stroke();
+    const label = tag + " " + fmtCoord(pt.x, pt.y);
+    ctx.font = "700 12px ui-monospace, Menlo, monospace";
+    const flip = p[0] > view.w - 120;
+    ctx.textAlign = flip ? "right" : "left";
+    ctx.textBaseline = below ? "top" : "bottom";
+    ctx.fillStyle = color;
+    haloText(label, flip ? p[0] - 16 : p[0] + 16, below ? p[1] + 16 : p[1] - 20);
+  }
+  function drawStatic() {
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    for (let i = 0; i < 70; i++) {
+      ctx.fillStyle = Math.random() < 0.5 ? "#ff4d6a" : "#ffffff";
+      ctx.fillRect(Math.random() * view.w, Math.random() * view.h, 3, 2);
+    }
+    ctx.restore();
+  }
+  function drawToast(now) {
+    if (state.over || !state.toast || now > state.toastUntil) return;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (state.toastUntil - now) / 300);
+    ctx.font = "700 13px Avenir Next, Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#e7f6ff";
+    haloText(state.toast, view.w / 2, 12);
+    ctx.restore();
+  }
+
+  function pips(n, max, cls) {
+    let s = '<span class="pips">';
+    for (let i = 0; i < max; i++) s += '<i class="' + (i < n ? "on " + (cls || "") : "") + '"></i>';
+    return s + "</span>";
+  }
+  function renderHUD() {
+    const host = document.getElementById("hud-stats");
+    if (state.screen !== "play") { host.innerHTML = ""; return; }
+    const puz = state.puzzle;
+    const round = "R" + state.round + " · " + (puz ? puz.tierLabel : "");
+    let html = "";
+    if (state.mode === "versus") {
+      html += stat("MODE", "2P VERSUS");
+      html += stat("ROUND", round);
+      html += '<div class="stat">P1 SHIELDS' + pips(state.versus.p1.shields, 3, "p1") + "</div>";
+      html += stat("P1 STARS", '<span class="star">★ ' + state.versus.p1.stars + "</span>");
+      html += '<div class="stat">P2 SHIELDS' + pips(state.versus.p2.shields, 3, "p2") + "</div>";
+      html += stat("P2 STARS", '<span class="star">★ ' + state.versus.p2.stars + "</span>");
+    } else if (state.mode === "coop") {
+      html += stat("MODE", "2P CO-OP TEAM");
+      html += stat("ROUND", round);
+      html += '<div class="stat">TEAM SHIELDS' + pips(state.shields, state.maxShields, "") + "</div>";
+      html += stat("TEAM COMBO", "×" + state.combo);
+      html += stat("TEAM SCORE", String(state.score));
+    } else {
+      html += stat("MODE", "SOLO TACTICIAN");
+      html += stat("ROUND", round);
+      html += '<div class="stat">RADAR SHIELDS' + pips(state.shields, state.maxShields, "") + "</div>";
+      html += stat("COMBO", "×" + state.combo);
+      html += stat("SOLO SCORE", String(state.score));
+    }
+    host.innerHTML = html;
+  }
+  function stat(k, v) { return '<div class="stat">' + k + "<b>" + v + "</b></div>"; }
+  function eqBlock(eq, label, cls, live) {
+    const showCleared = eq.html !== eq.cleared && (eq.style === "frac" || eq.style === "slopefrac");
+    return '<div class="eq ' + cls + (live ? " live" : "") + '"><div class="tag">' + label + "</div><div class=\"math\">" + eq.html + "</div>" +
+      (showCleared ? '<div class="cleared">Cleared form: ' + eq.cleared + "</div>" : "") + "</div>";
+  }
+  function renderConsole() {
+    const puz = state.puzzle;
+    if (!puz) return;
+    const step = state.mode === "versus" ? 0 : state.step;
+    const kicker = document.getElementById("kicker");
+    const mission = document.getElementById("mission");
+    const objective = document.getElementById("objective");
+    const turn = document.getElementById("turnline");
+    if (puz.kind === "reverse") {
+      kicker.textContent = "REVERSE PARAMETER WAVE";
+      mission.textContent = "RECOVER (p, q)";
+      objective.textContent = "The gold marker is the known intercept " + fmtCoord(puz.x, puz.y) + ". Substitute it into both parametric beams, then lock (p, q).";
+    } else if (state.mode === "versus") {
+      kicker.textContent = "VERSUS TRIANGULATION";
+      mission.textContent = "PLOT AND LOCK";
+      objective.textContent = "Each operator plots two points on Beam 1 and two on Beam 2, then locks the true intercept. First correct lock takes the star.";
+    } else if (state.step === 1) {
+      kicker.textContent = "STEP 1 OF 3";
+      mission.textContent = "PLOT BEAM 1";
+      objective.textContent = "Place two lattice points that satisfy the cyan equation. The laser then cuts across the radar.";
+    } else if (state.step === 2) {
+      kicker.textContent = "STEP 2 OF 3";
+      mission.textContent = "PLOT BEAM 2";
+      objective.textContent = "Place two lattice points that satisfy the magenta equation.";
+    } else if (puz.kind === "parallel") {
+      kicker.textContent = "STEP 3 OF 3";
+      mission.textContent = "READ THE BEAMS";
+      objective.textContent = "Compare the gradients. If they match and the lines are distinct, lock NO INTERSECTION.";
+    } else if (puz.kind === "coincident") {
+      kicker.textContent = "STEP 3 OF 3";
+      mission.textContent = "READ THE BEAMS";
+      objective.textContent = "If one equation is a multiple of the other, the beams are the same line. Lock INFINITE SOLUTIONS.";
+    } else {
+      kicker.textContent = "STEP 3 OF 3";
+      mission.textContent = "LOCK INTERCEPT";
+      objective.textContent = "Steer onto the exact crossing and lock (x, y). Read the horizontal axis first.";
+    }
+    const who = owner(state.step);
+    if (state.mode === "coop" && puz.kind !== "reverse") {
+      if (who === "any") turn.textContent = "Either operator can lock the intercept.";
+      else turn.textContent = (who === "p1" ? "P1 RED" : "P2 BLUE") + " has this beam. You swap next round.";
+    } else turn.textContent = "";
+    let eqs = "";
+    if (puz.kind === "reverse") {
+      eqs += '<div class="eq cyan live"><div class="tag">BEAM 1 · PARAMETRIC</div><div class="math">' + puz.paramHtml1 + '</div><div class="subline">At ' + fmtCoord(puz.x, puz.y) + ": " + puz.subHtml1 + "</div></div>";
+      eqs += '<div class="eq magenta live"><div class="tag">BEAM 2 · PARAMETRIC</div><div class="math">' + puz.paramHtml2 + '</div><div class="subline">At ' + fmtCoord(puz.x, puz.y) + ": " + puz.subHtml2 + "</div></div>";
+    } else {
+      eqs += eqBlock(puz.eq1, "BEAM 1 · CYAN", "cyan", step === 1);
+      eqs += eqBlock(puz.eq2, "BEAM 2 · MAGENTA", "magenta", step === 2);
+    }
+    document.getElementById("equations").innerHTML = eqs;
+    let grads = "";
+    if (puz.kind !== "reverse" && (beamOn(1) || beamOn(2))) {
+      grads = "Gradient m₁ = " + gradientPlain(puz.eq1);
+      if (beamOn(2)) grads += "    m₂ = " + gradientPlain(puz.eq2);
+      if (puz.kind === "parallel") grads += "    Same gradient, different intercept.";
+      if (puz.kind === "coincident") grads += "    Same line.";
+    }
+    document.getElementById("grads").textContent = grads;
+    document.getElementById("anchors").innerHTML = anchorReadout();
+    paintCoord();
+  }
+  function anchorReadout() {
+    const chunks = [];
+    const add = function (title, list, eq) {
+      if (!list.length) return;
+      const bits = list.map(function (pt) {
+        return fmtCoord(pt.x, pt.y) + " · " + lhsCompare(eq, pt.x, pt.y);
+      });
+      chunks.push(title + " " + bits.join("   "));
+    };
+    if (state.mode === "versus") {
+      add("P1 beam 1", state.versus.p1.anchors1, state.puzzle.eq1);
+      add("P1 beam 2", state.versus.p1.anchors2, state.puzzle.eq2);
+      add("P2 beam 1", state.versus.p2.anchors1, state.puzzle.eq1);
+      add("P2 beam 2", state.versus.p2.anchors2, state.puzzle.eq2);
+    } else if (state.puzzle.kind !== "reverse") {
+      add("Beam 1 anchors", state.anchors1, state.puzzle.eq1);
+      add("Beam 2 anchors", state.anchors2, state.puzzle.eq2);
+    }
+    return chunks.join("<br>");
+  }
+  function paintCoord() {
+    const el = document.getElementById("coordread");
+    if (!el || state.screen !== "play") return;
+    if (state.mode === "solo") el.textContent = "Reticle " + fmtCoord(state.reticle.p1.x, state.reticle.p1.y);
+    else el.textContent = "P1 " + fmtCoord(state.reticle.p1.x, state.reticle.p1.y) + "    P2 " + fmtCoord(state.reticle.p2.x, state.reticle.p2.y);
+  }
+  function renderCards() {
+    const used = {};
+    if (state.mode !== "versus" && state.puzzle && state.step < 3) {
+      const list = state.step === 1 ? state.anchors1 : state.anchors2;
+      list.forEach(function (pt) { used[coordKey(pt.x, pt.y)] = true; });
+    }
+    cardButtons.forEach(function (btn, i) {
+      const card = state.cards[i];
+      btn.disabled = !card || state.busy || state.over;
+      if (!card) { btn.innerHTML = ""; return; }
+      const hint = state.mode === "versus" ? (i + 1) + " / " + (i === 3 ? "0" : String(i + 7)) : String(i + 1);
+      btn.innerHTML = '<span class="hint">' + hint + "</span>" + cardLabel(card);
+      btn.className = "card";
+      if (state.mode === "versus") {
+        if (state.focus.p1 === i) btn.classList.add("focus");
+        if (state.focus.p2 === i) btn.classList.add("focus-p2");
+      } else if (state.focus.p1 === i) btn.classList.add("focus");
+      if (card.type === "point" && used[coordKey(card.x, card.y)]) btn.classList.add("used");
+      if (state.cardMark && state.cardMark.index === i && performance.now() < state.cardMark.until) {
+        btn.classList.add(state.cardMark.ok ? "good" : "bad");
+      }
+    });
+    const lock = document.getElementById("lock");
+    if (!state.puzzle) return;
+    if (state.puzzle.kind === "reverse") lock.textContent = "LOCK (p, q)";
+    else if (state.mode !== "versus" && state.step < 3) lock.textContent = "PLACE ANCHOR";
+    else lock.textContent = "LOCK INTERCEPT";
+    lock.disabled = state.busy || state.over;
+    const hint = document.getElementById("hint");
+    if (state.mode === "solo") hint.textContent = "Mouse or WASD / arrows. Space places or locks. Cards: 1–4, or LB/RB and X on the pad.";
+    else if (state.mode === "coop") hint.textContent = "P1 WASD + F/Space, pad 1. P2 arrows + Enter, pad 2. Team score only. Cards: 1–4.";
+    else hint.textContent = "P1 keys 1–4. P2 keys 7 8 9 0. Plot both of your beams before a lock counts.";
+  }
+  function renderAll() {
+    renderHUD();
+    renderConsole();
+    renderCards();
+  }
+
+  function onKey(e) {
+    const k = e.key;
+    if (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight" || k === " " || k === "Enter") e.preventDefault();
+    if (state.screen === "title") {
+      if (e.repeat) return;
+      if (k === "1") startGame("solo");
+      if (k === "2") startGame("coop");
+      if (k === "3") startGame("versus");
+      return;
+    }
+    if (state.over) return;
+    if (state.mode === "solo") {
+      if (k === "w" || k === "W" || k === "ArrowUp") moveReticle("p1", 0, 1);
+      else if (k === "s" || k === "S" || k === "ArrowDown") moveReticle("p1", 0, -1);
+      else if (k === "a" || k === "A" || k === "ArrowLeft") moveReticle("p1", -1, 0);
+      else if (k === "d" || k === "D" || k === "ArrowRight") moveReticle("p1", 1, 0);
+      else if (!e.repeat && (k === " " || k === "Enter" || k === "f" || k === "F")) confirmReticle("p1");
+    } else {
+      if (k === "w" || k === "W") moveReticle("p1", 0, 1);
+      else if (k === "s" || k === "S") moveReticle("p1", 0, -1);
+      else if (k === "a" || k === "A") moveReticle("p1", -1, 0);
+      else if (k === "d" || k === "D") moveReticle("p1", 1, 0);
+      else if (k === "ArrowUp") moveReticle("p2", 0, 1);
+      else if (k === "ArrowDown") moveReticle("p2", 0, -1);
+      else if (k === "ArrowLeft") moveReticle("p2", -1, 0);
+      else if (k === "ArrowRight") moveReticle("p2", 1, 0);
+      else if (!e.repeat && (k === " " || k === "f" || k === "F")) confirmReticle("p1");
+      else if (!e.repeat && k === "Enter") confirmReticle("p2");
+    }
+    if (e.repeat || state.screen !== "play") return;
+    const cardPlayer = state.mode === "versus" ? "p1" : teamActor();
+    if (k === "q" || k === "Q") cycleFocus(cardPlayer, -1);
+    if (k === "e" || k === "E") cycleFocus(cardPlayer, 1);
+    if (k === "u" || k === "U") cycleFocus("p2", -1);
+    if (k === "o" || k === "O") cycleFocus("p2", 1);
+    if (k >= "1" && k <= "4") activateCard(state.mode === "versus" ? "p1" : teamActor(), Number(k) - 1);
+    if (state.mode === "versus" && (k === "7" || k === "8" || k === "9" || k === "0")) {
+      activateCard("p2", k === "0" ? 3 : Number(k) - 7);
+    }
+  }
+  function pollPads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    if (!pads) return;
+    for (let i = 0; i < 2; i++) {
+      const gp = pads[i];
+      if (!gp) continue;
+      if (state.mode === "solo" && i > 0) continue;
+      const player = i === 0 ? "p1" : "p2";
+      const mem = padMem[i];
+      let dx = 0;
+      let dy = 0;
+      if (gp.buttons[14] && gp.buttons[14].pressed) dx -= 1;
+      if (gp.buttons[15] && gp.buttons[15].pressed) dx += 1;
+      if (gp.buttons[12] && gp.buttons[12].pressed) dy += 1;
+      if (gp.buttons[13] && gp.buttons[13].pressed) dy -= 1;
+      if (dx === 0 && Math.abs(gp.axes[0] || 0) > 0.55) dx = gp.axes[0] > 0 ? 1 : -1;
+      if (dy === 0 && Math.abs(gp.axes[1] || 0) > 0.55) dy = gp.axes[1] > 0 ? -1 : 1;
+      const sig = dx + "," + dy;
+      const now = performance.now();
+      if (dx === 0 && dy === 0) mem.sig = "";
+      else if (sig !== mem.sig || now >= mem.next) {
+        if (state.screen === "play") moveReticle(player, dx, dy);
+        mem.sig = sig;
+        mem.next = now + (sig !== mem.sig ? 260 : 140);
+      }
+      const a = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      const x = !!(gp.buttons[2] && gp.buttons[2].pressed);
+      const lb = !!(gp.buttons[4] && gp.buttons[4].pressed);
+      const rb = !!(gp.buttons[5] && gp.buttons[5].pressed);
+      if (a && !mem.a) {
+        ensureAudio();
+        if (state.screen === "title" && i === 0) startGame("solo");
+        else if (state.screen === "play") confirmReticle(player);
+      }
+      if (x && !mem.x && state.screen === "play") activateCard(player, state.focus[player]);
+      if (lb && !mem.lb && state.screen === "play") cycleFocus(player, -1);
+      if (rb && !mem.rb && state.screen === "play") cycleFocus(player, 1);
+      mem.a = a; mem.x = x; mem.lb = lb; mem.rb = rb;
+    }
+  }
+  function frame(now) {
+    pollPads();
+    musicTick();
+    if (state.screen === "play") draw(now);
+    requestAnimationFrame(frame);
+  }
+
+  document.querySelectorAll(".mode").forEach(function (btn) {
+    btn.addEventListener("click", function () { startGame(btn.dataset.mode); });
+  });
+  document.getElementById("mute").addEventListener("click", function () {
+    ensureAudio();
+    setMuted(!audio.muted);
+  });
+  document.getElementById("menu").addEventListener("click", showMenu);
+  document.getElementById("again").addEventListener("click", function () { startGame(state.mode); });
+  document.getElementById("back").addEventListener("click", showMenu);
+  document.getElementById("lock").addEventListener("click", function () {
+    ensureAudio();
+    if (state.mode === "versus") confirmReticle("p1");
+    else confirmReticle(mousePlayer());
+  });
+  cardButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      ensureAudio();
+      const index = Number(btn.dataset.i);
+      activateCard(state.mode === "versus" ? "p1" : teamActor(), index);
+    });
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (state.screen !== "play" || !state.puzzle) return;
+    pointFromEvent(e, mousePlayer());
+  });
+  canvas.addEventListener("pointerdown", function (e) {
+    if (state.screen !== "play") return;
+    e.preventDefault();
+    ensureAudio();
+    const player = mousePlayer();
+    pointFromEvent(e, player);
+    confirmReticle(player, true);
+  });
+  window.addEventListener("keydown", onKey);
+  window.addEventListener("resize", measure);
+  try {
+    if (localStorage.getItem("vector-intercept-mute") === "1") setMuted(true);
+  } catch (err) { /* ignore */ }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
