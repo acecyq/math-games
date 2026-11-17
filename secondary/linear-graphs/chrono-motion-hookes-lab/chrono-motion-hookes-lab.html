@@ -1,0 +1,3072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Chrono-Motion &amp; Hooke's Lab: Rate Simulator</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070b16;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+  }
+  canvas:focus { outline: none; }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Chrono-Motion and Hooke's Lab: Rate Simulator"></canvas>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<script>
+"use strict";
+(() => {
+  const FONT = '"Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif';
+  const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  const STORE = "chrono-hooke-lab-best";
+  const COL = {
+    cyan: "#3df0ff",
+    magenta: "#ff4fd8",
+    amber: "#ffc14a",
+    good: "#3dff9a",
+    bad: "#ff4d6a",
+    ink: "#e7f2ff",
+    dim: "#93a4c4",
+    blue: "#4d8dff",
+    red: "#ff5a6a",
+  };
+
+  const view = { w: 1280, h: 720, dpr: 1 };
+  let canvas, ctx, liveEl;
+  let REDUCE = false;
+  const zones = [];
+  const particles = [];
+  const floaters = [];
+  const HISTORY_MAX = 14;
+  const history = [];
+  const keysDown = new Set();
+  function seenProfile(key, hist) {
+    return !!key && hist.indexOf(key) !== -1;
+  }
+  function rememberProfile(key) {
+    if (!key) return;
+    history.push(key);
+    while (history.length > HISTORY_MAX) history.shift();
+  }
+  function clearHistory() {
+    history.length = 0;
+  }
+  const navMem = [{ dir: "", next: 0 }, { dir: "", next: 0 }, { dir: "", next: 0 }];
+  const padMem = [
+    { a: false, dir: "", next: 0 },
+    { a: false, dir: "", next: 0 },
+  ];
+
+  const audio = {
+    ctx: null, master: null, music: null, sfx: null,
+    muted: false, noise: null, next: 0, step: 0, started: false,
+  };
+
+  function makePlayer() {
+    return { sel: 0, armed: -1, propose: -1, shields: 3, stars: 0, score: 0, combo: 0, out: false };
+  }
+
+  const G = {
+    screen: "title",
+    mode: "solo",
+    round: 1,
+    step: 0,
+    mission: null,
+    shields: 3,
+    shieldMax: 3,
+    score: 0,
+    combo: 0,
+    best: 0,
+    players: [makePlayer(), makePlayer()],
+    hint: "",
+    hintKind: "info",
+    busy: 0,
+    reveal: 0,
+    line: 0,
+    play: 0,
+    playDir: 1,
+    celebrate: 0,
+    roundWait: 0,
+    doom: 0,
+    advance: false,
+    flash: null,
+    shake: 0,
+    stepT: 0,
+    titleSel: 0,
+    overSel: 0,
+    pointer: false,
+    mouseX: 0,
+    mouseY: 0,
+    mouseOn: false,
+    fatal: "",
+    time: 0,
+    layout: null,
+    plot: null,
+    ui: { cards: [], lock: null },
+    claimed: [false, false, false],
+    banner: "",
+  };
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function nearly(a, b, e) { return Math.abs(a - b) < (e == null ? 0.001 : e); }
+  function gcd(a, b) {
+    a = Math.abs(Math.round(a));
+    b = Math.abs(Math.round(b));
+    while (b) { const t = a % b; a = b; b = t; }
+    return a || 1;
+  }
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0;
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+  function shuffle(rng, arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+    }
+    return a;
+  }
+  function fmtNum(n) {
+    if (!isFinite(n)) return "?";
+    const v = Math.round(n * 1000) / 1000;
+    const i = Math.round(v);
+    if (Math.abs(v - i) < 0.001) return String(i);
+    const t = Math.round(v * 10) / 10;
+    if (Math.abs(v - t) < 0.001) return t.toFixed(1);
+    const h = Math.round(v * 100) / 100;
+    if (Math.abs(v - h) < 0.001) return h.toFixed(2);
+    return (Math.round(v * 1000) / 1000).toFixed(3);
+  }
+  function fmtVal(n, style) {
+    if (!isFinite(n)) return "?";
+    if (style === "prop") {
+      const hundred = Math.round(n * 100);
+      const neg = hundred < 0;
+      const a = Math.abs(hundred);
+      const body = (a % 10 === 0) ? (a / 100).toFixed(1) : (a / 100).toFixed(2);
+      return neg ? "−" + body : body;
+    }
+    const t = fmtNum(n);
+    return t.charAt(0) === "-" ? "−" + t.slice(1) : t;
+  }
+  function fmtTenths(t) {
+    const neg = t < 0 ? "−" : "";
+    const a = Math.abs(Math.round(t));
+    const whole = Math.floor(a / 10);
+    const frac = a % 10;
+    return frac === 0 ? neg + String(whole) : neg + whole + "." + frac;
+  }
+  function fmtSlope(m20) {
+    const hundred = m20 * 5;
+    return (hundred % 10 === 0) ? (hundred / 100).toFixed(1) : (hundred / 100).toFixed(2);
+  }
+  function linearEq(yName, m, c, style) {
+    const coef = fmtVal(Math.abs(m), style);
+    let xpart;
+    if (coef === "1" || coef === "1.0") xpart = m < 0 ? "−x" : "x";
+    else xpart = (m < 0 ? "−" : "") + coef + "x";
+    if (Math.abs(c) < 1e-9) return yName + " = " + xpart;
+    const cc = fmtVal(Math.abs(c), style);
+    return c > 0 ? yName + " = " + xpart + " + " + cc : yName + " = " + xpart + " − " + cc;
+  }
+  function lineText(line) {
+    if (line == null) return "";
+    if (typeof line === "string") return line;
+    const frac = line.n + "/" + line.d;
+    return (line.prefix || "") + (line.whole ? line.whole + " " : "") + frac + (line.suffix || "");
+  }
+  function optKey(o) { return o.lines.map(lineText).join(" | "); }
+  function fs(n) {
+    const s = clamp(Math.min(view.w / 1280, view.h / 720), 0.62, 1.28);
+    return Math.max(10, Math.round(n * s));
+  }
+  function setFont(weight, size, mono) {
+    ctx.font = weight + " " + Math.round(size) + "px " + (mono ? MONO : FONT);
+  }
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  function wrap(text, maxW) {
+    const words = String(text).split(" ");
+    const lines = [];
+    let line = "";
+    for (const word of words) {
+      const test = line ? line + " " + word : word;
+      if (line && ctx.measureText(test).width > maxW) {
+        lines.push(line);
+        line = word;
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [""];
+  }
+  function panel(x, y, w, h, accent) {
+    roundRect(x, y, w, h, 14);
+    ctx.fillStyle = "rgba(10, 16, 32, 0.94)";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = accent || "rgba(120, 170, 220, 0.28)";
+    ctx.stroke();
+  }
+  function tierLabel(round) {
+    if (round <= 2) return "WARM-UP";
+    if (round <= 4) return "KINEMATICS";
+    if (round <= 6) return "SPRING LAB";
+    return "MASTER";
+  }
+  function familyOf(round) {
+    if (round <= 2) return "linear";
+    if (round <= 4) return "journey";
+    if (round === 5) return "spring-mass";
+    if (round === 6) return "spring-diff";
+    return ["spring-cross", "spring-extend", "journey", "linear", "spring-diff", "spring-mass"][(round - 7) % 6];
+  }
+
+  function finalize(correct, wrongs, rng, numeric) {
+    const pool = [correct];
+    const seen = new Set([optKey(correct)]);
+    const traps = [];
+    const rest = [];
+    for (const w of wrongs) {
+      if (!w) continue;
+      if (w.trap) traps.push(w);
+      else rest.push(w);
+    }
+    const ordered = traps.concat(rest);
+    for (const w of ordered) {
+      const k = optKey(w);
+      if (seen.has(k)) continue;
+      if (numeric && w.value != null && correct.value != null && Math.abs(w.value - correct.value) < 0.02) continue;
+      seen.add(k);
+      pool.push(w);
+      if (pool.length === 4) break;
+    }
+    if (pool.length < 4) return null;
+    return shuffle(rng, pool);
+  }
+
+  function speedParts(n, d) {
+    const g = gcd(n, d);
+    n = Math.round(n / g);
+    d = Math.round(d / g);
+    if (d < 0) { n = -n; d = -d; }
+    const value = n / d;
+    if (d === 1) return { line: n + " km/h", value: value };
+    const whole = Math.trunc(n / d);
+    const rem = Math.abs(n % d);
+    return { line: { whole: whole, n: rem, d: d, suffix: " km/h" }, value: value };
+  }
+
+  function yAtStored(cS, mS, xTenths) {
+    if ((mS * xTenths) % 10 !== 0) return null;
+    return cS + (mS * xTenths) / 10;
+  }
+
+  function signHint(mission) {
+    const shown = fmtVal(Math.abs(mission.mDisp), mission.style || "percent");
+    const signed = (mission.mDisp < 0 ? "−" : "+") + shown;
+    if (mission.mDisp < 0) {
+      const what = mission.rig === "battery" ? "battery power is draining" : "the quantity is decreasing";
+      return "The graph slopes downward as time increases — " + what + ", so the gradient must be negative (" + signed + ")!";
+    }
+    return "The graph slopes upward as x increases, so the gradient is positive (" + signed + "), not negative.";
+  }
+  function averageHint(m) {
+    const T = fmtNum(m.totalHalves / 2);
+    return "Never average two speeds directly! Average Speed = Total Distance (" + m.D + " + " + m.D + " = " + (m.D * 2) + " km) ÷ Total Time including the stop (" + T + " hours)!";
+  }
+  function extensionHint(cm) {
+    return "Read carefully! Total length includes the original unstretched spring (" + cm + " cm). Extension = Total Length − Original Length!";
+  }
+
+  function clockLabel(mins) {
+    const m = ((Math.round(mins) % (24 * 60)) + 24 * 60) % (24 * 60);
+    const hh = Math.floor(m / 60);
+    const mm = m % 60;
+    return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+  }
+
+  function genLinear(round, rng, history) {
+    const filling = round === 2 || (round > 6 && rng() < 0.35);
+    const hard = round >= 7;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      let style, cS, mS, unit, yHead, xHead, rig, noun, flowName;
+      const roll = rng();
+      if (!filling && round === 1) {
+        style = "prop";
+      } else if (filling) {
+        style = roll < 0.5 ? "percent" : "litre";
+      } else if (roll < 0.5) style = "prop";
+      else if (roll < 0.78) style = "percent";
+      else style = "litre";
+
+      if (style === "prop") {
+        cS = pick(rng, hard ? [80, 90, 100] : [80, 100]);
+        mS = (filling ? 1 : -1) * pick(rng, hard ? [4, 5, 8, 10, 20] : [5, 10, 20]);
+        if (filling) {
+          cS = pick(rng, [20, 40, 50]);
+          mS = pick(rng, [5, 10, 20]);
+        }
+        unit = "charge";
+        yHead = "y (charge)";
+        xHead = "x (h)";
+        rig = "battery";
+        noun = filling ? "charge dock" : "lithium cell";
+        flowName = filling ? "Charge rises" : "Charge drains";
+      } else if (style === "percent") {
+        if (filling) {
+          cS = pick(rng, [20, 30, 40, 50]);
+          mS = pick(rng, [5, 8, 10, 12, 15]);
+        } else {
+          cS = pick(rng, hard ? [60, 80, 90, 100, 120] : [80, 100]);
+          mS = -pick(rng, hard ? [4, 5, 6, 8, 10, 12, 15] : [5, 8, 10]);
+        }
+        unit = "%";
+        yHead = "y (%)";
+        xHead = "x (h)";
+        rig = "battery";
+        noun = filling ? "charger" : "cell";
+        flowName = filling ? "Charge rises" : "Charge drains";
+      } else {
+        if (filling) {
+          cS = pick(rng, [20, 40, 60, 80]);
+          mS = pick(rng, [10, 12, 15, 20, 25]);
+        } else {
+          cS = pick(rng, [120, 160, 180, 200, 240, 300]);
+          mS = -pick(rng, [10, 12, 15, 20, 24, 30]);
+        }
+        unit = "L";
+        yHead = "y (L)";
+        xHead = "x (h)";
+        rig = "tank";
+        noun = filling ? "inlet tank" : "outlet tank";
+        flowName = filling ? "Tank fills" : "Tank drains";
+      }
+      if (!filling && mS >= 0) continue;
+      if (filling && mS <= 0) continue;
+      const maxH = filling ? 8 : Math.floor(Math.abs(cS / mS));
+      if (maxH < 4) continue;
+      const step = (!filling && maxH >= 10 && rng() < 0.55) ? 2 : 1;
+      const xCap = filling ? Math.min(8, 4 + Math.floor(rng() * 3) * (step === 2 ? 2 : 1)) : Math.min(maxH, step === 2 ? 12 : 8);
+      const xs = [];
+      const ysS = [];
+      for (let x = 0; x <= xCap && xs.length < 6; x += step) {
+        const yS = cS + mS * x;
+        if (!filling && yS < 0) break;
+        if (filling && yS > cS + Math.abs(mS) * 12) break;
+        xs.push(x);
+        ysS.push(yS);
+      }
+      if (xs.length < 4) continue;
+      if (!filling && ysS[ysS.length - 1] < 0) continue;
+      const mDisp = style === "prop" ? mS / 100 : mS;
+      const cDisp = style === "prop" ? cS / 100 : cS;
+      const xMax = xs[xs.length - 1];
+      const preds = [];
+      const horizon = (xMax + (filling ? 3 : 2)) * 10;
+      for (let xt = 2; xt <= horizon; xt++) {
+        const yS = yAtStored(cS, mS, xt);
+        if (yS == null || yS <= 0) continue;
+        const x = xt / 10;
+        if (x < 0.4 || x > xMax + (filling ? 3 : 2.01)) continue;
+        if (xs.some((v) => Math.abs(v - x) < 0.001)) continue;
+        if (!filling && yS >= cS) continue;
+        if (filling && yS <= cS) continue;
+        if (style !== "prop" && yS % 1 !== 0) continue;
+        preds.push({ xt: xt, x: x, yS: yS });
+      }
+      if (preds.length < 2) continue;
+      const pred = preds[Math.floor(rng() * preds.length)];
+      const yDisp = style === "prop" ? pred.yS / 100 : pred.yS;
+      const mode = rng() < 0.55 ? "x" : "y";
+      // Same c & m makes the table feel identical even if the predict target changes.
+      const sig = "L|" + style + "|" + (filling ? "fill" : "drain") + "|" + cS + "|" + mS;
+      if (seenProfile(sig, history)) continue;
+
+      const mText = (mDisp < 0 ? "−" : "+") + fmtVal(Math.abs(mDisp), style);
+      const cText = fmtVal(cDisp, style);
+      const unitM = style === "prop" ? "per h" : unit + "/h";
+      const step1 = finalize({
+        lines: ["c = " + cText + (style === "prop" ? " (" + cS + "%)" : " " + unit), "m = " + mText + " " + unitM],
+        correct: true,
+        value: mDisp,
+      }, [
+        {
+          lines: ["c = " + cText + (style === "prop" ? " (" + cS + "%)" : " " + unit), "m = " + (mDisp < 0 ? "+" : "−") + fmtVal(Math.abs(mDisp), style) + " " + unitM],
+          correct: false,
+          trap: "sign",
+          value: -mDisp,
+        },
+        {
+          lines: ["c = " + fmtVal(style === "prop" ? ysS[1] / 100 : ysS[1], style) + (style === "prop" ? "" : " " + unit), "m = " + mText + " " + unitM],
+          correct: false,
+          value: mDisp + 0.0001,
+          hint: "The initial value is the reading at x = 0, not the next row of the table.",
+        },
+        {
+          lines: ["c = " + cText + (style === "prop" ? " (" + cS + "%)" : " " + unit), "m = " + (mDisp < 0 ? "−" : "+") + fmtVal(Math.abs(mDisp) / 2, style) + " " + unitM],
+          correct: false,
+          value: mDisp / 2,
+          hint: "Gradient = change in y ÷ change in x. Use two rows, and keep the sign.",
+        },
+        {
+          lines: ["c = 0 " + (style === "prop" ? "" : unit), "m = " + mText + " " + unitM],
+          correct: false,
+          value: 0,
+          hint: "At x = 0 the graph meets the y-axis at c, not at zero.",
+        },
+      ], rng);
+      if (!step1) continue;
+
+      const eq = linearEq("y", mDisp, cDisp, style);
+      const eqFlip = linearEq("y", -mDisp, cDisp, style);
+      const eqHalf = linearEq("y", mDisp / 2, cDisp, style);
+      const eqNoC = linearEq("y", mDisp, 0, style);
+      const step2 = finalize({
+        lines: [eq],
+        correct: true,
+        value: mDisp,
+      }, [
+        { lines: [eqFlip], correct: false, trap: "sign", value: -mDisp },
+        { lines: [eqNoC], correct: false, value: mDisp + 0.002, hint: "Keep the y-intercept. At x = 0, y = c, so the equation needs + c." },
+        { lines: [eqHalf], correct: false, value: mDisp / 2, hint: "Check the gradient again: rise ÷ run, with the correct sign." },
+        { lines: [linearEq("y", mDisp, cDisp + (style === "prop" ? 0.2 : 10), style)], correct: false, value: cDisp + 3, hint: "The constant c is the value at x = 0." },
+      ], rng);
+      if (!step2) continue;
+
+      const yLabel = style === "prop"
+        ? fmtVal(yDisp, "prop") + " (" + Math.round(yDisp * 100) + "%)"
+        : fmtNum(yDisp) + " " + unit;
+      let step3;
+      let prompt3;
+      let because3;
+      if (mode === "x") {
+        prompt3 = filling
+          ? "How many hours until y reaches " + yLabel + "?"
+          : "How many hours until y falls to " + yLabel + "?";
+        because3 = eq + " gives x = " + fmtNum(pred.x) + " h when y = " + yLabel + ".";
+        const wrongNums = [pred.yS / Math.abs(mS) * (style === "prop" ? 1 : 1), Math.round(pred.x), pred.x + 1, Math.max(0.2, pred.x - 1), pred.x + xs[1]];
+        if (style === "prop") wrongNums[0] = (pred.yS / 100) / Math.abs(mDisp);
+        else wrongNums[0] = pred.yS / Math.abs(mS);
+        const wrongs = wrongNums.map((x) => ({
+          lines: [fmtNum(x) + " h"],
+          correct: false,
+          value: x,
+          hint: "Substitute the target y into y = mx + c and solve for x. Keep the sign of m.",
+        }));
+        step3 = finalize({ lines: [fmtNum(pred.x) + " h"], correct: true, value: pred.x }, wrongs, rng, true);
+      } else {
+        prompt3 = "What is y after " + fmtNum(pred.x) + " hours?";
+        because3 = "Substitute x = " + fmtNum(pred.x) + " into " + eq + ".";
+        const signY = cDisp + Math.abs(mDisp) * pred.x * (filling ? -1 : 1);
+        const near = cDisp + mDisp * Math.round(pred.x);
+        const shift = yDisp + (style === "prop" ? 0.1 : (style === "percent" ? 10 : 15));
+        const other = cDisp + mDisp * (pred.x + 1);
+        const cards = [signY, near, shift, other].map((y) => ({
+          lines: style === "prop" ? [fmtVal(y, "prop"), Math.round(y * 100) + "%"] : [fmtNum(y) + " " + unit],
+          correct: false,
+          value: y,
+          hint: "Use y = mx + c with the gradient's sign. A downward graph subtracts as x grows.",
+        }));
+        step3 = finalize({
+          lines: style === "prop" ? [fmtVal(yDisp, "prop"), Math.round(yDisp * 100) + "%"] : [fmtNum(yDisp) + " " + unit],
+          correct: true,
+          value: yDisp,
+        }, cards, rng, true);
+      }
+      if (!step3) continue;
+
+      const names = rig === "battery"
+        ? ["Ion Cell", "Lumen Pack", "Arc Core", "Nova Stack", "Helio Cell"]
+        : ["Reservoir C", "Cistern 4", "Holding Bay", "North Tank", "Dock Cistern"];
+      const place = pick(rng, names);
+      const ysDisp = ysS.map((v) => (style === "prop" ? v / 100 : v));
+      const yMax = Math.max.apply(null, ysDisp.concat([cDisp, yDisp])) * 1.15;
+      const xMaxFull = Math.max(xMax, pred.x) * 1.08;
+      return {
+        sig: sig,
+        family: "linear",
+        rig: rig,
+        style: style,
+        filling: filling,
+        title: place + " · " + flowName,
+        blurb: filling
+          ? "A " + noun + " increases at a constant rate. Read c at x = 0 and the gradient m."
+          : "A " + noun + " decreases at a constant rate. The y-intercept is the start, and the gradient is negative.",
+        mS: mS, cS: cS, mDisp: mDisp, cDisp: cDisp, xs: xs, ysS: ysS,
+        unit: unit,
+        table: {
+          xHead: xHead,
+          xs: xs.map(String),
+          rows: [{ head: yHead, cells: ysDisp.map((v) => fmtVal(v, style)) }],
+        },
+        steps: [
+          { kicker: "STEP 1 / 3  ·  INITIAL STATE & RATE", prompt: "What is the initial value c at x = 0, and the gradient m?", because: "c = " + cText + " at x = 0. m = " + mText + " " + unitM + ".", options: step1 },
+          { kicker: "STEP 2 / 3  ·  LINEAR EQUATION", prompt: "Which equation matches this telemetry?", because: "The model is " + eq + ".", options: step2 },
+          { kicker: "STEP 3 / 3  ·  PREDICT", prompt: prompt3, because: because3, options: step3 },
+        ],
+        xLabel: "Time (h)",
+        yLabel: style === "prop" ? "Charge" : (style === "percent" ? "Charge (%)" : "Volume (L)"),
+        xMaxTable: xMax * 1.08,
+        xMaxFull: xMaxFull,
+        yMax: Math.max(yMax, 1),
+        points: xs.map((x, i) => ({ x: x, y: ysDisp[i], color: COL.cyan })),
+        lines: [{ color: COL.cyan, m: mDisp, c: cDisp }],
+        segs: null,
+        guide: mode === "x"
+          ? { axis: "y", value: yDisp, label: "target " + yLabel }
+          : { axis: "x", value: pred.x, label: "x = " + fmtNum(pred.x) + " h" },
+        solution: { x: pred.x, y: yDisp, label: mode === "x" ? fmtNum(pred.x) + " h" : yLabel },
+        eqCaption: eq,
+        simMax: xMax,
+        simSpeed: Math.max(0.45, xMax / 9),
+        focusX: pred.x,
+        predict: { mode: mode, xt: pred.xt, x: pred.x, yS: pred.yS, yDisp: yDisp },
+      };
+    }
+    return null;
+  }
+
+  function genJourney(round, rng, history) {
+    const hard = round >= 7;
+    const speeds = hard ? [8, 10, 12, 14, 15, 16, 18, 20, 24, 25, 30] : [10, 12, 14, 15, 16, 18, 20, 24];
+    const places = ["library", "lab bay", "charger stop", "checkpoint", "kiosk"];
+    const who = ["Courier", "Cyclist", "Campus drone", "Harbour rider"];
+    for (let attempt = 0; attempt < 220; attempt++) {
+      const vOut = pick(rng, speeds);
+      const t1Choices = hard ? [2, 3, 4, 5, 6, 7, 8] : [2, 3, 4, 5, 6];
+      const tOutH = pick(rng, t1Choices);
+      if ((vOut * tOutH) % 2 !== 0) continue;
+      const D = (vOut * tOutH) / 2;
+      if (D < 12 || D > (hard ? 72 : 48)) continue;
+      const vBack = pick(rng, speeds);
+      if (vBack === vOut) continue;
+      if ((2 * D) % vBack !== 0) continue;
+      const tBackH = (2 * D) / vBack;
+      if (tBackH < 1 || tBackH > (hard ? 8 : 6)) continue;
+      const stopH = pick(rng, [1, 2, 3, 4]);
+      const totalH = tOutH + stopH + tBackH;
+      const num = 4 * D;
+      const den = totalH;
+      const g = gcd(num, den);
+      if (den / g > 4) continue;
+      const avg = num / den;
+      const trap = (vOut + vBack) / 2;
+      const forget = (4 * D) / (tOutH + tBackH);
+      const oneWay = (2 * D) / totalH;
+      if (Math.abs(trap - avg) < 0.05) continue;
+      if (Math.abs(forget - avg) < 0.05) continue;
+      if (Math.abs(oneWay - avg) < 0.05) continue;
+      if (Math.abs(trap - forget) < 0.05) continue;
+      const durationMin = totalH * 30;
+      const latest = 18 * 60 - durationMin;
+      if (latest < 7 * 60) continue;
+      const slots = [];
+      for (let m = 7 * 60; m <= latest; m += 30) slots.push(m);
+      const startMin = pick(rng, slots);
+      const place = pick(rng, places);
+      const rider = pick(rng, who);
+      const sig = "J|" + D + "|" + vOut + "|" + vBack + "|" + stopH;
+      if (seenProfile(sig, history)) continue;
+      // Same destination distance makes journeys feel recycled even with different speeds.
+      if (history.some((h) => h === ("JD|" + D) || (h.charAt(0) === "J" && h.split("|")[1] === String(D)))) continue;
+
+      const tOut = tOutH / 2;
+      const tStop = stopH / 2;
+      const tBack = tBackH / 2;
+      const total = totalH / 2;
+      const marks = [
+        { t: 0, d: 0 },
+        { t: tOut, d: D },
+        { t: tOut + tStop, d: D },
+        { t: total, d: 0 },
+      ];
+      const clocks = [
+        clockLabel(startMin),
+        clockLabel(startMin + tOutH * 30),
+        clockLabel(startMin + (tOutH + stopH) * 30),
+        clockLabel(startMin + totalH * 30),
+      ];
+      const step1 = finalize({
+        lines: ["c = 0 km at home", "outbound " + vOut + " km/h"],
+        correct: true,
+        value: vOut,
+      }, [
+        {
+          lines: ["c = 0 km at home", "outbound −" + vOut + " km/h"],
+          correct: false,
+          trap: "sign",
+          value: -vOut,
+          hint: "Distance from home increases on the way out, so that gradient is positive.",
+        },
+        {
+          lines: ["c = " + D + " km at home", "outbound " + vOut + " km/h"],
+          correct: false,
+          value: D,
+          hint: "Home is x = 0 on the time axis. Distance there is the y-intercept, 0 km.",
+        },
+        {
+          lines: ["c = 0 km at home", "outbound " + vBack + " km/h"],
+          correct: false,
+          value: vBack,
+          hint: "Outbound speed uses the away leg only: distance to the stop ÷ time to get there.",
+        },
+      ], rng);
+      if (!step1) continue;
+      const stopLabel = fmtNum(tStop);
+      const step2 = finalize({
+        lines: ["stop " + stopLabel + " h (speed 0)", "return " + vBack + " km/h"],
+        correct: true,
+        value: vBack + stopH / 100,
+      }, [
+        {
+          lines: ["stop 0 h", "return " + vBack + " km/h"],
+          correct: false,
+          value: vBack,
+          hint: "A horizontal segment is a rest. Its duration is the length of the flat part, and its speed is 0 km/h.",
+        },
+        {
+          lines: ["stop " + stopLabel + " h (speed 0)", "return " + vOut + " km/h"],
+          correct: false,
+          value: vOut + 0.01,
+          hint: "Return speed is the downward leg: distance home ÷ time on that leg only.",
+        },
+        {
+          lines: ["stop " + fmtNum(tOut) + " h", "return " + vBack + " km/h"],
+          correct: false,
+          value: tOut,
+          hint: "Do not use the outbound time as the stop. Read the flat segment between the two equal distances.",
+        },
+      ], rng);
+      if (!step2) continue;
+      const avgParts = speedParts(num, den);
+      const trapParts = speedParts(vOut + vBack, 2);
+      const forgetParts = speedParts(4 * D, tOutH + tBackH);
+      const oneParts = speedParts(2 * D, totalH);
+      const outParts = speedParts(vOut, 1);
+      const step3 = finalize({
+        lines: [(D * 2) + " km ÷ " + fmtNum(total) + " h", avgParts.line],
+        correct: true,
+        value: avgParts.value,
+      }, [
+        { lines: ["(" + vOut + " + " + vBack + ") ÷ 2", trapParts.line], correct: false, trap: "average", value: trapParts.value },
+        { lines: ["stop ignored", forgetParts.line], correct: false, value: forgetParts.value, hint: "The stationary stop is part of the journey time. Average speed uses total time, including rest." },
+        { lines: ["one way only", oneParts.line], correct: false, value: oneParts.value, hint: "The rider goes out and back, so total distance is " + D + " + " + D + " km." },
+        { lines: ["outbound only", outParts.line], correct: false, value: outParts.value, hint: "Outbound speed is one leg. Average speed uses the whole path and the whole time." },
+      ], rng, true);
+      if (!step3) continue;
+
+      return {
+        sig: sig,
+        family: "journey",
+        rig: "journey",
+        style: "journey",
+        title: rider + " · " + place + " loop",
+        blurb: clocks[0] + " leave home, arrive " + clocks[1] + ", rest until " + clocks[2] + ", home at " + clocks[3] + ". Distance from home is on the y-axis.",
+        D: D, vOut: vOut, vBack: vBack, tOutHalves: tOutH, tBackHalves: tBackH, stopHalves: stopH, totalHalves: totalH,
+        mDisp: vOut,
+        place: place,
+        table: {
+          xHead: "time",
+          xs: clocks,
+          rows: [{ head: "km", cells: marks.map((p) => String(p.d)) }],
+        },
+        steps: [
+          { kicker: "STEP 1 / 3  ·  START & OUTBOUND RATE", prompt: "The rider starts at home. What is c, and the outbound speed?", because: "c = 0 km. Outbound speed = " + D + " km ÷ " + fmtNum(tOut) + " h = " + vOut + " km/h.", options: step1 },
+          { kicker: "STEP 2 / 3  ·  STOP & RETURN LEG", prompt: "How long is the stationary stop, and what is the return speed?", because: "The flat segment lasts " + stopLabel + " h at 0 km/h. Return speed = " + D + " ÷ " + fmtNum(tBack) + " = " + vBack + " km/h.", options: step2 },
+          { kicker: "STEP 3 / 3  ·  WHOLE-JOURNEY AVERAGE", prompt: "What is the average speed for the whole journey?", because: "Average speed = " + (D * 2) + " km ÷ " + fmtNum(total) + " h, including the stop.", options: step3 },
+        ],
+        xLabel: "Time (h)",
+        yLabel: "Distance from home (km)",
+        xMaxTable: total * 1.06,
+        xMaxFull: total * 1.06,
+        yMax: D * 1.28,
+        points: marks.map((p, i) => ({ x: p.t, y: p.d, color: i === 0 || i === 3 ? COL.cyan : (i === 1 ? COL.amber : COL.magenta), tag: clocks[i] })),
+        xTicks: marks.map((p, i) => ({ v: p.t, label: clocks[i] })),
+        lines: null,
+        segs: [
+          { t0: 0, t1: tOut, d0: 0, d1: D, color: COL.cyan },
+          { t0: tOut, t1: tOut + tStop, d0: D, d1: D, color: COL.amber },
+          { t0: tOut + tStop, t1: total, d0: D, d1: 0, color: COL.magenta },
+        ],
+        guide: null,
+        solution: null,
+        eqCaption: "out " + vOut + " km/h · rest " + stopLabel + " h · back " + vBack + " km/h",
+        resultCaption: "average " + lineText(avgParts.line),
+        simMax: total,
+        simSpeed: total / 10,
+        focusX: total,
+        journey: { D: D, tOut: tOut, tStop: tStop, tBack: tBack, vOut: vOut, vBack: vBack, place: place },
+      };
+    }
+    return null;
+  }
+
+  function springLenT(m20, c, grams) {
+    if ((m20 * grams) % 2 !== 0) return null;
+    return (m20 * grams) / 2 + c * 10;
+  }
+
+  function genSpring(kind, round, rng, history) {
+    const hard = round >= 7;
+    const slopes = hard ? [2, 3, 4, 5, 6, 7, 8] : [2, 3, 4, 5, 6, 7];
+    const cs = [3, 4, 5, 6, 7, 8, 9];
+    const bays = ["Helix Bay", "Coil Rig", "Twin Hook", "Gauge Pair", "North Crane"];
+    for (let attempt = 0; attempt < 240; attempt++) {
+      const mA = pick(rng, slopes);
+      const mB = pick(rng, slopes);
+      const cA = pick(rng, cs);
+      const cB = pick(rng, cs);
+      if (mA === mB || cA === cB) continue;
+      const num = (cA - cB) * 20;
+      const den = mB - mA;
+      if (den === 0 || num % den !== 0) continue;
+      const xInt = num / den;
+      if (xInt < 8 || xInt > (hard ? 80 : 50)) continue;
+      if (attempt < 160 && xInt % 20 === 0) continue;
+      if ((mA * xInt) % 2 !== 0 || (mB * xInt) % 2 !== 0) continue;
+      const lInt = springLenT(mA, cA, xInt);
+      const lIntB = springLenT(mB, cB, xInt);
+      if (lInt == null || lInt !== lIntB) continue;
+      if (lInt < 50 || lInt > 400) continue;
+      const masses = [0, 20, 40, 60, 80];
+      const rowA = masses.map((M) => springLenT(mA, cA, M));
+      const rowB = masses.map((M) => springLenT(mB, cB, M));
+      if (rowA.some((v) => v == null) || rowB.some((v) => v == null)) continue;
+
+      const diffMasses = [40, 50, 60, 70, 90];
+      const diffs = [];
+      for (const M of diffMasses) {
+        const la = springLenT(mA, cA, M);
+        const lb = springLenT(mB, cB, M);
+        if (la == null || lb == null) continue;
+        const d = Math.abs(la - lb);
+        if (d >= 10) diffs.push({ M: M, d: d, la: la, lb: lb });
+      }
+      if (!diffs.length) continue;
+      const diff = diffs[Math.floor(rng() * diffs.length)];
+
+      function targetsFor(m20, c) {
+        const out = [];
+        for (let x = 100; x <= 220; x += 10) {
+          const t = springLenT(m20, c, x);
+          if (t == null) continue;
+          if (t < 180 || t > 550) continue;
+          out.push({ x: x, t: t, m20: m20, c: c });
+        }
+        return out;
+      }
+      let bag = targetsFor(mA, cA).map((t) => Object.assign({ who: "A" }, t));
+      bag = bag.concat(targetsFor(mB, cB).map((t) => Object.assign({ who: "B" }, t)));
+      if (!bag.length) continue;
+      const target = bag[Math.floor(rng() * bag.length)];
+
+      const extBag = [];
+      for (const who of ["A", "B"]) {
+        const m20 = who === "A" ? mA : mB;
+        const c = who === "A" ? cA : cB;
+        for (const M of diffMasses) {
+          const total = springLenT(m20, c, M);
+          if (total == null) continue;
+          const ext = total - c * 10;
+          if (ext >= 10) extBag.push({ who: who, M: M, total: total, ext: ext, c: c, m20: m20 });
+        }
+      }
+      if (!extBag.length) continue;
+      const ext = extBag[Math.floor(rng() * extBag.length)];
+
+      // Block the same spring pair (and soft-block the same pair under any spring task) so A/B tables don't feel recycled.
+      const pair = "S|" + mA + "|" + cA + "|" + mB + "|" + cB;
+      const sig = pair + "|" + kind;
+      if (seenProfile(sig, history) || seenProfile(pair, history)) continue;
+
+      const slopeA = fmtSlope(mA);
+      const slopeB = fmtSlope(mB);
+      const step1 = finalize({
+        lines: ["A  L₀ " + cA + " cm · " + slopeA + " cm/g", "B  L₀ " + cB + " cm · " + slopeB + " cm/g"],
+        correct: true,
+        value: mA + cA / 100,
+      }, [
+        {
+          lines: ["A  L₀ " + cB + " cm · " + slopeB + " cm/g", "B  L₀ " + cA + " cm · " + slopeA + " cm/g"],
+          correct: false,
+          value: mB + cB / 100,
+          hint: "Keep each spring with its own column. Do not swap A and B.",
+        },
+        {
+          lines: ["A  L₀ " + cA + " cm · " + fmtSlope(mA * 10) + " cm/g", "B  L₀ " + cB + " cm · " + fmtSlope(mB * 10) + " cm/g"],
+          correct: false,
+          value: mA * 10,
+          hint: "The gradient is the change in centimetres for each gram, such as 0.15 cm/g, not 1.5.",
+        },
+        {
+          lines: ["A  L₀ " + (cA + mA) + " cm · " + slopeA + " cm/g", "B  L₀ " + (cB + mB) + " cm · " + slopeB + " cm/g"],
+          correct: false,
+          value: cA + mA,
+          hint: "Original length is the row where mass is 0 g, before any weight is hung.",
+        },
+      ], rng);
+      if (!step1) continue;
+      const eqA = "L = " + slopeA + "x + " + cA;
+      const eqB = "L = " + slopeB + "x + " + cB;
+      const step2 = finalize({
+        lines: ["A  " + eqA, "B  " + eqB],
+        correct: true,
+        value: 1,
+      }, [
+        { lines: ["A  " + eqB, "B  " + eqA], correct: false, value: 2, hint: "Each equation must keep that spring's own gradient and its own original length." },
+        { lines: ["A  L = " + slopeA + "x", "B  L = " + slopeB + "x"], correct: false, value: 3, hint: "Total length includes the original length. The model is L = mx + c, and c is L₀." },
+        {
+          lines: ["A  L = −" + slopeA + "x + " + cA, "B  L = −" + slopeB + "x + " + cB],
+          correct: false,
+          trap: "sign",
+          value: -1,
+          hint: "Adding mass lengthens the spring, so both gradients are positive.",
+        },
+      ], rng);
+      if (!step2) continue;
+
+      let step3 = null;
+      let prompt3 = "";
+      let because3 = "";
+      let guide = null;
+      let solution = null;
+      let focusX = 40;
+      let xMaxFull = 100;
+      const yMaxCm = Math.max(rowA[rowA.length - 1], rowB[rowB.length - 1], lInt) / 10;
+
+      if (kind === "spring-mass") {
+        const who = target.who;
+        const cm = fmtTenths(target.t);
+        prompt3 = "Spring " + who + " has total length " + cm + " cm. What mass is hanging on it?";
+        because3 = "Solve " + (who === "A" ? eqA : eqB) + " with L = " + cm + ". x = " + target.x + " g.";
+        const mAsk = who === "A" ? mA : mB;
+        const cAsk = who === "A" ? cA : cB;
+        const mOther = who === "A" ? mB : mA;
+        const cOther = who === "A" ? cB : cA;
+        const wrongX = [];
+        const tCm = target.t / 10;
+        wrongX.push((tCm - cOther) / (mOther / 20));
+        wrongX.push((tCm - cAsk) / (mOther / 20));
+        wrongX.push(tCm - cAsk);
+        wrongX.push(target.x / 10);
+        wrongX.push(target.x + 20);
+        step3 = finalize({ lines: [target.x + " g"], correct: true, value: target.x }, wrongX.map((x) => ({
+          lines: [fmtNum(x) + " g"],
+          correct: false,
+          value: x,
+          hint: "Use that spring's own equation, L = mx + c, and solve for x. Do not drop the original length.",
+        })), rng, true);
+        guide = { axis: "y", value: target.t / 10, label: "L = " + cm + " cm" };
+        solution = { x: target.x, y: target.t / 10, label: target.x + " g" };
+        focusX = Math.min(target.x, 200);
+        xMaxFull = Math.max(100, target.x * 1.06);
+      } else if (kind === "spring-diff") {
+        const cm = fmtTenths(diff.d);
+        prompt3 = "At " + diff.M + " g, what is the difference in total length between the springs?";
+        because3 = "L_A = " + fmtTenths(diff.la) + " cm and L_B = " + fmtTenths(diff.lb) + " cm. Difference = " + cm + " cm.";
+        const wrongs = [diff.la, diff.lb, Math.abs(diff.la - cA * 10), Math.abs((cA - cB) * 10), diff.d * 2].map((t) => ({
+          lines: [fmtTenths(t) + " cm"],
+          correct: false,
+          value: t / 10,
+          hint: "Subtract the two total lengths at the same mass. Do not subtract L₀ unless the question asks for extension.",
+        }));
+        step3 = finalize({ lines: [cm + " cm"], correct: true, value: diff.d / 10 }, wrongs, rng, true);
+        guide = { axis: "x", value: diff.M, label: diff.M + " g" };
+        solution = {
+          x: diff.M,
+          y: Math.max(diff.la, diff.lb) / 10,
+          label: "Δ " + cm + " cm",
+          marks: [
+            { x: diff.M, y: diff.la / 10, color: COL.cyan },
+            { x: diff.M, y: diff.lb / 10, color: COL.magenta },
+          ],
+        };
+        focusX = diff.M;
+        xMaxFull = 110;
+      } else if (kind === "spring-extend") {
+        prompt3 = "How many centimetres has Spring " + ext.who + " stretched past its original length at " + ext.M + " g?";
+        because3 = "Extension = total length − L₀ = " + fmtTenths(ext.total) + " − " + ext.c + " = " + fmtTenths(ext.ext) + " cm.";
+        const other = ext.who === "A" ? springLenT(mB, cB, ext.M) - cB * 10 : springLenT(mA, cA, ext.M) - cA * 10;
+        step3 = finalize({
+          lines: [fmtTenths(ext.ext) + " cm"],
+          correct: true,
+          value: ext.ext / 10,
+        }, [
+          { lines: [fmtTenths(ext.total) + " cm"], correct: false, trap: "extension", value: ext.total / 10 },
+          { lines: [ext.c + " cm"], correct: false, value: ext.c, hint: "That is the original unstretched length, not how far the spring has stretched." },
+          { lines: [fmtTenths(other) + " cm"], correct: false, value: other / 10, hint: "Read the spring named in the question, then subtract its own L₀." },
+          { lines: [fmtTenths(ext.ext + ext.c * 10) + " cm"], correct: false, value: (ext.ext + ext.c * 10) / 10, hint: "If the option equals the total length, it still includes L₀." },
+        ], rng, true);
+        guide = { axis: "x", value: ext.M, label: ext.M + " g" };
+        solution = { x: ext.M, y: ext.total / 10, label: "extension " + fmtTenths(ext.ext) + " cm" };
+        focusX = ext.M;
+        xMaxFull = 110;
+      } else {
+        prompt3 = "At what load do Spring A and Spring B have the same total length?";
+        because3 = "Set " + eqA + " equal to " + eqB + ". They meet at x = " + xInt + " g, L = " + fmtTenths(lInt) + " cm.";
+        const wrongs = [
+          { x: xInt * 2, L: springLenT(mA, cA, xInt * 2) },
+          { x: 20, L: springLenT(mA, cA, 20) },
+          { x: Math.max(4, xInt - 5), L: lInt + 10 },
+          { x: xInt, L: (cA + cB) * 5 },
+          { x: Math.abs(cA - cB), L: cA * 10 },
+        ];
+        step3 = finalize({
+          lines: ["x = " + xInt + " g", "L = " + fmtTenths(lInt) + " cm"],
+          correct: true,
+          value: xInt,
+          extra: lInt,
+        }, wrongs.map((w) => ({
+          lines: ["x = " + fmtNum(w.x) + " g", "L = " + (w.L == null ? "?" : fmtTenths(w.L)) + " cm"],
+          correct: false,
+          value: w.x + (w.L || 0) / 1000,
+          hint: "Set the two length equations equal and solve for x, then substitute to find L.",
+        })), rng, true);
+        guide = null;
+        solution = { x: xInt, y: lInt / 10, label: xInt + " g, " + fmtTenths(lInt) + " cm" };
+        focusX = xInt;
+        xMaxFull = Math.max(100, xInt * 1.3);
+      }
+      if (!step3) continue;
+
+      const yMax = Math.max(yMaxCm, (solution && solution.y) ? solution.y : 0, guide && guide.axis === "y" ? guide.value : 0) * 1.18;
+      return {
+        sig: sig,
+        family: kind,
+        rig: "spring",
+        style: "spring",
+        title: pick(rng, bays) + " · springs A & B",
+        blurb: "Total length L (cm) against mass x (g). L₀ is the length at 0 g. Extension means L − L₀.",
+        mA: mA, cA: cA, mB: mB, cB: cB, xInt: xInt, lInt: lInt,
+        mDisp: mA / 20,
+        extC: kind === "spring-extend" ? ext.c : cA,
+        table: {
+          xHead: "x (g)",
+          xs: masses.map(String),
+          rows: [
+            { head: "Spring A", cells: rowA.map(fmtTenths) },
+            { head: "Spring B", cells: rowB.map(fmtTenths) },
+          ],
+        },
+        steps: [
+          { kicker: "STEP 1 / 3  ·  ORIGINAL LENGTH & GRADIENT", prompt: "What is each spring's original length L₀ and gradient?", because: "At 0 g, A is " + cA + " cm and B is " + cB + " cm. Gradients are " + slopeA + " and " + slopeB + " cm/g.", options: step1 },
+          { kicker: "STEP 2 / 3  ·  BOTH LINEAR MODELS", prompt: "Which pair of equations L = mx + c matches Spring A and Spring B?", because: "A: " + eqA + ". B: " + eqB + ".", options: step2 },
+          { kicker: "STEP 3 / 3  ·  EXTRAPOLATE OR COMPARE", prompt: prompt3, because: because3, options: step3 },
+        ],
+        xLabel: "Mass x (g)",
+        yLabel: "Total length L (cm)",
+        xMaxTable: 100,
+        xMaxFull: xMaxFull,
+        yMax: Math.max(12, yMax),
+        points: masses.map((M, i) => ({ x: M, y: rowA[i] / 10, color: COL.cyan })).concat(masses.map((M, i) => ({ x: M, y: rowB[i] / 10, color: COL.magenta }))),
+        lines: [
+          { color: COL.cyan, m: mA / 20, c: cA, name: "A" },
+          { color: COL.magenta, m: mB / 20, c: cB, name: "B" },
+        ],
+        segs: null,
+        guide: guide,
+        solution: solution,
+        eqCaption: "A: " + eqA + "    B: " + eqB,
+        simMax: 80,
+        simSpeed: 8,
+        focusX: focusX,
+        spring: { a: { m20: mA, c: cA }, b: { m20: mB, c: cB } },
+        askMass: focusX,
+      };
+    }
+    return null;
+  }
+
+  function generateMission(round, hist, rng) {
+    const family = familyOf(round);
+    const make = (h) => {
+      if (family === "linear") return genLinear(round, rng, h);
+      if (family === "journey") return genJourney(round, rng, h);
+      return genSpring(family, round, rng, h);
+    };
+    let mission = make(hist);
+    if (!mission && hist.length > 4) mission = make(hist.slice(-Math.ceil(hist.length / 2)));
+    if (!mission && hist.length) mission = make([]);
+    return mission;
+  }
+
+  function profileBase(sig) {
+    if (!sig) return "";
+    if (sig.charAt(0) === "S") {
+      const parts = sig.split("|");
+      return parts.slice(0, 5).join("|");
+    }
+    if (sig.charAt(0) === "J") return "JD|" + sig.split("|")[1];
+    return sig;
+  }
+
+  function auditMission(m) {
+    if (!m || !m.steps || m.steps.length !== 3) return "steps";
+    for (let s = 0; s < 3; s++) {
+      const step = m.steps[s];
+      if (!step.options || step.options.length !== 4) return "option count " + s;
+      if (step.options.filter((o) => o.correct).length !== 1) return "correct " + s;
+      const keys = new Set(step.options.map(optKey));
+      if (keys.size !== 4) return "duplicate " + s;
+    }
+    if (m.family === "linear") {
+      for (let i = 0; i < m.xs.length; i++) {
+        if (m.cS + m.mS * m.xs[i] !== m.ysS[i]) return "table";
+      }
+      const yS = yAtStored(m.cS, m.mS, m.predict.xt);
+      if (yS !== m.predict.yS) return "predict";
+      if (m.mDisp < 0) {
+        if (!m.steps[0].options.some((o) => o.trap === "sign")) return "sign trap 1";
+        if (!m.steps[1].options.some((o) => o.trap === "sign")) return "sign trap 2";
+      }
+      const ok = m.steps[2].options.find((o) => o.correct);
+      if (m.predict.mode === "x" && !nearly(ok.value, m.predict.x)) return "card x";
+      if (m.predict.mode === "y" && !nearly(ok.value, m.predict.yDisp)) return "card y";
+      const back = m.cDisp + m.mDisp * m.predict.x;
+      if (!nearly(back, m.predict.yDisp, 0.02)) return "display predict";
+    }
+    if (m.family === "journey") {
+      if (m.vOut * m.tOutHalves !== m.D * 2) return "out";
+      if (m.vBack * m.tBackHalves !== m.D * 2) return "back";
+      const avg = (4 * m.D) / m.totalHalves;
+      const ok = m.steps[2].options.find((o) => o.correct);
+      if (!nearly(ok.value, avg, 0.02)) return "avg";
+      const trap = m.steps[2].options.find((o) => o.trap === "average");
+      if (!trap) return "missing average trap";
+      if (!nearly(trap.value, (m.vOut + m.vBack) / 2, 0.02)) return "trap avg";
+      if (nearly(trap.value, avg, 0.02)) return "trap collided";
+      const end = m.segs[m.segs.length - 1];
+      if (!nearly(end.t1, m.totalHalves / 2, 0.001) || !nearly(end.d1, 0)) return "path";
+    }
+    if (m.family && m.family.indexOf("spring") === 0) {
+      const masses = [0, 20, 40, 60, 80];
+      for (const M of masses) {
+        const la = springLenT(m.mA, m.cA, M);
+        const lb = springLenT(m.mB, m.cB, M);
+        if (fmtTenths(la) !== m.table.rows[0].cells[masses.indexOf(M)]) return "row A";
+        if (fmtTenths(lb) !== m.table.rows[1].cells[masses.indexOf(M)]) return "row B";
+      }
+      if (springLenT(m.mA, m.cA, m.xInt) !== m.lInt) return "cross A";
+      if (springLenT(m.mB, m.cB, m.xInt) !== m.lInt) return "cross B";
+      const ok = m.steps[2].options.find((o) => o.correct);
+      if (m.family === "spring-cross") {
+        if (!nearly(ok.value, m.xInt)) return "cross card";
+        if (ok.extra !== m.lInt) return "cross L";
+      }
+      if (m.family === "spring-extend") {
+        if (!m.steps[2].options.some((o) => o.trap === "extension")) return "ext trap";
+        const trap = m.steps[2].options.find((o) => o.trap === "extension");
+        if (!(trap.value > ok.value + 0.4)) return "ext bigger";
+      }
+      if (!m.steps[1].options.some((o) => o.trap === "sign")) return "spring sign";
+    }
+    return "";
+  }
+
+  function runMathAudit() {
+    const hist = [];
+    const slots = [];
+    for (let round = 1; round <= 14; round++) {
+      for (let n = 0; n < 3; n++) {
+        const rng = mulberry32((round * 10007 + n * 7919 + 91) >>> 0);
+        const mission = generateMission(round, hist, rng);
+        if (!mission) return "No mission for round " + round + " try " + n;
+        if (hist.indexOf(mission.sig) !== -1) return "Repeated " + mission.sig;
+        const err = auditMission(mission);
+        if (err) return "Round " + round + " " + mission.family + ": " + err + " [" + mission.sig + "]";
+        hist.push(mission.sig);
+        const base = profileBase(mission.sig);
+        if (base && base !== mission.sig) hist.push(base);
+        while (hist.length > HISTORY_MAX) hist.shift();
+        slots.push(mission.steps[0].options.findIndex((o) => o.correct));
+      }
+    }
+    if (new Set(slots).size < 2) return "Answers did not shuffle";
+    return "";
+  }
+
+  function sampleAt(m, x) {
+    if (m.segs) {
+      for (const s of m.segs) {
+        if (x <= s.t1 + 1e-4) {
+          const span = s.t1 - s.t0 || 1;
+          const u = clamp((x - s.t0) / span, 0, 1);
+          return s.d0 + (s.d1 - s.d0) * u;
+        }
+      }
+      return m.segs[m.segs.length - 1].d1;
+    }
+    if (m.lines && m.lines.length) return m.lines[0].m * x + m.lines[0].c;
+    return 0;
+  }
+
+  function springCm(sp, mass) { return sp.c + (sp.m20 / 20) * mass; }
+
+  function owners() {
+    if (G.mode !== "coop") return G.mode === "solo" ? [0] : [0, 1];
+    const flip = G.round % 2 === 0;
+    if (G.step === 0) return [flip ? 1 : 0];
+    if (G.step === 1) return [flip ? 0 : 1];
+    return [0, 1];
+  }
+  function canControl(pi) {
+    if (G.screen !== "play" || G.fatal) return false;
+    if (G.doom > 0) return false;
+    if (G.busy > 0 && G.roundWait <= 0) return false;
+    if (G.mode === "versus" && G.players[pi].out) return false;
+    if (G.mode === "coop" && owners().indexOf(pi) === -1) return false;
+    if (G.mode === "solo" && pi !== 0) return false;
+    return true;
+  }
+  function mousePlayer() {
+    if (G.mode === "versus") return 0;
+    if (G.mode === "solo") return 0;
+    const o = owners();
+    return o.length === 1 ? o[0] : 0;
+  }
+
+  function announce() {
+    if (!liveEl || !G.mission) return;
+    const step = G.mission.steps[G.step];
+    const opts = step.options.map((o, i) => (i + 1) + ". " + o.lines.map(lineText).join(" / ")).join("   ");
+    liveEl.textContent = step.kicker + ". " + step.prompt + " " + opts + (G.hint ? " " + G.hint : "");
+  }
+
+  function resetArms() {
+    for (const p of G.players) {
+      p.armed = -1;
+      p.propose = -1;
+      p.sel = 0;
+    }
+  }
+
+  function feedbackHint(opt) {
+    if (opt.hint && !opt.trap) return opt.hint;
+    if (opt.trap === "sign") return opt.hint || signHint(G.mission);
+    if (opt.trap === "average") return averageHint(G.mission);
+    if (opt.trap === "extension") return extensionHint(G.mission.extC || 5);
+    return opt.hint || "That reading does not match the table. Use x = 0 for c, and rise ÷ run for the gradient.";
+  }
+
+  function loseShield(pi, trap) {
+    const penalise = G.mode === "versus" || !!trap;
+    if (!penalise) {
+      if (G.mode === "versus") G.players[pi].combo = 0;
+      else G.combo = 0;
+      return;
+    }
+    if (G.mode === "versus") {
+      const p = G.players[pi];
+      p.combo = 0;
+      p.shields -= 1;
+      if (p.shields <= 0) {
+        p.out = true;
+        p.shields = 0;
+        if (G.players[0].out && G.players[1].out) G.doom = 1.35;
+      }
+    } else {
+      G.combo = 0;
+      G.shields -= 1;
+      if (G.shields <= 0) {
+        G.shields = 0;
+        G.doom = 1.45;
+      }
+    }
+  }
+
+  function grant(pi, step) {
+    const base = [100, 150, 350][step];
+    if (G.mode === "versus") {
+      const p = G.players[pi];
+      p.combo += 1;
+      const elapsed = (performance.now() - G.stepT) / 1000;
+      const speed = Math.max(40, Math.round(150 - elapsed * 7));
+      const comboBonus = p.combo >= 2 ? (p.combo - 1) * 25 : 0;
+      p.score += base + speed + comboBonus;
+      if (step === 2) p.stars += 1;
+      spawnFloat("+" + base, COL.amber);
+      spawnFloat("+" + speed + " SPEED", COL.cyan);
+      return;
+    }
+    G.combo += 1;
+    const comboBonus = G.combo >= 2 ? (G.combo - 1) * 25 : 0;
+    G.score += base + comboBonus;
+    if (G.score > G.best) {
+      G.best = G.score;
+      try { localStorage.setItem(STORE, String(G.best)); } catch (e) { /* ignore */ }
+    }
+    spawnFloat("+" + base, step === 2 ? COL.amber : COL.good);
+    if (comboBonus) spawnFloat("+" + comboBonus + " COMBO", COL.cyan);
+  }
+
+  function burst(x, y, color, n) {
+    const count = REDUCE ? Math.min(6, n) : n;
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 70 + Math.random() * 160;
+      particles.push({
+        x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 30,
+        life: 0.45 + Math.random() * 0.35, age: 0, color: color, r: 1.5 + Math.random() * 2.2,
+      });
+    }
+    if (particles.length > 120) particles.splice(0, particles.length - 120);
+  }
+  function spawnFloat(text, color) {
+    floaters.push({ text: text, color: color, x: view.w * 0.72, y: view.h * 0.46, age: 0, life: 1.15 });
+    if (floaters.length > 8) floaters.shift();
+  }
+
+  function resolve(index, pi) {
+    if (G.claimed[G.step]) return;
+    const step = G.mission.steps[G.step];
+    const opt = step.options[index];
+    G.flash = { index: index, ok: !!opt.correct, until: performance.now() + 420 };
+    if (!opt.correct) {
+      G.hint = feedbackHint(opt);
+      G.hintKind = "bad";
+      G.shake = opt.trap ? 1 : 0.45;
+      G.busy = 0.42;
+      G.combo = G.mode === "versus" ? G.players[pi].combo : G.combo;
+      loseShield(pi, opt.trap);
+      if (G.mode !== "versus") G.combo = 0;
+      const card = G.ui.cards[index];
+      if (card) burst(card.x + card.w / 2, card.y + card.h / 2, COL.bad, opt.trap ? 22 : 10);
+      playBuzz();
+      announce();
+      return;
+    }
+    G.claimed[G.step] = true;
+    grant(pi, G.step);
+    G.reveal = G.step + 1;
+    G.hint = step.because;
+    G.hintKind = "ok";
+    G.banner = G.mode === "versus" ? (pi === 0 ? "P1 locked it" : "P2 locked it") : "";
+    const card = G.ui.cards[index];
+    if (card) burst(card.x + card.w / 2, card.y + 10, COL.good, 16);
+    if (G.step >= 2) {
+      G.celebrate = 1;
+      G.roundWait = 2.35;
+      G.busy = 2.35;
+      playChord();
+      playRigSting(G.mission.rig);
+    } else {
+      G.advance = true;
+      G.busy = 0.82;
+      if (G.step === 1) playSweep();
+      else playRigSting(G.mission.rig);
+    }
+    announce();
+  }
+
+  function trySubmit(pi, forcedIndex) {
+    const index = forcedIndex != null ? forcedIndex : G.players[pi].armed;
+    if (index == null || index < 0 || index > 3) {
+      G.hint = "Click (or highlight) a card to lock it in.";
+      G.hintKind = "info";
+      return;
+    }
+    G.players[pi].armed = index;
+    G.players[pi].sel = index;
+    if (G.mode === "coop" && G.step === 2) {
+      G.players[pi].propose = index;
+      const a = G.players[0].propose;
+      const b = G.players[1].propose;
+      if (a < 0 || b < 0) {
+        G.hint = (a >= 0 ? "P1" : "P2") + " is ready. Partner: click the same card.";
+        G.hintKind = "info";
+        playBlip();
+        announce();
+        return;
+      }
+      if (a !== b) {
+        G.hint = "Signals differ — both engineers must click the same card.";
+        G.hintKind = "bad";
+        playBuzz();
+        announce();
+        return;
+      }
+      resolve(a, pi);
+      return;
+    }
+    resolve(index, pi);
+  }
+
+  function confirmPlayer(pi) {
+    if (G.roundWait > 0.25) {
+      G.roundWait = 0.05;
+      G.busy = 0.05;
+      return;
+    }
+    if (!canControl(pi)) return;
+    const p = G.players[pi];
+    if (p.sel >= 0 && p.sel <= 3) {
+      trySubmit(pi, p.sel);
+      return;
+    }
+    trySubmit(pi);
+  }
+
+  function beginRound() {
+    let mission = null;
+    let lastErr = "";
+    for (let tryN = 0; tryN < 12 && !mission; tryN++) {
+      let seed = (Date.now() ^ ((Math.random() * 0x7fffffff) | 0) ^ (G.round * 977) ^ (tryN * 7919) ^ (history.length * 104729)) >>> 0;
+      if (!seed) seed = 1 + tryN;
+      const rng = mulberry32(seed);
+      const candidate = generateMission(G.round, history, rng);
+      if (!candidate) {
+        lastErr = "empty";
+        continue;
+      }
+      const err = auditMission(candidate);
+      if (err) {
+        lastErr = err;
+        continue;
+      }
+      mission = candidate;
+    }
+    if (!mission) {
+      G.fatal = "The lab could not calibrate a fresh profile for round " + G.round + (lastErr ? " (" + lastErr + ")" : "") + ".";
+      return;
+    }
+    rememberProfile(mission.sig);
+    const soft = profileBase(mission.sig);
+    if (soft && soft !== mission.sig) rememberProfile(soft);
+    G.mission = mission;
+    G.step = 0;
+    G.reveal = 0;
+    G.line = 0;
+    G.play = 0;
+    G.playDir = 1;
+    G.celebrate = 0;
+    G.hint = "";
+    G.busy = 0.22;
+    G.advance = false;
+    G.roundWait = 0;
+    G.claimed = [false, false, false];
+    G.stepT = performance.now();
+    G.banner = "";
+    resetArms();
+    announce();
+  }
+
+  function startGame(mode) {
+    G.screen = "play";
+    G.mode = mode;
+    G.round = 1;
+    G.score = 0;
+    G.combo = 0;
+    G.shieldMax = mode === "coop" ? 4 : 3;
+    G.shields = G.shieldMax;
+    G.doom = 0;
+    G.fatal = "";
+    clearHistory();
+    G.players = [makePlayer(), makePlayer()];
+    if (mode === "versus") {
+      G.players[0].shields = 3;
+      G.players[1].shields = 3;
+    }
+    beginRound();
+    if (canvas) canvas.focus();
+  }
+
+  function goTitle() {
+    G.screen = "title";
+    G.mission = null;
+    G.hint = "";
+    G.roundWait = 0;
+    G.busy = 0;
+    G.doom = 0;
+    G.titleSel = 0;
+    G.shake = 0;
+  }
+
+  function endGame(reason) {
+    G.screen = "over";
+    G.overReason = reason;
+    G.overSel = 0;
+    G.busy = 0;
+    G.roundWait = 0;
+    if (G.score > G.best) {
+      G.best = G.score;
+      try { localStorage.setItem(STORE, String(G.best)); } catch (e) { /* ignore */ }
+    }
+  }
+
+  function versusLead() {
+    const a = G.players[0];
+    const b = G.players[1];
+    if (a.stars !== b.stars) return a.stars > b.stars ? "P1 holds more Master Physicist stars." : "P2 holds more Master Physicist stars.";
+    if (a.score !== b.score) return a.score > b.score ? "Stars are tied. P1 leads on speed points." : "Stars are tied. P2 leads on speed points.";
+    return "The duel is tied.";
+  }
+
+  function update(dt, now) {
+    G.time += dt;
+    if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 1.8);
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 40 * dt;
+      if (p.age >= p.life) particles.splice(i, 1);
+    }
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].age += dt;
+      floaters[i].y -= dt * 28;
+      if (floaters[i].age >= floaters[i].life) floaters.splice(i, 1);
+    }
+    musicTick();
+    pollPads(now);
+    if (G.screen === "title") {
+      applyNav(0, now, (dir) => {
+        if (dir === "up" || dir === "left") G.titleSel = (G.titleSel + 2) % 3;
+        if (dir === "down" || dir === "right") G.titleSel = (G.titleSel + 1) % 3;
+      });
+      return;
+    }
+    if (G.screen === "over") {
+      applyNav(0, now, (dir) => {
+        if (dir === "left" || dir === "up") G.overSel = 0;
+        if (dir === "right" || dir === "down") G.overSel = 1;
+      });
+      return;
+    }
+    if (G.busy > 0) G.busy = Math.max(0, G.busy - dt);
+    if (G.advance && G.busy <= 0) {
+      G.advance = false;
+      G.step += 1;
+      G.stepT = performance.now();
+      G.hint = "";
+      resetArms();
+      announce();
+    }
+    if (G.roundWait > 0) {
+      G.roundWait -= dt;
+      if (G.roundWait <= 0) {
+        G.round += 1;
+        beginRound();
+      }
+    }
+    if (G.doom > 0) {
+      G.doom -= dt;
+      if (G.doom <= 0) {
+        if (G.mode === "versus") endGame(versusLead());
+        else endGame("Lab shields depleted.");
+      }
+    }
+    if (G.mission && G.reveal >= 2) G.line = Math.min(1, G.line + dt * (REDUCE ? 2 : 0.85));
+    else G.line = 0;
+    if (G.mission) {
+      const m = G.mission;
+      if (G.celebrate > 0) {
+        G.play += (m.focusX - G.play) * Math.min(1, dt * 2.4);
+      } else {
+        G.play += G.playDir * m.simSpeed * dt * (REDUCE ? 0.45 : 1);
+        if (G.play > m.simMax) { G.play = m.simMax; G.playDir = -1; }
+        if (G.play < 0) { G.play = 0; G.playDir = 1; }
+      }
+    }
+    if (G.screen === "play") {
+      const count = G.mode === "solo" ? 1 : 2;
+      for (let pi = 0; pi < count; pi++) {
+        applyNav(pi, now, (dir) => {
+          if (!canControl(pi)) return;
+          G.pointer = false;
+          const cur = G.players[pi].sel;
+          G.players[pi].sel = nudge(cur < 0 ? 0 : cur, dir, G.layout && G.layout.narrow);
+        });
+      }
+    }
+  }
+
+  function nudge(sel, dir, narrow) {
+    if (!narrow) {
+      let i = sel;
+      if (dir === "left") i = (i + 4) % 5;
+      if (dir === "right") i = (i + 1) % 5;
+      if (dir === "up") i = 4;
+      if (dir === "down") i = i === 4 ? 0 : 4;
+      return i;
+    }
+    const map = {
+      0: { left: 1, right: 1, up: 4, down: 2 },
+      1: { left: 0, right: 0, up: 4, down: 3 },
+      2: { left: 3, right: 3, up: 0, down: 4 },
+      3: { left: 2, right: 2, up: 1, down: 4 },
+      4: { left: 0, right: 1, up: 0, down: 2 },
+    };
+    const row = map[sel] || map[0];
+    return row[dir] == null ? sel : row[dir];
+  }
+
+  function dirFromHeld(pi) {
+    const down = (c) => keysDown.has(c);
+    let x = 0;
+    let y = 0;
+    if (G.screen !== "play" || G.mode === "solo") {
+      if (pi !== 0 && G.screen === "play" && G.mode !== "solo") return "";
+      if (down("ArrowLeft") || down("KeyA")) x -= 1;
+      if (down("ArrowRight") || down("KeyD")) x += 1;
+      if (down("ArrowUp") || down("KeyW")) y -= 1;
+      if (down("ArrowDown") || down("KeyS")) y += 1;
+    } else if (pi === 0) {
+      if (down("KeyA")) x -= 1;
+      if (down("KeyD")) x += 1;
+      if (down("KeyW")) y -= 1;
+      if (down("KeyS")) y += 1;
+    } else {
+      if (down("ArrowLeft")) x -= 1;
+      if (down("ArrowRight")) x += 1;
+      if (down("ArrowUp")) y -= 1;
+      if (down("ArrowDown")) y += 1;
+    }
+    if (x && y) return Math.abs(x) >= Math.abs(y) ? (x < 0 ? "left" : "right") : (y < 0 ? "up" : "down");
+    if (x) return x < 0 ? "left" : "right";
+    if (y) return y < 0 ? "up" : "down";
+    return "";
+  }
+
+  function tapSlot(slot, dir, now) {
+    if (!dir) { slot.dir = ""; return false; }
+    if (dir !== slot.dir) {
+      slot.dir = dir;
+      slot.next = now + 280;
+      return true;
+    }
+    if (now >= slot.next) {
+      slot.next = now + 130;
+      return true;
+    }
+    return false;
+  }
+
+  function applyNav(pi, now, fn) {
+    const dir = dirFromHeld(pi);
+    if (tapSlot(navMem[pi], dir, now)) fn(dir);
+  }
+
+  function pollPads(now) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const max = G.mode === "solo" || G.screen !== "play" ? 1 : 2;
+    for (let i = 0; i < max; i++) {
+      const pad = pads && pads[i];
+      if (!pad) continue;
+      const mem = padMem[i];
+      const a = !!(pad.buttons[0] && pad.buttons[0].pressed);
+      if (a && !mem.a) {
+        ensureAudio();
+        if (G.screen === "title") startGame(["solo", "coop", "versus"][G.titleSel]);
+        else if (G.screen === "over") {
+          if (G.overSel === 0) startGame(G.mode);
+          else goTitle();
+        } else confirmPlayer(i);
+      }
+      mem.a = a;
+      let x = 0;
+      let y = 0;
+      const ax = pad.axes && pad.axes.length > 1 ? pad.axes[0] : 0;
+      const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] : 0;
+      if ((pad.buttons[14] && pad.buttons[14].pressed) || ax < -0.5) x = -1;
+      if ((pad.buttons[15] && pad.buttons[15].pressed) || ax > 0.5) x = 1;
+      if ((pad.buttons[12] && pad.buttons[12].pressed) || ay < -0.5) y = -1;
+      if ((pad.buttons[13] && pad.buttons[13].pressed) || ay > 0.5) y = 1;
+      let dir = "";
+      if (x && y) dir = Math.abs(ax) >= Math.abs(ay) ? (x < 0 ? "left" : "right") : (y < 0 ? "up" : "down");
+      else if (x) dir = x < 0 ? "left" : "right";
+      else if (y) dir = y < 0 ? "up" : "down";
+      if (!dir) { mem.dir = ""; continue; }
+      const fresh = dir !== mem.dir || now >= mem.next;
+      if (!fresh) continue;
+      mem.next = dir === mem.dir ? now + 140 : now + 280;
+      mem.dir = dir;
+      G.pointer = false;
+      if (G.screen === "title") {
+        if (dir === "up" || dir === "left") G.titleSel = (G.titleSel + 2) % 3;
+        if (dir === "down" || dir === "right") G.titleSel = (G.titleSel + 1) % 3;
+      } else if (G.screen === "over") {
+        if (dir === "left" || dir === "up") G.overSel = 0;
+        if (dir === "right" || dir === "down") G.overSel = 1;
+      } else if (canControl(i)) {
+        const cur = G.players[i].sel;
+        G.players[i].sel = nudge(cur < 0 ? 0 : cur, dir, G.layout && G.layout.narrow);
+      }
+    }
+  }
+
+  function onKey(code) {
+    ensureAudio();
+    if (code === "KeyM") { toggleMute(); return; }
+    if (code === "Escape" && G.screen !== "title") { goTitle(); return; }
+    if (G.screen === "title") {
+      if (code === "Enter" || code === "Space" || code === "KeyF") startGame(["solo", "coop", "versus"][G.titleSel]);
+      return;
+    }
+    if (G.screen === "over") {
+      if (code === "Enter" || code === "Space" || code === "KeyF") {
+        if (G.overSel === 0) startGame(G.mode);
+        else goTitle();
+      }
+      return;
+    }
+    if (G.mode === "solo") {
+      if (code === "Enter" || code === "Space" || code === "KeyF") confirmPlayer(0);
+    } else {
+      if (code === "Space" || code === "KeyF") confirmPlayer(0);
+      if (code === "Enter") confirmPlayer(1);
+    }
+  }
+
+  function zoneAt(x, y) {
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const z = zones[i];
+      if (x >= z.x && y >= z.y && x <= z.x + z.w && y <= z.y + z.h) return z;
+    }
+    return null;
+  }
+  function pointerXY(e) {
+    const r = canvas.getBoundingClientRect();
+    const sx = r.width ? view.w / r.width : 1;
+    const sy = r.height ? view.h / r.height : 1;
+    return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+  }
+
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, view.h);
+    g.addColorStop(0, "#121a30");
+    g.addColorStop(0.5, "#070b16");
+    g.addColorStop(1, "#07141c");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, view.w, view.h);
+    ctx.save();
+    ctx.globalAlpha = 0.13;
+    ctx.strokeStyle = "#1b4662";
+    ctx.lineWidth = 1;
+    const gap = 56;
+    for (let x = 0; x <= view.w; x += gap) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, view.h);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= view.h; y += gap) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(view.w, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function measureHintH() {
+    if (!G.hint || !ctx) return 8;
+    setFont("600", fs(14));
+    const lines = wrap(G.hint, Math.max(120, view.w - 48));
+    return clamp(16 + lines.length * (fs(14) + 3), 40, 86);
+  }
+
+  function computeLayout() {
+    const w = view.w;
+    const h = view.h;
+    const narrow = w < 980;
+    const hudH = w < 760 ? 78 : 56;
+    const hintH = G.screen === "play" ? measureHintH() : 8;
+    const deckH = h < 640 ? 124 : (narrow ? Math.min(210, Math.max(156, h * 0.3)) : Math.min(176, Math.max(128, h * 0.21)));
+    const briefH = h < 640 ? 108 : Math.max(124, Math.min(158, h * 0.19));
+    const gap = 8;
+    const briefY = hudH + 6;
+    const midY = briefY + briefH + 6;
+    const deckY = h - deckH;
+    const hintY = deckY - hintH - 4;
+    const midH = Math.max(0, hintY - midY - 4);
+    const colGap = 8;
+    const leftW = Math.round((w - gap * 2 - colGap) * (w < 1100 ? 0.46 : 0.42));
+    return {
+      narrow: narrow,
+      hudH: hudH,
+      hintH: hintH,
+      deckH: deckH,
+      brief: { x: gap, y: briefY, w: w - gap * 2, h: briefH },
+      rig: { x: gap, y: midY, w: leftW, h: midH },
+      graph: { x: gap + leftW + colGap, y: midY, w: w - gap * 2 - leftW - colGap, h: midH },
+      hint: { x: gap, y: hintY, w: w - gap * 2, h: hintH },
+      deck: { x: 0, y: deckY, w: w, h: deckH },
+    };
+  }
+
+  function drawShield(x, y, filled) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, -8);
+    ctx.lineTo(7, -5);
+    ctx.lineTo(7, 2);
+    ctx.lineTo(0, 9);
+    ctx.lineTo(-7, 2);
+    ctx.lineTo(-7, -5);
+    ctx.closePath();
+    ctx.fillStyle = filled ? COL.cyan : "rgba(80, 110, 140, 0.25)";
+    ctx.fill();
+    ctx.strokeStyle = filled ? "#d8fbff" : "rgba(140,170,200,0.35)";
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawStar(x, y, r, filled) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rad = i % 2 === 0 ? r : r * 0.45;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const px = Math.cos(a) * rad;
+      const py = Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = filled ? COL.amber : "rgba(255, 193, 74, 0.18)";
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHUD(L) {
+    ctx.fillStyle = "rgba(6, 10, 20, 0.96)";
+    ctx.fillRect(0, 0, view.w, L.hudH);
+    ctx.fillStyle = "rgba(61, 240, 255, 0.35)";
+    ctx.fillRect(0, L.hudH - 2, view.w, 2);
+    const y = L.hudH / 2;
+    const modeText = G.mode === "coop" ? "2P CO-OP TEAM" : G.mode === "versus" ? "2P VERSUS" : "SOLO PHYSICIST";
+    setFont("800", fs(16));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = G.mode === "versus" ? COL.amber : COL.cyan;
+    const modeW = ctx.measureText(modeText).width;
+    ctx.fillText(modeText, 16, y - (L.hudH > 64 ? 12 : 0));
+    setFont("600", fs(12));
+    ctx.fillStyle = COL.dim;
+    const sub = "ROUND " + G.round + "  ·  " + tierLabel(G.round);
+    if (L.hudH > 64) ctx.fillText(sub, 16, y + 12);
+    else ctx.fillText(sub, 28 + modeW, y);
+
+    ctx.textAlign = "right";
+    setFont("700", fs(14));
+    const muteLeft = view.w - 100;
+    if (G.mode === "versus") {
+      const a = G.players[0];
+      const b = G.players[1];
+      const text = "P1  SH " + a.shields + "   ★ " + a.stars + "   " + a.score + "     P2  SH " + b.shields + "   ★ " + b.stars + "   " + b.score;
+      ctx.fillStyle = COL.ink;
+      ctx.fillText(text, muteLeft, y);
+    } else if (G.mode === "coop") {
+      const combo = G.combo >= 2 ? "   COMBO x" + G.combo : "";
+      ctx.fillStyle = COL.ink;
+      ctx.fillText("TEAM SHIELDS " + G.shields + combo + "    TEAM SCORE " + G.score, muteLeft, y);
+    } else {
+      const combo = G.combo >= 2 ? "   COMBO x" + G.combo : "";
+      ctx.fillStyle = COL.ink;
+      ctx.fillText("SHIELDS " + G.shields + combo + "    SCORE " + G.score, muteLeft, y);
+    }
+  }
+
+  function drawBrief(rect) {
+    const m = G.mission;
+    panel(rect.x, rect.y, rect.w, rect.h, "rgba(61,240,255,0.25)");
+    const step = m.steps[G.step];
+    let kicker = step.kicker;
+    if (G.mode === "coop") {
+      const o = owners();
+      const who = G.step === 2 ? "BOTH CONFIRM" : (o[0] === 0 ? "P1 ACTS" : "P2 ACTS");
+      kicker = step.kicker + "  ·  " + who;
+    } else if (G.mode === "versus") kicker = step.kicker + "  ·  FIRST LOCK WINS";
+    const tableW = Math.min(430, rect.w * 0.44);
+    const textW = Math.max(160, rect.w - tableW - 44);
+    const leftX = rect.x + 16;
+    const askPad = 10;
+    const askX = leftX;
+    const askW = textW;
+
+    setFont("700", fs(11));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = COL.amber;
+    ctx.fillText(kicker, leftX, rect.y + 8);
+    setFont("700", fs(13));
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(m.title, leftX, rect.y + 26);
+
+    // Hero ASK block — the player's job, not the scenario blurb.
+    setFont("800", fs(16));
+    const askLines = wrap(step.prompt, askW - askPad * 2);
+    const shownAsk = askLines.slice(0, 2);
+    const askH = Math.max(44, 18 + shownAsk.length * (fs(16) + 4) + (G.step === 0 ? fs(12) + 6 : 0));
+    const askY = rect.y + 46;
+    roundRect(askX, askY, askW, Math.min(askH, rect.h - 54), 10);
+    ctx.fillStyle = "rgba(255, 193, 74, 0.14)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 193, 74, 0.55)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    setFont("800", fs(11));
+    ctx.fillStyle = COL.amber;
+    ctx.fillText("YOUR TASK", askX + askPad, askY + 8);
+    setFont("800", fs(16));
+    ctx.fillStyle = COL.ink;
+    let ty = askY + 24;
+    for (const line of shownAsk) {
+      ctx.fillText(line, askX + askPad, ty);
+      ty += fs(16) + 3;
+    }
+    if (G.step === 0 && m.blurb && ty < askY + askH - 4) {
+      setFont("600", fs(11));
+      ctx.fillStyle = COL.dim;
+      const blurbs = wrap(m.blurb, askW - askPad * 2);
+      if (blurbs[0]) ctx.fillText(blurbs[0], askX + askPad, ty + 2);
+    }
+    drawTable(rect.x + rect.w - tableW - 12, rect.y + 12, tableW, rect.h - 24, m.table);
+  }
+
+  function drawTable(x, y, w, h, table) {
+    roundRect(x, y, w, h, 10);
+    ctx.fillStyle = "rgba(6, 14, 28, 0.8)";
+    ctx.fill();
+    const cols = table.xs.length;
+    const rows = table.rows.length + 1;
+    const colW = w / (cols + 1);
+    const rowH = h / rows;
+    setFont("700", Math.max(10, fs(12)), true);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(table.xHead, x + colW / 2, y + rowH / 2);
+    for (let c = 0; c < cols; c++) {
+      ctx.fillStyle = COL.cyan;
+      ctx.fillText(table.xs[c], x + colW * (c + 1.5), y + rowH / 2);
+    }
+    for (let r = 0; r < table.rows.length; r++) {
+      const row = table.rows[r];
+      const rowColor = r === 1 ? COL.magenta : (table.rows.length > 1 ? COL.cyan : COL.ink);
+      setFont("800", Math.max(10, fs(11)), true);
+      ctx.fillStyle = rowColor;
+      ctx.fillText(row.head, x + colW / 2, y + rowH * (r + 1.5));
+      setFont("700", Math.max(10, fs(12)), true);
+      for (let c = 0; c < row.cells.length; c++) {
+        ctx.fillText(row.cells[c], x + colW * (c + 1.5), y + rowH * (r + 1.5));
+      }
+    }
+  }
+
+  function drawRig(rect) {
+    const m = G.mission;
+    panel(rect.x, rect.y, rect.w, rect.h, "rgba(61,240,255,0.22)");
+    setFont("700", fs(11));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText("LIVE RIG", rect.x + 14, rect.y + 10);
+    if (rect.h < 40 || rect.w < 40) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x + 8, rect.y + 28, rect.w - 16, rect.h - 38);
+    ctx.clip();
+    if (m.rig === "battery") drawBattery(rect, m);
+    else if (m.rig === "tank") drawTank(rect, m);
+    else if (m.rig === "journey") drawJourneyRig(rect, m);
+    else drawSpringRig(rect, m);
+    ctx.restore();
+  }
+
+  function drawBattery(rect, m) {
+    const y = sampleAt(m, G.play);
+    const top = m.filling ? Math.max(m.yMax, 1) : Math.max(m.cDisp, 0.001);
+    const level = clamp(y / top, 0, 1);
+    const cx = rect.x + rect.w * 0.42;
+    const base = rect.y + rect.h - 36;
+    const bh = Math.min(rect.h * 0.62, 220);
+    const bw = Math.min(70, rect.w * 0.22);
+    const topY = base - bh;
+    ctx.fillStyle = "rgba(61,240,255,0.08)";
+    roundRect(cx - bw / 2 - 16, topY - 18, bw + 32, bh + 34, 18);
+    ctx.fill();
+    roundRect(cx - 14, topY - 16, 28, 12, 3);
+    ctx.fillStyle = "#9fb4c8";
+    ctx.fill();
+    roundRect(cx - bw / 2, topY, bw, bh, 16);
+    ctx.fillStyle = "#121a28";
+    ctx.fill();
+    ctx.save();
+    roundRect(cx - bw / 2 + 6, topY + 6, bw - 12, bh - 12, 12);
+    ctx.clip();
+    const fillH = (bh - 12) * level;
+    const grd = ctx.createLinearGradient(0, base, 0, topY);
+    grd.addColorStop(0, level > 0.35 ? "#1ad98a" : "#ff4d6a");
+    grd.addColorStop(1, "#9dffe2");
+    ctx.fillStyle = grd;
+    ctx.fillRect(cx - bw / 2, base - 6 - fillH, bw, fillH + 8);
+    ctx.restore();
+    ctx.strokeStyle = COL.cyan;
+    ctx.lineWidth = 2;
+    roundRect(cx - bw / 2, topY, bw, bh, 16);
+    ctx.stroke();
+    setFont("800", fs(22));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.ink;
+    const label = m.style === "prop" ? fmtVal(y, "prop") : fmtNum(y) + (m.unit === "%" ? "%" : " L");
+    ctx.fillText(label, cx, topY + bh / 2);
+    setFont("600", fs(12));
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(m.filling ? "CHARGING" : "LIVE CELL", cx, base + 16);
+    if (G.reveal >= 2) {
+      setFont("700", fs(13));
+      ctx.fillStyle = COL.amber;
+      ctx.fillText(m.eqCaption, rect.x + rect.w * 0.72, rect.y + rect.h * 0.55);
+    }
+  }
+
+  function drawTank(rect, m) {
+    const y = sampleAt(m, G.play);
+    const top = Math.max(m.yMax * 0.86, m.cDisp, 1);
+    const level = clamp(y / top, 0, 1);
+    const cx = rect.x + rect.w * 0.4;
+    const base = rect.y + rect.h - 42;
+    const bh = Math.min(rect.h * 0.58, 200);
+    const bw = Math.min(86, rect.w * 0.28);
+    const topY = base - bh;
+    ctx.strokeStyle = "#8fd0ff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(cx - bw / 2, topY, bw, bh);
+    ctx.fillStyle = "rgba(10, 20, 32, 0.8)";
+    ctx.fillRect(cx - bw / 2, topY, bw, bh);
+    ctx.fillStyle = m.filling ? "rgba(61,240,255,0.75)" : "rgba(80,170,255,0.72)";
+    ctx.fillRect(cx - bw / 2 + 3, topY + bh - (bh - 6) * level - 3, bw - 6, (bh - 6) * level);
+    ctx.fillStyle = "rgba(255,255,255,0.2)";
+    ctx.fillRect(cx - bw / 2 + 6, topY + 8, 6, bh - 16);
+    setFont("800", fs(18));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(fmtNum(y) + " " + m.unit, cx, topY + bh / 2);
+    ctx.fillStyle = COL.dim;
+    setFont("600", fs(12));
+    ctx.fillText(m.filling ? "INLET OPEN" : "OUTLET OPEN", cx, base + 18);
+    ctx.strokeStyle = COL.amber;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    if (m.filling) {
+      ctx.moveTo(cx + bw / 2 + 8, topY + 16);
+      ctx.lineTo(cx + bw / 2 + 28, topY + 16);
+    } else {
+      ctx.moveTo(cx + bw / 2, base - 16);
+      ctx.lineTo(cx + bw / 2 + 24, base - 8);
+    }
+    ctx.stroke();
+  }
+
+  function drawJourneyRig(rect, m) {
+    const j = m.journey;
+    const dist = sampleAt(m, G.play);
+    const t = G.play;
+    const left = rect.x + 36;
+    const right = rect.x + rect.w - 46;
+    const road = rect.y + rect.h * 0.62;
+    ctx.strokeStyle = "rgba(61,240,255,0.35)";
+    ctx.lineWidth = 8;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(left, road);
+    ctx.lineTo(right, road);
+    ctx.stroke();
+    ctx.fillStyle = COL.dim;
+    setFont("600", fs(11));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText("HOME", left, road + 14);
+    ctx.fillText(j.place.toUpperCase(), right, road + 14);
+    const u = j.D ? dist / j.D : 0;
+    const x = lerp(left, right, clamp(u, 0, 1));
+    drawBuilding(left, road, COL.cyan, false);
+    drawBuilding(right, road, COL.amber, true);
+    const resting = t >= j.tOut - 0.02 && t <= j.tOut + j.tStop + 0.02 && dist > j.D * 0.92;
+    drawBike(x, road - 8, 1, resting ? COL.amber : COL.cyan, G.time * (resting ? 0 : 10));
+    setFont("700", fs(13));
+    ctx.textAlign = "left";
+    ctx.fillStyle = COL.ink;
+    let status = "moving";
+    if (G.reveal >= 1 && t <= j.tOut) status = j.vOut + " km/h outbound";
+    else if (G.reveal >= 2 && resting) status = "stationary · 0 km/h";
+    else if (G.reveal >= 2 && t > j.tOut + j.tStop) status = j.vBack + " km/h return";
+    else if (resting) status = "holding at the stop";
+    ctx.fillText(status, rect.x + 16, rect.y + 34);
+    ctx.fillStyle = COL.dim;
+    setFont("600", fs(12));
+    ctx.fillText(fmtNum(dist) + " km from home", rect.x + 16, rect.y + 52);
+    if (G.reveal >= 3 && m.resultCaption) {
+      ctx.fillStyle = COL.amber;
+      setFont("800", fs(14));
+      ctx.fillText(m.resultCaption, rect.x + 16, rect.y + rect.h - 46);
+    }
+  }
+
+  function drawBuilding(x, road, color, library) {
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(x - 10, road - 34, 20, 34);
+    ctx.fillStyle = "#071018";
+    ctx.fillRect(x - 5, road - 16, 10, 16);
+    if (library) {
+      ctx.fillStyle = COL.amber;
+      ctx.fillRect(x - 14, road - 40, 28, 6);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBike(x, y, scale, color, spin) {
+    const r = 10 * scale;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x - 14, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + 14, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 14, y);
+    ctx.lineTo(x - 2, y - 16);
+    ctx.lineTo(x + 14, y);
+    ctx.moveTo(x - 2, y - 16);
+    ctx.lineTo(x + 6, y - 16);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + 2, y - 26, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(x - 14 - Math.cos(spin) * r, y - Math.sin(spin) * r);
+    ctx.lineTo(x - 14 + Math.cos(spin) * r, y + Math.sin(spin) * r);
+    ctx.moveTo(x + 14 - Math.cos(spin + 1) * r, y - Math.sin(spin + 1) * r);
+    ctx.lineTo(x + 14 + Math.cos(spin + 1) * r, y + Math.sin(spin + 1) * r);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawSpringBadge(x, y, color, title, detail) {
+    setFont("900", fs(18));
+    const titleW = ctx.measureText(title).width;
+    setFont("700", fs(11));
+    const detailW = ctx.measureText(detail).width;
+    const w = Math.max(88, Math.min(124, Math.max(titleW, detailW) + 28));
+    const h = 40;
+    roundRect(x - w / 2, y - h, w, h, 8);
+    ctx.fillStyle = "rgba(8, 14, 26, 0.92)";
+    ctx.fill();
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    setFont("900", fs(18));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = color;
+    ctx.fillText(title, x, y - h + 14);
+    setFont("700", fs(11));
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(detail, x, y - h + 30);
+  }
+
+  function drawSpringRig(rect, m) {
+    const sp = m.spring;
+    const mass = G.celebrate > 0 ? m.focusX : G.play;
+    const stableMax = Math.max(m.yMax, 16);
+    const ceiling = rect.y + 44;
+    const avail = Math.max(30, rect.h - 92);
+    const px = avail / stableMax;
+    const midL = rect.x + rect.w * 0.34;
+    const midR = rect.x + rect.w * 0.66;
+    const lenA = springCm(sp.a, mass);
+    const lenB = springCm(sp.b, mass);
+    ctx.strokeStyle = "#d5e6f5";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(rect.x + 20, ceiling);
+    ctx.lineTo(rect.x + rect.w - 20, ceiling);
+    ctx.stroke();
+    drawOneSpring(midL, ceiling, lenA, px, COL.cyan, "A", mass);
+    drawOneSpring(midR, ceiling, lenB, px, COL.magenta, "B", mass);
+    // Nameplates overlaid under the beam so Spring A / B stay obvious.
+    drawSpringBadge(midL, ceiling + 44, COL.cyan, "SPRING A", fmtNum(lenA) + " cm");
+    drawSpringBadge(midR, ceiling + 44, COL.magenta, "SPRING B", fmtNum(lenB) + " cm");
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    const rx = rect.x + 18;
+    ctx.beginPath();
+    ctx.moveTo(rx, ceiling);
+    ctx.lineTo(rx, ceiling + stableMax * px);
+    ctx.stroke();
+    setFont("600", fs(10), true);
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.dim;
+    const tick = stableMax > 30 ? 5 : 2;
+    for (let cm = 0; cm <= stableMax; cm += tick) {
+      const yy = ceiling + cm * px;
+      ctx.fillText(String(cm), rx - 4, yy);
+    }
+    if (G.reveal >= 2) {
+      setFont("700", fs(12));
+      ctx.textAlign = "left";
+      ctx.fillStyle = COL.amber;
+      const cap = wrap(m.eqCaption, rect.w - 24);
+      ctx.fillText(cap[0], rect.x + 12, rect.y + rect.h - 28);
+    }
+  }
+
+  function drawOneSpring(x, y, cm, pxPer, color, name, mass) {
+    const len = Math.max(18, cm * pxPer);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    const coils = 8;
+    const steps = coils * 8;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const px = x + Math.sin(t * coils * Math.PI * 2) * 12;
+      const py = y + len * t;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    const hy = y + len;
+    // Colored weight plate with clear A/B letter.
+    roundRect(x - 22, hy, 44, 34, 6);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.22;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#101826";
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    setFont("900", fs(16));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = color;
+    ctx.fillText(name, x - 12, hy + 17);
+    setFont("700", fs(11));
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(Math.round(mass) + " g", x + 10, hy + 17);
+  }
+
+  function axisTicks(min, max, goal) {
+    const span = Math.max(0.001, max - min);
+    const rough = span / goal;
+    const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+    const err = rough / pow;
+    const step = err >= 7.5 ? 10 * pow : err >= 3.5 ? 5 * pow : err >= 1.5 ? 2 * pow : pow;
+    const out = [];
+    let v = Math.ceil((min - 1e-6) / step) * step;
+    for (let i = 0; i < 14 && v <= max + step * 0.01; i++, v += step) {
+      out.push(Math.round(v * 1000) / 1000);
+    }
+    return out;
+  }
+
+  function drawXAxisLabels(xt, X, plot, xMax, clockTicks) {
+    setFont("600", fs(clockTicks ? 10 : 11));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = COL.dim;
+    const rowGap = fs(10) + 3;
+    const candidates = xt.filter((t) => t.v >= -0.01 && t.v <= xMax + 0.01);
+    const items = candidates.map((t) => {
+      const label = String(t.label || fmtNum(t.v));
+      const tw = ctx.measureText(label).width;
+      const cx = X(t.v);
+      return { label: label, cx: cx, left: cx - tw / 2 - 4, right: cx + tw / 2 + 4, row: 0 };
+    });
+    // Greedy left-to-right stagger when clock labels sit too close (e.g. short rest stops).
+    for (let i = 0; i < items.length; i++) {
+      let row = 0;
+      for (; row < 3; row++) {
+        const hit = items.slice(0, i).some((p) => p.row === row && !(items[i].right < p.left || items[i].left > p.right));
+        if (!hit) break;
+      }
+      items[i].row = row;
+    }
+    // Keep journey start/end clocks on the top row; push any colliding middle labels down.
+    if (items.length) {
+      items[0].row = 0;
+      items[items.length - 1].row = 0;
+      for (let j = 1; j < items.length - 1; j++) {
+        const clashStart = !(items[j].right < items[0].left || items[j].left > items[0].right);
+        const clashEnd = !(items[j].right < items[items.length - 1].left || items[j].left > items[items.length - 1].right);
+        if ((clashStart || clashEnd) && items[j].row === 0) items[j].row = 1;
+      }
+    }
+    for (const p of items) {
+      ctx.fillText(p.label, p.cx, plot.y + plot.h + 4 + p.row * rowGap);
+    }
+  }
+
+  function drawGraph(rect) {
+    const m = G.mission;
+    panel(rect.x, rect.y, rect.w, rect.h, "rgba(255,79,216,0.22)");
+    setFont("700", fs(11));
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = COL.magenta;
+    ctx.fillText("LINEAR GRAPH", rect.x + 14, rect.y + 10);
+    if (G.reveal >= 2 && m.eqCaption) {
+      setFont("700", fs(12));
+      ctx.fillStyle = COL.amber;
+      const cap = G.reveal >= 3 && m.resultCaption ? m.resultCaption : m.eqCaption;
+      const shown = wrap(cap, rect.w - 150);
+      ctx.fillText(shown[0], rect.x + 130, rect.y + 10);
+    }
+    const clockTicks = !!(m.xTicks && m.xTicks.length && String(m.xTicks[0].label || "").indexOf(":") !== -1);
+    const bottomPad = clockTicks ? 78 : 64;
+    const plot = {
+      x: rect.x + 54,
+      y: rect.y + 36,
+      w: Math.max(10, rect.w - 70),
+      h: Math.max(10, rect.h - bottomPad),
+    };
+    const mix = G.reveal >= 2 ? clamp(G.line, 0, 1) : 0;
+    const xMax = lerp(m.xMaxTable, m.xMaxFull, m.xMaxFull > m.xMaxTable + 0.5 ? mix : 0);
+    const yMax = m.yMax;
+    G.plot = { x: plot.x, y: plot.y, w: plot.w, h: plot.h, xMin: 0, xMax: xMax, yMin: 0, yMax: yMax };
+    const X = (v) => plot.x + (v / xMax) * plot.w;
+    const Y = (v) => plot.y + plot.h - (v / yMax) * plot.h;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(90, 140, 180, 0.18)";
+    ctx.lineWidth = 1;
+    const xt = m.xTicks || axisTicks(0, xMax, 6).map((v) => ({ v: v, label: fmtNum(v) }));
+    const yt = axisTicks(0, yMax, 5);
+    for (const t of yt) {
+      ctx.beginPath();
+      ctx.moveTo(plot.x, Y(t));
+      ctx.lineTo(plot.x + plot.w, Y(t));
+      ctx.stroke();
+    }
+    for (const t of xt) {
+      ctx.beginPath();
+      ctx.moveTo(X(t.v), plot.y);
+      ctx.lineTo(X(t.v), plot.y + plot.h);
+      ctx.stroke();
+    }
+    if (G.reveal >= 2 && m.segs) {
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "round";
+      const endT = (m.segs[m.segs.length - 1].t1) * G.line;
+      for (const s of m.segs) {
+        if (s.t0 >= endT) break;
+        const t1 = Math.min(s.t1, endT);
+        const u = (t1 - s.t0) / (s.t1 - s.t0 || 1);
+        ctx.strokeStyle = s.color;
+        ctx.beginPath();
+        ctx.moveTo(X(s.t0), Y(s.d0));
+        ctx.lineTo(X(s.t0 + (s.t1 - s.t0) * u), Y(s.d0 + (s.d1 - s.d0) * u));
+        ctx.stroke();
+      }
+    }
+    if (G.reveal >= 2 && m.lines) {
+      for (const ln of m.lines) {
+        const x1 = xMax * G.line;
+        ctx.strokeStyle = ln.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(X(0), Y(ln.c));
+        ctx.lineTo(X(x1), Y(ln.m * x1 + ln.c));
+        ctx.stroke();
+      }
+    }
+    if (G.step >= 2 && m.guide && G.reveal < 3) {
+      ctx.save();
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = COL.amber;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (m.guide.axis === "y") {
+        ctx.moveTo(plot.x, Y(m.guide.value));
+        ctx.lineTo(plot.x + plot.w, Y(m.guide.value));
+      } else {
+        ctx.moveTo(X(m.guide.value), plot.y);
+        ctx.lineTo(X(m.guide.value), plot.y + plot.h);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (G.reveal >= 3 && m.solution) {
+      const marks = m.solution.marks || [{ x: m.solution.x, y: m.solution.y, color: COL.amber }];
+      for (const mk of marks) {
+        if (mk.y == null) continue;
+        ctx.fillStyle = mk.color || COL.amber;
+        ctx.beginPath();
+        ctx.arc(X(mk.x), Y(mk.y), 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (G.reveal >= 2) {
+      const tx = G.play;
+      if (m.lines) {
+        for (const ln of m.lines) {
+          const yy = ln.m * tx + ln.c;
+          ctx.fillStyle = ln.color;
+          ctx.beginPath();
+          ctx.arc(X(clamp(tx, 0, xMax)), Y(yy), 4.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
+        const yy = sampleAt(m, tx);
+        ctx.fillStyle = COL.cyan;
+        ctx.beginPath();
+        ctx.arc(X(clamp(tx, 0, xMax)), Y(yy), 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (const p of m.points) {
+      ctx.fillStyle = p.color || COL.ink;
+      ctx.beginPath();
+      ctx.arc(X(p.x), Y(p.y), 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#071018";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    if (G.mouseOn && G.pointer) {
+      const mx = G.mouseX;
+      const my = G.mouseY;
+      if (mx >= plot.x && mx <= plot.x + plot.w && my >= plot.y && my <= plot.y + plot.h) {
+        const dx = ((mx - plot.x) / plot.w) * xMax;
+        const dy = ((plot.y + plot.h - my) / plot.h) * yMax;
+        ctx.save();
+        ctx.setLineDash([3, 4]);
+        ctx.strokeStyle = "rgba(231,242,255,0.65)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mx, plot.y);
+        ctx.lineTo(mx, plot.y + plot.h);
+        ctx.moveTo(plot.x, my);
+        ctx.lineTo(plot.x + plot.w, my);
+        ctx.stroke();
+        ctx.restore();
+        const label = "(" + fmtNum(dx) + ", " + fmtNum(dy) + ")";
+        setFont("700", fs(12), true);
+        const tw = ctx.measureText(label).width + 12;
+        const lx = clamp(mx + 10, plot.x, plot.x + plot.w - tw);
+        const ly = clamp(my - 26, plot.y, plot.y + plot.h - 20);
+        roundRect(lx, ly, tw, 18, 4);
+        ctx.fillStyle = "rgba(6,12,24,0.9)";
+        ctx.fill();
+        ctx.fillStyle = COL.ink;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, lx + 6, ly + 9);
+      }
+    }
+    ctx.restore();
+    ctx.strokeStyle = COL.ink;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(plot.x, plot.y);
+    ctx.lineTo(plot.x, plot.y + plot.h);
+    ctx.lineTo(plot.x + plot.w, plot.y + plot.h);
+    ctx.stroke();
+    drawXAxisLabels(xt, X, plot, xMax, clockTicks);
+    setFont("600", fs(11));
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.dim;
+    for (const t of yt) ctx.fillText(fmtNum(t), plot.x - 6, Y(t));
+    setFont("600", fs(11));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(m.xLabel, plot.x + plot.w / 2, rect.y + rect.h - (clockTicks ? 12 : 14));
+    ctx.save();
+    ctx.translate(rect.x + 14, plot.y + plot.h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(m.yLabel, 0, 0);
+    ctx.restore();
+    if (m.lines && m.lines.length > 1) {
+      setFont("700", fs(11));
+      ctx.textAlign = "left";
+      ctx.fillStyle = COL.cyan;
+      ctx.fillText("A", rect.x + rect.w - 46, rect.y + 28);
+      ctx.fillStyle = COL.magenta;
+      ctx.fillText("B", rect.x + rect.w - 28, rect.y + 28);
+    }
+  }
+
+  function richWidth(line, size) {
+    if (typeof line === "string") {
+      setFont("700", size);
+      return ctx.measureText(line).width;
+    }
+    setFont("700", size);
+    const prefix = line.prefix ? ctx.measureText(line.prefix).width : 0;
+    const whole = line.whole ? ctx.measureText(String(line.whole)).width + 4 : 0;
+    const fsSmall = Math.max(10, Math.round(size * 0.58));
+    setFont("700", fsSmall);
+    const fw = Math.max(ctx.measureText(String(line.n)).width, ctx.measureText(String(line.d)).width) + 6;
+    setFont("700", size);
+    const suffix = line.suffix ? ctx.measureText(line.suffix).width : 0;
+    return prefix + whole + fw + suffix;
+  }
+
+  function drawRich(line, cx, y, size, color) {
+    ctx.fillStyle = color;
+    if (typeof line === "string") {
+      setFont("700", size);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(line, cx, y);
+      return;
+    }
+    const fsSmall = Math.max(10, Math.round(size * 0.58));
+    const width = richWidth(line, size);
+    let x = cx - width / 2;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    if (line.prefix) {
+      setFont("700", size);
+      ctx.fillText(line.prefix, x, y);
+      x += ctx.measureText(line.prefix).width;
+    }
+    if (line.whole) {
+      setFont("700", size);
+      ctx.fillText(String(line.whole), x, y);
+      x += ctx.measureText(String(line.whole)).width + 4;
+    }
+    setFont("700", fsSmall);
+    const fw = Math.max(ctx.measureText(String(line.n)).width, ctx.measureText(String(line.d)).width) + 6;
+    const mid = x + fw / 2;
+    ctx.textAlign = "center";
+    ctx.fillText(String(line.n), mid, y - fsSmall * 0.58);
+    ctx.fillText(String(line.d), mid, y + fsSmall * 0.66);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, size / 14);
+    ctx.beginPath();
+    ctx.moveTo(x + 1, y);
+    ctx.lineTo(x + fw - 1, y);
+    ctx.stroke();
+    x += fw;
+    if (line.suffix) {
+      setFont("700", size);
+      ctx.textAlign = "left";
+      ctx.fillText(line.suffix, x, y);
+    }
+  }
+
+  function drawDeck(rect) {
+    const m = G.mission;
+    const step = m.steps[G.step];
+    const narrow = G.layout.narrow;
+    const pad = 12;
+    G.ui.cards = [];
+    const lockW = narrow ? rect.w - pad * 2 : Math.max(118, rect.w * 0.13);
+    if (!narrow) {
+      const gap = 8;
+      const cardsW = rect.w - pad * 2 - lockW - 10;
+      const cw = (cardsW - gap * 3) / 4;
+      const ch = rect.h - 18;
+      const y = rect.y + 9;
+      for (let i = 0; i < 4; i++) {
+        const x = pad + i * (cw + gap);
+        G.ui.cards.push({ x: x, y: y, w: cw, h: ch });
+      }
+      G.ui.lock = { x: pad + cardsW + 10, y: y, w: lockW, h: ch };
+    } else {
+      const gap = 8;
+      const cw = (rect.w - pad * 2 - gap) / 2;
+      const lockH = 42;
+      const ch = (rect.h - 16 - lockH - gap) / 2;
+      const y0 = rect.y + 8;
+      for (let i = 0; i < 4; i++) {
+        const col = i % 2;
+        const row = i < 2 ? 0 : 1;
+        G.ui.cards.push({ x: pad + col * (cw + gap), y: y0 + row * (ch + gap), w: cw, h: ch });
+      }
+      G.ui.lock = { x: pad, y: rect.y + rect.h - lockH - 6, w: rect.w - pad * 2, h: lockH };
+    }
+    for (let i = 0; i < 4; i++) drawCard(G.ui.cards[i], step.options[i], i);
+    drawLock(G.ui.lock);
+    G.ui.cards.forEach((c, i) => zones.push({ id: "card", index: i, x: c.x, y: c.y, w: c.w, h: c.h }));
+    zones.push({ id: "lock", x: G.ui.lock.x, y: G.ui.lock.y, w: G.ui.lock.w, h: G.ui.lock.h });
+  }
+
+  function cardHot(i) {
+    if (G.mode === "solo") return G.players[0].sel === i;
+    return G.players[0].sel === i || G.players[1].sel === i;
+  }
+  function cardArmed(i) {
+    return G.players[0].armed === i || (G.mode !== "solo" && G.players[1].armed === i);
+  }
+
+  function drawCard(r, opt, index) {
+    const hot = cardHot(index);
+    const armed = cardArmed(index);
+    const flash = G.flash && G.flash.index === index && performance.now() < G.flash.until;
+    let accent = "rgba(140,170,210,0.28)";
+    if (armed) accent = COL.cyan;
+    if (hot) accent = COL.amber;
+    if (flash) accent = G.flash.ok ? COL.good : COL.bad;
+    roundRect(r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = flash ? (G.flash.ok ? "rgba(61,255,154,0.16)" : "rgba(255,77,106,0.16)") : (armed ? "rgba(61,240,255,0.1)" : "rgba(12,18,34,0.94)");
+    ctx.fill();
+    ctx.lineWidth = hot || armed ? 2.4 : 1.4;
+    ctx.strokeStyle = accent;
+    ctx.stroke();
+    const lines = opt.lines;
+    let size = fs(16);
+    const maxW = r.w - 16;
+    for (let guard = 0; guard < 8; guard++) {
+      const widest = Math.max.apply(null, lines.map((ln) => richWidth(ln, size)));
+      if (widest <= maxW || size <= 11) break;
+      size -= 1;
+    }
+    const gap = size + 8;
+    let y = r.y + r.h / 2 - ((lines.length - 1) * gap) / 2;
+    for (const line of lines) {
+      drawRich(line, r.x + r.w / 2, y, size, COL.ink);
+      y += gap;
+    }
+    const tags = [];
+    if (G.players[0].propose === index) tags.push({ t: "P1", c: COL.red });
+    if (G.players[1].propose === index) tags.push({ t: "P2", c: COL.blue });
+    tags.forEach((tag, i) => {
+      setFont("800", fs(10));
+      ctx.fillStyle = tag.c;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(tag.t, r.x + 8 + i * 28, r.y + 6);
+    });
+  }
+
+  function drawLock(r) {
+    const hot = cardHot(4);
+    const coopDual = G.mode === "coop" && G.step === 2;
+    roundRect(r.x, r.y, r.w, r.h, 12);
+    const g = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+    g.addColorStop(0, "#243044");
+    g.addColorStop(1, "#151c2c");
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = hot ? 2.5 : 1.5;
+    ctx.strokeStyle = hot ? COL.amber : "rgba(140,160,190,0.4)";
+    ctx.stroke();
+    setFont("800", fs(r.h < 70 ? 11 : 13));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(coopDual ? "DUAL LOCK" : "CLICK A CARD", r.x + r.w / 2, r.y + r.h / 2 - 8);
+    setFont("700", fs(10));
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(coopDual ? "same card both" : "or Space / A", r.x + r.w / 2, r.y + r.h / 2 + 10);
+  }
+
+  function drawHint(rect) {
+    if (!G.hint || rect.h < 16) return;
+    const color = G.hintKind === "ok" ? COL.good : G.hintKind === "bad" ? COL.bad : COL.cyan;
+    roundRect(rect.x, rect.y, rect.w, rect.h, 10);
+    ctx.fillStyle = "rgba(8, 12, 24, 0.92)";
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    setFont("600", fs(14));
+    ctx.fillStyle = color;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const lines = wrap(G.hint, rect.w - 24);
+    let y = rect.y + 8;
+    for (const line of lines) {
+      ctx.fillText(line, rect.x + 12, y);
+      y += fs(14) + 3;
+    }
+  }
+
+  function drawReticles() {
+    if (G.screen !== "play") return;
+    const count = G.mode === "solo" ? 1 : 2;
+    for (let pi = 0; pi < count; pi++) {
+      if (G.mode === "coop" && owners().indexOf(pi) === -1 && G.step !== 2) continue;
+      const pos = reticlePos(pi);
+      const color = G.mode === "solo" ? COL.cyan : (pi === 0 ? COL.red : COL.blue);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 11, 0, Math.PI * 2);
+      ctx.moveTo(pos.x - 16, pos.y);
+      ctx.lineTo(pos.x - 6, pos.y);
+      ctx.moveTo(pos.x + 6, pos.y);
+      ctx.lineTo(pos.x + 16, pos.y);
+      ctx.moveTo(pos.x, pos.y - 16);
+      ctx.lineTo(pos.x, pos.y - 6);
+      ctx.moveTo(pos.x, pos.y + 6);
+      ctx.lineTo(pos.x, pos.y + 16);
+      ctx.stroke();
+      if (G.mode !== "solo") {
+        setFont("800", fs(11));
+        ctx.fillStyle = color;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(pi === 0 ? "P1" : "P2", pos.x + 14, pos.y - 10);
+      }
+      ctx.restore();
+    }
+  }
+
+  function reticlePos(pi) {
+    if (G.pointer && G.mouseOn && mousePlayer() === pi) return { x: G.mouseX, y: G.mouseY };
+    const sel = G.players[pi].sel;
+    let z = null;
+    if (sel >= 0 && sel <= 3 && G.ui.cards[sel]) z = G.ui.cards[sel];
+    if (sel === 4) z = G.ui.lock;
+    if (z) return { x: z.x + z.w / 2, y: z.y + 16 };
+    return { x: view.w * (pi === 0 ? 0.35 : 0.65), y: view.h - 70 };
+  }
+
+  function drawFloaters() {
+    for (const f of floaters) {
+      const a = 1 - f.age / f.life;
+      ctx.globalAlpha = Math.max(0, a);
+      setFont("800", fs(20));
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const a = 1 - p.age / p.life;
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawMute() {
+    const r = { x: view.w - 88, y: 10, w: 74, h: Math.max(28, (G.layout ? G.layout.hudH : 56) - 20) };
+    roundRect(r.x, r.y, r.w, r.h, 8);
+    ctx.fillStyle = audio.muted ? "rgba(255,77,106,0.2)" : "rgba(61,240,255,0.12)";
+    ctx.fill();
+    ctx.strokeStyle = audio.muted ? COL.bad : COL.cyan;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    setFont("800", fs(12));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(audio.muted ? "MUTED" : "SOUND", r.x + r.w / 2, r.y + r.h / 2);
+    zones.push({ id: "mute", x: r.x, y: r.y, w: r.w, h: r.h });
+  }
+
+  function drawTitle() {
+    setFont("800", fs(18));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText("SINGAPORE SECONDARY 1  ·  LINEAR GRAPHS", view.w / 2, view.h * 0.12);
+    setFont("800", fs(40));
+    ctx.fillStyle = COL.ink;
+    ctx.fillText("CHRONO-MOTION & HOOKE'S LAB", view.w / 2, view.h * 0.2);
+    setFont("700", fs(18));
+    ctx.fillStyle = COL.amber;
+    ctx.fillText("Rate Simulator", view.w / 2, view.h * 0.26);
+    setFont("600", fs(15));
+    ctx.fillStyle = COL.dim;
+    const sub = "Read c at x = 0, read the gradient as a rate, then predict.";
+    ctx.fillText(sub, view.w / 2, view.h * 0.32);
+    const modes = [
+      { id: "solo", t: "SOLO PHYSICIST", d: "Mouse, keyboard, or one 8BitDo. Three lab shields." },
+      { id: "coop", t: "2P CO-OP TEAM", d: "Shared team score only. You alternate steps, then lock step 3 together." },
+      { id: "versus", t: "2P VERSUS", d: "Same experiment. First correct lock takes speed points. Step 3 awards a star." },
+    ];
+    const bw = Math.min(760, view.w - 80);
+    const bh = 64;
+    const x = (view.w - bw) / 2;
+    let y = view.h * 0.4;
+    modes.forEach((mode, i) => {
+      const hot = G.titleSel === i;
+      roundRect(x, y, bw, bh, 12);
+      ctx.fillStyle = hot ? "rgba(61,240,255,0.12)" : "rgba(10,16,32,0.9)";
+      ctx.fill();
+      ctx.strokeStyle = hot ? COL.cyan : "rgba(140,170,200,0.3)";
+      ctx.lineWidth = hot ? 2.4 : 1.4;
+      ctx.stroke();
+      setFont("800", fs(16));
+      ctx.textAlign = "left";
+      ctx.fillStyle = COL.ink;
+      ctx.fillText(mode.t, x + 18, y + 24);
+      setFont("600", fs(13));
+      ctx.fillStyle = COL.dim;
+      ctx.fillText(mode.d, x + 18, y + 46);
+      zones.push({ id: "mode", mode: mode.id, index: i, x: x, y: y, w: bw, h: bh });
+      y += bh + 12;
+    });
+    setFont("600", fs(13));
+    ctx.textAlign = "center";
+    ctx.fillStyle = COL.dim;
+    ctx.fillText("Click a card once to lock     ·     P1 W/A/S/D + Space     ·     P2 Arrows + Enter     ·     8BitDo A     ·     M mute", view.w / 2, view.h * 0.86);
+    ctx.fillStyle = COL.amber;
+    ctx.fillText("BEST SCORE  " + G.best, view.w / 2, view.h * 0.91);
+    if (G.pointer) {
+      const z = zoneAt(G.mouseX, G.mouseY);
+      if (z && z.id === "mode") G.titleSel = z.index;
+    }
+  }
+
+  function drawOver() {
+    panel(view.w / 2 - 280, view.h / 2 - 180, 560, 360, COL.bad);
+    setFont("800", fs(28));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = COL.bad;
+    ctx.fillText("SHIELDS DOWN", view.w / 2, view.h / 2 - 120);
+    setFont("600", fs(16));
+    ctx.fillStyle = COL.ink;
+    const reason = G.mode === "versus" ? versusLead() : (G.overReason || "Lab shields depleted.");
+    const lines = wrap(reason, 480);
+    lines.forEach((line, i) => ctx.fillText(line, view.w / 2, view.h / 2 - 78 + i * 22));
+    ctx.fillStyle = COL.amber;
+    if (G.mode === "versus") {
+      ctx.fillText("P1  ★ " + G.players[0].stars + "   " + G.players[0].score + "     P2  ★ " + G.players[1].stars + "   " + G.players[1].score, view.w / 2, view.h / 2 - 10);
+    } else {
+      ctx.fillText((G.mode === "coop" ? "TEAM SCORE  " : "SCORE  ") + G.score + "    ·    ROUND " + G.round, view.w / 2, view.h / 2 - 10);
+    }
+    const labels = ["RUN IT BACK", "TITLE"];
+    labels.forEach((label, i) => {
+      const x = view.w / 2 - 220 + i * 230;
+      const y = view.h / 2 + 50;
+      roundRect(x, y, 200, 52, 10);
+      ctx.fillStyle = G.overSel === i ? "rgba(61,240,255,0.16)" : "rgba(8,12,24,0.5)";
+      ctx.fill();
+      ctx.strokeStyle = G.overSel === i ? COL.cyan : "rgba(140,170,200,0.35)";
+      ctx.stroke();
+      ctx.fillStyle = COL.ink;
+      setFont("800", fs(15));
+      ctx.fillText(label, x + 100, y + 26);
+      zones.push({ id: "over", index: i, x: x, y: y, w: 200, h: 52 });
+    });
+  }
+
+  function drawFatal() {
+    drawBackground();
+    panel(40, view.h / 2 - 80, view.w - 80, 160, COL.bad);
+    setFont("700", fs(16));
+    ctx.fillStyle = COL.bad;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const lines = wrap(G.fatal || "Lab fault", view.w - 120);
+    lines.slice(0, 5).forEach((line, i) => ctx.fillText(line, 60, view.h / 2 - 60 + i * 24));
+  }
+
+  function draw() {
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    ctx.clearRect(0, 0, view.w, view.h);
+    if (G.shake > 0 && !REDUCE) {
+      const s = G.shake * 7;
+      ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    drawBackground();
+    if (G.fatal) {
+      drawFatal();
+      drawMute();
+      return;
+    }
+    if (G.screen === "title") drawTitle();
+    else if (G.screen === "over") drawOver();
+    else if (G.mission) {
+      const L = G.layout;
+      drawHUD(L);
+      drawBrief(L.brief);
+      if (L.rig.h > 30) drawRig(L.rig);
+      if (L.graph.h > 30) drawGraph(L.graph);
+      drawHint(L.hint);
+      drawDeck(L.deck);
+      drawFloaters();
+      drawReticles();
+    }
+    drawParticles();
+    drawMute();
+  }
+
+  function resize() {
+    view.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    view.w = window.innerWidth;
+    view.h = window.innerHeight;
+    canvas.width = Math.max(1, Math.round(view.w * view.dpr));
+    canvas.height = Math.max(1, Math.round(view.h * view.dpr));
+  }
+
+  function setupAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const actx = new AC();
+    const master = actx.createGain();
+    master.gain.value = 0.85;
+    master.connect(actx.destination);
+    const music = actx.createGain();
+    music.gain.value = 0.16;
+    music.connect(master);
+    const sfx = actx.createGain();
+    sfx.gain.value = 0.5;
+    sfx.connect(master);
+    const len = actx.sampleRate;
+    const buffer = actx.createBuffer(1, len, actx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    audio.ctx = actx;
+    audio.master = master;
+    audio.music = music;
+    audio.sfx = sfx;
+    audio.noise = buffer;
+    audio.next = actx.currentTime + 0.05;
+    audio.started = true;
+    applyMute();
+  }
+  function ensureAudio() {
+    if (!audio.ctx) setupAudio();
+    if (audio.ctx && audio.ctx.state === "suspended") audio.ctx.resume();
+  }
+  function applyMute() {
+    if (!audio.master) return;
+    audio.master.gain.value = audio.muted ? 0 : 0.85;
+  }
+  function toggleMute() {
+    ensureAudio();
+    audio.muted = !audio.muted;
+    applyMute();
+  }
+  function tone(dest, when, freq, dur, type, gain, slide) {
+    if (!audio.ctx || audio.muted) return;
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, when);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), when + dur);
+    g.gain.setValueAtTime(gain, when);
+    g.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    o.connect(g);
+    g.connect(dest);
+    o.start(when);
+    o.stop(when + dur + 0.02);
+  }
+  function noiseHit(when, dur, gain) {
+    if (!audio.ctx || audio.muted || !audio.noise) return;
+    const src = audio.ctx.createBufferSource();
+    src.buffer = audio.noise;
+    const filter = audio.ctx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.value = 1800;
+    const g = audio.ctx.createGain();
+    g.gain.setValueAtTime(gain, when);
+    g.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(audio.sfx);
+    src.start(when);
+    src.stop(when + dur);
+  }
+  function musicTick() {
+    if (!audio.ctx || audio.muted || !audio.started) return;
+    if (audio.next < audio.ctx.currentTime - 0.05) audio.next = audio.ctx.currentTime + 0.02;
+    const stepDur = 60 / 104 / 2;
+    const arp = [293.66, 349.23, 440, 523.25, 392, 493.88, 440, 349.23];
+    while (audio.next < audio.ctx.currentTime + 0.18) {
+      const s = audio.step % 16;
+      if (s % 4 === 0) tone(audio.music, audio.next, s % 8 === 4 ? 82.41 : 73.42, stepDur * 1.7, "triangle", 0.55);
+      tone(audio.music, audio.next, arp[s % arp.length], stepDur * 0.42, "square", 0.07);
+      if (s % 2 === 1) noiseHit(audio.next, 0.03, 0.035);
+      if (s % 8 === 4) noiseHit(audio.next, 0.07, 0.05);
+      audio.next += stepDur;
+      audio.step += 1;
+    }
+  }
+  function playBlip() { if (!audio.ctx) return; tone(audio.sfx, audio.ctx.currentTime, 660, 0.06, "square", 0.08); }
+  function playBuzz() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    tone(audio.sfx, t, 110, 0.22, "sawtooth", 0.08, 70);
+    noiseHit(t, 0.18, 0.08);
+  }
+  function playSweep() {
+    if (!audio.ctx) return;
+    tone(audio.sfx, audio.ctx.currentTime, 240, 0.38, "sine", 0.1, 980);
+  }
+  function playChord() {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(audio.sfx, t + i * 0.03, f, 0.55, "sine", 0.08));
+  }
+  function playRigSting(rig) {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    if (rig === "spring") tone(audio.sfx, t, 320, 0.28, "triangle", 0.12, 90);
+    else if (rig === "journey") {
+      tone(audio.sfx, t, 880, 0.12, "sine", 0.1);
+      tone(audio.sfx, t + 0.08, 1320, 0.16, "sine", 0.06);
+    } else {
+      tone(audio.sfx, t, 520, 0.1, "sine", 0.09);
+      tone(audio.sfx, t + 0.09, 780, 0.16, "sine", 0.08);
+    }
+  }
+
+  function boot() {
+    canvas = document.getElementById("game");
+    ctx = canvas.getContext("2d");
+    liveEl = document.getElementById("live");
+    REDUCE = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    try { G.best = Number(localStorage.getItem(STORE) || 0) || 0; } catch (e) { G.best = 0; }
+    const audit = runMathAudit();
+    if (audit) G.fatal = audit;
+    resize();
+    G.layout = computeLayout();
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", (e) => {
+      const block = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "Enter"];
+      if (block.indexOf(e.code) !== -1) e.preventDefault();
+      if (keysDown.has(e.code)) return;
+      keysDown.add(e.code);
+      onKey(e.code);
+    });
+    window.addEventListener("keyup", (e) => keysDown.delete(e.code));
+    canvas.addEventListener("pointermove", (e) => {
+      const p = pointerXY(e);
+      G.pointer = true;
+      G.mouseOn = true;
+      G.mouseX = p.x;
+      G.mouseY = p.y;
+      if (G.screen !== "play") return;
+      const pi = mousePlayer();
+      const z = zoneAt(p.x, p.y);
+      if (!z) return;
+      if (z.id === "card") G.players[pi].sel = z.index;
+      else if (z.id === "lock") G.players[pi].sel = 4;
+      else G.players[pi].sel = -1;
+    });
+    canvas.addEventListener("pointerleave", () => { G.mouseOn = false; });
+    canvas.addEventListener("pointerdown", (e) => {
+      ensureAudio();
+      canvas.focus();
+      const p = pointerXY(e);
+      G.pointer = true;
+      G.mouseX = p.x;
+      G.mouseY = p.y;
+      const z = zoneAt(p.x, p.y);
+      if (!z) return;
+      if (z.id === "mute") { toggleMute(); return; }
+      if (G.screen === "title" && z.id === "mode") { startGame(z.mode); return; }
+      if (G.screen === "over" && z.id === "over") {
+        G.overSel = z.index;
+        if (z.index === 0) startGame(G.mode);
+        else goTitle();
+        return;
+      }
+      if (G.screen !== "play") return;
+      const pi = mousePlayer();
+      if (G.roundWait > 0.25) { G.roundWait = 0.05; G.busy = 0.05; return; }
+      if (!canControl(pi)) return;
+      if (z.id === "card") {
+        G.players[pi].sel = z.index;
+        trySubmit(pi, z.index);
+      } else if (z.id === "lock") {
+        G.players[pi].sel = 4;
+        confirmPlayer(pi);
+      }
+    });
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    window.addEventListener("gamepadconnected", () => {});
+    let last = performance.now();
+    function frame(now) {
+      const dt = clamp((now - last) / 1000, 0, 0.034) || 0.016;
+      last = now;
+      if (!G.fatal) {
+        try {
+          G.layout = computeLayout();
+          update(dt, now);
+          zones.length = 0;
+          draw();
+        } catch (err) {
+          G.fatal = (err && err.message) ? err.message : String(err);
+        }
+      } else {
+        try {
+          zones.length = 0;
+          drawFatal();
+          drawMute();
+        } catch (e2) { /* keep the loop alive */ }
+      }
+      requestAnimationFrame(frame);
+    }
+    if (liveEl) liveEl.textContent = "Chrono-Motion and Hooke's Lab. Choose solo, co-op, or versus.";
+    requestAnimationFrame(frame);
+  }
+
+  if (typeof document === "undefined") {
+    globalThis.__CHRONO_TEST__ = { runMathAudit: runMathAudit, generateMission: generateMission, auditMission: auditMission };
+    return;
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
