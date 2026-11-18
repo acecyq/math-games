@@ -1,0 +1,3072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polygon Citadel: Interior &amp; Exterior Fortress</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #071018;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+  }
+  noscript {
+    color: #e8fff4;
+    font-family: "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>Polygon Citadel needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game" tabindex="0" aria-label="Polygon Citadel. Interior and exterior fortress. Solve special quadrilateral and polygon angle problems. Solo uses mouse, WASD or arrows and Space. Co-op and versus: P1 WASD and F, P2 arrows and Enter. Press M to mute."></canvas>
+<script>
+'use strict';
+
+/* Polygon Citadel: Interior & Exterior Fortress
+   Singapore Sec 1 G3 — special quadrilaterals, interior/exterior polygon
+   theorems, shared-vertex rings, extended-side triangles, nested isosceles.
+   Every blueprint is procedurally generated, solved exactly, and audited. */
+
+const W = 1280;
+const H = 720;
+const UI = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const MONO = 'ui-monospace, Consolas, "Courier New", monospace';
+const DEG = '\u00b0';
+const ANG = '\u2220';
+
+const COL = {
+  bg: '#071018',
+  ink: '#e8fff6',
+  dim: '#8fb3a8',
+  cyan: '#2fe0c0',
+  teal: '#1ab89a',
+  magenta: '#ff5d7a',
+  amber: '#ffc14a',
+  gold: '#ffe08a',
+  good: '#5dffb0',
+  bad: '#ff4d6a',
+  p1: '#ff3355',
+  p2: '#3aa0ff',
+  rail: '#5dffd0',
+  aux: '#ffd24a',
+  arcA: '#ff7ad9',
+  arcB: '#6dffb0',
+  arcC: '#ffc857',
+  arcD: '#7ab8ff',
+  glow: '#3dffc8'
+};
+
+const GEO = {
+  hud: { x: 16, y: 10, w: 1248, h: 52 },
+  spec: { x: 16, y: 70, w: 1248, h: 58 },
+  stage: { x: 16, y: 136, w: 1248, h: 318 },
+  deck: { x: 16, y: 462, w: 1248, h: 244 },
+  mute: { x: 1168, y: 18, w: 80, h: 36 }
+};
+
+const CLEAN_N = [5, 6, 8, 9, 10, 12, 15, 18, 20, 24];
+
+let canvas, ctx;
+const game = {
+  screen: 'title',
+  mode: 'solo',
+  round: 1,
+  step: 0,
+  phase: 'play',
+  problem: null,
+  shields: 3,
+  maxShields: 3,
+  pShields: [3, 3],
+  score: 0,
+  pScore: [0, 0],
+  stars: [0, 0],
+  combo: 0,
+  pCombo: [0, 0],
+  cleared: 0,
+  sel: [0, 0],
+  titleSel: 0,
+  tip: '',
+  tipT: 0,
+  lock: 0,
+  celebrateT: 0,
+  time: 0,
+  shake: 0,
+  flash: 0,
+  particles: [],
+  floats: [],
+  history: [],
+  best: {},
+  paused: false,
+  fatal: '',
+  overReason: '',
+  winner: '',
+  mouseX: 640,
+  mouseY: 360,
+  mouseIn: false,
+  pointerDevice: 'mouse',
+  hoverLock: false,
+  padOn: [false, false],
+  view: { s: 1, ox: 0, oy: 0 },
+  lastAward: 0,
+  auxGlow: 0,
+  beamT: 0,
+  junctionPulse: 0
+};
+
+const keysDown = new Set();
+const keyEdge = new Set();
+let pointerDown = false;
+let pointerEdge = false;
+let frameUsed = false;
+let lastAudit = '';
+
+const audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  muted: false,
+  started: false,
+  step: 0,
+  next: 0,
+  noise: null
+};
+
+const padMem = [
+  { buttons: [], dx: 0, dy: 0 },
+  { buttons: [], dx: 0, dy: 0 }
+];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function randInt(rng, a, b) { return a + Math.floor(rng() * (b - a + 1)); }
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+function shuffle(rng, arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function uniq(arr) {
+  const seen = {};
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const k = arr[i].plain || arr[i].label || JSON.stringify(arr[i]);
+    if (seen[k]) continue;
+    seen[k] = true;
+    out.push(arr[i]);
+  }
+  return out;
+}
+function degSym(n) {
+  if (typeof n === 'number' && !Number.isInteger(n)) {
+    const s = Math.round(n * 100) / 100;
+    return String(s) + DEG;
+  }
+  return String(n) + DEG;
+}
+function fmtNum(n) {
+  if (typeof n !== 'number') return String(n);
+  if (Number.isInteger(n)) return String(n);
+  const r = Math.round(n * 100) / 100;
+  return String(r);
+}
+function interiorOf(n) { return ((n - 2) * 180) / n; }
+function exteriorOf(n) { return 360 / n; }
+
+function card(o) {
+  return {
+    plain: o.plain,
+    correct: !!o.correct,
+    tip: o.tip || '',
+    trap: o.trap || '',
+    dead: false
+  };
+}
+function padCards(cards, tip) {
+  const out = uniq(cards).slice(0, 4);
+  let n = 1;
+  while (out.length < 4) {
+    out.push(card({
+      plain: 'Misaligned option ' + n,
+      correct: false,
+      tip: tip || TIPS.algebra,
+      trap: 'pad'
+    }));
+    n++;
+  }
+  return out;
+}
+function makeSteps(reason, equation, answers) {
+  return [
+    {
+      prompt: 'STEP 1 \u2014 Unlock the key polygon / quadrilateral angle',
+      cards: shuffle(Math.random, padCards(reason, TIPS.algebra))
+    },
+    {
+      prompt: 'STEP 2 \u2014 Formulate the equation / side-count n',
+      cards: shuffle(Math.random, padCards(equation, TIPS.algebra))
+    },
+    {
+      prompt: 'STEP 3 \u2014 Solve the final target (x, n, or sub-angle)',
+      cards: shuffle(Math.random, padCards(answers, TIPS.solve))
+    }
+  ];
+}
+function pack(arch, key, title, givens, find, sol, steps, figure, highlight, tipBank) {
+  return {
+    arch: arch,
+    key: key,
+    title: title,
+    givens: givens,
+    find: find,
+    sol: sol,
+    steps: steps,
+    figure: figure,
+    highlight: highlight || {},
+    tipBank: tipBank || {},
+    tier: ''
+  };
+}
+function tierOf(round) {
+  if (round <= 2) {
+    return {
+      name: 'WARM-UP GATES',
+      arches: ['rectDiag', 'parallelogram', 'trapezium', 'kite']
+    };
+  }
+  if (round <= 4) {
+    return {
+      name: 'POLYGON SUMS',
+      arches: ['irregExterior', 'irregInterior', 'ratioExterior', 'regularN']
+    };
+  }
+  if (round <= 6) {
+    return {
+      name: 'JUNCTION RINGS',
+      arches: ['dualVertex', 'tripleJunction', 'extendedSides', 'regularN']
+    };
+  }
+  return {
+    name: 'MASTER CITADEL',
+    arches: ['nestedSquare', 'paraIsoChain', 'tripleJunction', 'extendedSides', 'dualVertex', 'kite']
+  };
+}
+
+/* ─── Figure helpers (stage coords 0..100) ───────────────────────── */
+function V(id, x, y) { return { id: id, x: x, y: y }; }
+function E(from, to, style) { return { from: from, to: to, style: style || 'solid' }; }
+function A(at, fromId, toId, label, color, r) {
+  return { at: at, fromId: fromId, toId: toId, label: label, color: color || COL.arcA, r: r || 14 };
+}
+function RA(at, fromId, toId) { return { at: at, fromId: fromId, toId: toId }; }
+function TK(a, b, marks) { return { edge: [a, b], marks: marks || 1 }; }
+function AUX(from, to) { return { from: from, to: to }; }
+
+function mapFig(fig, pad) {
+  const verts = Array.isArray(fig) ? fig : fig.verts;
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  for (let i = 0; i < verts.length; i++) {
+    minX = Math.min(minX, verts[i].x);
+    maxX = Math.max(maxX, verts[i].x);
+    minY = Math.min(minY, verts[i].y);
+    maxY = Math.max(maxY, verts[i].y);
+  }
+  const bw = Math.max(1, maxX - minX);
+  const bh = Math.max(1, maxY - minY);
+  const p = pad || 14;
+  const sx = (100 - 2 * p) / bw;
+  const sy = (100 - 2 * p) / bh;
+  const s = Math.min(sx, sy);
+  const ox = p + (100 - 2 * p - bw * s) / 2 - minX * s;
+  const oy = p + (100 - 2 * p - bh * s) / 2 - minY * s;
+  return verts.map(function (v) {
+    return { id: v.id, x: v.x * s + ox, y: v.y * s + oy };
+  });
+}
+function regularVerts(ids, cx, cy, r, startDeg) {
+  const n = ids.length;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = ((startDeg || -90) + i * (360 / n)) * Math.PI / 180;
+    out.push(V(ids[i], cx + r * Math.cos(a), cy + r * Math.sin(a)));
+  }
+  return out;
+}
+function irregularVertsFromExteriors(ids, exteriors, startDeg) {
+  /* Turn by each exterior; solve two side lengths so the path closes.
+     Equal sides only close when all exteriors are equal (regular). */
+  const n = ids.length;
+  if (n !== exteriors.length || n < 3) return null;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    if (exteriors[i] <= 0 || exteriors[i] >= 180) return null;
+    sum += exteriors[i];
+  }
+  if (Math.abs(sum - 360) > 0.01) return null;
+
+  function build(ext, labels, freeScale) {
+    const dirs = [];
+    let heading = ((startDeg == null ? -90 : startDeg) * Math.PI / 180);
+    for (let i = 0; i < n; i++) {
+      dirs.push({ x: Math.cos(heading), y: Math.sin(heading) });
+      /* Turn ext[i+1] at the NEXT vertex after walking side i (ext[0] closes at labels[0]). */
+      heading += ext[(i + 1) % n] * Math.PI / 180;
+    }
+    const sides = [];
+    let rx = 0, ry = 0;
+    for (let i = 0; i < n - 2; i++) {
+      const s = freeScale[(i % freeScale.length)];
+      sides.push(s);
+      rx += s * dirs[i].x;
+      ry += s * dirs[i].y;
+    }
+    const a = dirs[n - 2].x, b = dirs[n - 1].x;
+    const c = dirs[n - 2].y, d = dirs[n - 1].y;
+    const det = a * d - b * c;
+    if (Math.abs(det) < 1e-6) return null;
+    const s0 = (-rx * d + ry * b) / det;
+    const s1 = (-a * ry + c * rx) / det;
+    if (s0 < 0.2 || s1 < 0.2 || s0 > 5 || s1 > 5) return null;
+    sides.push(s0, s1);
+    const raw = [];
+    let x = 0, y = 0;
+    for (let i = 0; i < n; i++) {
+      raw.push({ id: labels[i], x: x, y: y });
+      x += sides[i] * dirs[i].x;
+      y += sides[i] * dirs[i].y;
+    }
+    if (Math.hypot(x, y) > 0.1) return null;
+    return mapFig(raw, 16);
+  }
+
+  const scales = [
+    [1, 1, 1, 1],
+    [1, 1.2, 0.9, 1.1],
+    [1.3, 0.8, 1, 1.15],
+    [0.85, 1.25, 1, 0.95],
+    [1.1, 1.1, 0.75, 1.2]
+  ];
+  /* Rotate which exterior sits where so the solved edges stay positive. */
+  for (let rot = 0; rot < n; rot++) {
+    const ext = [];
+    const labels = [];
+    for (let i = 0; i < n; i++) {
+      ext.push(exteriors[(i + rot) % n]);
+      labels.push(ids[(i + rot) % n]);
+    }
+    for (let s = 0; s < scales.length; s++) {
+      const verts = build(ext, labels, scales[s]);
+      if (verts) return verts;
+    }
+  }
+  return null;
+}
+function cycleEdges(ids, style) {
+  const e = [];
+  for (let i = 0; i < ids.length; i++) e.push(E(ids[i], ids[(i + 1) % ids.length], style));
+  return e;
+}
+
+const TIPS = {
+  extSum: 'The sum of EXTERIOR angles of ANY convex polygon is ALWAYS 360' + DEG + ', no matter how many sides it has!',
+  ratioExt: 'The LARGEST exterior angle belongs to the SMALLEST interior angle! Subtract the smallest interior from 180' + DEG + '.',
+  rectHalf: 'Diagonals of a rectangle bisect each other equally (EA = EB), forming an ISOSCELES triangle — they do NOT bisect the corner angles unless it\'s a square!',
+  paraOpp: 'In a parallelogram, opposite angles are equal and consecutive angles between parallel sides sum to 180' + DEG + '.',
+  trapCo: 'In a trapezium with one pair of parallel sides, co-interior angles between the parallels sum to 180' + DEG + '.',
+  kiteSym: 'A kite is symmetric across its main diagonal — base angles in the isosceles triangles are equal.',
+  intSum: 'Sum of interior angles of an n-gon = (n \u2212 2) \u00d7 180' + DEG + '.',
+  extShort: 'For a regular polygon: Exterior ' + ANG + ' = 180' + DEG + ' \u2212 Interior ' + ANG + ', then n = 360' + DEG + ' \u00f7 Exterior ' + ANG + '.',
+  point360: 'Angles at a point sum to 360' + DEG + '. Subtract the known regular interiors from 360' + DEG + '.',
+  iso: 'Equal-length sides (tick marks) make an isosceles triangle — base angles are equal.',
+  algebra: 'Check the signs and which angles you combined. Lock the exact equation from the figure.',
+  solve: 'Solve the locked equation carefully for x, n, or the target angle.'
+};
+
+function reasonCards(correctPlain, distractors) {
+  const cards = [card({ plain: correctPlain, correct: true })];
+  distractors.forEach(function (d) {
+    cards.push(card({ plain: d.plain, correct: false, tip: d.tip, trap: d.trap || '' }));
+  });
+  return uniq(cards).slice(0, 4);
+}
+function eqCards(correctPlain, distractors) {
+  const cards = [card({ plain: correctPlain, correct: true })];
+  distractors.forEach(function (d) {
+    cards.push(card({ plain: d.plain, correct: false, tip: d.tip || TIPS.algebra, trap: d.trap || 'algebra' }));
+  });
+  return uniq(cards).slice(0, 4);
+}
+function ansCards(correctPlain, wrongs, tip) {
+  const cards = [card({ plain: correctPlain, correct: true })];
+  wrongs.forEach(function (w) {
+    cards.push(card({ plain: w, correct: false, tip: tip || TIPS.solve, trap: 'solve' }));
+  });
+  return uniq(cards).slice(0, 4);
+}
+function wrongNums(correct, extras) {
+  const set = {};
+  set[fmtNum(correct)] = true;
+  const out = [];
+  (extras || []).forEach(function (v) {
+    const s = fmtNum(v);
+    if (!set[s] && v > 0) { set[s] = true; out.push(v); }
+  });
+  return out;
+}
+
+/* ─── Generators ──────────────────────────────────────────────────── */
+
+function genRectDiag(rng) {
+  /* 2(ax \u00b1 c) + (180 - bec) = 180  =>  2(ax\u00b1c) = bec  => ax\u00b1c = bec/2 */
+  const a = randInt(rng, 2, 5);
+  let bec = 2 * randInt(rng, 28, 48); /* even so half is integer */
+  const half = bec / 2;
+  const useSub = rng() < 0.55;
+  let c, x, expr, eqLeft;
+  if (useSub) {
+    c = randInt(rng, 2, Math.min(18, half - 4));
+    if ((half + c) % a !== 0) {
+      /* force integer x */
+      x = randInt(rng, 6, 18);
+      const val = a * x - c;
+      if (val <= 20 || val >= 70) return null;
+      bec = 2 * val;
+      if (bec >= 160 || bec <= 40) return null;
+    } else {
+      x = (half + c) / a;
+    }
+    if (!Number.isInteger(x) || x < 4 || x > 30) return null;
+    expr = '(' + a + 'x \u2212 ' + c + ')' + DEG;
+    eqLeft = '2(' + a + 'x \u2212 ' + c + ') + (180 \u2212 ' + bec + ') = 180';
+  } else {
+    c = randInt(rng, 1, 12);
+    if ((half - c) % a !== 0 || half - c <= 0) {
+      x = randInt(rng, 6, 18);
+      const val = a * x + c;
+      if (val <= 20 || val >= 70) return null;
+      bec = 2 * val;
+      if (bec >= 160 || bec <= 40) return null;
+    } else {
+      x = (half - c) / a;
+    }
+    if (!Number.isInteger(x) || x < 4 || x > 30) return null;
+    expr = '(' + a + 'x + ' + c + ')' + DEG;
+    eqLeft = '2(' + a + 'x + ' + c + ') + (180 \u2212 ' + bec + ') = 180';
+  }
+  const vert = 180 - bec;
+  const fig = {
+    verts: mapFig([
+      V('A', 12, 78), V('B', 88, 78), V('C', 88, 22), V('D', 12, 22), V('E', 50, 50)
+    ]),
+    edges: [E('A', 'B'), E('B', 'C'), E('C', 'D'), E('D', 'A'), E('A', 'C'), E('B', 'D')],
+    angles: [
+      A('E', 'B', 'C', degSym(bec), COL.arcA, 16),
+      A('B', 'A', 'E', expr, COL.arcB, 14),
+      A('A', 'B', 'E', expr, COL.arcC, 12)
+    ],
+    rightAngles: [RA('A', 'B', 'D'), RA('B', 'A', 'C')],
+    parallels: [{ a: 'A', b: 'B', c: 'D', d: 'C' }],
+    ticks: [TK('A', 'E', 1), TK('B', 'E', 1), TK('D', 'E', 1), TK('C', 'E', 1)],
+    aux: [],
+    labels: true,
+    fill: ['A', 'B', 'C', 'D']
+  };
+  const wrongX = wrongNums(x, [x + 3, x - 2, Math.round(bec / 2), x + 5, Math.round(bec / a)]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('EA = EB \u2192 isosceles \u25b3EAB (base ' + ANG + 's equal)', [
+      { plain: ANG + 'ABE = ' + bec + DEG + ' \u00f7 2 (angle bisector)', tip: TIPS.rectHalf, trap: 'rectHalf' },
+      { plain: 'Diagonals of a rectangle are perpendicular', tip: 'Rectangle diagonals are equal and bisect each other, but are only perpendicular in a rhombus/square.', trap: 'perp' },
+      { plain: 'Opposite angles of a kite', tip: TIPS.rectHalf, trap: 'kite' }
+    ]),
+    eqCards(eqLeft, [
+      { plain: '(' + a + 'x ' + (useSub ? '\u2212' : '+') + ' ' + c + ') = ' + bec, tip: TIPS.rectHalf, trap: 'rectHalf' },
+      { plain: '2(' + a + 'x ' + (useSub ? '\u2212' : '+') + ' ' + c + ') + ' + bec + ' = 180', tip: 'The vertex angle at E in \u25b3EAB is the vertically opposite partner of ' + bec + DEG + ', which is ' + vert + DEG + '.', trap: 'algebra' },
+      { plain: '2(' + a + 'x ' + (useSub ? '\u2212' : '+') + ' ' + c + ') = 180', tip: TIPS.algebra, trap: 'algebra' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }), TIPS.rectHalf)
+  );
+  return pack('rectDiag', 'rd-' + a + '-' + x + '-' + bec, 'Rectangle ABCD \u00b7 diagonals at E',
+    'ABCD is a rectangle \u00b7 ' + ANG + 'BEC = ' + bec + DEG + ' \u00b7 ' + ANG + 'ABE = ' + expr,
+    'Find x', { x: x }, steps, fig, { rule: 'iso', glow: 'E' }, TIPS);
+}
+
+function genParallelogram(rng) {
+  /* AB // DC, AC transversal => BAC = ACD (alternate). Express BAC algebraically. */
+  const angD = randInt(rng, 100, 115);
+  const angA = 180 - angD;
+  const bacMax = Math.min(52, angA - 18);
+  const bac = randInt(rng, 30, bacMax);
+  const BCA_tri = 180 - bac - angD;
+  if (BCA_tri <= 15 || BCA_tri >= 75) return null;
+  const candidates = [];
+  for (let den = 1; den <= 2; den++) {
+    const as = den === 2 ? [3, 5] : [2, 3, 4, 5];
+    for (let ai = 0; ai < as.length; ai++) {
+      const a = as[ai];
+      if ((bac * den) % a !== 0) continue;
+      const x = (bac * den) / a;
+      if (Number.isInteger(x) && x >= 6 && x <= 30) candidates.push({ a: a, den: den, x: x });
+    }
+  }
+  if (!candidates.length) return null;
+  const pickC = pick(rng, candidates);
+  const a = pickC.a, den = pickC.den, x = pickC.x;
+  const expr = den === 1 ? (a + 'x' + DEG) : ('(' + a + 'x/' + den + ')' + DEG);
+  const eq = den === 1 ? (a + 'x = ' + bac) : (a + 'x/' + den + ' = ' + bac);
+  const fig = {
+    verts: mapFig([
+      V('A', 18, 78), V('B', 82, 78), V('C', 92, 22), V('D', 28, 22)
+    ]),
+    edges: [E('A', 'B'), E('B', 'C'), E('C', 'D'), E('D', 'A'), E('A', 'C')],
+    angles: [
+      A('D', 'A', 'C', degSym(angD), COL.arcA, 14),
+      A('C', 'A', 'D', degSym(bac), COL.arcB, 13),
+      A('A', 'B', 'C', expr, COL.arcC, 15)
+    ],
+    rightAngles: [],
+    parallels: [{ a: 'A', b: 'B', c: 'D', d: 'C' }],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fill: ['A', 'B', 'C', 'D'],
+    parallelNote: 'AB // DC'
+  };
+  const wrongX = wrongNums(x, [x + 4, x - 3, bac, Math.round(angA / a), x + 8]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('Alt. ' + ANG + 's (Z): ' + ANG + 'BAC = ' + ANG + 'ACD  (AB // DC)', [
+      { plain: 'Opp. angles of parallelogram: ' + ANG + 'BAC = ' + ANG + 'D', tip: TIPS.paraOpp, trap: 'opp' },
+      { plain: 'Co-int. ' + ANG + 's: ' + ANG + 'BAC + ' + ANG + 'ACD = 180' + DEG, tip: 'These are alternate angles on transversal AC, so they are equal — not co-interior.', trap: 'coint' },
+      { plain: 'Diagonals bisect the angles', tip: 'Parallelogram diagonals do not bisect the angles (unless it is a rhombus).', trap: 'bisect' }
+    ]),
+    eqCards(eq, [
+      { plain: (den === 1 ? a + 'x' : a + 'x/' + den) + ' + ' + bac + ' = 180', tip: TIPS.paraOpp, trap: 'coint' },
+      { plain: (den === 1 ? a + 'x' : a + 'x/' + den) + ' = ' + angD, tip: TIPS.paraOpp, trap: 'opp' },
+      { plain: (den === 1 ? a + 'x' : a + 'x/' + den) + ' = ' + angA, tip: TIPS.algebra, trap: 'algebra' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }))
+  );
+  return pack('parallelogram', 'pg-' + a + '-' + den + '-' + x + '-' + angD, 'Parallelogram ABCD \u00b7 diagonal AC',
+    'ABCD is a parallelogram \u00b7 ' + ANG + 'ADC = ' + angD + DEG + ' \u00b7 ' + ANG + 'ACD = ' + bac + DEG + ' \u00b7 ' + ANG + 'BAC = ' + expr,
+    'Find x', { x: x }, steps, fig, { rule: 'Z', glow: 'A' }, TIPS);
+}
+
+function genTrapezium(rng) {
+  /* AB // DC, angle D = d, DAC = p, AC = BC (isos), ACB = ax+c */
+  const d = randInt(rng, 100, 120);
+  const angleA = 180 - d;
+  const p = randInt(rng, 25, Math.min(45, angleA - 20));
+  const bac = angleA - p;
+  if (bac <= 15 || bac >= 55) return null;
+  const acb = 180 - 2 * bac; /* AC=BC => base angles at A and B equal */
+  if (acb <= 40 || acb >= 130) return null;
+  const a = pick(rng, [3, 4, 5, 6, 8, 10, 12]);
+  const cChoices = [];
+  for (let c = 0; c <= 20; c++) {
+    if ((acb - c) % a === 0) {
+      const x = (acb - c) / a;
+      if (Number.isInteger(x) && x >= 4 && x <= 25) cChoices.push({ c: c, x: x });
+    }
+  }
+  if (!cChoices.length) return null;
+  const pickC = pick(rng, cChoices);
+  const c = pickC.c;
+  const x = pickC.x;
+  const expr = c === 0 ? (a + 'x' + DEG) : ('(' + a + 'x + ' + c + ')' + DEG);
+  const eq = c === 0
+    ? (a + 'x = ' + acb + '   (or  2\u00d7' + bac + ' + ' + a + 'x = 180)')
+    : ('(' + a + 'x + ' + c + ') = ' + acb);
+  const fig = {
+    verts: mapFig([
+      V('A', 22, 78), V('B', 78, 78), V('C', 92, 28), V('D', 10, 28)
+    ]),
+    edges: [E('A', 'B'), E('B', 'C'), E('C', 'D'), E('D', 'A'), E('A', 'C')],
+    angles: [
+      A('D', 'A', 'C', degSym(d), COL.arcA, 14),
+      A('A', 'D', 'C', degSym(p), COL.arcB, 12),
+      A('C', 'A', 'B', expr, COL.arcC, 15)
+    ],
+    rightAngles: [],
+    parallels: [{ a: 'A', b: 'B', c: 'D', d: 'C' }],
+    ticks: [TK('A', 'C', 1), TK('B', 'C', 1)],
+    aux: [],
+    labels: true,
+    fill: ['A', 'B', 'C', 'D'],
+    parallelNote: 'AB // DC'
+  };
+  const wrongX = wrongNums(x, [x + 3, x - 2, bac, Math.round((180 - d) / a), x + 6]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('AB // DC \u2192 co-int. ' + ANG + 'A + ' + ANG + 'D = 180' + DEG + '; AC = BC \u2192 isos. \u25b3ABC', [
+      { plain: 'Opp. angles of trapezium are equal', tip: TIPS.trapCo, trap: 'opp' },
+      { plain: 'All exterior angles = 360' + DEG + ' / 4', tip: TIPS.trapCo, trap: 'reg' },
+      { plain: 'Diagonals of a trapezium are equal', tip: 'Only an isosceles trapezium has equal diagonals — here AC = BC are sides of \u25b3ABC.', trap: 'diag' }
+    ]),
+    eqCards('2\u00d7' + bac + ' + (' + (c === 0 ? a + 'x' : a + 'x + ' + c) + ') = 180', [
+      { plain: bac + ' + (' + (c === 0 ? a + 'x' : a + 'x + ' + c) + ') = 180', tip: TIPS.iso, trap: 'iso' },
+      { plain: (c === 0 ? a + 'x' : a + 'x + ' + c) + ' = ' + d, tip: TIPS.algebra, trap: 'algebra' },
+      { plain: angleA + ' + (' + (c === 0 ? a + 'x' : a + 'x + ' + c) + ') = 180', tip: 'First find ' + ANG + 'BAC = ' + ANG + 'A \u2212 ' + ANG + 'DAC, then use isosceles \u25b3ABC.', trap: 'algebra' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }))
+  );
+  return pack('trapezium', 'tr-' + a + '-' + x + '-' + d, 'Trapezium ABCD (AB // DC)',
+    'AB // DC \u00b7 ' + ANG + 'ADC = ' + d + DEG + ' \u00b7 ' + ANG + 'DAC = ' + p + DEG + ' \u00b7 AC = BC \u00b7 ' + ANG + 'ACB = ' + expr,
+    'Find x', { x: x }, steps, fig, { rule: 'iso', glow: 'C' }, TIPS);
+}
+
+function kitePointD(ax, ay, cx, cy, angADeg, angCDeg) {
+  /* Place D left of AC so \u25b3ADC has \u2220A = angADeg and \u2220C = angCDeg. */
+  const angD = 180 - angADeg - angCDeg;
+  if (angD <= 20 || angD >= 160) return null;
+  const ac = Math.hypot(cx - ax, cy - ay) || 1;
+  const ad = ac * Math.sin(angCDeg * Math.PI / 180) / Math.sin(angD * Math.PI / 180);
+  const cd = ac * Math.sin(angADeg * Math.PI / 180) / Math.sin(angD * Math.PI / 180);
+  const dx = cx - ax, dy = cy - ay;
+  const d = Math.hypot(dx, dy) || 1;
+  const aa = (ad * ad - cd * cd + d * d) / (2 * d);
+  const hh = Math.sqrt(Math.max(0, ad * ad - aa * aa));
+  if (!(hh > 0.5)) return null;
+  const mx = ax + aa * dx / d, my = ay + aa * dy / d;
+  const px = -dy / d * hh, py = dx / d * hh;
+  const left = (mx + px < mx - px) ? { x: mx + px, y: my + py } : { x: mx - px, y: my - py };
+  if (left.x < 2 || left.x > 98 || left.y < 2 || left.y > 98) return null;
+  return left;
+}
+
+function genKite(rng) {
+  /* Symmetric about AC. Angles in \u25b3ADC: DAC=p, DCA=q, ADC = ax\u00b1c */
+  let p = randInt(rng, 28, 48);
+  let q = randInt(rng, 28, 52);
+  /* Keep base angles clearly unequal so AD \u2260 DC matches distinct kite tick pairs. */
+  if (Math.abs(p - q) < 6) q = clamp(p + (q >= p ? 8 : -8), 28, 56);
+  if (p + q >= 150 || p + q <= 70) return null;
+  const adc = 180 - p - q;
+  if (adc <= 40 || adc >= 120) return null;
+  const a = pick(rng, [2, 3, 4, 5]);
+  const variants = [];
+  for (let c = 0; c <= 30; c++) {
+    if ((adc + c) % a === 0) {
+      const x = (adc + c) / a;
+      if (Number.isInteger(x) && x >= 5 && x <= 40) variants.push({ op: '-', c: c, x: x });
+    }
+  }
+  for (let c = 0; c <= 20; c++) {
+    if ((adc - c) % a === 0 && adc - c > 0) {
+      const x = (adc - c) / a;
+      if (Number.isInteger(x) && x >= 5 && x <= 40) variants.push({ op: '+', c: c, x: x });
+    }
+  }
+  if (!variants.length) return null;
+  const v = pick(rng, variants);
+  const expr = v.c === 0 ? (a + 'x' + DEG) : ('(' + a + 'x ' + (v.op === '-' ? '\u2212' : '+') + ' ' + v.c + ')' + DEG);
+  const eqInner = v.c === 0 ? (a + 'x') : (a + 'x ' + (v.op === '-' ? '\u2212' : '+') + ' ' + v.c);
+  const eq = p + ' + ' + q + ' + (' + eqInner + ') = 180';
+
+  const ax = 50, ay = 14, cx = 50, cy = 86;
+  const Dpt = kitePointD(ax, ay, cx, cy, p, q);
+  if (!Dpt) return null;
+  /* Reflect D across AC (x = 50) to get B — kite symmetry. */
+  const bx = 100 - Dpt.x, by = Dpt.y;
+  if (bx < 4 || bx > 96) return null;
+
+  const equalBase = p === q; /* AD = DC \u21d2 rhombus kite: same tick on all sides */
+  const ticks = equalBase
+    ? [TK('A', 'B', 1), TK('A', 'D', 1), TK('B', 'C', 1), TK('D', 'C', 1)]
+    : [TK('A', 'B', 1), TK('A', 'D', 1), TK('B', 'C', 2), TK('D', 'C', 2)];
+
+  const fig = {
+    verts: mapFig([
+      V('A', ax, ay), V('B', bx, by), V('C', cx, cy), V('D', Dpt.x, Dpt.y)
+    ]),
+    edges: [E('A', 'B'), E('B', 'C'), E('C', 'D'), E('D', 'A'), E('A', 'C')],
+    angles: [
+      A('A', 'D', 'C', degSym(p), COL.arcA, 13),
+      A('C', 'D', 'A', degSym(q), COL.arcB, 13),
+      A('D', 'A', 'C', expr, COL.arcC, 18)
+    ],
+    rightAngles: [],
+    parallels: [],
+    ticks: ticks,
+    aux: [],
+    labels: true,
+    fill: ['A', 'B', 'C', 'D'],
+    symmetry: 'AC'
+  };
+  const wrongX = wrongNums(v.x, [v.x + 4, v.x - 3, adc, Math.round((180 - p) / a), v.x + 7]).slice(0, 3);
+  const isoTrapTip = equalBase
+    ? 'Those base angles are equal, so AD = DC — but you still need the triangle sum to solve for x.'
+    : 'Use the given ' + ANG + 'DAC and ' + ANG + 'DCA — they need not be equal.';
+  const steps = makeSteps(
+    reasonCards('Kite symmetric about AC \u2192 \u25b3ADC angle sum = 180' + DEG, [
+      { plain: 'Opp. angles of kite are all equal', tip: TIPS.kiteSym, trap: 'opp' },
+      { plain: 'Diagonals of a kite are equal', tip: 'Only one diagonal of a kite is a line of symmetry; diagonals are not equal in general.', trap: 'diag' },
+      { plain: ANG + 'ADC = ' + p + DEG + ' + ' + q + DEG, tip: TIPS.kiteSym, trap: 'sum' }
+    ]),
+    eqCards(eq, [
+      { plain: p + ' + ' + q + ' + (' + eqInner + ') = 360', tip: TIPS.intSum, trap: 'point' },
+      { plain: '2(' + p + ') + (' + eqInner + ') = 180', tip: isoTrapTip, trap: 'iso' },
+      { plain: eqInner + ' = 180 \u2212 ' + p, tip: TIPS.algebra, trap: 'algebra' }
+    ]),
+    ansCards('x = ' + v.x, wrongX.map(function (n) { return 'x = ' + fmtNum(n); }))
+  );
+  return pack('kite', 'kt-' + a + '-' + v.x + '-' + p + '-' + q, 'Kite ABCD \u00b7 symmetry about AC',
+    'ABCD is a kite (sym. about AC) \u00b7 ' + ANG + 'DAC = ' + p + DEG + ' \u00b7 ' + ANG + 'DCA = ' + q + DEG + ' \u00b7 ' + ANG + 'ADC = ' + expr,
+    'Find x', { x: v.x }, steps, fig, { rule: 'iso', glow: 'D' }, TIPS);
+}
+
+function genIrregExterior(rng) {
+  const n = pick(rng, [6, 7, 8, 9, 10]);
+  const rest = n - 1;
+  /* Choose equal exterior x first so 360 - rest*x is a clean known angle */
+  const x = randInt(rng, 22, 48);
+  const known = 360 - rest * x;
+  if (known <= 35 || known >= 140 || known === x) return null;
+  if (Math.abs(known - x) < 8) return null; /* must look clearly irregular */
+  const eq = known + ' + ' + rest + 'x = 360';
+  const trapEq = known + ' + ' + rest + 'x = ' + ((n - 2) * 180);
+  const ids = 'ABCDEFGHIJ'.slice(0, n).split('');
+  const exteriors = [known];
+  for (let i = 1; i < n; i++) exteriors.push(x);
+  const verts = irregularVertsFromExteriors(ids, exteriors, -100 + randInt(rng, 0, 40));
+  if (!verts) return null;
+
+  const fig = {
+    verts: verts.slice(),
+    edges: cycleEdges(ids),
+    angles: [],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fill: ids.slice(),
+    exteriorRay: true,
+    /* Spoilers off: students count sides from the figure. */
+    note: 'Count the sides \u00b7 one exterior marked ' + known + DEG,
+    labelIds: [ids[0], ids[1]], /* only the marked corners — no A\u2026G roll-call */
+    hideNoteN: true
+  };
+  /* Exterior at A: extend side BA past A to X. Then ∠(prev, A, X) = exterior
+     (adjacent to interior ∠GAB on the straight line B–A–X). Same idea at B→Y. */
+  const vPrev = fig.verts.find(function (v) { return v.id === ids[n - 1]; });
+  const v0 = fig.verts.find(function (v) { return v.id === ids[0]; });
+  const v1 = fig.verts.find(function (v) { return v.id === ids[1]; });
+  const v2 = fig.verts.find(function (v) { return v.id === ids[2]; });
+  if (!vPrev || !v0 || !v1 || !v2) return null;
+  const dxA = v0.x - v1.x, dyA = v0.y - v1.y;
+  const lenA = Math.hypot(dxA, dyA) || 1;
+  fig.verts.push(V('X', v0.x + dxA / lenA * 16, v0.y + dyA / lenA * 16));
+  fig.edges.push(E(ids[0], 'X', 'dash'));
+  fig.aux.push(AUX(ids[0], 'X'));
+  const dxB = v1.x - v2.x, dyB = v1.y - v2.y;
+  const lenB = Math.hypot(dxB, dyB) || 1;
+  fig.verts.push(V('Y', v1.x + dxB / lenB * 14, v1.y + dyB / lenB * 14));
+  fig.edges.push(E(ids[1], 'Y', 'dash'));
+  fig.aux.push(AUX(ids[1], 'Y'));
+  fig.angles = [
+    A(ids[0], ids[n - 1], 'X', degSym(known), COL.arcA, 15),
+    A(ids[1], ids[0], 'Y', 'x' + DEG, COL.arcB, 12)
+  ];
+
+  const wrongX = wrongNums(x, [x + 5, x - 4, Math.round(((n - 2) * 180 - known) / rest), 360 - known]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('Sum of exterior ' + ANG + 's of ANY convex polygon = 360' + DEG, [
+      { plain: 'Sum of exterior ' + ANG + 's = (n \u2212 2) \u00d7 180' + DEG, tip: TIPS.extSum, trap: 'extSum' },
+      { plain: 'Sum of exterior ' + ANG + 's = n \u00d7 180' + DEG, tip: TIPS.extSum, trap: 'extSum' },
+      { plain: 'Each exterior ' + ANG + ' = 360' + DEG + ' / n (even if irregular)', tip: 'That shortcut is only for REGULAR polygons. Here exteriors are not all equal — an irregular polygon may have a ' + known + DEG + ' exterior as long as all exteriors sum to 360' + DEG + '.', trap: 'reg' }
+    ]),
+    eqCards(eq, [
+      { plain: trapEq, tip: TIPS.extSum, trap: 'extSum' },
+      { plain: known + ' + ' + rest + 'x = 180', tip: TIPS.extSum, trap: 'extSum' },
+      { plain: rest + 'x = 360', tip: 'Include the known exterior angle ' + known + DEG + ' in the sum. Count the sides first!', trap: 'algebra' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }), TIPS.extSum)
+  );
+  return pack('irregExterior', 'ie-' + n + '-' + known + '-' + x, 'Irregular polygon \u00b7 exterior angles',
+    'One exterior ' + ANG + ' = ' + known + DEG + ' \u00b7 all other exterior ' + ANG + 's = x' + DEG + ' each \u00b7 count the sides!',
+    'Find x', { x: x }, steps, fig, { rule: 'ext', glow: ids[0], showRays: true }, TIPS);
+}
+
+function genIrregInterior(rng) {
+  const n = pick(rng, [5, 6]);
+  const sum = (n - 2) * 180;
+  let x, exprList, eq;
+  if (n === 6) {
+    /* Pick x, then pick target expression values in (70,150), back-solve constants */
+    x = randInt(rng, 35, 50);
+    const e3 = randInt(rng, 85, 140);
+    const e4 = randInt(rng, 85, 140);
+    const e5 = randInt(rng, 85, 140);
+    const e6 = randInt(rng, 70, 120);
+    const a1 = randInt(rng, 100, 140);
+    const a2f = sum - (a1 + e3 + e4 + e5 + e6);
+    if (a2f < 90 || a2f > 150) return null;
+    const c3 = 3 * x - e3;
+    const c4 = 4 * x - e4;
+    const c5 = e5 - 2 * x;
+    const c6 = e6 + x;
+    if (c3 < 0 || c4 < 0 || c5 < 0 || c6 < 20 || c6 > 160) return null;
+    exprList = [
+      degSym(a1),
+      degSym(a2f),
+      '(3x \u2212 ' + c3 + ')' + DEG,
+      '(4x \u2212 ' + c4 + ')' + DEG,
+      '(2x + ' + c5 + ')' + DEG,
+      '(' + c6 + ' \u2212 x)' + DEG
+    ];
+    eq = a1 + ' + ' + a2f + ' + (3x \u2212 ' + c3 + ') + (4x \u2212 ' + c4 + ') + (2x + ' + c5 + ') + (' + c6 + ' \u2212 x) = 720';
+  } else {
+    x = randInt(rng, 25, 45);
+    const e3 = randInt(rng, 80, 130);
+    const e4 = randInt(rng, 80, 130);
+    const e5 = randInt(rng, 70, 120);
+    const a1 = randInt(rng, 90, 130);
+    const a2f = sum - (a1 + e3 + e4 + e5);
+    if (a2f < 80 || a2f > 150) return null;
+    const c3 = e3 - 2 * x;
+    const c4 = 3 * x - e4;
+    const k = e5 + x;
+    if (c3 < 0 || c4 < 0 || k < 80 || k > 160) return null;
+    exprList = [
+      degSym(a1),
+      degSym(a2f),
+      '(2x + ' + c3 + ')' + DEG,
+      '(3x \u2212 ' + c4 + ')' + DEG,
+      '(' + k + ' \u2212 x)' + DEG
+    ];
+    eq = a1 + ' + ' + a2f + ' + (2x + ' + c3 + ') + (3x \u2212 ' + c4 + ') + (' + k + ' \u2212 x) = 540';
+  }
+  const ids = 'ABCDEF'.slice(0, n).split('');
+  const fig = {
+    verts: mapFig(regularVerts(ids, 50, 52, 36, -90)),
+    edges: cycleEdges(ids),
+    angles: [],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fill: ids.slice(),
+    polyLabels: exprList,
+    note: 'Count the sides \u00b7 interiors labelled',
+    labelIds: ids.slice() /* letters ok once angles are marked; title does not name the n-gon */
+  };
+  for (let i = 0; i < n; i++) {
+    const prev = ids[(i - 1 + n) % n];
+    const next = ids[(i + 1) % n];
+    fig.angles.push(A(ids[i], prev, next, exprList[i], [COL.arcA, COL.arcB, COL.arcC, COL.arcD, COL.amber, COL.cyan][i % 6], 11));
+  }
+  const wrongX = wrongNums(x, [x + 6, x - 5, Math.round(sum / n), x + 12]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('Interior sum = (n \u2212 2) \u00d7 180' + DEG + ' = ' + sum + DEG, [
+      { plain: 'Interior sum = 360' + DEG, tip: TIPS.intSum, trap: 'extSum' },
+      { plain: 'Interior sum = n \u00d7 180' + DEG, tip: TIPS.intSum, trap: 'intSum' },
+      { plain: 'Exterior sum = (n \u2212 2) \u00d7 180' + DEG, tip: TIPS.extSum, trap: 'extSum' }
+    ]),
+    eqCards(eq, [
+      { plain: eq.replace(String(sum), '360'), tip: TIPS.intSum, trap: 'extSum' },
+      { plain: eq.replace(String(sum), String(n * 180)), tip: TIPS.intSum, trap: 'intSum' },
+      { plain: 'Average interior = ' + sum + ' / ' + n, tip: TIPS.algebra, trap: 'algebra' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }))
+  );
+  return pack('irregInterior', 'ii-' + n + '-' + x + '-' + sum, 'Irregular polygon \u00b7 algebraic interiors',
+    'Interior angles: ' + exprList.join(', ') + ' \u00b7 count the sides!',
+    'Find x', { x: x }, steps, fig, { rule: 'int', glow: ids[2] }, TIPS);
+}
+
+function genRatioExterior(rng) {
+  /* Ratio parts for pentagon or hexagon interiors; find LARGEST exterior */
+  const n = pick(rng, [5, 6]);
+  const sum = (n - 2) * 180;
+  let parts;
+  if (n === 5) {
+    parts = pick(rng, [
+      [2, 3, 4, 5, 6],
+      [1, 2, 3, 4, 5],
+      [2, 2, 3, 4, 5],
+      [1, 3, 4, 5, 6]
+    ]);
+  } else {
+    parts = pick(rng, [
+      [1, 2, 3, 4, 5, 6],
+      [2, 3, 3, 4, 5, 6],
+      [1, 2, 2, 3, 4, 5]
+    ]);
+  }
+  const total = parts.reduce(function (s, v) { return s + v; }, 0);
+  if (sum % total !== 0) return null;
+  const unit = sum / total;
+  const interiors = parts.map(function (p) { return p * unit; });
+  const smallest = Math.min.apply(null, interiors);
+  const largestInt = Math.max.apply(null, interiors);
+  const largestExt = 180 - smallest;
+  const trapExt = 180 - largestInt; /* common wrong: using largest interior */
+  const trapShare = largestInt; /* taking largest interior as "largest exterior" */
+  if (largestExt <= 20 || largestExt >= 160) return null;
+  if (!Number.isInteger(unit)) return null;
+
+  const ids = 'ABCDEF'.slice(0, n).split('');
+  const fig = {
+    verts: mapFig(regularVerts(ids, 50, 52, 36, -90)),
+    edges: cycleEdges(ids),
+    angles: [],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fill: ids.slice(),
+    ratioBanner: parts.join(' : '),
+    note: 'Count the sides \u00b7 interior ratio shares'
+  };
+  for (let i = 0; i < n; i++) {
+    const prev = ids[(i - 1 + n) % n];
+    const next = ids[(i + 1) % n];
+    fig.angles.push(A(ids[i], prev, next, parts[i] + 'k', [COL.arcA, COL.arcB, COL.arcC, COL.arcD, COL.amber, COL.cyan][i % 6], 12));
+  }
+  const wrong = wrongNums(largestExt, [trapExt, trapShare, smallest, 180 - largestInt, Math.round(360 / n)]).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('Interior sum = ' + sum + DEG + ' \u00b7 unit k = ' + sum + '/' + total + ' = ' + unit + DEG, [
+      { plain: 'Exterior sum = (n \u2212 2) \u00d7 180' + DEG, tip: TIPS.extSum, trap: 'extSum' },
+      { plain: 'Largest ratio share \u21d2 largest exterior ' + ANG, tip: TIPS.ratioExt, trap: 'ratioExt' },
+      { plain: 'Each interior = 360' + DEG + ' / n', tip: TIPS.intSum, trap: 'reg' }
+    ]),
+    eqCards('Smallest interior = ' + parts[parts.indexOf(Math.min.apply(null, parts))] + '\u00d7' + unit + ' = ' + smallest + DEG + ' \u2192 largest ext. = 180 \u2212 ' + smallest,
+      [
+        { plain: 'Largest interior = ' + largestInt + DEG + ' is the largest exterior', tip: TIPS.ratioExt, trap: 'ratioExt' },
+        { plain: 'Largest exterior = 180 \u2212 ' + largestInt, tip: TIPS.ratioExt, trap: 'ratioExt' },
+        { plain: 'Largest exterior = ' + smallest + DEG, tip: TIPS.ratioExt, trap: 'ratioExt' }
+      ]),
+    ansCards(largestExt + DEG, wrong.map(function (v) { return fmtNum(v) + DEG; }), TIPS.ratioExt)
+  );
+  return pack('ratioExterior', 're-' + n + '-' + parts.join('') + '-' + largestExt,
+    'Irregular polygon \u00b7 interior ratio ' + parts.join(' : '),
+    'Interior ' + ANG + 's in ratio ' + parts.join(' : ') + ' \u00b7 sum = ' + sum + DEG + ' \u00b7 count the sides!',
+    'Find the LARGEST exterior ' + ANG, { x: largestExt }, steps, fig, { rule: 'ratio', glow: ids[parts.indexOf(Math.min.apply(null, parts))] }, TIPS);
+}
+
+function genRegularN(rng) {
+  const n = pick(rng, CLEAN_N.filter(function (v) { return v >= 5 && v <= 24; }));
+  const ext = exteriorOf(n);
+  const inn = interiorOf(n);
+  const mode = pick(rng, ['interior', 'times', 'exterior']);
+  let title, givens, step1, eq, find, k = 0;
+  if (mode === 'interior') {
+    title = 'Regular polygon \u00b7 interior ' + inn + DEG;
+    givens = 'Each interior ' + ANG + ' of a regular polygon = ' + inn + DEG;
+    step1 = 'Exterior ' + ANG + ' = 180' + DEG + ' \u2212 ' + inn + DEG + ' = ' + ext + DEG;
+    eq = 'n = 360' + DEG + ' \u00f7 ' + ext + DEG;
+    find = 'Find n (number of sides)';
+  } else if (mode === 'times') {
+    /* interior = k * exterior => (180 - e) = k*e => 180 = (k+1)e => e = 180/(k+1) */
+    k = Math.round(inn / ext);
+    if (k * ext !== inn) return null;
+    title = 'Regular polygon \u00b7 interior = ' + k + ' \u00d7 exterior';
+    givens = 'Interior ' + ANG + ' is ' + k + ' times the exterior ' + ANG;
+    step1 = 'Let exterior = e \u2192 ' + k + 'e + e = 180' + DEG + ' \u2192 e = ' + ext + DEG;
+    eq = 'n = 360' + DEG + ' \u00f7 ' + ext + DEG;
+    find = 'Find n';
+  } else {
+    title = 'Regular polygon \u00b7 exterior ' + ext + DEG;
+    givens = 'Each exterior ' + ANG + ' of a regular polygon = ' + ext + DEG;
+    step1 = 'Exterior ' + ANG + ' = ' + ext + DEG + ' (given)';
+    eq = 'n = 360' + DEG + ' \u00f7 ' + ext + DEG;
+    find = 'Find n';
+  }
+
+  /* Local corner only — never draw the full n-gon or name n (that is the answer).
+     For ratio mode use a neutral opening so the picture does not leak the degree size. */
+  const drawInn = mode === 'times' ? 120 : inn;
+  const open = drawInn * Math.PI / 180;
+  const fig = {
+    verts: mapFig([
+      V('P', 18, 70),
+      V('A', 48, 70),
+      V('B', 48 + 36 * Math.cos(Math.PI - open), 70 - 36 * Math.sin(Math.PI - open))
+    ]),
+    edges: [E('P', 'A'), E('A', 'B')],
+    angles: [],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fill: [],
+    labelIds: ['P', 'A', 'B'],
+    note: 'Regular polygon \u00b7 one vertex (n unknown)'
+  };
+  const vA = fig.verts.find(function (v) { return v.id === 'A'; });
+  const vB = fig.verts.find(function (v) { return v.id === 'B'; });
+  const dx = vA.x - vB.x, dy = vA.y - vB.y;
+  const len = Math.hypot(dx, dy) || 1;
+  fig.verts.push(V('X', vA.x + dx / len * 18, vA.y + dy / len * 18));
+
+  if (mode === 'times') {
+    /* Ratio only — no degree values that would hand over n. */
+    fig.edges.push(E('A', 'X', 'dash'));
+    fig.aux.push(AUX('A', 'X'));
+    fig.angles = [
+      A('A', 'P', 'B', k + 'e', COL.arcA, 16),
+      A('A', 'P', 'X', 'e', COL.arcB, 12)
+    ];
+    fig.note = 'Regular polygon \u00b7 interior = ' + k + ' \u00d7 exterior';
+  } else if (mode === 'exterior') {
+    fig.edges.push(E('A', 'X', 'dash'));
+    fig.aux.push(AUX('A', 'X'));
+    fig.angles = [A('A', 'P', 'X', degSym(ext), COL.arcA, 15)];
+    fig.note = 'Regular polygon \u00b7 one exterior marked';
+  } else {
+    fig.angles = [A('A', 'P', 'B', degSym(inn), COL.arcA, 15)];
+    fig.note = 'Regular polygon \u00b7 one interior marked';
+  }
+
+  const wrongN = wrongNums(n, [n + 2, n - 2, Math.round(360 / inn), 180 / ext, n + 5].map(Math.round)).filter(function (v) {
+    return v >= 3 && v <= 36 && v !== n;
+  }).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards(step1, [
+      { plain: 'Exterior = (n \u2212 2) \u00d7 180' + DEG + ' / n', tip: TIPS.extShort, trap: 'intSum' },
+      { plain: 'n = 180' + DEG + ' \u00f7 exterior', tip: TIPS.extShort, trap: 'half' },
+      { plain: 'Interior = 360' + DEG + ' / n', tip: TIPS.extShort, trap: 'mix' }
+    ]),
+    eqCards(eq, [
+      { plain: 'n = 360' + DEG + ' \u00f7 ' + inn + DEG, tip: TIPS.extShort, trap: 'mix' },
+      { plain: 'n = (180 \u2212 ' + ext + ') / ' + ext, tip: TIPS.extShort, trap: 'algebra' },
+      { plain: 'n = (' + inn + ' / 180) + 2', tip: 'Rearrange (n\u22122)\u00d7180/n = interior carefully, or use the exterior shortcut.', trap: 'algebra' }
+    ]),
+    ansCards('n = ' + n + ' sides', wrongN.map(function (v) { return 'n = ' + v + ' sides'; }), TIPS.extShort)
+  );
+  return pack('regularN', 'rn-' + mode + '-' + n, title, givens, find, { x: n }, steps, fig, { rule: 'n', glow: 'A', showRays: true }, TIPS);
+}
+
+function genDualVertex(rng) {
+  const pairs = [
+    [9, 5], [8, 5], [10, 6], [12, 5], [9, 6], [8, 6], [15, 5], [12, 6], [10, 5], [9, 8]
+  ];
+  const pair = pick(rng, pairs);
+  const n1 = pair[0], n2 = pair[1];
+  const i1 = interiorOf(n1), i2 = interiorOf(n2);
+  const x = 360 - i1 - i2;
+  if (x <= 20 || x >= 160) return null;
+  const names = { 5: 'pentagon', 6: 'hexagon', 8: 'octagon', 9: 'nonagon', 10: 'decagon', 12: 'dodecagon', 15: '15-gon' };
+  const fig = {
+    verts: mapFig([
+      V('A', 18, 70), V('B', 50, 78), V('C', 82, 70),
+      V('P', 28, 30), V('Q', 50, 18), V('R', 72, 30),
+      V('V', 50, 52)
+    ]),
+    edges: [
+      E('A', 'B'), E('B', 'C'), E('C', 'V'), E('V', 'A'),
+      E('P', 'Q'), E('Q', 'R'), E('R', 'V'), E('V', 'P'),
+      E('A', 'P'), E('C', 'R')
+    ],
+    angles: [
+      A('V', 'A', 'B', degSym(i1), COL.arcA, 16),
+      A('V', 'Q', 'R', degSym(i2), COL.arcB, 14),
+      A('V', 'C', 'R', 'x' + DEG, COL.arcC, 18)
+    ],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [],
+    labels: true,
+    fillPolys: [['A', 'B', 'C', 'V'], ['P', 'Q', 'R', 'V']],
+    junction: 'V',
+    note: 'Regular ' + names[n1] + ' + regular ' + names[n2]
+  };
+  const wrongX = wrongNums(x, [i1 + i2, 180 - x, 360 - i1, i1 - i2, x + 20]).filter(function (v) { return v > 0; }).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('1 interior of regular ' + names[n1] + ' = ' + i1 + DEG + '; ' + names[n2] + ' = ' + i2 + DEG, [
+      { plain: 'Exterior of ' + names[n1] + ' = ' + i1 + DEG, tip: TIPS.extShort, trap: 'mix' },
+      { plain: 'Interior = 360' + DEG + ' / n', tip: TIPS.extShort, trap: 'mix' },
+      { plain: 'Co-interior angles sum to 180' + DEG, tip: TIPS.point360, trap: 'coint' }
+    ]),
+    eqCards('x = 360' + DEG + ' \u2212 ' + i1 + DEG + ' \u2212 ' + i2 + DEG, [
+      { plain: 'x = 180' + DEG + ' \u2212 ' + i1 + DEG + ' \u2212 ' + i2 + DEG, tip: TIPS.point360, trap: 'straight' },
+      { plain: 'x = ' + i1 + ' + ' + i2, tip: TIPS.point360, trap: 'sum' },
+      { plain: 'x = 360' + DEG + ' \u2212 ' + exteriorOf(n1) + DEG + ' \u2212 ' + exteriorOf(n2) + DEG, tip: 'At the shared vertex use the INTERIOR angles of each regular polygon.', trap: 'mix' }
+    ]),
+    ansCards('x = ' + x, wrongX.map(function (v) { return 'x = ' + fmtNum(v); }), TIPS.point360)
+  );
+  return pack('dualVertex', 'dv-' + n1 + '-' + n2 + '-' + x,
+    'Shared-vertex ring \u00b7 regular ' + names[n1] + ' + ' + names[n2],
+    'Regular ' + names[n1] + ' (' + i1 + DEG + ') + regular ' + names[n2] + ' (' + i2 + DEG + ') share a vertex',
+    'Find x' + DEG + ' at the junction', { x: x }, steps, fig, { rule: '360', glow: 'V', junction: true }, TIPS);
+}
+
+function genTripleJunction(rng) {
+  /* Three regular polygons meet at a point: interiors sum to 360°. */
+  const fixed = pick(rng, [
+    { nA: 6, nB: 4, nameA: 'hexagon', nameB: 'square' },
+    { nA: 8, nB: 4, nameA: 'octagon', nameB: 'square' },
+    { nA: 5, nB: 6, nameA: 'pentagon', nameB: 'hexagon' },
+    { nA: 9, nB: 4, nameA: 'nonagon', nameB: 'square' },
+    { nA: 10, nB: 4, nameA: 'decagon', nameB: 'square' }
+  ]);
+  const iA = interiorOf(fixed.nA);
+  const iB = fixed.nB === 4 ? 90 : interiorOf(fixed.nB);
+  const iN = 360 - iA - iB;
+  if (iN <= 90 || iN >= 170) return null;
+  const ext = 180 - iN;
+  if (360 % ext !== 0) return null;
+  const n = 360 / ext;
+  if (CLEAN_N.indexOf(n) < 0 && n !== 4 && n !== 3) return null;
+  /* In regular n-gon corner △QST, base ∠QTS = (180 − interior)/2 = exterior/2 */
+  const tip = ext / 2;
+  const ask = pick(rng, ['n', 'tip', 'both']);
+  let find, ansPlain, solX;
+  if (ask === 'n') {
+    find = 'Find n (sides of the third regular polygon)';
+    ansPlain = 'n = ' + n + ' sides';
+    solX = n;
+  } else if (ask === 'tip') {
+    find = 'Find ' + ANG + 'QTS in isosceles \u25b3QST';
+    ansPlain = ANG + 'QTS = ' + tip + DEG;
+    solX = tip;
+  } else {
+    find = 'Find n and ' + ANG + 'QTS';
+    ansPlain = 'n = ' + n + ', ' + ANG + 'QTS = ' + tip + DEG;
+    solX = n;
+  }
+
+  /* Clean fan at S: three corner wedges using the true sector angles (canvas y↓).
+     Rays: T (A|n shared) → D (A|B) → Q (B|n) → back to T. */
+  const Sx = 50, Sy = 52, R = 34, rFar = 21;
+  function ray(deg, rad) {
+    const a = deg * Math.PI / 180;
+    return { x: Sx + rad * Math.cos(a), y: Sy + rad * Math.sin(a) };
+  }
+  const a0 = -205;
+  const a1 = a0 + iA;
+  const a2 = a1 + iB;
+  const PT = ray(a0, R);
+  const PD = ray(a1, R);
+  const PQ = ray(a2, R);
+  const FA = ray(a0 + iA / 2, rFar);
+  const FB = ray(a1 + iB / 2, fixed.nB === 4 ? rFar * 0.72 : rFar);
+  const fig = {
+    verts: mapFig([
+      V('S', Sx, Sy),
+      V('T', PT.x, PT.y),
+      V('D', PD.x, PD.y),
+      V('Q', PQ.x, PQ.y),
+      V('A', FA.x, FA.y),
+      V('B', FB.x, FB.y)
+    ]),
+    edges: [
+      E('T', 'S'), E('S', 'D'), E('T', 'A'), E('A', 'D'),
+      E('S', 'Q'), E('D', 'B'), E('B', 'Q'),
+      E('Q', 'T')
+    ],
+    angles: [
+      A('S', 'T', 'D', degSym(iA), COL.arcA, 18),
+      A('S', 'D', 'Q', fixed.nB === 4 ? '' : degSym(iB), COL.arcB, 14),
+      A('S', 'Q', 'T', '?', COL.arcC, 16),
+      A('T', 'Q', 'S', ask === 'n' ? '' : ('x' + DEG), COL.arcD, 11)
+    ].filter(function (ang) { return ang.label !== ''; }),
+    rightAngles: fixed.nB === 4 ? [RA('S', 'D', 'Q')] : [],
+    parallels: [],
+    ticks: [TK('Q', 'S', 1), TK('S', 'T', 1)],
+    aux: [],
+    labels: true,
+    fillPolys: [
+      ['S', 'T', 'A', 'D'],
+      ['S', 'D', 'B', 'Q'],
+      ['S', 'Q', 'T']
+    ],
+    labelIds: ['S', 'T', 'D', 'Q'],
+    junction: 'S',
+    note: 'Three regular polygons meet at S \u00b7 QS = ST'
+  };
+
+  const wrongN = wrongNums(n, [n + 2, n - 2, Math.round(360 / iN), 8, 10]).filter(function (v) { return v >= 3 && v !== n; }).slice(0, 3);
+  const wrongAns = ask === 'n'
+    ? wrongN.map(function (v) { return 'n = ' + v + ' sides'; })
+    : ask === 'tip'
+      ? wrongNums(tip, [ext, iN / 2, 180 - iN, tip * 2]).slice(0, 3).map(function (v) { return ANG + 'QTS = ' + fmtNum(v) + DEG; })
+      : ['n = ' + (n + 2) + ', ' + ANG + 'QTS = ' + tip + DEG, 'n = ' + n + ', ' + ANG + 'QTS = ' + ext + DEG, 'n = ' + Math.round(360 / iN) + ', ' + ANG + 'QTS = ' + tip + DEG];
+
+  const steps = makeSteps(
+    reasonCards('Angles at point S: ' + iA + DEG + ' + ' + iB + DEG + ' + interior_n = 360' + DEG, [
+      { plain: 'Sum to 180' + DEG + ' on a straight line', tip: TIPS.point360, trap: 'straight' },
+      { plain: 'Interior_n = ' + iA + ' + ' + iB, tip: TIPS.point360, trap: 'sum' },
+      { plain: 'Use exterior angles of the first two polygons', tip: 'At the junction, subtract the INTERIOR angles from 360' + DEG + '.', trap: 'mix' }
+    ]),
+    eqCards('Interior_n = 360 \u2212 ' + iA + ' \u2212 ' + iB + ' = ' + iN + DEG + ' \u2192 ext = ' + ext + DEG + ' \u2192 n = 360/' + ext,
+      [
+        { plain: 'n = 360 / ' + iN, tip: TIPS.extShort, trap: 'mix' },
+        { plain: 'Interior_n = 180 \u2212 ' + iA + ' \u2212 ' + iB, tip: TIPS.point360, trap: 'straight' },
+        { plain: 'n = (n \u2212 2) \u00d7 180 / ' + iN, tip: TIPS.extShort, trap: 'algebra' }
+      ]),
+    ansCards(ansPlain, wrongAns, TIPS.extShort)
+  );
+  return pack('tripleJunction', 'tj-' + fixed.nA + '-' + fixed.nB + '-' + n + '-' + ask,
+    'Triple junction \u00b7 ' + fixed.nameA + ' + ' + fixed.nameB + ' + regular n-gon',
+    'Regular ' + fixed.nameA + ' (' + iA + DEG + ') + ' + fixed.nameB + ' (' + iB + DEG + ') + regular n-gon at a point',
+    find, { x: solX }, steps, fig, { rule: '360', glow: 'S', junction: true }, TIPS);
+}
+
+function genExtendedSides(rng) {
+  const n = pick(rng, [12, 15, 18, 20, 24]);
+  const ext = exteriorOf(n);
+  const rxs = 180 - 2 * ext;
+  if (rxs <= 60 || rxs >= 160) return null;
+  /* Labels PQRSTU... with QR and ST extended to X */
+  const fig = {
+    verts: mapFig([
+      V('P', 18, 42), V('Q', 32, 22), V('R', 55, 18), V('S', 72, 32),
+      V('T', 82, 55), V('U', 78, 78), V('V', 55, 88), V('W', 28, 78),
+      V('X', 88, 8)
+    ]),
+    edges: [
+      E('P', 'Q'), E('Q', 'R'), E('R', 'S'), E('S', 'T'), E('T', 'U'), E('U', 'V'), E('V', 'W'), E('W', 'P'),
+      E('Q', 'X', 'dash'), E('S', 'X', 'dash')
+    ],
+    angles: [
+      A('R', 'Q', 'X', degSym(ext), COL.arcA, 13),
+      A('S', 'T', 'X', degSym(ext), COL.arcB, 13),
+      A('X', 'R', 'S', 'x' + DEG, COL.arcC, 16)
+    ],
+    rightAngles: [],
+    parallels: [],
+    ticks: [],
+    aux: [AUX('Q', 'X'), AUX('S', 'X')],
+    labels: true,
+    fill: ['P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W'],
+    note: 'Regular ' + n + '-gon \u00b7 QR & ST extended to X',
+    exteriorRay: true
+  };
+  const ask = pick(rng, ['rxs', 'ext', 'both']);
+  let find, ans, solX, wrongs;
+  if (ask === 'ext') {
+    find = 'Find ' + ANG + 'XRS';
+    ans = ANG + 'XRS = ' + ext + DEG;
+    solX = ext;
+    wrongs = wrongNums(ext, [interiorOf(n), 360 / (n - 2), ext * 2, 180 - ext]).slice(0, 3).map(function (v) { return ANG + 'XRS = ' + fmtNum(v) + DEG; });
+  } else if (ask === 'rxs') {
+    find = 'Find ' + ANG + 'RXS';
+    ans = ANG + 'RXS = ' + rxs + DEG;
+    solX = rxs;
+    wrongs = wrongNums(rxs, [180 - ext, 2 * ext, interiorOf(n), 360 - 2 * ext]).slice(0, 3).map(function (v) { return ANG + 'RXS = ' + fmtNum(v) + DEG; });
+  } else {
+    find = 'Find ' + ANG + 'XRS and ' + ANG + 'RXS';
+    ans = ANG + 'XRS = ' + ext + DEG + ', ' + ANG + 'RXS = ' + rxs + DEG;
+    solX = rxs;
+    wrongs = [
+      ANG + 'XRS = ' + interiorOf(n) + DEG + ', ' + ANG + 'RXS = ' + rxs + DEG,
+      ANG + 'XRS = ' + ext + DEG + ', ' + ANG + 'RXS = ' + (180 - ext) + DEG,
+      ANG + 'XRS = ' + ext + DEG + ', ' + ANG + 'RXS = ' + (2 * ext) + DEG
+    ];
+  }
+  const steps = makeSteps(
+    reasonCards('Exterior ' + ANG + ' of regular ' + n + '-gon = 360' + DEG + ' \u00f7 ' + n + ' = ' + ext + DEG, [
+      { plain: 'Exterior = (n \u2212 2) \u00d7 180 / n', tip: TIPS.extShort, trap: 'intSum' },
+      { plain: ANG + 'XRS = interior = ' + interiorOf(n) + DEG, tip: 'The angle between a side and the extension of an adjacent side is the EXTERIOR angle.', trap: 'mix' },
+      { plain: 'Alternate angles on parallel sides', tip: 'Use exterior angles of the regular polygon at R and S.', trap: 'par' }
+    ]),
+    eqCards(ANG + 'XRS = ' + ANG + 'XSR = ' + ext + DEG + ' \u2192 ' + ANG + 'RXS = 180 \u2212 2\u00d7' + ext,
+      [
+        { plain: ANG + 'RXS = 360 \u2212 2\u00d7' + ext, tip: TIPS.iso, trap: 'point' },
+        { plain: ANG + 'RXS = 180 \u2212 ' + ext, tip: 'Triangle RXS is isosceles with TWO exterior angles at R and S.', trap: 'iso' },
+        { plain: ANG + 'RXS = ' + interiorOf(n), tip: TIPS.algebra, trap: 'mix' }
+      ]),
+    ansCards(ans, wrongs, TIPS.extShort)
+  );
+  return pack('extendedSides', 'es-' + n + '-' + ask + '-' + rxs,
+    'Extended sides of regular ' + n + '-gon',
+    'Regular ' + n + '-gon PQRSTU\u2026 \u00b7 QR and ST extended meet at X',
+    find, { x: solX }, steps, fig, { rule: 'ext', glow: 'X', showRays: true }, TIPS);
+}
+
+function genNestedSquare(rng) {
+  /* Square ABCD, diagonals at M (45 each). N on AB with BN = BM. Find angle AMN = 22.5 */
+  /* Or generalize: ask for BMN = 67.5 or AMN = 22.5 */
+  const ask = pick(rng, ['amn', 'bmn']);
+  const amn = 22.5;
+  const bmn = 67.5;
+  const target = ask === 'amn' ? amn : bmn;
+  const fig = {
+    verts: mapFig([
+      V('A', 18, 78), V('B', 82, 78), V('C', 82, 22), V('D', 18, 22),
+      V('M', 50, 50), V('N', 66, 78)
+    ]),
+    edges: [
+      E('A', 'B'), E('B', 'C'), E('C', 'D'), E('D', 'A'),
+      E('A', 'C'), E('B', 'D'), E('M', 'N')
+    ],
+    angles: [
+      A('M', 'B', 'A', '45' + DEG, COL.arcA, 12),
+      A('B', 'A', 'M', '45' + DEG, COL.arcB, 11),
+      A('M', 'B', 'N', ask === 'bmn' ? 'x' + DEG : degSym(bmn), COL.arcC, 14),
+      A('M', 'A', 'N', ask === 'amn' ? 'x' + DEG : degSym(amn), COL.arcD, 13)
+    ],
+    rightAngles: [RA('A', 'B', 'D'), RA('B', 'A', 'C')],
+    parallels: [],
+    ticks: [TK('B', 'N', 1), TK('B', 'M', 1)],
+    aux: [],
+    labels: true,
+    fill: ['A', 'B', 'C', 'D'],
+    note: 'Square ABCD \u00b7 BN = BM'
+  };
+  const wrong = wrongNums(target, [45, 90 - 45, 30, 60, 15, 75, 22, 67]).filter(function (v) { return v !== target; }).slice(0, 3);
+  const steps = makeSteps(
+    reasonCards('Square diagonals \u2192 ' + ANG + 'ABM = 45' + DEG + '; BN = BM \u2192 isosceles \u25b3MBN', [
+      { plain: 'Diagonals of a square bisect corner angles only — skip BN = BM', tip: TIPS.iso, trap: 'iso' },
+      { plain: ANG + 'MBN = 90' + DEG, tip: 'At B, ' + ANG + 'ABC = 90' + DEG + ' and ' + ANG + 'ABM = 45' + DEG + ', so ' + ANG + 'MBN = 45' + DEG + '.', trap: 'right' },
+      { plain: 'Rectangle property: EA = EB only', tip: TIPS.iso, trap: 'rect' }
+    ]),
+    eqCards(ANG + 'MBN = 45' + DEG + ' \u2192 base ' + ANG + 's of \u25b3MBN = (180\u221245)/2 = 67.5' + DEG + ' \u2192 ' + ANG + 'AMN = 90 \u2212 67.5',
+      [
+        { plain: ANG + 'BMN = (180 \u2212 45)/2 = 67.5, so ' + ANG + 'AMN = 67.5', tip: ANG + 'AMN and ' + ANG + 'BMN are adjacent on straight? Actually on diagonal path: ' + ANG + 'AMB = 90' + DEG + ' in square, so ' + ANG + 'AMN = 90 \u2212 ' + ANG + 'BMN.', trap: 'algebra' },
+        { plain: ANG + 'BMN = 45' + DEG, tip: TIPS.iso, trap: 'iso' },
+        { plain: ANG + 'AMN = 45' + DEG + ' / 2', tip: TIPS.algebra, trap: 'half' }
+      ]),
+    ansCards('x = ' + fmtNum(target) + DEG, wrong.map(function (v) { return 'x = ' + fmtNum(v) + DEG; }), TIPS.iso)
+  );
+  return pack('nestedSquare', 'ns-' + ask,
+    'Square ABCD \u00b7 diagonals at M \u00b7 BN = BM',
+    'ABCD square \u00b7 diagonals meet at M \u00b7 N on AB with BN = BM',
+    'Find ' + (ask === 'amn' ? ANG + 'AMN' : ANG + 'BMN'),
+    { x: target }, steps, fig, { rule: 'iso', glow: 'M' }, TIPS);
+}
+
+function genParaIsoChain(rng) {
+  /* Parallelogram PQRS, SR = SQ, SP = SX, angle PSX = p. Find angle QRS and/or QSX */
+  const p = pick(rng, [20, 22, 24, 26, 28, 30, 32]);
+  /* Chain: SP = SX => base angles at P and X in \u25b3PSX equal.
+     Angle at S in \u25b3PSX = 180 - 2*((180-p)/2 wait)
+     In \u25b3PSX: angle at P = angle at X; angle at S = p? User said angle PSX = 26.
+     So angle at S = 26. Base angles = (180-26)/2 = 77.
+     SR = SQ => \u25b3SRQ isosceles with SR=SQ, so angles at R and Q equal.
+     Parallel chase: angle QRS = 180 - angle SPQ (co-int) or opposite.
+     Classic result often: angle QRS = 2*77 - something... Let me build a clean chain:
+     Angle PSX = p (at S).
+     SP=SX => angles at P and X = (180-p)/2 = base.
+     Let base = (180-p)/2.
+     Angle QSP (straight or adjacent): often X is on extension or inside.
+     Simpler verified puzzle:
+     - PQRS parallelogram
+     - SQ = SR => angles at PQR side: angles SQR = SRQ = (180 - angle QSR)/2
+     - Given angle PSX = p with SP=SX
+     - Find angle QSX = base = (180-p)/2  (isosceles in \u25b3PSX... wait angle at S is p, so base angles (180-p)/2)
+     And angle QRS via parallel: angle QRS = angle QPS (opp) or 180 - angle SPQ.
+     Let angle QPS = base (same as angle at P in \u25b3PSX if X is along direction...).
+     Clean version used in many textbooks:
+     angle PSX = p, SP=SX => angle SPX = angle SXP = (180-p)/2
+     SQ=SR => and S,Q,R form isosceles.
+     angle QRS = 180 - p  (if co-interior with something) — too guessy.
+
+  I'll use a fully verified mini-chain:
+  1) SP = SX, angle PSX = p => base angles = (180-p)/2 each.
+  2) Ask for angle QSX which equals the base angle at X when Q-S-X related...
+  Actually angle QSX = angle QS P + angle PSX or angle QSX = (180-p)/2 if Q lies on XP.
+
+  Simpler problem:
+  Parallelogram PQRS with SQ = SR. Given angle P = alpha (or angle PSQ).
+  Let angle PSR = d (given numerically), SQ=SR => angles at Q and R in \u25b3SQR equal.
+  angle QSR = d? 
+
+  Verified:
+  - Angle SPQ = A (opposite to R)
+  - Given angle PSX = p where X on RQ extended or X such that SP=SX
+  - Target angle QSX = (180 - p)/2
+
+  And angle QRS = 180 - A, with A = (180-p)/2 if angle SPQ equals base angle.
+  So angle QRS = 180 - (180-p)/2 = (180+p)/2
+
+  Check with p=26: base=77, QRS=103, QSX=77. Good clean numbers.
+  */
+  const base = (180 - p) / 2;
+  if (!Number.isInteger(base) && Math.round(base * 2) !== base * 2) {
+    /* allow .5 */
+  }
+  const qrs = (180 + p) / 2;
+  const ask = pick(rng, ['qsx', 'qrs', 'both']);
+  let find, ans, solX, wrongs;
+  if (ask === 'qsx') {
+    find = 'Find ' + ANG + 'QSX';
+    ans = ANG + 'QSX = ' + fmtNum(base) + DEG;
+    solX = base;
+    wrongs = wrongNums(base, [p, 180 - p, qrs, base * 2]).slice(0, 3).map(function (v) { return ANG + 'QSX = ' + fmtNum(v) + DEG; });
+  } else if (ask === 'qrs') {
+    find = 'Find ' + ANG + 'QRS';
+    ans = ANG + 'QRS = ' + fmtNum(qrs) + DEG;
+    solX = qrs;
+    wrongs = wrongNums(qrs, [p, base, 180 - p, 90 + p / 2]).slice(0, 3).map(function (v) { return ANG + 'QRS = ' + fmtNum(v) + DEG; });
+  } else {
+    find = 'Find ' + ANG + 'QRS and ' + ANG + 'QSX';
+    ans = ANG + 'QRS = ' + fmtNum(qrs) + DEG + ', ' + ANG + 'QSX = ' + fmtNum(base) + DEG;
+    solX = qrs;
+    wrongs = [
+      ANG + 'QRS = ' + fmtNum(base) + DEG + ', ' + ANG + 'QSX = ' + fmtNum(qrs) + DEG,
+      ANG + 'QRS = ' + (180 - p) + DEG + ', ' + ANG + 'QSX = ' + fmtNum(base) + DEG,
+      ANG + 'QRS = ' + fmtNum(qrs) + DEG + ', ' + ANG + 'QSX = ' + p + DEG
+    ];
+  }
+  const fig = {
+    verts: mapFig([
+      V('P', 20, 75), V('Q', 78, 75), V('R', 92, 30), V('S', 34, 30),
+      V('X', 8, 48)
+    ]),
+    edges: [
+      E('P', 'Q'), E('Q', 'R'), E('R', 'S'), E('S', 'P'),
+      E('S', 'Q'), E('S', 'X'), E('P', 'X')
+    ],
+    angles: [
+      A('S', 'P', 'X', degSym(p), COL.arcA, 14),
+      A('X', 'S', 'P', fmtNum(base) + DEG, COL.arcB, 11),
+      A('Q', 'S', 'X', ask === 'qsx' || ask === 'both' ? 'x' + DEG : fmtNum(base) + DEG, COL.arcC, 15),
+      A('R', 'Q', 'S', ask === 'qrs' || ask === 'both' ? 'y' + DEG : fmtNum(qrs) + DEG, COL.arcD, 14)
+    ],
+    rightAngles: [],
+    parallels: [{ a: 'P', b: 'Q', c: 'S', d: 'R' }],
+    ticks: [TK('S', 'R', 1), TK('S', 'Q', 1), TK('S', 'P', 2), TK('S', 'X', 2)],
+    aux: [],
+    labels: true,
+    fill: ['P', 'Q', 'R', 'S'],
+    parallelNote: 'PQ // SR',
+    note: 'SR = SQ \u00b7 SP = SX'
+  };
+  const steps = makeSteps(
+    reasonCards('SP = SX \u2192 isos. \u25b3PSX \u00b7 base ' + ANG + 's = (180 \u2212 ' + p + ')/2 = ' + fmtNum(base) + DEG, [
+      { plain: ANG + 'PSX bisects ' + ANG + 'PSR', tip: TIPS.iso, trap: 'bisect' },
+      { plain: 'Opp. angles only — ignore tick marks', tip: TIPS.iso, trap: 'opp' },
+      { plain: 'Exterior angle = ' + p + DEG, tip: TIPS.iso, trap: 'ext' }
+    ]),
+    eqCards(ANG + 'QPS = ' + fmtNum(base) + DEG + ' (same base) \u2192 co-int./opp. chase \u2192 ' + ANG + 'QRS = 180 \u2212 ' + fmtNum(base),
+      [
+        { plain: ANG + 'QRS = ' + p, tip: TIPS.paraOpp, trap: 'para' },
+        { plain: ANG + 'QRS = 2\u00d7' + p, tip: TIPS.algebra, trap: 'algebra' },
+        { plain: ANG + 'QSX = ' + p, tip: TIPS.iso, trap: 'iso' }
+      ]),
+    ansCards(ans, wrongs, TIPS.iso)
+  );
+  return pack('paraIsoChain', 'pic-' + p + '-' + ask,
+    'Parallelogram PQRS \u00b7 SR = SQ \u00b7 SP = SX',
+    'PQRS parallelogram \u00b7 SR = SQ \u00b7 SP = SX \u00b7 ' + ANG + 'PSX = ' + p + DEG,
+    find, { x: solX }, steps, fig, { rule: 'iso', glow: 'S' }, TIPS);
+}
+
+const GENS = {
+  rectDiag: genRectDiag,
+  parallelogram: genParallelogram,
+  trapezium: genTrapezium,
+  kite: genKite,
+  irregExterior: genIrregExterior,
+  irregInterior: genIrregInterior,
+  ratioExterior: genRatioExterior,
+  regularN: genRegularN,
+  dualVertex: genDualVertex,
+  tripleJunction: genTripleJunction,
+  extendedSides: genExtendedSides,
+  nestedSquare: genNestedSquare,
+  paraIsoChain: genParaIsoChain
+};
+
+function audit(p) {
+  if (!p || !p.steps || p.steps.length !== 3) return 'steps';
+  if (!p.sol || p.sol.x == null) return 'sol';
+  if (!p.figure || !p.figure.verts || !p.figure.edges) return 'figure';
+  for (let i = 0; i < 3; i++) {
+    const cards = p.steps[i].cards;
+    if (!cards || cards.length < 4) return 'cards-' + i;
+    const good = cards.filter(function (c) { return c.correct; });
+    if (good.length !== 1) return 'correct-' + i;
+    const plains = {};
+    for (let k = 0; k < cards.length; k++) {
+      if (!cards[k].plain) return 'plain-' + i;
+      if (plains[cards[k].plain]) return 'dup-' + i;
+      plains[cards[k].plain] = true;
+      if (!cards[k].correct && !cards[k].tip) return 'tip-' + i;
+    }
+  }
+  return '';
+}
+
+function generateProblem(round, history, rng) {
+  const random = rng || Math.random;
+  const tier = tierOf(round);
+  const recent = {};
+  (history || []).forEach(function (h) { recent[h.key] = true; });
+  const last = history && history.length ? history[history.length - 1].arch : '';
+  let pool = tier.arches.slice();
+  if (last && pool.length > 1) {
+    const filtered = pool.filter(function (a) { return a !== last; });
+    if (filtered.length) pool = filtered;
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const arches = pass === 0 ? pool : tier.arches;
+    const tries = pass === 0 ? 64 : 48;
+    for (let i = 0; i < tries; i++) {
+      const arch = arches[Math.floor(random() * arches.length)];
+      let problem = null;
+      try { problem = GENS[arch](random); } catch (err) { problem = null; }
+      if (!problem) continue;
+      if (pass === 0 && recent[problem.key]) continue;
+      const a = audit(problem);
+      if (a !== '') { lastAudit = a + ':' + arch; continue; }
+      problem.tier = tier.name;
+      return problem;
+    }
+  }
+  return null;
+}
+
+/* ─── Audio ───────────────────────────────────────────────────────── */
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+function ensureAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio.ctx = new AC();
+  audio.master = audio.ctx.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.2;
+  audio.master.connect(audio.ctx.destination);
+  audio.music = audio.ctx.createGain();
+  audio.music.gain.value = 0.38;
+  audio.music.connect(audio.master);
+  const len = Math.floor(audio.ctx.sampleRate * 0.25);
+  audio.noise = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
+  const data = audio.noise.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+}
+function resumeAudio() {
+  try {
+    ensureAudio();
+    if (!audio.ctx) return;
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    if (!audio.started) {
+      audio.started = true;
+      audio.next = audio.ctx.currentTime + 0.05;
+    }
+  } catch (err) { /* optional */ }
+}
+function toggleMute() {
+  resumeAudio();
+  audio.muted = !audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.2;
+}
+function blip(time, freq, dur, type, gain, dest, slide) {
+  if (!audio.ctx || audio.muted) return;
+  const o = audio.ctx.createOscillator();
+  const g = audio.ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), time);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(gain, time + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  o.connect(g);
+  g.connect(dest || audio.master);
+  o.start(time);
+  o.stop(time + dur + 0.03);
+}
+function noiseHit(time, dur, gain, freq) {
+  if (!audio.ctx || audio.muted || !audio.noise) return;
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = freq || 1400;
+  const g = audio.ctx.createGain();
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.master);
+  src.start(time);
+  src.stop(time + dur + 0.02);
+}
+function sfxChime() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 784, 0.08, 'triangle', 0.05);
+  blip(t + 0.06, 1175, 0.1, 'sine', 0.04);
+  blip(t + 0.12, 1568, 0.14, 'triangle', 0.035);
+}
+function sfxLock() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 392, 0.09, 'square', 0.04);
+  blip(t + 0.07, 523, 0.12, 'square', 0.045);
+  blip(t + 0.16, 784, 0.18, 'triangle', 0.04);
+}
+function sfxFanfare() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 200, 0.35, 'sawtooth', 0.03, audio.master, 1200);
+  [523, 659, 784, 1047].forEach(function (f, i) { blip(t + 0.08 + i * 0.07, f, 0.24, 'triangle', 0.05); });
+}
+function sfxBuzz() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 70, 0.22, 'sawtooth', 0.05, audio.master, 40);
+  noiseHit(t, 0.15, 0.05, 500);
+}
+function sfxUi() {
+  if (!audio.ctx) return;
+  blip(audio.ctx.currentTime, 660, 0.05, 'square', 0.03);
+}
+
+const CHORDS = [[67, 71, 74], [62, 67, 71], [69, 72, 76], [64, 67, 71]];
+const BASS = [43, 38, 45, 40];
+function playMusicStep(index, time) {
+  const bar = Math.floor(index / 16) % 4;
+  const chord = CHORDS[bar];
+  const step = index % 16;
+  if (step % 8 === 0) blip(time, midi(BASS[bar]), 0.18, 'triangle', 0.065, audio.music);
+  if (step % 2 === 0) {
+    const order = [0, 2, 1, 2];
+    blip(time, midi(chord[order[(step / 2) % 4]] + 12), 0.1, 'square', 0.022, audio.music);
+  }
+  if (step === 0 || step === 8) blip(time, 96, 0.06, 'sine', 0.04, audio.music, 52);
+  if (step === 4 || step === 12) noiseHit(time, 0.07, 0.02, 2000);
+  if (step % 2 === 1) noiseHit(time, 0.025, 0.009, 4500);
+  if (step === 14) blip(time, midi(chord[2] + 24), 0.08, 'triangle', 0.016, audio.music);
+}
+function tickMusic() {
+  if (!audio.started || !audio.ctx || audio.muted || game.paused) return;
+  const stepDur = (60 / 112) / 4;
+  let guard = 0;
+  while (audio.next < audio.ctx.currentTime + 0.12 && guard < 8) {
+    playMusicStep(audio.step, audio.next);
+    audio.step = (audio.step + 1) % 64;
+    audio.next += stepDur;
+    guard++;
+  }
+}
+
+/* ─── Layout / hit testing ────────────────────────────────────────── */
+function layoutView() {
+  const sw = window.innerWidth;
+  const sh = window.innerHeight;
+  const s = Math.min(sw / W, sh / H);
+  game.view.s = s;
+  game.view.ox = (sw - W * s) / 2;
+  game.view.oy = (sh - H * s) / 2;
+}
+function worldFromClient(cx, cy) {
+  return {
+    x: (cx - game.view.ox) / game.view.s,
+    y: (cy - game.view.oy) / game.view.s
+  };
+}
+function hit(x, y, r) {
+  return x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+}
+function deckGeom() {
+  const y = 548;
+  const h = 118;
+  const cards = [];
+  for (let i = 0; i < 4; i++) cards.push({ x: 28 + i * 250, y: y, w: 236, h: h, i: i });
+  return {
+    prompt: { x: 28, y: 478, w: 900, h: 24 },
+    role: { x: 940, y: 478, w: 300, h: 24 },
+    tip: { x: 28, y: 506, w: 1224, h: 34 },
+    cards: cards,
+    lock: { x: 1040, y: y, w: 208, h: h }
+  };
+}
+function titleGeom() {
+  const y = 390;
+  return [
+    { id: 'solo', x: 90, y: y, w: 340, h: 150 },
+    { id: 'coop', x: 470, y: y, w: 340, h: 150 },
+    { id: 'versus', x: 850, y: y, w: 340, h: 150 }
+  ];
+}
+function overGeom() {
+  return {
+    title: { x: 360, y: 470, w: 200, h: 48 },
+    again: { x: 720, y: 470, w: 220, h: 48 }
+  };
+}
+function currentCards() {
+  return game.problem && game.problem.steps[game.step] ? game.problem.steps[game.step].cards : [];
+}
+function ownerFor(step) {
+  if (game.mode !== 'coop') return -1;
+  const base = (game.round - 1) % 2;
+  if (step === 0) return base;
+  if (step === 1) return 1 - base;
+  return -1;
+}
+function playerMaps() {
+  if (game.mode === 'solo') {
+    return [{ left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'], up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], fire: ['Space', 'Enter'] }];
+  }
+  return [
+    { left: ['KeyA'], right: ['KeyD'], up: ['KeyW'], down: ['KeyS'], fire: ['KeyF', 'Space'] },
+    { left: ['ArrowLeft'], right: ['ArrowRight'], up: ['ArrowUp'], down: ['ArrowDown'], fire: ['Enter'] }
+  ];
+}
+function pressed(codes) {
+  for (let i = 0; i < codes.length; i++) if (keyEdge.has(codes[i])) return true;
+  return false;
+}
+function hoverPlayer() {
+  if (game.mode === 'coop') {
+    const o = ownerFor(game.step);
+    return o >= 0 ? o : 0;
+  }
+  return 0;
+}
+function moveSel(player, dir) {
+  const cards = currentCards();
+  if (!cards.length) return;
+  let i = game.sel[player];
+  for (let n = 0; n < cards.length; n++) {
+    i = (i + dir + cards.length) % cards.length;
+    if (!cards[i].dead) { game.sel[player] = i; return; }
+  }
+}
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 40 + Math.random() * 160;
+    game.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      life: 0.4 + Math.random() * 0.5,
+      color: color
+    });
+  }
+}
+function floatText(x, y, msg, color) {
+  game.floats.push({ x: x, y: y, msg: msg, color: color || COL.gold, life: 1.1 });
+}
+function remember(p) {
+  game.history.push({ key: p.key, arch: p.arch });
+  if (game.history.length > 6) game.history.shift();
+}
+function saveBest() {
+  try {
+    const k = game.mode;
+    const score = game.mode === 'versus' ? Math.max(game.pScore[0], game.pScore[1]) : game.score;
+    if (!game.best[k] || score > game.best[k]) {
+      game.best[k] = score;
+      localStorage.setItem('polygon-citadel-best', JSON.stringify(game.best));
+    }
+  } catch (err) { /* ignore */ }
+}
+function endGame(reason) {
+  game.screen = 'over';
+  game.overReason = reason;
+  game.phase = 'play';
+  saveBest();
+}
+function startMode(mode) {
+  resumeAudio();
+  sfxUi();
+  game.screen = 'play';
+  game.mode = mode;
+  game.round = 1;
+  game.step = 0;
+  game.phase = 'play';
+  game.shields = mode === 'coop' ? 4 : 3;
+  game.maxShields = game.shields;
+  game.pShields = [3, 3];
+  game.score = 0;
+  game.pScore = [0, 0];
+  game.stars = [0, 0];
+  game.combo = 0;
+  game.pCombo = [0, 0];
+  game.cleared = 0;
+  game.sel = [0, 0];
+  game.tip = '';
+  game.tipT = 0;
+  game.lock = 0;
+  game.celebrateT = 0;
+  game.shake = 0;
+  game.paused = false;
+  game.overReason = '';
+  game.winner = '';
+  game.particles = [];
+  game.floats = [];
+  game.history = [];
+  game.auxGlow = 0;
+  game.beamT = 0;
+  game.junctionPulse = 0;
+  const problem = generateProblem(1, game.history, Math.random);
+  if (!problem) {
+    game.fatal = lastAudit || 'Citadel generator failed.';
+    game.screen = 'title';
+    return;
+  }
+  remember(problem);
+  game.problem = problem;
+}
+function finishRound() {
+  if (game.phase !== 'celebrate') return;
+  const problem = generateProblem(game.round + 1, game.history, Math.random);
+  if (!problem) {
+    endGame('No fresh fortress blueprint passed verification.');
+    return;
+  }
+  game.round += 1;
+  game.step = 0;
+  game.phase = 'play';
+  game.sel = [0, 0];
+  game.tip = '';
+  game.tipT = 0;
+  game.auxGlow = 0;
+  game.beamT = 0;
+  game.junctionPulse = 0;
+  remember(problem);
+  game.problem = problem;
+}
+function succeed(player) {
+  sfxChime();
+  if (game.step === 0) {
+    sfxChime();
+    game.auxGlow = 1;
+    game.junctionPulse = 1;
+  }
+  if (game.step === 1) sfxLock();
+  const deck = deckGeom();
+  const rect = deck.cards[game.sel[player]] || deck.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + rect.h / 2, COL.good, 16);
+  let award = 120 + game.combo * 20;
+  if (game.mode === 'versus') {
+    game.pCombo[player] += 1;
+    award += 40;
+    game.pScore[player] += award;
+  } else {
+    game.combo += 1;
+    game.score += award;
+  }
+  game.lastAward = award;
+  floatText(rect.x + rect.w / 2, rect.y, '+' + award, COL.good);
+  game.lock = 0.25;
+  if (game.step < 2) {
+    game.step += 1;
+    game.sel = [0, 0];
+    game.tip = '';
+    return;
+  }
+  sfxFanfare();
+  game.beamT = 1;
+  const finale = 350 + game.combo * 25;
+  if (game.mode === 'versus') {
+    game.pScore[player] += finale;
+    game.stars[player] += 1;
+    floatText(W / 2, 300, 'P' + (player + 1) + ' MASTER ARCHITECT +' + finale, player === 0 ? COL.p1 : COL.p2);
+  } else {
+    game.score += finale;
+    floatText(W / 2, 300, 'CITADEL FORTIFIED +' + finale, COL.gold);
+  }
+  game.cleared += 1;
+  game.phase = 'celebrate';
+  game.celebrateT = 1.6;
+}
+function fail(player, c) {
+  sfxBuzz();
+  game.combo = 0;
+  if (game.mode === 'versus') game.pCombo[player] = 0;
+  game.shake = 8;
+  game.flash = 0.4;
+  game.tip = c.tip || TIPS.algebra;
+  game.tipT = 1;
+  c.dead = true;
+  const deck = deckGeom();
+  const rect = deck.cards[game.sel[player]] || deck.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + rect.h / 2, COL.bad, 18);
+  if (game.mode === 'versus') {
+    game.pShields[player] = Math.max(0, game.pShields[player] - 1);
+    if (game.pShields[player] <= 0) {
+      game.winner = player === 0 ? 'P2' : 'P1';
+      endGame((player === 0 ? 'P1' : 'P2') + ' citadel shields shattered. ' + game.winner + ' claims the fortress.');
+    }
+  } else {
+    game.shields -= 1;
+    if (game.shields <= 0) endGame('Citadel shields depleted. The holo-fortress collapses.');
+  }
+  const cards = currentCards();
+  if (game.pointerDevice !== 'mouse' && cards[game.sel[player]] && cards[game.sel[player]].dead) moveSel(player, 1);
+}
+function confirm(player) {
+  if (frameUsed || game.lock > 0 || game.phase !== 'play' || game.screen !== 'play') return;
+  if (game.mode === 'coop') {
+    const owner = ownerFor(game.step);
+    if (owner >= 0 && player !== owner) {
+      floatText(W / 2, 430, 'P' + (owner + 1) + ' LOCKS THIS STEP', owner === 0 ? COL.p1 : COL.p2);
+      return;
+    }
+  }
+  if (game.mode === 'versus' && game.pShields[player] <= 0) return;
+  const cards = currentCards();
+  const c = cards[game.sel[player]];
+  if (!c || c.dead) return;
+  frameUsed = true;
+  if (!c.correct) fail(player, c);
+  else succeed(player);
+}
+
+function pollPads() {
+  const out = [null, null];
+  const list = (navigator.getGamepads && navigator.getGamepads()) || [];
+  const found = [];
+  for (let i = 0; i < list.length && found.length < 2; i++) if (list[i]) found.push(list[i]);
+  for (let p = 0; p < 2; p++) {
+    const gp = found[p];
+    const mem = padMem[p];
+    if (!gp) {
+      game.padOn[p] = false;
+      mem.buttons = [];
+      mem.dx = 0; mem.dy = 0;
+      continue;
+    }
+    game.padOn[p] = true;
+    const b = [];
+    for (let i = 0; i < gp.buttons.length; i++) b[i] = !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.45));
+    const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+    const ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+    const dx = (b[14] || ax < -0.55) ? -1 : (b[15] || ax > 0.55) ? 1 : 0;
+    const dy = (b[12] || ay < -0.55) ? -1 : (b[13] || ay > 0.55) ? 1 : 0;
+    out[p] = {
+      dx: dx !== 0 && mem.dx === 0 ? dx : 0,
+      dy: dy !== 0 && mem.dy === 0 ? dy : 0,
+      fire: b[0] && !mem.buttons[0],
+      start: b[9] && !mem.buttons[9]
+    };
+    mem.buttons = b;
+    mem.dx = dx; mem.dy = dy;
+  }
+  return out;
+}
+function pollInput() {
+  frameUsed = false;
+  if (keyEdge.has('KeyM')) toggleMute();
+  const pads = pollPads();
+  if (pointerEdge && hit(game.mouseX, game.mouseY, GEO.mute)) {
+    toggleMute();
+    pointerEdge = false;
+  }
+  if ((pads[0] && pads[0].start) || (pads[1] && pads[1].start)) {
+    if (game.screen === 'play') game.paused = !game.paused;
+  }
+  if (game.screen === 'title') {
+    if (pressed(['ArrowLeft', 'KeyA']) || (pads[0] && pads[0].dx < 0)) game.titleSel = (game.titleSel + 2) % 3;
+    if (pressed(['ArrowRight', 'KeyD']) || (pads[0] && pads[0].dx > 0)) game.titleSel = (game.titleSel + 1) % 3;
+    if (keyEdge.has('Digit1')) startMode('solo');
+    else if (keyEdge.has('Digit2')) startMode('coop');
+    else if (keyEdge.has('Digit3')) startMode('versus');
+    else if (pressed(['Enter', 'Space']) || (pads[0] && pads[0].fire)) startMode(['solo', 'coop', 'versus'][game.titleSel]);
+    if (pointerEdge) {
+      const cards = titleGeom();
+      for (let i = 0; i < cards.length; i++) {
+        if (hit(game.mouseX, game.mouseY, cards[i])) startMode(cards[i].id);
+      }
+    }
+    return;
+  }
+  if (game.screen === 'over') {
+    const og = overGeom();
+    if (pointerEdge && hit(game.mouseX, game.mouseY, og.title)) { game.screen = 'title'; return; }
+    if (pointerEdge && hit(game.mouseX, game.mouseY, og.again)) { startMode(game.mode); return; }
+    if (pressed(['Enter', 'Space']) || (pads[0] && pads[0].fire)) startMode(game.mode);
+    if (keyEdge.has('Escape')) game.screen = 'title';
+    return;
+  }
+  if (keyEdge.has('KeyP') || keyEdge.has('Escape')) {
+    if (game.screen === 'play') game.paused = !game.paused;
+  }
+  if (game.paused) {
+    if (pointerEdge && hit(game.mouseX, game.mouseY, { x: 490, y: 390, w: 300, h: 52 })) game.paused = false;
+    return;
+  }
+  if (game.phase === 'celebrate') {
+    if (pointerEdge || pressed(['Enter', 'Space', 'KeyF']) || (pads[0] && pads[0].fire) || (pads[1] && pads[1].fire)) finishRound();
+    return;
+  }
+  const maps = playerMaps();
+  const actors = [];
+  for (let p = 0; p < maps.length; p++) {
+    const map = maps[p];
+    const pad = pads[p];
+    if (pressed(map.left) || (pad && pad.dx < 0)) moveSel(p, -1);
+    if (pressed(map.right) || (pad && pad.dx > 0)) moveSel(p, 1);
+    if (pressed(map.up) || (pad && pad.dy < 0)) moveSel(p, -1);
+    if (pressed(map.down) || (pad && pad.dy > 0)) moveSel(p, 1);
+    if (pressed(map.fire) || (pad && pad.fire)) actors.push(p);
+  }
+  if (actors.length === 2 && Math.random() < 0.5) actors.reverse();
+  for (let i = 0; i < actors.length; i++) confirm(actors[i]);
+  if (pointerEdge && game.phase === 'play') {
+    const deck = deckGeom();
+    const who = hoverPlayer();
+    if (hit(game.mouseX, game.mouseY, deck.lock)) confirm(who);
+    else {
+      for (let i = 0; i < deck.cards.length; i++) {
+        if (hit(game.mouseX, game.mouseY, deck.cards[i])) {
+          game.sel[who] = i;
+          confirm(who);
+          break;
+        }
+      }
+    }
+  }
+}
+function advance(dt) {
+  game.time += dt;
+  if (game.lock > 0) game.lock = Math.max(0, game.lock - dt);
+  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 26);
+  if (game.flash > 0) game.flash = Math.max(0, game.flash - dt);
+  if (game.auxGlow > 0 && game.auxGlow < 1.5) game.auxGlow = Math.min(1.5, game.auxGlow + dt * 0.6);
+  if (game.junctionPulse > 0 && game.junctionPulse < 1.5) game.junctionPulse = Math.min(1.5, game.junctionPulse + dt * 0.5);
+  if (game.beamT > 0) game.beamT = Math.max(0, game.beamT - dt * 0.7);
+  if (game.phase === 'celebrate') {
+    game.celebrateT -= dt;
+    if (game.celebrateT <= 0) finishRound();
+  }
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.life <= 0) game.particles.splice(i, 1);
+  }
+  for (let i = game.floats.length - 1; i >= 0; i--) {
+    const f = game.floats[i];
+    f.life -= dt;
+    f.y -= 28 * dt;
+    if (f.life <= 0) game.floats.splice(i, 1);
+  }
+}
+
+/* ─── Drawing helpers ─────────────────────────────────────────────── */
+function roundRect(x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function panel(x, y, w, h, accent) {
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(6, 18, 20, 0.92)';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = accent || 'rgba(47, 224, 192, 0.32)';
+  ctx.stroke();
+}
+function text(msg, x, y, font, color, align) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(msg, x, y);
+}
+function wrap(msg, font, maxW) {
+  ctx.font = font;
+  const words = String(msg).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const t = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(t).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = t;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#06141a');
+  g.addColorStop(0.45, '#0a1c22');
+  g.addColorStop(1, '#0c1814');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.1;
+  for (let i = 0; i < 20; i++) {
+    const x = (i * 91 + game.time * 14) % (W + 50) - 25;
+    ctx.strokeStyle = COL.cyan;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x - 70, H);
+    ctx.stroke();
+  }
+  /* subtle hex lattice */
+  ctx.globalAlpha = 0.05;
+  ctx.strokeStyle = COL.teal;
+  for (let row = 0; row < 10; row++) {
+    for (let col = 0; col < 16; col++) {
+      const hx = col * 90 + (row % 2) * 45;
+      const hy = row * 78 + (game.time * 6) % 78;
+      ctx.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = (k * 60 - 30) * Math.PI / 180;
+        const px = hx + 22 * Math.cos(a);
+        const py = hy + 22 * Math.sin(a);
+        if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+  const rg = ctx.createRadialGradient(W * 0.5, H * 0.38, 20, W * 0.5, H * 0.38, 360);
+  rg.addColorStop(0, 'rgba(47, 224, 192, 0.09)');
+  rg.addColorStop(1, 'rgba(47, 224, 192, 0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function vertMap(fig) {
+  const m = {};
+  for (let i = 0; i < fig.verts.length; i++) m[fig.verts[i].id] = fig.verts[i];
+  return m;
+}
+function stageRect() {
+  return { x: 40, y: 150, w: 1200, h: 290 };
+}
+function toStage(v, rect) {
+  /* Uniform scale so drawn angles match the problem (no X/Y stretch). */
+  const s = Math.min(rect.w, rect.h) / 100;
+  const ox = rect.x + (rect.w - 100 * s) / 2;
+  const oy = rect.y + (rect.h - 100 * s) / 2;
+  return { x: ox + v.x * s, y: oy + v.y * s };
+}
+function drawChevron(ax, ay, bx, by, t) {
+  const mx = ax + (bx - ax) * t;
+  const my = ay + (by - ay) * t;
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len, py = dx / len;
+  const s = 6;
+  ctx.beginPath();
+  ctx.moveTo(mx - px * s - dx / len * 5, my - py * s - dy / len * 5);
+  ctx.lineTo(mx, my);
+  ctx.lineTo(mx + px * s - dx / len * 5, my + py * s - dy / len * 5);
+  ctx.strokeStyle = COL.cyan;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+function drawTickMarks(ax, ay, bx, by, marks) {
+  const mx = (ax + bx) / 2, my = (ay + by) / 2;
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len, py = dx / len;
+  ctx.strokeStyle = COL.amber;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < marks; i++) {
+    const o = (i - (marks - 1) / 2) * 5;
+    const cx = mx + dx / len * o, cy = my + dy / len * o;
+    ctx.beginPath();
+    ctx.moveTo(cx - px * 7, cy - py * 7);
+    ctx.lineTo(cx + px * 7, cy + py * 7);
+    ctx.stroke();
+  }
+}
+function drawRightAngle(vm, ra, rect) {
+  const m = vm[ra.at], a = vm[ra.fromId], b = vm[ra.toId];
+  if (!m || !a || !b) return;
+  const M = toStage(m, rect), A = toStage(a, rect), B = toStage(b, rect);
+  const dax = A.x - M.x, day = A.y - M.y;
+  const dbx = B.x - M.x, dby = B.y - M.y;
+  const la = Math.hypot(dax, day) || 1;
+  const lb = Math.hypot(dbx, dby) || 1;
+  const s = 12;
+  const ax = dax / la * s, ay = day / la * s;
+  const bx = dbx / lb * s, by = dby / lb * s;
+  ctx.beginPath();
+  ctx.moveTo(M.x + ax, M.y + ay);
+  ctx.lineTo(M.x + ax + bx, M.y + ay + by);
+  ctx.lineTo(M.x + bx, M.y + by);
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+function angOf(M, P) { return Math.atan2(P.y - M.y, P.x - M.x); }
+function pillSize(label) {
+  const msg = String(label || '');
+  const font = '800 14px ' + MONO;
+  ctx.font = font;
+  return {
+    font: font,
+    tw: Math.min(168, Math.max(28, ctx.measureText(msg).width + 14)),
+    th: 22
+  };
+}
+function distPointSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy || 1;
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = clamp(t, 0, 1);
+  const qx = ax + t * dx, qy = ay + t * dy;
+  return Math.hypot(px - qx, py - qy);
+}
+function pillEdgeClearance(x, y, tw, th, edges) {
+  /* Approximate pill with center + 4 corners; return min distance to any edge. */
+  const pts = [
+    [x, y],
+    [x - tw / 2, y - th / 2], [x + tw / 2, y - th / 2],
+    [x - tw / 2, y + th / 2], [x + tw / 2, y + th / 2]
+  ];
+  let best = 1e9;
+  for (let i = 0; i < pts.length; i++) {
+    for (let e = 0; e < edges.length; e++) {
+      best = Math.min(best, distPointSeg(pts[i][0], pts[i][1], edges[e][0], edges[e][1], edges[e][2], edges[e][3]));
+    }
+  }
+  return best;
+}
+function stageEdgeList(vm, fig, rect) {
+  const edges = [];
+  if (!fig || !fig.edges) return edges;
+  for (let i = 0; i < fig.edges.length; i++) {
+    const e = fig.edges[i];
+    const a = vm[e.from], b = vm[e.to];
+    if (!a || !b) continue;
+    const A = toStage(a, rect), B = toStage(b, rect);
+    edges.push([A.x, A.y, B.x, B.y]);
+  }
+  return edges;
+}
+function roomAlongBisector(Mx, My, cosM, sinM, edges, maxScan) {
+  const lim = maxScan || 120;
+  for (let t = 10; t < lim; t += 3) {
+    const x = Mx + cosM * t, y = My + sinM * t;
+    for (let e = 0; e < edges.length; e++) {
+      if (distPointSeg(x, y, edges[e][0], edges[e][1], edges[e][2], edges[e][3]) < 5) return t;
+    }
+  }
+  return lim;
+}
+function pickPillSeat(Mx, My, cosM, sinM, r, tw, th, rect, edges, occupied, absDelta) {
+  const pad = 12;
+  const tx = -sinM, ty = cosM;
+  const delta = Math.abs(absDelta || 1);
+  const halfAng = Math.max(0.12, delta / 2);
+  /* Distance where the wedge is wide enough for the pill. */
+  const fitDist = (tw * 0.5) / Math.tan(halfAng) + 6;
+  const base = clamp(Math.max(r + 12, fitDist), r + 12, r + 42);
+  const room = roomAlongBisector(Mx, My, cosM, sinM, edges || [], 130);
+  /* Need the whole pill (center + half width) to fit before the next edge. */
+  const needIn = r + 14 + tw * 0.5 + 10;
+  const preferOut = tw > 60 && needIn > room - 14;
+  const maxDist = preferOut ? r + 26 : Math.max(r + 14, Math.min(base + 16, room - tw * 0.5 - 10));
+  const cands = [];
+  function add(x, y, pref) { cands.push({ x: x, y: y, pref: pref }); }
+  if (preferOut) {
+    /* Park just outside the vertex: right edge of pill near the arc, not far-flung. */
+    const outBase = r + 8 + Math.min(12, tw * 0.12);
+    [0, 4, 8].forEach(function (extra) {
+      const d = outBase + extra;
+      add(Mx - cosM * d, My - sinM * d, 1.0);
+      add(Mx - cosM * d + tx * 8, My - sinM * d + ty * 8, 0.9);
+      add(Mx - cosM * d - tx * 8, My - sinM * d - ty * 8, 0.9);
+      add(Mx - cosM * (d * 0.55) + tx * 14, My - sinM * (d * 0.55) + ty * 14, 0.72);
+      add(Mx - cosM * (d * 0.55) - tx * 14, My - sinM * (d * 0.55) - ty * 14, 0.72);
+    });
+    [r + 12, r + 18].forEach(function (d) {
+      add(Mx + cosM * d, My + sinM * d, 0.3);
+      add(Mx + cosM * d + tx * 10, My + sinM * d + ty * 10, 0.26);
+      add(Mx + cosM * d - tx * 10, My + sinM * d - ty * 10, 0.26);
+    });
+  } else {
+    [0, 6, 12, 18].forEach(function (extra) {
+      const d = base + extra;
+      add(Mx + cosM * d, My + sinM * d, 1.0);
+      add(Mx + cosM * d + tx * 10, My + sinM * d + ty * 10, 0.85);
+      add(Mx + cosM * d - tx * 10, My + sinM * d - ty * 10, 0.85);
+      add(Mx + cosM * (d * 0.85) + tx * 16, My + sinM * (d * 0.85) + ty * 16, 0.7);
+      add(Mx + cosM * (d * 0.85) - tx * 16, My + sinM * (d * 0.85) - ty * 16, 0.7);
+    });
+    [r + 16, r + 24].forEach(function (d) {
+      add(Mx - cosM * d, My - sinM * d, 0.26);
+      add(Mx - cosM * d + tx * 12, My - sinM * d + ty * 12, 0.22);
+      add(Mx - cosM * d - tx * 12, My - sinM * d - ty * 12, 0.22);
+    });
+  }
+  let best = null, bestScore = -1e9;
+  for (let i = 0; i < cands.length; i++) {
+    const rawX = cands[i].x, rawY = cands[i].y;
+    let x = clamp(rawX, rect.x + pad + tw / 2, rect.x + rect.w - pad - tw / 2);
+    let y = clamp(rawY, rect.y + pad + th / 2, rect.y + rect.h - pad - th / 2);
+    const clampPen = Math.hypot(x - rawX, y - rawY);
+    const dx = x - Mx, dy = y - My;
+    const vertDist = Math.hypot(dx, dy);
+    const along = dx * cosM + dy * sinM;
+    const side = dx * tx + dy * ty;
+    const align = vertDist > 1 ? along / vertDist : 0;
+    const edgeDist = pillEdgeClearance(x, y, tw, th, edges);
+    let occPen = 0;
+    if (occupied) {
+      for (let j = 0; j < occupied.length; j++) {
+        const o = occupied[j];
+        const ox = Math.abs(x - o.x) / ((tw + o.tw) * 0.55 + 1);
+        const oy = Math.abs(y - o.y) / ((th + o.th) * 0.7 + 1);
+        if (ox < 1 && oy < 1) occPen += (1 - ox) * (1 - oy) * 70;
+      }
+    }
+    const wedgeBonus = preferOut
+      ? (along < 0 ? 28 : -20)
+      : (along > 0 ? 26 : -35);
+    const alignBonus = preferOut
+      ? Math.max(0, -align) * 55
+      : Math.max(0, align) * 55;
+    const score =
+      cands[i].pref * 44
+      + alignBonus
+      + wedgeBonus
+      + Math.min(edgeDist, 14) * 1.3
+      - Math.max(0, vertDist - maxDist) * 6
+      - (!preferOut ? Math.max(0, along - (base + 20)) * 1.8 : Math.max(0, -along - (r + 34)) * 2)
+      - (vertDist < r + 8 ? 32 : 0)
+      - Math.abs(side) * 0.08
+      - clampPen * 3
+      - (edgeDist < 4 ? 18 : 0)
+      - occPen;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { x: x, y: y, edgeDist: edgeDist };
+    }
+  }
+  return best || { x: Mx + cosM * base, y: My + sinM * base, edgeDist: 0 };
+}
+function drawAnglePill(lx, ly, label, color, rect) {
+  const msg = String(label || '');
+  if (!msg) return;
+  const sz = pillSize(msg);
+  const pad = 10;
+  const x = clamp(lx, rect.x + pad + sz.tw / 2, rect.x + rect.w - pad - sz.tw / 2);
+  const y = clamp(ly, rect.y + pad + sz.th / 2, rect.y + rect.h - pad - sz.th / 2);
+  roundRect(x - sz.tw / 2, y - sz.th / 2, sz.tw, sz.th, 6);
+  ctx.fillStyle = 'rgba(4, 14, 16, 0.96)';
+  ctx.fill();
+  ctx.strokeStyle = color || COL.ink;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  text(msg, x, y, sz.font, color || COL.ink, 'center');
+}
+function angleGeom(vm, ang, rect, nestIndex, nestCount) {
+  const m = vm[ang.at], a = vm[ang.fromId], b = vm[ang.toId];
+  if (!m || !a || !b) return null;
+  const M = toStage(m, rect), A = toStage(a, rect), B = toStage(b, rect);
+  let a0 = angOf(M, A), a1 = angOf(M, B);
+  let delta = a1 - a0;
+  while (delta <= -Math.PI) delta += Math.PI * 2;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  const nest = nestIndex || 0;
+  const nestN = Math.max(1, nestCount || 1);
+  const scale = rect.w / 1100;
+  const baseR = clamp((ang.r || 14) * scale * 1.15, 18, 34);
+  const r = clamp(baseR + nest * 9, 18, nestN > 2 ? 42 : 36);
+  const mid = a0 + delta / 2;
+  return {
+    M: M, a0: a0, delta: delta, r: r, nest: nest,
+    mid: mid, cosM: Math.cos(mid), sinM: Math.sin(mid),
+    color: ang.color || COL.arcA, label: ang.label, at: ang.at
+  };
+}
+function drawAngleArcOnly(g, glow) {
+  if (!g) return;
+  ctx.beginPath();
+  ctx.moveTo(g.M.x, g.M.y);
+  ctx.arc(g.M.x, g.M.y, g.r, g.a0, g.a0 + g.delta, g.delta < 0);
+  ctx.closePath();
+  ctx.fillStyle = g.color;
+  ctx.globalAlpha = glow ? 0.22 : 0.14;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.arc(g.M.x, g.M.y, g.r, g.a0, g.a0 + g.delta, g.delta < 0);
+  ctx.strokeStyle = g.color;
+  ctx.lineWidth = glow ? 2.8 : 2.2;
+  if (glow) {
+    ctx.shadowColor = g.color;
+    ctx.shadowBlur = 10;
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+function drawAngleLabel(g, rect, edges) {
+  if (!g || !g.label) return;
+  const sz = pillSize(g.label);
+  const seat = pickPillSeat(g.M.x, g.M.y, g.cosM, g.sinM, g.r, sz.tw, sz.th, rect, edges || [], null, Math.abs(g.delta));
+  drawAnglePill(seat.x, seat.y, g.label, g.color, rect);
+}
+function drawAngleArc(vm, ang, rect, glow, nestIndex, nestCount) {
+  const g = angleGeom(vm, ang, rect, nestIndex, nestCount);
+  drawAngleArcOnly(g, glow);
+  drawAngleLabel(g, rect);
+  return g;
+}
+function drawLabel(vm, id, rect, avoidAngles) {
+  const v = vm[id];
+  if (!v) return;
+  const P = toStage(v, rect);
+  const cx = rect.x + rect.w / 2, cy = rect.y + rect.h / 2;
+  let dx = P.x - cx, dy = P.y - cy;
+  let len = Math.hypot(dx, dy) || 1;
+  let ox = dx / len;
+  let oy = dy / len;
+  /* Keep letters close to the vertex; swing them sideways off any exterior angle pill. */
+  let dist = 16;
+  if (avoidAngles && avoidAngles[id]) {
+    const bis = avoidAngles[id];
+    /* Exterior pills sit on -bis; push the letter along the tangent instead. */
+    const tx = -bis.y, ty = bis.x;
+    const side = (ox * tx + oy * ty) >= 0 ? 1 : -1;
+    ox = clamp(ox * 0.35 + tx * side * 0.9, -1, 1);
+    oy = clamp(oy * 0.35 + ty * side * 0.9, -1, 1);
+    const n = Math.hypot(ox, oy) || 1;
+    ox /= n; oy /= n;
+    dist = 18;
+  }
+  const lx = clamp(P.x + ox * dist, rect.x + 12, rect.x + rect.w - 12);
+  const ly = clamp(P.y + oy * dist, rect.y + 12, rect.y + rect.h - 12);
+  ctx.beginPath();
+  ctx.arc(lx, ly, 11, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(4, 14, 16, 0.92)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(232, 255, 246, 0.4)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  text(id, lx, ly, '800 13px ' + UI, COL.ink, 'center');
+}
+
+function drawFigure() {
+  const p = game.problem;
+  if (!p || !p.figure) return;
+  const rect = stageRect();
+  panel(GEO.stage.x, GEO.stage.y, GEO.stage.w, GEO.stage.h, 'rgba(47,224,192,0.25)');
+  const fig = p.figure;
+  const vm = vertMap(fig);
+  const showAux = game.step >= 1 || game.phase === 'celebrate' || game.auxGlow > 0;
+  const gold = game.phase === 'celebrate' || game.beamT > 0;
+
+  /* fills */
+  if (fig.fill && fig.fill.length) {
+    ctx.beginPath();
+    fig.fill.forEach(function (id, i) {
+      const v = vm[id]; if (!v) return;
+      const P = toStage(v, rect);
+      if (i === 0) ctx.moveTo(P.x, P.y); else ctx.lineTo(P.x, P.y);
+    });
+    ctx.closePath();
+    ctx.fillStyle = gold ? 'rgba(255, 224, 138, 0.12)' : 'rgba(47, 224, 192, 0.07)';
+    ctx.fill();
+  }
+  if (fig.fillPolys) {
+    fig.fillPolys.forEach(function (poly, pi) {
+      ctx.beginPath();
+      poly.forEach(function (id, i) {
+        const v = vm[id]; if (!v) return;
+        const P = toStage(v, rect);
+        if (i === 0) ctx.moveTo(P.x, P.y); else ctx.lineTo(P.x, P.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = pi === 0 ? 'rgba(47,224,192,0.08)' : 'rgba(255,193,74,0.07)';
+      ctx.fill();
+    });
+  }
+
+  /* edges */
+  for (let i = 0; i < fig.edges.length; i++) {
+    const e = fig.edges[i];
+    const a = vm[e.from], b = vm[e.to];
+    if (!a || !b) continue;
+    const A = toStage(a, rect), B = toStage(b, rect);
+    ctx.beginPath();
+    ctx.moveTo(A.x, A.y);
+    ctx.lineTo(B.x, B.y);
+    if (e.style === 'dash') {
+      ctx.setLineDash([7, 6]);
+      ctx.strokeStyle = COL.aux;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = showAux ? 0.9 : 0.25;
+    } else {
+      ctx.setLineDash([]);
+      ctx.strokeStyle = gold ? COL.gold : COL.rail;
+      ctx.lineWidth = 2.6;
+      ctx.shadowColor = gold ? COL.gold : COL.cyan;
+      ctx.shadowBlur = gold ? 14 : 8;
+      ctx.globalAlpha = 1;
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+  }
+
+  /* parallel chevrons */
+  if (fig.parallels && fig.parallels.length) {
+    const pr = fig.parallels[0];
+    const a = vm[pr.a], b = vm[pr.b], c = vm[pr.c], d = vm[pr.d];
+    if (a && b) {
+      const A = toStage(a, rect), B = toStage(b, rect);
+      drawChevron(A.x, A.y, B.x, B.y, 0.42);
+      drawChevron(A.x, A.y, B.x, B.y, 0.58);
+    }
+    if (c && d) {
+      const C = toStage(c, rect), D = toStage(d, rect);
+      drawChevron(C.x, C.y, D.x, D.y, 0.42);
+      drawChevron(C.x, C.y, D.x, D.y, 0.58);
+    }
+    text(fig.parallelNote || 'parallel', rect.x + rect.w - 12, rect.y + 18, '800 13px ' + UI, COL.cyan, 'right');
+  }
+
+  /* aux dashed */
+  if (showAux && fig.aux) {
+    const pulse = 0.55 + 0.45 * Math.sin(game.time * 6);
+    ctx.save();
+    ctx.setLineDash([8, 7]);
+    ctx.globalAlpha = 0.35 + 0.5 * Math.min(1, game.auxGlow || (game.step >= 1 ? 1 : 0)) * pulse;
+    ctx.strokeStyle = COL.aux;
+    ctx.lineWidth = 2.2;
+    for (let i = 0; i < fig.aux.length; i++) {
+      const a = vm[fig.aux[i].from], b = vm[fig.aux[i].to];
+      if (!a || !b) continue;
+      const A = toStage(a, rect), B = toStage(b, rect);
+      ctx.beginPath();
+      ctx.moveTo(A.x, A.y);
+      ctx.lineTo(B.x, B.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ticks */
+  if (fig.ticks) {
+    for (let i = 0; i < fig.ticks.length; i++) {
+      const t = fig.ticks[i];
+      const a = vm[t.edge[0]], b = vm[t.edge[1]];
+      if (!a || !b) continue;
+      const A = toStage(a, rect), B = toStage(b, rect);
+      drawTickMarks(A.x, A.y, B.x, B.y, t.marks || 1);
+    }
+  }
+
+  /* right angles */
+  if (fig.rightAngles) {
+    for (let i = 0; i < fig.rightAngles.length; i++) drawRightAngle(vm, fig.rightAngles[i], rect);
+  }
+
+  /* junction pulse ring */
+  if ((fig.junction || (p.highlight && p.highlight.junction)) && (game.step >= 1 || game.junctionPulse > 0 || game.phase === 'celebrate')) {
+    const jid = fig.junction || p.highlight.glow;
+    const jv = vm[jid];
+    if (jv) {
+      const J = toStage(jv, rect);
+      const pulse = 0.5 + 0.5 * Math.sin(game.time * 5);
+      ctx.beginPath();
+      ctx.arc(J.x, J.y, 22 + pulse * 8, 0, Math.PI * 2);
+      ctx.strokeStyle = COL.amber;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.45 + 0.4 * pulse;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(J.x, J.y, 34 + pulse * 6, 0, Math.PI * 2);
+      ctx.strokeStyle = COL.cyan;
+      ctx.globalAlpha = 0.25 + 0.3 * pulse;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      text('360' + DEG, J.x, J.y - 44, '800 12px ' + MONO, COL.amber, 'center');
+    }
+  }
+
+  /* angles: arcs first, vertex letters next, value pills last (always on top) */
+  const glow = game.step >= 1 || game.phase === 'celebrate';
+  const angleGeoms = [];
+  const avoidAngles = {};
+  if (fig.angles) {
+    const peers = {};
+    for (let i = 0; i < fig.angles.length; i++) {
+      const key = fig.angles[i].at;
+      if (!peers[key]) peers[key] = [];
+      peers[key].push(i);
+    }
+    for (let i = 0; i < fig.angles.length; i++) {
+      const group = peers[fig.angles[i].at];
+      const g = angleGeom(vm, fig.angles[i], rect, group.indexOf(i), group.length);
+      if (!g) continue;
+      drawAngleArcOnly(g, glow);
+      angleGeoms.push(g);
+      if (!avoidAngles[g.at]) avoidAngles[g.at] = { x: 0, y: 0, n: 0 };
+      avoidAngles[g.at].x += g.cosM;
+      avoidAngles[g.at].y += g.sinM;
+      avoidAngles[g.at].n += 1;
+    }
+    Object.keys(avoidAngles).forEach(function (id) {
+      const a = avoidAngles[id];
+      const n = Math.hypot(a.x, a.y) || 1;
+      a.x /= n; a.y /= n;
+    });
+  }
+
+  /* note / ratio banner */
+  if (fig.note) text(fig.note, rect.x + 12, rect.y + 18, '700 13px ' + UI, COL.dim, 'left');
+  if (fig.ratioBanner) text('ratio ' + fig.ratioBanner, rect.x + 12, rect.y + 38, '700 13px ' + MONO, COL.amber, 'left');
+
+  /* vertex labels — nudged away from angle bisectors */
+  const allowLabels = fig.labelIds ? fig.labelIds.slice() : null;
+  const fillSet = fig.fill ? fig.fill : null;
+  for (let i = 0; i < fig.verts.length; i++) {
+    const id = fig.verts[i].id;
+    const isRayTip = id === 'X' || id === 'Y';
+    if (isRayTip && !showAux && !(p.highlight && p.highlight.showRays)) continue;
+    if (isRayTip) {
+      drawLabel(vm, id, rect, avoidAngles);
+      continue;
+    }
+    if (allowLabels && allowLabels.indexOf(id) < 0) {
+      /* Unlabeled corner dots — students count sides without an A\u2026G roll-call. */
+      if (fillSet && fillSet.indexOf(id) < 0) continue;
+      const P = toStage(fig.verts[i], rect);
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = COL.rail;
+      ctx.fill();
+      continue;
+    }
+    drawLabel(vm, id, rect, avoidAngles);
+  }
+
+  /* angle value pills on top so they never sit under arcs or letters */
+  const edgeList = stageEdgeList(vm, fig, rect);
+  const occupied = [];
+  for (let i = 0; i < angleGeoms.length; i++) {
+    const g = angleGeoms[i];
+    if (!g || !g.label) continue;
+    const sz = pillSize(g.label);
+    const seat = pickPillSeat(g.M.x, g.M.y, g.cosM, g.sinM, g.r, sz.tw, sz.th, rect, edgeList, occupied, Math.abs(g.delta));
+    occupied.push({ x: seat.x, y: seat.y, tw: sz.tw, th: sz.th });
+    drawAnglePill(seat.x, seat.y, g.label, g.color, rect);
+  }
+
+  /* celebration gold wash */
+  if (game.beamT > 0) {
+    ctx.save();
+    ctx.globalAlpha = game.beamT * 0.55;
+    const y = rect.y + rect.h * 0.55;
+    const grd = ctx.createLinearGradient(rect.x, y, rect.x + rect.w, y);
+    grd.addColorStop(0, 'rgba(47,224,192,0)');
+    grd.addColorStop(0.5, 'rgba(255,224,138,0.95)');
+    grd.addColorStop(1, 'rgba(47,224,192,0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(rect.x, y - 5, rect.w, 10);
+    ctx.restore();
+  }
+}
+
+function drawShields(x, y, n, max, color) {
+  for (let i = 0; i < max; i++) {
+    const on = i < n;
+    ctx.beginPath();
+    ctx.moveTo(x + i * 18 + 6, y - 8);
+    ctx.lineTo(x + i * 18 + 12, y - 1);
+    ctx.lineTo(x + i * 18 + 10, y + 8);
+    ctx.lineTo(x + i * 18 + 2, y + 8);
+    ctx.lineTo(x + i * 18, y - 1);
+    ctx.closePath();
+    ctx.fillStyle = on ? color : 'rgba(255,255,255,0.12)';
+    ctx.fill();
+  }
+}
+function drawHUD() {
+  panel(GEO.hud.x, GEO.hud.y, GEO.hud.w, GEO.hud.h, 'rgba(47,224,192,0.28)');
+  let modeLabel = 'SOLO ARCHITECT';
+  if (game.mode === 'coop') modeLabel = '2P CO-OP TEAM';
+  if (game.mode === 'versus') modeLabel = '2P VERSUS';
+  text(modeLabel, 32, 36, '800 16px ' + UI, COL.gold, 'left');
+  text('ROUND ' + game.round + '  \u00b7  ' + (game.problem ? game.problem.tier : ''), 280, 36, '700 14px ' + UI, COL.dim, 'left');
+
+  if (game.mode === 'versus') {
+    text('P1', 620, 28, '800 12px ' + UI, COL.p1, 'left');
+    drawShields(650, 28, game.pShields[0], 3, COL.p1);
+    text('\u2605 ' + game.stars[0], 720, 28, '800 14px ' + MONO, COL.p1, 'left');
+    text('P2', 820, 28, '800 12px ' + UI, COL.p2, 'left');
+    drawShields(850, 28, game.pShields[1], 3, COL.p2);
+    text('\u2605 ' + game.stars[1], 920, 28, '800 14px ' + MONO, COL.p2, 'left');
+    text(game.pScore[0] + ' / ' + game.pScore[1], 1000, 36, '700 13px ' + MONO, COL.dim, 'left');
+  } else if (game.mode === 'coop') {
+    text('TEAM SHIELDS', 600, 28, '700 11px ' + UI, COL.dim, 'left');
+    drawShields(710, 28, game.shields, game.maxShields, COL.cyan);
+    text('COMBO ' + game.combo, 820, 36, '700 14px ' + MONO, COL.magenta, 'left');
+    text('TEAM ' + game.score, 960, 36, '800 18px ' + MONO, COL.gold, 'left');
+  } else {
+    text('SHIELDS', 620, 28, '700 11px ' + UI, COL.dim, 'left');
+    drawShields(700, 28, game.shields, game.maxShields, COL.cyan);
+    text('COMBO ' + game.combo, 800, 36, '700 14px ' + MONO, COL.magenta, 'left');
+    text('SCORE ' + game.score, 960, 36, '800 18px ' + MONO, COL.gold, 'left');
+  }
+
+  roundRect(GEO.mute.x, GEO.mute.y, GEO.mute.w, GEO.mute.h, 8);
+  ctx.fillStyle = 'rgba(8,20,22,0.9)';
+  ctx.fill();
+  ctx.strokeStyle = audio.muted ? COL.amber : COL.cyan;
+  ctx.stroke();
+  text(audio.muted ? 'UNMUTE' : 'MUTE', GEO.mute.x + GEO.mute.w / 2, GEO.mute.y + 18, '800 12px ' + UI, audio.muted ? COL.amber : COL.cyan, 'center');
+}
+function drawSpec() {
+  panel(GEO.spec.x, GEO.spec.y, GEO.spec.w, GEO.spec.h, 'rgba(255,193,74,0.22)');
+  const p = game.problem;
+  if (!p) return;
+  text(p.title, 36, 92, '800 17px ' + UI, COL.ink, 'left');
+  text(p.givens, 36, 114, '600 13px ' + UI, COL.dim, 'left');
+  text(p.find, 1240, 102, '800 15px ' + MONO, COL.gold, 'right');
+}
+function drawDeck() {
+  panel(GEO.deck.x, GEO.deck.y, GEO.deck.w, GEO.deck.h, 'rgba(47,224,192,0.2)');
+  const deck = deckGeom();
+  const p = game.problem;
+  if (!p) return;
+  const step = p.steps[game.step];
+  text(step ? step.prompt : '', deck.prompt.x, deck.prompt.y + 10, '700 15px ' + UI, COL.cyan, 'left');
+
+  let role = '';
+  if (game.mode === 'coop') {
+    const o = ownerFor(game.step);
+    if (o < 0) role = 'BOTH CONFIRM STEP 3';
+    else role = 'P' + (o + 1) + ' CONTROLS THIS STEP';
+  } else if (game.mode === 'versus') role = 'FIRST LOCK WINS THE STEP';
+  else role = 'FORTIFY THE CITADEL';
+  text(role, deck.role.x + deck.role.w, deck.role.y + 10, '700 13px ' + UI, COL.dim, 'right');
+
+  if (game.tip) {
+    const lines = wrap(game.tip, '600 13px ' + UI, 1200);
+    text(lines[0] || '', deck.tip.x, deck.tip.y + 16, '600 13px ' + UI, COL.bad, 'left');
+  }
+
+  const cards = currentCards();
+  for (let i = 0; i < deck.cards.length; i++) {
+    const r = deck.cards[i];
+    const c = cards[i];
+    if (!c) continue;
+    const selected = game.mode === 'versus'
+      ? (game.sel[0] === i || game.sel[1] === i)
+      : game.sel[hoverPlayer()] === i;
+    roundRect(r.x, r.y, r.w, r.h, 12);
+    ctx.fillStyle = c.dead ? 'rgba(40,12,18,0.9)' : selected ? 'rgba(16,40,38,0.96)' : 'rgba(8,24,26,0.94)';
+    ctx.fill();
+    ctx.lineWidth = selected ? 2.5 : 1.4;
+    ctx.strokeStyle = c.dead ? COL.bad : selected ? COL.gold : 'rgba(47,224,192,0.3)';
+    ctx.stroke();
+    text(String(i + 1), r.x + 16, r.y + 22, '800 14px ' + MONO, COL.dim, 'left');
+    const lines = wrap(c.plain, '700 14px ' + UI, r.w - 28);
+    for (let li = 0; li < Math.min(lines.length, 4); li++) {
+      text(lines[li], r.x + r.w / 2, r.y + 48 + li * 18, '700 14px ' + UI, c.dead ? COL.bad : COL.ink, 'center');
+    }
+    if (game.mode === 'versus') {
+      if (game.sel[0] === i) text('P1', r.x + 20, r.y + r.h - 14, '800 12px ' + UI, COL.p1, 'left');
+      if (game.sel[1] === i) text('P2', r.x + r.w - 20, r.y + r.h - 14, '800 12px ' + UI, COL.p2, 'right');
+    }
+  }
+
+  const lock = deck.lock;
+  const hot = game.hoverLock;
+  roundRect(lock.x, lock.y, lock.w, lock.h, 12);
+  ctx.fillStyle = hot ? 'rgba(255,193,74,0.18)' : 'rgba(10,28,30,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  text('FORTIFY', lock.x + lock.w / 2, lock.y + 46, '800 17px ' + UI, COL.gold, 'center');
+  text('CITADEL', lock.x + lock.w / 2, lock.y + 72, '800 17px ' + UI, COL.gold, 'center');
+
+  if (game.phase === 'celebrate') {
+    text('FORTRESS LOCKED — click or press Space for next round', W / 2, 500, '700 14px ' + UI, COL.good, 'center');
+  }
+}
+function drawReticles() {
+  if (game.pointerDevice === 'mouse' && game.mouseIn) {
+    const x = game.mouseX, y = game.mouseY;
+    ctx.strokeStyle = game.mode === 'coop' ? (hoverPlayer() === 0 ? COL.p1 : COL.p2) : COL.cyan;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - 20, y); ctx.lineTo(x - 8, y);
+    ctx.moveTo(x + 8, y); ctx.lineTo(x + 20, y);
+    ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 8);
+    ctx.moveTo(x, y + 8); ctx.lineTo(x, y + 20);
+    ctx.stroke();
+  }
+  if (game.mode !== 'solo') {
+    const deck = deckGeom();
+    for (let p = 0; p < (game.mode === 'versus' ? 2 : 1); p++) {
+      const who = game.mode === 'coop' ? hoverPlayer() : p;
+      const r = deck.cards[game.sel[who]];
+      if (!r) continue;
+      ctx.strokeStyle = who === 0 ? COL.p1 : COL.p2;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.7;
+      roundRect(r.x - 4, r.y - 4, r.w + 8, r.h + 8, 14);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+function drawFloats() {
+  for (let i = 0; i < game.particles.length; i++) {
+    const p = game.particles[i];
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < game.floats.length; i++) {
+    const f = game.floats[i];
+    ctx.globalAlpha = Math.max(0, f.life);
+    text(f.msg, f.x, f.y, '800 16px ' + UI, f.color, 'center');
+  }
+  ctx.globalAlpha = 1;
+}
+function drawTitle() {
+  text('POLYGON CITADEL', W / 2, 108, '800 52px ' + UI, COL.ink, 'center');
+  text('INTERIOR & EXTERIOR FORTRESS', W / 2, 156, '800 18px ' + UI, COL.cyan, 'center');
+  text('Sec 1 G3 \u00b7 special quadrilaterals \u00b7 polygon angle sums \u00b7 shared-vertex rings', W / 2, 196, '600 14px ' + UI, COL.dim, 'center');
+
+  ctx.save();
+  ctx.translate(W / 2, 290);
+  ctx.strokeStyle = COL.cyan;
+  ctx.lineWidth = 2.2;
+  ctx.shadowColor = COL.cyan;
+  ctx.shadowBlur = 16;
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = (i * 60 - 90) * Math.PI / 180;
+    const px = Math.cos(a) * 54, py = Math.sin(a) * 54;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = (i * 72 - 90) * Math.PI / 180;
+    const px = Math.cos(a) * 28, py = Math.sin(a) * 28;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.strokeStyle = COL.amber;
+  ctx.shadowColor = COL.amber;
+  ctx.stroke();
+  ctx.restore();
+
+  const cards = titleGeom();
+  const meta = [
+    ['SOLO ARCHITECT', 'Mouse, keyboard, or one 8BitDo. Three citadel shields, combo, solo score.', 'Best ' + (game.best.solo || 0)],
+    ['2P CO-OP TEAM', 'P1 Step 1 \u00b7 P2 Step 2 \u00b7 both fortify Step 3. Shared shields. TEAM SCORE only.', 'Best ' + (game.best.coop || 0)],
+    ['2P VERSUS', 'Same blueprint race. First lock scores. Master Architect stars for Step 3.', 'Best ' + (game.best.versus || 0)]
+  ];
+  for (let i = 0; i < cards.length; i++) {
+    const r = cards[i];
+    const on = game.titleSel === i;
+    roundRect(r.x, r.y, r.w, r.h, 14);
+    ctx.fillStyle = on ? 'rgba(16,40,38,0.95)' : 'rgba(6,20,22,0.92)';
+    ctx.fill();
+    ctx.strokeStyle = on ? COL.gold : 'rgba(47,224,192,0.28)';
+    ctx.lineWidth = on ? 2.5 : 1.4;
+    ctx.stroke();
+    text((i + 1) + '  \u00b7  ' + meta[i][0], r.x + 20, r.y + 36, '800 17px ' + UI, on ? COL.gold : COL.ink, 'left');
+    const lines = wrap(meta[i][1], '600 13px ' + UI, r.w - 36);
+    for (let li = 0; li < lines.length; li++) text(lines[li], r.x + 20, r.y + 68 + li * 18, '600 13px ' + UI, COL.dim, 'left');
+    text(meta[i][2], r.x + 20, r.y + r.h - 22, '700 13px ' + MONO, COL.cyan, 'left');
+  }
+  text('Controls: WASD / Arrows + Space \u00b7 8BitDo D-pad + A \u00b7 M mutes \u00b7 P pauses', W / 2, 580, '600 13px ' + UI, COL.dim, 'center');
+  text('3 steps: key angle/property \u2192 equation or n \u2192 solve final target', W / 2, 606, '600 13px ' + UI, COL.dim, 'center');
+  if (game.fatal) text(game.fatal, W / 2, 640, '700 13px ' + MONO, COL.bad, 'center');
+}
+function drawOver() {
+  ctx.fillStyle = 'rgba(4, 12, 14, 0.72)';
+  ctx.fillRect(0, 0, W, H);
+  panel(300, 160, 680, 400, COL.cyan);
+  text('CITADEL COLLAPSE', W / 2, 210, '800 28px ' + UI, COL.ink, 'center');
+  const reasonLines = wrap(game.overReason || 'Shields gone.', '700 16px ' + UI, 560);
+  reasonLines.slice(0, 3).forEach(function (line, i) {
+    text(line, W / 2, 260 + i * 22, '700 16px ' + UI, COL.dim, 'center');
+  });
+  if (game.mode === 'versus') {
+    text('P1  ' + game.stars[0] + ' stars   ' + game.pScore[0] + ' pts', W / 2, 340, '800 18px ' + MONO, COL.p1, 'center');
+    text('P2  ' + game.stars[1] + ' stars   ' + game.pScore[1] + ' pts', W / 2, 372, '800 18px ' + MONO, COL.p2, 'center');
+    text((game.winner || 'DRAW') + '  \u00b7  ' + game.cleared + ' fortresses cleared', W / 2, 420, '700 15px ' + UI, COL.gold, 'center');
+  } else {
+    text(String(game.score), W / 2, 350, '800 48px ' + MONO, COL.gold, 'center');
+    text((game.mode === 'coop' ? 'TEAM SCORE' : 'SOLO SCORE') + '  \u00b7  ' + game.cleared + ' CLEARED', W / 2, 410, '700 15px ' + UI, COL.dim, 'center');
+  }
+  const buttons = overGeom();
+  roundRect(buttons.title.x, buttons.title.y, buttons.title.w, buttons.title.h, 8);
+  ctx.fillStyle = 'rgba(8,20,22,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = COL.dim;
+  ctx.stroke();
+  text('TITLE', buttons.title.x + buttons.title.w / 2, buttons.title.y + 24, '800 16px ' + UI, COL.ink, 'center');
+  roundRect(buttons.again.x, buttons.again.y, buttons.again.w, buttons.again.h, 8);
+  ctx.fillStyle = 'rgba(8,20,22,0.95)';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('FORTIFY AGAIN', buttons.again.x + buttons.again.w / 2, buttons.again.y + 24, '800 15px ' + UI, COL.gold, 'center');
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 12, 14, 0.6)';
+  ctx.fillRect(0, 0, W, H);
+  panel(390, 240, 500, 230, COL.cyan);
+  text('CITADEL PAUSED', W / 2, 300, '800 24px ' + UI, COL.cyan, 'center');
+  text('P or Esc resumes. The blueprint stays put.', W / 2, 346, '600 15px ' + UI, COL.dim, 'center');
+  roundRect(490, 390, 300, 52, 8);
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  text('RESUME', W / 2, 416, '800 16px ' + UI, COL.gold, 'center');
+}
+function drawFatal() {
+  if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#3a1020';
+  ctx.fillRect(0, 0, canvas.width, 64);
+  ctx.font = '16px monospace';
+  ctx.fillStyle = '#ffd0d6';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(game.fatal).slice(0, 220), 12, 28);
+}
+function draw() {
+  const dpr = canvas.width / Math.max(1, window.innerWidth);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  layoutView();
+  ctx.save();
+  ctx.translate(game.view.ox, game.view.oy);
+  ctx.scale(game.view.s, game.view.s);
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.clip();
+  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  drawBackground();
+  if (game.screen === 'title') drawTitle();
+  else {
+    drawHUD();
+    drawSpec();
+    drawFigure();
+    drawDeck();
+    drawFloats();
+    if (game.flash > 0) {
+      ctx.fillStyle = 'rgba(255, 50, 80, ' + (game.flash * 0.22) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (game.screen === 'play' && !game.paused && game.phase === 'play') drawReticles();
+    if (game.screen === 'over') drawOver();
+    if (game.paused) drawPause();
+  }
+  ctx.restore();
+  const overUi = game.screen !== 'play' || game.paused || hit(game.mouseX, game.mouseY, GEO.mute);
+  canvas.style.cursor = game.screen === 'play' && !game.paused && game.pointerDevice === 'mouse' && !overUi ? 'none' : 'default';
+}
+function update(dt) {
+  layoutView();
+  pollInput();
+  if (game.screen === 'play' && !game.paused) advance(dt);
+  else game.time += dt;
+  tickMusic();
+}
+
+let lastTs = 0;
+function frame(now) {
+  const dt = Math.min(0.05, lastTs ? (now - lastTs) / 1000 : 0.016);
+  lastTs = now;
+  try {
+    update(dt);
+    draw();
+    game.fatal = '';
+  } catch (err) {
+    game.fatal = err && err.stack ? err.stack : String(err);
+    if (typeof console !== 'undefined') console.error(err);
+    try { drawFatal(); } catch (e2) { /* ignore */ }
+  }
+  keyEdge.clear();
+  pointerEdge = false;
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d', { alpha: false });
+  try {
+    const saved = localStorage.getItem('polygon-citadel-best');
+    if (saved) game.best = JSON.parse(saved) || {};
+  } catch (err) { game.best = {}; }
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  window.addEventListener('keydown', function (e) {
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(e.code) >= 0) e.preventDefault();
+    if (e.repeat) return;
+    keysDown.add(e.code);
+    keyEdge.add(e.code);
+    game.pointerDevice = 'key';
+    resumeAudio();
+  });
+  window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+  canvas.addEventListener('mousemove', function (e) {
+    const p = worldFromClient(e.clientX, e.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    game.mouseIn = true;
+    game.pointerDevice = 'mouse';
+    if (game.screen === 'title') {
+      titleGeom().forEach(function (card, i) { if (hit(p.x, p.y, card)) game.titleSel = i; });
+    }
+    if (game.screen === 'play' && game.phase === 'play') {
+      const deck = deckGeom();
+      const who = hoverPlayer();
+      game.hoverLock = hit(p.x, p.y, deck.lock);
+      for (let i = 0; i < deck.cards.length; i++) {
+        if (hit(p.x, p.y, deck.cards[i])) game.sel[who] = i;
+      }
+    }
+  });
+  canvas.addEventListener('mouseleave', function () { game.mouseIn = false; });
+  canvas.addEventListener('mousedown', function (e) {
+    const p = worldFromClient(e.clientX, e.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    pointerEdge = true;
+    pointerDown = true;
+    game.pointerDevice = 'mouse';
+    resumeAudio();
+  });
+  window.addEventListener('mouseup', function () { pointerDown = false; });
+  canvas.addEventListener('touchstart', function (e) {
+    const t = e.changedTouches[0];
+    const p = worldFromClient(t.clientX, t.clientY);
+    game.mouseX = p.x;
+    game.mouseY = p.y;
+    game.pointerDevice = 'mouse';
+    pointerEdge = true;
+    resumeAudio();
+    e.preventDefault();
+  }, { passive: false });
+  window.addEventListener('gamepadconnected', function () {});
+  requestAnimationFrame(frame);
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,2719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Prism Breaker: Parallel & Crook Laser Lab</title>
+<style>
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #060a12;
+    font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    color: #e6f1ff;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+(() => {
+  'use strict';
+
+  // ============================================================================
+  // 1. CANVAS SETUP & HIGH-DPI SCALING
+  // ============================================================================
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  let W = window.innerWidth;
+  let H = window.innerHeight;
+  let DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resizeCanvas() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // ============================================================================
+  // 2. PROCEDURAL WEB AUDIO SYNTHESIZER (CHIPTUNE BGM + OPTICAL SFX)
+  // ============================================================================
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.unlocked = false;
+      this.bgmTimer = null;
+      this.stepIdx = 0;
+      this.masterGain = null;
+      this.bgmGain = null;
+      this.sfxGain = null;
+    }
+
+    unlock() {
+      if (this.unlocked) return;
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        this.ctx = new AudioCtx();
+        if (this.ctx.state === 'suspended') {
+          this.ctx.resume();
+        }
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = this.muted ? 0 : 0.85;
+        this.masterGain.connect(this.ctx.destination);
+
+        this.bgmGain = this.ctx.createGain();
+        this.bgmGain.gain.value = 0.08;
+        this.bgmGain.connect(this.masterGain);
+
+        this.sfxGain = this.ctx.createGain();
+        this.sfxGain.gain.value = 0.32;
+        this.sfxGain.connect(this.masterGain);
+
+        this.unlocked = true;
+        this.startBGM();
+      } catch (e) {
+        // Ignore audio restrictions if blocked
+      }
+    }
+
+    toggleMute() {
+      this.unlock();
+      this.muted = !this.muted;
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setTargetAtTime(this.muted ? 0 : 0.85, this.ctx.currentTime, 0.02);
+      }
+      return this.muted;
+    }
+
+    startBGM() {
+      if (this.bgmTimer) return;
+      // Upbeat sci-fi arpeggio (D minor / Dorian optical lab groove)
+      const arpNotes = [
+        293.66, 349.23, 440.00, 523.25,
+        293.66, 349.23, 440.00, 587.33,
+        261.63, 329.63, 392.00, 493.88,
+        220.00, 261.63, 329.63, 440.00
+      ];
+      const bassNotes = [
+        146.83, 146.83, 146.83, 146.83,
+        146.83, 146.83, 146.83, 146.83,
+        130.81, 130.81, 130.81, 130.81,
+        110.00, 110.00, 110.00, 110.00
+      ];
+
+      this.bgmTimer = setInterval(() => {
+        if (!this.unlocked || this.muted || !this.ctx || this.ctx.state !== 'running') return;
+        const now = this.ctx.currentTime;
+        const idx = this.stepIdx % arpNotes.length;
+
+        // Pluck Arp
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(arpNotes[idx], now);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.16, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+        osc.connect(gain);
+        gain.connect(this.bgmGain);
+        osc.start(now);
+        osc.stop(now + 0.17);
+
+        // Bass pulse on quarter notes
+        if (idx % 2 === 0) {
+          const bOsc = this.ctx.createOscillator();
+          const bGain = this.ctx.createGain();
+          bOsc.type = 'sine';
+          bOsc.frequency.setValueAtTime(bassNotes[idx], now);
+          bGain.gain.setValueAtTime(0.001, now);
+          bGain.gain.linearRampToValueAtTime(0.24, now + 0.02);
+          bGain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+          bOsc.connect(bGain);
+          bGain.connect(this.bgmGain);
+          bOsc.start(now);
+          bOsc.stop(now + 0.3);
+        }
+        this.stepIdx++;
+      }, 190);
+    }
+
+    playTick(pitch = 680) {
+      if (!this.unlocked || this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(pitch, now);
+      osc.frequency.exponentialRampToValueAtTime(pitch * 1.25, now + 0.045);
+      gain.gain.setValueAtTime(0.14, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      osc.connect(gain);
+      gain.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.055);
+    }
+
+    playStepLock(stepNum) {
+      if (!this.unlocked || this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      const base = stepNum === 1 ? 523.25 : 659.25;
+      [base, base * 1.25, base * 1.5].forEach((freq, i) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now + i * 0.055);
+        gain.gain.setValueAtTime(0.22, now + i * 0.055);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.055 + 0.18);
+        osc.connect(gain);
+        gain.connect(this.sfxGain);
+        osc.start(now + i * 0.055);
+        osc.stop(now + i * 0.055 + 0.19);
+      });
+    }
+
+    playLaserBlast() {
+      if (!this.unlocked || this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      // High-energy laser sweep + harmonic chime
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(1250, now);
+      osc.frequency.exponentialRampToValueAtTime(220, now + 0.34);
+      gain.gain.setValueAtTime(0.28, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.connect(gain);
+      gain.connect(this.sfxGain);
+      osc.start(now);
+      osc.stop(now + 0.36);
+
+      [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
+        const cOsc = this.ctx.createOscillator();
+        const cGain = this.ctx.createGain();
+        cOsc.type = 'sine';
+        cOsc.frequency.setValueAtTime(freq, now + 0.06 + i * 0.06);
+        cGain.gain.setValueAtTime(0.22, now + 0.06 + i * 0.06);
+        cGain.gain.exponentialRampToValueAtTime(0.001, now + 0.38 + i * 0.06);
+        cOsc.connect(cGain);
+        cGain.connect(this.sfxGain);
+        cOsc.start(now + 0.06 + i * 0.06);
+        cOsc.stop(now + 0.4 + i * 0.06);
+      });
+    }
+
+    playError() {
+      if (!this.unlocked || this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime;
+      [165, 130].forEach((freq, i) => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now + i * 0.1);
+        gain.gain.setValueAtTime(0.26, now + i * 0.1);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.1 + 0.22);
+        osc.connect(gain);
+        gain.connect(this.sfxGain);
+        osc.start(now + i * 0.1);
+        osc.stop(now + i * 0.1 + 0.24);
+      });
+    }
+  }
+
+  const sfx = new SoundEngine();
+
+  // ============================================================================
+  // 3. MATH & GEOMETRY UTILITIES + FRACTION / EXPRESSION RENDERER
+  // ============================================================================
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function formatLinear(a, b, varName = 'x', withDeg = false) {
+    let str = '';
+    if (a === 1) str = varName;
+    else if (a === -1) str = '-' + varName;
+    else str = `${a}${varName}`;
+    if (b > 0) str += ` + ${b}`;
+    else if (b < 0) str += ` - ${Math.abs(b)}`;
+    return withDeg ? `(${str})°` : str;
+  }
+
+  /**
+   * Renders mathematical strings with stacked fractions (e.g. `x/2` or `5x/6`)
+   * cleanly centered at (cx, cy) on the HTML5 Canvas.
+   */
+  function drawMathText(ctx, text, cx, cy, fontSize = 16, color = '#ffffff', bold = true, maxWidth = 340) {
+    ctx.save();
+    const weight = bold ? '700' : '500';
+    ctx.font = `${weight} ${fontSize}px 'Segoe UI', system-ui, sans-serif`;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+
+    // Tokenize fractions of form [0-9]*[a-zA-Z]?/[0-9]+
+    const fracRegex = /([0-9]*[a-zA-Z]?)\/([0-9]+)/g;
+    if (!fracRegex.test(text)) {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // Auto-scale font if wider than maxWidth
+      let w = ctx.measureText(text).width;
+      if (w > maxWidth && maxWidth > 40) {
+        const scaled = Math.max(11, Math.floor(fontSize * (maxWidth / w)));
+        ctx.font = `${weight} ${scaled}px 'Segoe UI', system-ui, sans-serif`;
+      }
+      ctx.fillText(text, cx, cy);
+      ctx.restore();
+      return;
+    }
+
+    // Parse tokens for stacked fraction rendering
+    fracRegex.lastIndex = 0;
+    const tokens = [];
+    let lastIdx = 0;
+    let match;
+    while ((match = fracRegex.exec(text)) !== null) {
+      if (match.index > lastIdx) {
+        tokens.push({ type: 'text', val: text.slice(lastIdx, match.index) });
+      }
+      tokens.push({ type: 'frac', num: match[1] || '1', den: match[2] });
+      lastIdx = fracRegex.lastIndex;
+    }
+    if (lastIdx < text.length) {
+      tokens.push({ type: 'text', val: text.slice(lastIdx) });
+    }
+
+    const subSize = Math.max(10, Math.round(fontSize * 0.76));
+    let totalW = 0;
+    tokens.forEach(t => {
+      if (t.type === 'text') {
+        ctx.font = `${weight} ${fontSize}px 'Segoe UI', system-ui, sans-serif`;
+        t.w = ctx.measureText(t.val).width;
+      } else {
+        ctx.font = `${weight} ${subSize}px 'Segoe UI', system-ui, sans-serif`;
+        t.w = Math.max(ctx.measureText(t.num).width, ctx.measureText(t.den).width) + 6;
+      }
+      totalW += t.w;
+    });
+
+    const scale = totalW > maxWidth && maxWidth > 40 ? maxWidth / totalW : 1;
+    let curX = cx - (totalW * scale) / 2;
+
+    tokens.forEach(t => {
+      const tw = t.w * scale;
+      if (t.type === 'text') {
+        ctx.font = `${weight} ${Math.round(fontSize * scale)}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(t.val, curX, cy);
+      } else {
+        const sFont = Math.round(subSize * scale);
+        ctx.font = `${weight} ${sFont}px 'Segoe UI', system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(t.num, curX + tw / 2, cy - 2 * scale);
+
+        ctx.lineWidth = Math.max(1.2, 1.6 * scale);
+        ctx.beginPath();
+        ctx.moveTo(curX + 2 * scale, cy);
+        ctx.lineTo(curX + tw - 2 * scale, cy);
+        ctx.stroke();
+
+        ctx.textBaseline = 'top';
+        ctx.fillText(t.den, curX + tw / 2, cy + 2 * scale);
+      }
+      curX += tw;
+    });
+
+    ctx.restore();
+  }
+
+  // ============================================================================
+  // 4. PROCEDURAL PROBLEM GENERATOR (SINGAPORE SEC 1 G3 TOPIC 10)
+  // ============================================================================
+  class ProblemGenerator {
+    constructor() {
+      this.history = [];
+    }
+
+    isDuplicate(sig) {
+      return this.history.includes(sig);
+    }
+
+    pushHistory(sig) {
+      this.history.push(sig);
+      if (this.history.length > 6) {
+        this.history.shift();
+      }
+    }
+
+    generate(roundNumber) {
+      let problem = null;
+      let attempts = 0;
+      while (!problem && attempts < 25) {
+        attempts++;
+        let candidate = null;
+        if (roundNumber <= 2) {
+          candidate = Math.random() < 0.5 ? this.genRound1_IntersectingLines() : this.genRound1_ParallelTransversal();
+        } else if (roundNumber <= 4) {
+          const r = randInt(1, 3);
+          if (r === 1) candidate = this.genRound3_TriangleExterior();
+          else if (r === 2) candidate = this.genRound3_BowTieTriangles();
+          else candidate = this.genRound3_IsoscelesRightCorner();
+        } else if (roundNumber <= 6) {
+          candidate = Math.random() < 0.55 ? this.genRound5_OneBendCrook() : this.genRound5_TwoBendCrook();
+        } else {
+          candidate = Math.random() < 0.55 ? this.genRound7_SawtoothWave() : this.genRound7_CoupledParallelXY();
+        }
+        if (candidate && !this.isDuplicate(candidate.sig)) {
+          this.pushHistory(candidate.sig);
+          problem = candidate;
+        }
+      }
+      if (!problem) {
+        problem = this.genRound5_OneBendCrook();
+      }
+      // Shuffle choices for all 3 steps while preserving correctness & trap metadata
+      problem.steps.forEach(step => {
+        step.choices = shuffle(step.choices);
+      });
+      return problem;
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 1 (ROUNDS 1-2): INTERSECTING STRAIGHT LINES & POINT ANGLES
+    // --------------------------------------------------------------------------
+    genRound1_IntersectingLines() {
+      const subType = Math.random() < 0.5 ? 'vert_opp' : 'point_360';
+      if (subType === 'vert_opp') {
+        // (ax - b)° = 90° + c° (vertically opposite angles)
+        const x = randInt(24, 46);
+        const a = pick([3, 4, 5]);
+        const c = randInt(28, 64);
+        const rhs = 90 + c;
+        const b = a * x - rhs;
+        if (b <= 4 || b >= 60) return null;
+
+        const expr = formatLinear(a, -b, 'x', true);
+        const exprNoDeg = formatLinear(a, -b, 'x', false);
+        const sig = `r1_vo_${a}_${b}_${c}`;
+
+        const trapNo90 = Math.round((c + b) / a);
+        const trap180 = Math.round((180 - rhs + b) / a);
+
+        return {
+          sig,
+          tierName: 'TIER 1 • INTERSECTING LINES',
+          type: 'intersecting_vo',
+          givens: `Lines PQ and RS intersect at M. A right-angle square (90°) is marked at M. Find x.`,
+          params: { a, b, c, x, expr },
+          steps: [
+            {
+              prompt: 'STEP 1: IDENTIFY THE GEOMETRIC RELATION AT VERTEX M',
+              choices: [
+                { text: 'Vert. Opp. ∠s (with 90° square)', correct: true },
+                { text: 'Adj. ∠s on a str. line = 180°', correct: false, trap: 'Look across vertex M: the two opposite sectors share the same intersecting lines, so they are Vertically Opposite (equal), not supplementary!' },
+                { text: 'Alt. ∠s, AB // CD', correct: false, trap: 'There are no parallel lines here — only two intersecting straight lines meeting at vertex M!' },
+                { text: 'Vert. Opp. ∠s (ignoring 90°)', correct: false, trap: 'Check every symbol at vertex M! The small square marks a 90° right angle that must be included in the opposite sector!' }
+              ]
+            },
+            {
+              prompt: 'STEP 2: FORGE THE ALGEBRAIC ANGLE EQUATION',
+              choices: [
+                { text: `${exprNoDeg} = 90 + ${c}`, correct: true },
+                { text: `${exprNoDeg} = ${c}`, correct: false, trap: 'Check every symbol at vertex M! The small square marks a 90° right angle, so the opposite angle is 90° + ' + c + '°!' },
+                { text: `${exprNoDeg} + 90 + ${c} = 180`, correct: false, trap: 'Vertically opposite angles are EQUAL to each other — they do not add up to 180°!' },
+                { text: `${exprNoDeg} + ${c} = 90`, correct: false, trap: 'These angles are vertically opposite across M, not complementary!' }
+              ]
+            },
+            {
+              prompt: 'STEP 3: SOLVE FOR x TO ALIGN THE PRISM BEAM',
+              choices: [
+                { text: `x = ${x}`, correct: true },
+                { text: `x = ${trapNo90}`, correct: false, trap: `You forgot the 90° right-angle square! Add 90° + ${c}° = ${rhs}° before solving ${exprNoDeg} = ${rhs}.` },
+                { text: `x = ${x - Math.round((2 * b) / a)}`, correct: false, trap: `Watch your sign when transposing -${b}! Add ${b} to both sides: ${a}x = ${rhs} + ${b} = ${a * x}.` },
+                { text: `x = ${trap180 || x + 6}`, correct: false, trap: `Vertically opposite angles are equal (${exprNoDeg} = ${rhs}), not supplementary to 180°!` }
+              ]
+            }
+          ]
+        };
+      } else {
+        // Angles at a point: kx° + kx° + 90° + d° = 360°
+        const k = pick([2, 3, 4]);
+        const x = randInt(16, 32);
+        const d = 360 - 90 - 2 * k * x;
+        if (d < 45 || d > 175) return null;
+
+        const sig = `r1_pt_${k}_${x}_${d}`;
+        const wrongNo90 = Math.round((360 - d) / (2 * k));
+        const wrong180 = Math.max(5, Math.round((180 - d) / (2 * k)));
+
+        return {
+          sig,
+          tierName: 'TIER 1 • ANGLES AT A POINT',
+          type: 'point_360',
+          givens: `Four rays meet at point M, including a 90° right-angle square and two equal ${k}x° sectors. Find x.`,
+          params: { k, x, d },
+          steps: [
+            {
+              prompt: 'STEP 1: IDENTIFY THE ANGLE PROPERTY AT POINT M',
+              choices: [
+                { text: '∠s at a pt = 360° (incl. 90°)', correct: true },
+                { text: 'Adj. ∠s on a str. line = 180°', correct: false, trap: 'The sectors wrap completely around point M! A full revolution around a point is 360°, not 180°!' },
+                { text: '∠s at a pt = 360° (omit 90°)', correct: false, trap: 'Check every symbol at vertex M! The small square marks a 90° right angle, and all angles around point M sum to 360°!' },
+                { text: 'Vert. Opp. ∠s are equal', correct: false, trap: 'These four rays do not form two straight crossing lines — sum all angles around point M to 360°!' }
+              ]
+            },
+            {
+              prompt: 'STEP 2: FORGE THE ALGEBRAIC ANGLE EQUATION',
+              choices: [
+                { text: `${k}x + ${k}x + 90 + ${d} = 360`, correct: true },
+                { text: `${k}x + ${k}x + ${d} = 360`, correct: false, trap: 'Check every symbol at vertex M! The small square marks a 90° right angle, and all angles around point M sum to 360°!' },
+                { text: `${k}x + 90 + ${d} = 360`, correct: false, trap: `There are TWO ${k}x° sectors at point M! Include both: ${k}x + ${k}x + 90 + ${d} = 360.` },
+                { text: `${k}x + ${k}x + 90 + ${d} = 180`, correct: false, trap: 'A full circle around point M equals 360°, not 180°!' }
+              ]
+            },
+            {
+              prompt: 'STEP 3: SOLVE FOR x TO ENERGIZE THE CORE',
+              choices: [
+                { text: `x = ${x}`, correct: true },
+                { text: `x = ${wrongNo90}`, correct: false, trap: `You omitted the 90° right-angle square! Subtract 90° as well: ${2 * k}x = 360 - 90 - ${d} = ${2 * k * x}.` },
+                { text: `x = ${x * 2}`, correct: false, trap: `Remember to combine ${k}x + ${k}x = ${2 * k}x before dividing!` },
+                { text: `x = ${wrong180}`, correct: false, trap: `All angles around point M sum to 360°, not 180°!` }
+              ]
+            }
+          ]
+        };
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 1 (ROUNDS 1-2): SINGLE-TRANSVERSAL PARALLEL LINES (AB // CD)
+    // --------------------------------------------------------------------------
+    genRound1_ParallelTransversal() {
+      const isInterior = Math.random() < 0.55;
+      if (isInterior) {
+        // Interior angles (C-shape): (x - b)° + c° + d° = 180°
+        const x = randInt(48, 88);
+        const b = randInt(8, 22);
+        const c = randInt(38, 62);
+        const d = 180 - (x - b) - c;
+        if (d < 42 || d > 78) return null;
+
+        const expr = formatLinear(1, -b, 'x', true);
+        const exprNoDeg = formatLinear(1, -b, 'x', false);
+        const sig = `r1_par_int_${b}_${c}_${d}`;
+        const trapEqual = d - c + b;
+
+        return {
+          sig,
+          tierName: 'TIER 1 • PARALLEL TRANSVERSAL',
+          type: 'parallel_interior',
+          givens: `Parallel rails AB // CD are cut by a transversal. Interior C-shape angles are ${expr}, ${c}°, and ${d}°. Find x.`,
+          params: { x, b, c, d, expr },
+          steps: [
+            {
+              prompt: 'STEP 1: IDENTIFY THE PARALLEL LINE PROPERTY (AB // CD)',
+              choices: [
+                { text: 'Int. ∠s, AB // CD (C-shape = 180°)', correct: true },
+                { text: 'Alt. ∠s, AB // CD (Z-shape equal)', correct: false, trap: 'Those angles lie on the SAME side of the transversal between parallel lines (C-shape) — interior angles add up to 180°, they are NOT equal!' },
+                { text: 'Corr. ∠s, AB // CD (F-shape equal)', correct: false, trap: 'Corresponding F-shape angles sit in matching positions on the same side of the transversal, whereas these are trapped inside between AB and CD (C-shape = 180°)!' },
+                { text: 'Vert. Opp. ∠s are equal', correct: false, trap: 'These angles sit at two different intersections along the transversal between AB // CD!' }
+              ]
+            },
+            {
+              prompt: 'STEP 2: FORGE THE ALGEBRAIC ANGLE EQUATION',
+              choices: [
+                { text: `${exprNoDeg} + ${c} + ${d} = 180`, correct: true },
+                { text: `${exprNoDeg} + ${c} = ${d}`, correct: false, trap: 'Those angles lie on the SAME side of the transversal between parallel lines (C-shape) — interior angles add up to 180°, they are NOT equal!' },
+                { text: `${exprNoDeg} + ${c} + ${d} = 360`, correct: false, trap: 'Co-interior C-shape angles between parallel lines sum to 180°, not 360°!' },
+                { text: `x + ${b} + ${c} + ${d} = 180`, correct: false, trap: `Check the sign inside ${expr}: it is x - ${b}, not x + ${b}!` }
+              ]
+            },
+            {
+              prompt: 'STEP 3: SOLVE FOR x TO FIRE THE BEAM',
+              choices: [
+                { text: `x = ${x}`, correct: true },
+                { text: `x = ${trapEqual > 0 ? trapEqual : x - 18}`, correct: false, trap: 'Those angles lie on the SAME side of the transversal between parallel lines (C-shape) — interior angles add up to 180°, they are NOT equal!' },
+                { text: `x = ${x - 2 * b}`, correct: false, trap: `Watch the minus sign! (x - ${b}) + ${c + d} = 180 gives x + ${c + d - b} = 180, so x = ${x}.` },
+                { text: `x = ${180 - d}`, correct: false, trap: `Include BOTH ${c}° and ${d}° in the interior sum: (x - ${b}) + ${c} + ${d} = 180.` }
+              ]
+            }
+          ]
+        };
+      } else {
+        // Alternate / Corresponding: (ax - b)° = c°
+        // Keep slanted transversal angles strictly in 48°..76° or 104°..132° (never 85°..95°)
+        const x = randInt(15, 28);
+        const a = pick([4, 5, 6]);
+        const c = Math.random() < 0.65 ? randInt(48, 76) : randInt(104, 132);
+        const b = a * x - c;
+        if (b < 4 || b > 38) return null;
+
+        const expr = formatLinear(a, -b, 'x', true);
+        const exprNoDeg = formatLinear(a, -b, 'x', false);
+        const sig = `r1_par_alt_${a}_${b}_${c}`;
+        const trap180 = Math.max(4, Math.round((180 - c + b) / a));
+
+        return {
+          sig,
+          tierName: 'TIER 1 • PARALLEL TRANSVERSAL',
+          type: 'parallel_alt',
+          givens: `Parallel rails AB // CD are cut by a transversal forming a glowing Z-shape with ${expr} and ${c}°. Find x.`,
+          params: { x, a, b, c, expr },
+          steps: [
+            {
+              prompt: 'STEP 1: IDENTIFY THE PARALLEL LINE PROPERTY (AB // CD)',
+              choices: [
+                { text: 'Alt. ∠s, AB // CD (Z-shape equal)', correct: true },
+                { text: 'Int. ∠s, AB // CD (sum = 180°)', correct: false, trap: 'Look at the glowing Z-path across the transversal: alternate angles on opposite sides of the transversal are EQUAL!' },
+                { text: '∠s at a pt = 360°', correct: false, trap: 'These two angles are at separate vertices along the transversal between parallel rails AB // CD.' },
+                { text: 'Ext. ∠ of △', correct: false, trap: 'No closed triangle is formed here — use Alternate Angles (Z-shape) on AB // CD!' }
+              ]
+            },
+            {
+              prompt: 'STEP 2: FORGE THE ALGEBRAIC ANGLE EQUATION',
+              choices: [
+                { text: `${exprNoDeg} = ${c}`, correct: true },
+                { text: `${exprNoDeg} + ${c} = 180`, correct: false, trap: 'Alternate Z-shape angles between parallel lines are EQUAL, not supplementary to 180°!' },
+                { text: `${a}x + ${b} = ${c}`, correct: false, trap: `Check the expression carefully: it is ${exprNoDeg}, with a minus sign!` },
+                { text: `${exprNoDeg} + ${c} = 90`, correct: false, trap: 'Alternate Z-shape angles are equal to each other: ' + exprNoDeg + ' = ' + c + '.' }
+              ]
+            },
+            {
+              prompt: 'STEP 3: SOLVE FOR x TO LOCK THE PRISM',
+              choices: [
+                { text: `x = ${x}`, correct: true },
+                { text: `x = ${trap180}`, correct: false, trap: `Alternate Z-shape angles are EQUAL (${exprNoDeg} = ${c}), so they do not sum to 180°!` },
+                { text: `x = ${Math.max(3, Math.round((c - b) / a))}`, correct: false, trap: `When moving -${b} to the other side, ADD ${b}: ${a}x = ${c} + ${b} = ${a * x}.` },
+                { text: `x = ${c + b}`, correct: false, trap: `Don't forget to divide by ${a} after adding ${b}!` }
+              ]
+            }
+          ]
+        };
+      }
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 2 (ROUNDS 3-4): TRIANGLE EXTERIOR ANGLE THEOREM
+    // --------------------------------------------------------------------------
+    genRound3_TriangleExterior() {
+      // Exterior angle: ax° = (180° - b°) + cx°
+      const a = pick([4, 5, 6]);
+      const c = pick([1, 2]);
+      const diff = a - c;
+      const x = randInt(18, 32);
+      const interior1 = diff * x;
+      const b = 180 - interior1;
+      if (b < 95 || b > 142) return null;
+
+      const sig = `r3_ext_${a}_${b}_${c}`;
+      const trapUseB = Math.round((b) / diff);
+      const trapAddC = Math.round(interior1 / (a + c));
+
+      return {
+        sig,
+        tierName: 'TIER 2 • EXTERIOR ANGLE OF △',
+        type: 'tri_exterior',
+        givens: `A laser beam extends the base of a triangle. Exterior angle = ${a}x°, adjacent straight-line angle = ${b}°, and opposite interior angle = ${c}x°. Find x.`,
+        params: { a, b, c, x, interior1 },
+        steps: [
+          {
+            prompt: 'STEP 1: IDENTIFY THE TRIANGLE & LINE THEOREMS',
+            choices: [
+              { text: 'Ext. ∠ of △ = sum of 2 int. opp. ∠s', correct: true },
+              { text: 'Ext. ∠ of △ = adjacent angle', correct: false, trap: 'An exterior angle of a triangle equals the sum of the TWO interior OPPOSITE angles — not the adjacent angle next to it!' },
+              { text: 'Alt. ∠s, AB // CD', correct: false, trap: 'There are no parallel lines here! Use Adjacent ∠s on a straight line (180°) and Exterior ∠ of △.' },
+              { text: 'Base ∠s of isos. △', correct: false, trap: 'No equal-side tick marks are shown on this triangle — apply the Exterior Angle of a Triangle theorem!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: FORGE THE ALGEBRAIC ANGLE EQUATION',
+            choices: [
+              { text: `${a}x = (180 - ${b}) + ${c}x`, correct: true },
+              { text: `${a}x = ${b} + ${c}x`, correct: false, trap: `${b}° is OUTSIDE the triangle on a straight line! First find the interior angle (180° - ${b}° = ${interior1}°).` },
+              { text: `${a}x + ${c}x = 180 - ${b}`, correct: false, trap: `The exterior angle ${a}x° equals the SUM of the two interior opposite angles: ${a}x = (180 - ${b}) + ${c}x.` },
+              { text: `${a}x + ${b} + ${c}x = 180`, correct: false, trap: `${a}x° is an EXTERIOR angle, so it does not sit inside the triangle's 180° sum!` }
+            ]
+          },
+          {
+            prompt: 'STEP 3: SOLVE FOR x TO REFRACT THE BEAM',
+            choices: [
+              { text: `x = ${x}`, correct: true },
+              { text: `x = ${trapUseB}`, correct: false, trap: `You used ${b}° directly instead of its straight-line supplement (180° - ${b}° = ${interior1}°)!` },
+              { text: `x = ${trapAddC}`, correct: false, trap: `Subtract ${c}x from both sides: ${a}x - ${c}x = ${diff}x = ${interior1}, so x = ${x}.` },
+              { text: `x = ${interior1}`, correct: false, trap: `Remember to divide ${interior1} by (${a} - ${c}) = ${diff}!` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 2 (ROUNDS 3-4): BOW-TIE VERTICALLY OPPOSITE TRIANGLES
+    // --------------------------------------------------------------------------
+    genRound3_BowTieTriangles() {
+      // Top triangle has angles a°, b°, apex. Bottom triangle has apex, c°, kx°.
+      // Since apexes are vertically opposite: a + b = c + kx
+      const k = pick([2, 3, 4]);
+      const x = randInt(14, 28);
+      const c = randInt(34, 58);
+      const sum = c + k * x;
+      if (sum < 85 || sum > 135) return null;
+      const a = randInt(38, sum - 38);
+      const b = sum - a;
+      const apex = 180 - sum;
+
+      const sig = `r3_bowtie_${a}_${b}_${c}_${k}`;
+      const trap180 = Math.max(4, Math.round((180 - c) / k));
+
+      return {
+        sig,
+        tierName: 'TIER 2 • BOW-TIE TRIANGLES',
+        type: 'bow_tie',
+        givens: `Two laser triangles intersect at apex M (bow-tie prisms). Top angles are ${a}° and ${b}°; bottom angles are ${c}° and ${k}x°. Find x.`,
+        params: { a, b, c, k, x, apex },
+        steps: [
+          {
+            prompt: 'STEP 1: IDENTIFY THE SHARED APEX PROPERTY AT M',
+            choices: [
+              { text: '∠ sum of △ = 180° & Vert. Opp. ∠s', correct: true },
+              { text: 'Alt. ∠s, AB // CD', correct: false, trap: 'The outer edges are NOT marked parallel! Connect the two triangles through their shared Vertically Opposite apex at M.' },
+              { text: 'Base ∠s of isos. △', correct: false, trap: 'Neither triangle has equal-side tick marks. Use ∠ sum of △ = 180° and Vertically Opposite ∠s at M!' },
+              { text: 'Ext. ∠ of △', correct: false, trap: 'The two segments cross through M to form Vertically Opposite interior angles inside each triangle.' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: EQUATE THE REMAINING ANGLE SUMS OF BOTH △s',
+            choices: [
+              { text: `${a} + ${b} = ${c} + ${k}x`, correct: true },
+              { text: `${a} + ${b} + ${c} + ${k}x = 180`, correct: false, trap: `Each triangle has its OWN 180° sum! Because the apex angles at M are equal, ${a} + ${b} = ${c} + ${k}x.` },
+              { text: `${a} + ${b} + ${c} + ${k}x = 360`, correct: false, trap: `You forgot to subtract the two apex angles at M! Since both triangles share equal apex angles (${apex}°), ${a} + ${b} = ${c} + ${k}x.` },
+              { text: `${k}x = ${a} + ${b} + ${c}`, correct: false, trap: `${c}° is in the SAME bottom triangle as ${k}x°, so subtract ${c}° from (${a}° + ${b}°)!` }
+            ]
+          },
+          {
+            prompt: 'STEP 3: SOLVE FOR x TO ALIGN BOTH PRISMS',
+            choices: [
+              { text: `x = ${x}`, correct: true },
+              { text: `x = ${Math.round((a + b + c) / k)}`, correct: false, trap: `Subtract ${c} from ${a + b}: ${k}x = ${a + b} - ${c} = ${k * x}.` },
+              { text: `x = ${trap180}`, correct: false, trap: `Don't ignore the apex angle ${apex}°! ${c}° + ${k}x° equals ${a}° + ${b}° (${sum}°), not 180°.` },
+              { text: `x = ${k * x}`, correct: false, trap: `Divide by ${k} to isolate x: x = ${k * x} ÷ ${k} = ${x}.` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 2 (ROUNDS 3-4): ISOSCELES TRIANGLE + RIGHT-ANGLE CORNER
+    // --------------------------------------------------------------------------
+    genRound3_IsoscelesRightCorner() {
+      // On the straight base at V, EXACTLY three adjacent angles sum to 180°:
+      //   baseAngle + (ax - b)° + 90° = 180°
+      // where baseAngle = (180 - apex)/2 from the isosceles prism,
+      // and 90° is the full right-angle corner sitting against the base.
+      // A marked split d° inside the right angle is a distractor only —
+      // using (90 - d) would under-count because d° also lies on the same line.
+      const c = randInt(22, 44) * 2; // even apex angle
+      const baseAngle = (180 - c) / 2;
+      const d = randInt(28, 50);
+      const comp = 90 - d;
+      const targetAngle = 90 - baseAngle; // since expr + base + 90 = 180
+      const a = pick([3, 4, 5]);
+      const x = randInt(16, 30);
+      const b = a * x - targetAngle;
+      if (b < 3 || b > 40 || targetAngle < 30 || targetAngle > 70) return null;
+
+      const expr = formatLinear(a, -b, 'x', true);
+      const exprNoDeg = formatLinear(a, -b, 'x', false);
+      const sig = `r3_isos_${a}_${b}_${c}_${d}`;
+      const trapUseComp = Math.max(4, Math.round((180 - baseAngle - comp + b) / a));
+      const trapNoDiv2 = Math.max(4, Math.round((180 - (180 - c) - 90 + b) / a));
+
+      return {
+        sig,
+        tierName: 'TIER 2 • ISOSCELES & RIGHT CORNER',
+        type: 'isosceles_corner',
+        givens: `An isosceles prism (apex ${c}°, equal-side tick marks) meets a 90° right-angle corner (a ${d}° ray splits that corner) along a straight base line with ${expr}. Find x.`,
+        params: { a, b, c, d, x, baseAngle, comp, expr },
+        steps: [
+          {
+            prompt: 'STEP 1: IDENTIFY THE TRIANGLE & STRAIGHT-LINE RULES',
+            choices: [
+              { text: 'Base ∠s of isos. △ & Adj. ∠s on str. line', correct: true },
+              { text: 'Equilateral △ (all ∠s = 60°)', correct: false, trap: 'Only TWO sides have equal tick marks! An isosceles triangle has two equal base angles: (180° - ' + c + '°) ÷ 2 = ' + baseAngle + '°.' },
+              { text: 'Alt. ∠s, AB // CD', correct: false, trap: 'No parallel lines are present — use Base ∠s of isosceles △ and Adjacent ∠s on a straight line = 180°!' },
+              { text: '∠s at a pt = 360°', correct: false, trap: 'The angles sit on one side of a straight base line, so they sum to 180°, not 360°!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: FORGE THE STRAIGHT-LINE ANGLE EQUATION',
+            choices: [
+              { text: `${exprNoDeg} + (180 - ${c})/2 + 90 = 180`, correct: true },
+              { text: `${exprNoDeg} + (180 - ${c})/2 + (90 - ${d}) = 180`, correct: false, trap: `The ${d}° ray only splits the right-angle corner — both ${d}° and ${comp}° sit on the straight line, so together they contribute the full 90°, not ${comp}° alone!` },
+              { text: `${exprNoDeg} + ${c} + ${d} = 180`, correct: false, trap: `${c}° is the APEX at the top! Use the base angle (180° - ${c}°) ÷ 2 = ${baseAngle}°, and the full 90° right corner.` },
+              { text: `${exprNoDeg} + ${baseAngle} + 90 = 360`, correct: false, trap: 'Angles on a straight line sum to 180°, not 360°!' }
+            ]
+          },
+          {
+            prompt: 'STEP 3: SOLVE FOR x TO STABILIZE THE PRISM',
+            choices: [
+              { text: `x = ${x}`, correct: true },
+              { text: `x = ${trapNoDiv2}`, correct: false, trap: `You forgot ÷ 2 for the isosceles base angle! Each base angle is (180° - ${c}°) ÷ 2 = ${baseAngle}°.` },
+              { text: `x = ${trapUseComp}`, correct: false, trap: `Don't replace the right angle with only 90° - ${d}° = ${comp}° — the full 90° corner sits on the straight line!` },
+              { text: `x = ${Math.max(4, Math.round((targetAngle - b) / a))}`, correct: false, trap: `Transpose -${b} by adding ${b}: ${a}x = ${targetAngle} + ${b} = ${a * x}.` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 3 (ROUNDS 5-6): SINGLE-BEND "CROOK" PARALLEL RAILS (AB // CD)
+    // --------------------------------------------------------------------------
+    genRound5_OneBendCrook() {
+      // Classic Singapore Sec 1 "Crook" figure:
+      // Top ray makes angle a° with AB; bends at V1 with obtuse angle b°;
+      // bends at V2 with obtuse angle x°; meets CD at angle c°.
+      // Auxiliary parallel lines through V1 and V2:
+      // Upper part of b° = a° (Alt. ∠s) -> Lower part of b° = b - a
+      // Upper part of x° = 180 - (b - a) (Int. ∠s) -> Lower part of x° = c° (Alt. ∠s)
+      // Therefore: x = 180 - b + a + c
+      const a = randInt(32, 54);
+      const b = randInt(122, 152);
+      const c = randInt(16, 36);
+      const x = 180 - b + a + c;
+      if (x < 75 || x > 145) return null;
+
+      const splitLowerB = b - a;
+      const splitUpperX = 180 - splitLowerB;
+      const sig = `r5_crook1_${a}_${b}_${c}`;
+
+      return {
+        sig,
+        tierName: 'TIER 3 • 1-BEND CROOK PARALLEL',
+        type: 'crook_1bend',
+        givens: `Parallel rails AB // CD contain a zig-zag laser crook with angles ${a}°, ${b}°, x°, and ${c}°. Fire auxiliary parallel splitters to find x.`,
+        params: { a, b, c, x, splitLowerB, splitUpperX },
+        steps: [
+          {
+            prompt: 'STEP 1: FIRE AUXILIARY PARALLEL SPLITTERS AT THE BENDS',
+            choices: [
+              { text: 'Aux. Parallel Rays + Alt. (Z) & Int. (C) ∠s', correct: true },
+              { text: 'Direct Alt. ∠s without splitting bends', correct: false, trap: 'Never guess across a bend! Fire a dashed auxiliary parallel line through the bend vertex to create clean Alternate (Z) and Interior (C) angles!' },
+              { text: 'Ext. ∠ of △ (no parallel lines needed)', correct: false, trap: 'The zig-zag path does not form a closed triangle — fire dashed auxiliary lines parallel to AB and CD through each bend!' },
+              { text: 'Vert. Opp. ∠s at each bend', correct: false, trap: 'The beam bends at each vertex rather than crossing straight through — use auxiliary parallel rays!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: COMBINE THE SPLIT SUB-ANGLES FOR x°',
+            choices: [
+              { text: `x = [180 - (${b} - ${a})] + ${c}`, correct: true },
+              { text: `x = ${b} + ${a} - ${c}`, correct: false, trap: 'Never guess across a bend! Fire a dashed auxiliary parallel line through the bend vertex to create clean Alternate (Z) and Interior (C) angles!' },
+              { text: `x = (${b} - ${a}) + ${c}`, correct: false, trap: `The middle segment creates a C-shape interior pair! Subtract (${b}° - ${a}° = ${splitLowerB}°) from 180° to get ${splitUpperX}°, then add ${c}°.` },
+              { text: `x = 180 - ${b} + ${c}`, correct: false, trap: `Don't forget to subtract ${a}° from ${b}° first! The upper Z-part of ${b}° is ${a}°, leaving ${splitLowerB}° for the C-shape interior pair.` }
+            ]
+          },
+          {
+            prompt: 'STEP 3: LOCK IN x TO ROUTE THE BEAM THROUGH CD',
+            choices: [
+              { text: `x = ${x}`, correct: true },
+              { text: `x = ${b}`, correct: false, trap: 'Never guess across a bend! Fire a dashed auxiliary parallel line through the bend vertex to create clean Alternate (Z) and Interior (C) angles!' },
+              { text: `x = ${splitLowerB + c}`, correct: false, trap: `You treated the C-shape interior angle as equal instead of supplementary to 180°! 180° - ${splitLowerB}° = ${splitUpperX}°, plus ${c}° = ${x}°.` },
+              { text: `x = ${180 - b + c}`, correct: false, trap: `You forgot the top ${a}° alternate angle that splits ${b}° into ${a}° + ${splitLowerB}°!` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 3 (ROUNDS 5-6): DOUBLE-BEND REFLEX CROOK (AB // CD)
+    // --------------------------------------------------------------------------
+    genRound5_TwoBendCrook() {
+      // Top ray makes angle a° with AB; reflex bend x°; obtuse bend b°; bottom angle c°.
+      // Auxiliary parallel lines at both bends:
+      // Upper part of x°: 180 - a (Int. ∠s with AB)
+      // Lower part of b°: c° (Alt. ∠s with CD) -> Upper part of b° = b - c
+      // Lower part of x°: 180 - (b - c) (Int. ∠s)
+      // Total reflex x = (180 - a) + [180 - (b - c)] = 360 - a - b + c
+      const a = randInt(28, 46);
+      const b = randInt(86, 114);
+      const c = randInt(18, 34);
+      const x = 360 - a - b + c;
+      if (x < 215 || x > 285) return null;
+
+      const upperX = 180 - a;
+      const upperB = b - c;
+      const lowerX = 180 - upperB;
+      const sig = `r5_crook2_${a}_${b}_${c}`;
+
+      return {
+        sig,
+        tierName: 'TIER 3 • REFLEX CROOK PARALLEL',
+        type: 'crook_2bend',
+        givens: `Parallel rails AB // CD have a deep reflex bend x° alongside ${a}°, ${b}°, and ${c}°. Fire auxiliary parallel rays to find reflex angle x.`,
+        params: { a, b, c, x, upperX, upperB, lowerX },
+        steps: [
+          {
+            prompt: 'STEP 1: DECOMPOSE THE REFLEX BEND WITH AUXILIARY RAYS',
+            choices: [
+              { text: 'Aux. Parallel Rays + Two Int. (C) Pairs', correct: true },
+              { text: 'Assume reflex x° = 360° - ' + b + '°', correct: false, trap: 'Never guess across a bend! Fire dashed auxiliary parallel lines through BOTH bend vertices to split reflex x° into two C-shape interior angles!' },
+              { text: 'Corr. ∠s, AB // CD (F-shape equal)', correct: false, trap: 'The zig-zag bends reverse direction twice — split each bend vertex with an auxiliary parallel ray!' },
+              { text: '∠ sum of quadrilateral = 360°', correct: false, trap: 'There are only three zig-zag segments between AB and CD, not a closed 4-sided polygon!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: SUM THE TWO SPLIT PARTS OF REFLEX ANGLE x°',
+            choices: [
+              { text: `x = (180 - ${a}) + [180 - (${b} - ${c})]`, correct: true },
+              { text: `x = ${a} + ${b} + ${c}`, correct: false, trap: 'Never guess across a bend! Each part of reflex x° forms a C-shape interior pair (180° minus the adjacent angle)!' },
+              { text: `x = (180 - ${a}) + (180 - ${b})`, correct: false, trap: `Before taking 180° - ${b}°, subtract the bottom Z-angle ${c}° from ${b}° (${b}° - ${c}° = ${upperB}°)!` },
+              { text: `x = 360 - (${a} + ${b} + ${c})`, correct: false, trap: `Notice that ${c}° is alternate to the lower part of ${b}°, so ${c}° ADDS to x rather than subtracting!` }
+            ]
+          },
+          {
+            prompt: 'STEP 3: COMPUTE REFLEX ANGLE x TO REFLECT THE LASER',
+            choices: [
+              { text: `x = ${x}`, correct: true },
+              { text: `x = ${360 - a - b}`, correct: false, trap: `You forgot to subtract ${c}° from ${b}° first! Upper part of ${b}° is ${b}° - ${c}° = ${upperB}°, giving x = ${x}.` },
+              { text: `x = ${a + b + c}`, correct: false, trap: 'Never guess across a bend! Use auxiliary parallel lines: x = ' + upperX + ' + ' + lowerX + ' = ' + x + '.' },
+              { text: `x = ${360 - x}`, correct: false, trap: `You found the acute/obtuse angle on the OTHER side of the bend! The marked arc is the REFLEX angle x = ${x}.` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 4 (ROUNDS 7+): MULTI-TOOTH SAWTOOTH PARALLEL WAVE
+    // --------------------------------------------------------------------------
+    genRound7_SawtoothWave() {
+      // Multi-tooth zig-zag between AB // CD:
+      // Left-pointing angles: x/p and qx/r (e.g., x/2 and 5x/6)
+      // Right-pointing angles: a° and b° (e.g., 32° and 64°)
+      // Sawtooth theorem (via auxiliary parallel lines at every tooth):
+      // Sum of left-pointing angles = Sum of right-pointing angles
+      const presets = [
+        { p: 2, q: 5, r: 6, x: 72 },   // x/2 + 5x/6 = 4x/3 = 96
+        { p: 3, q: 2, r: 3, x: 84 },   // x/3 + 2x/3 = x = 84
+        { p: 2, q: 3, r: 4, x: 64 },   // x/2 + 3x/4 = 5x/4 = 80
+        { p: 4, q: 3, r: 4, x: 92 },   // x/4 + 3x/4 = x = 92
+        { p: 2, q: 1, r: 3, x: 96 }    // x/2 + x/3 = 5x/6 = 80
+      ];
+      const cfg = pick(presets);
+      const totalRight = (cfg.x / cfg.p) + (cfg.q * cfg.x) / cfg.r;
+      if (!Number.isInteger(totalRight) || totalRight < 60 || totalRight > 130) return null;
+
+      const a = randInt(24, Math.floor(totalRight * 0.45));
+      const b = totalRight - a;
+
+      const left1 = cfg.p === 1 ? 'x' : `x/${cfg.p}`;
+      const left2 = cfg.q === 1 ? `x/${cfg.r}` : `${cfg.q}x/${cfg.r}`;
+      const sig = `r7_saw_${cfg.p}_${cfg.q}_${cfg.r}_${a}_${b}`;
+
+      return {
+        sig,
+        tierName: 'TIER 4 • SAWTOOTH WAVE MASTER',
+        type: 'sawtooth',
+        givens: `A multi-tooth sawtooth prism sits between AB // CD. Right-pointing angles are ${a}° and ${b}°; left-pointing teeth are ${left1}° and ${left2}°. Find x.`,
+        params: { a, b, x: cfg.x, left1, left2, totalRight },
+        steps: [
+          {
+            prompt: 'STEP 1: FIRE AUXILIARY RAYS THROUGH ALL SAWTOOTH PEAKS',
+            choices: [
+              { text: 'Sum of Left ∠s = Sum of Right ∠s (Aux. Rays)', correct: true },
+              { text: 'All sawtooth angles sum to 360°', correct: false, trap: 'Firing auxiliary parallel rays through each tooth splits every peak into Alternate Z-angles: Sum of left-pointing ∠s = Sum of right-pointing ∠s!' },
+              { text: 'Each tooth equals 90°', correct: false, trap: 'The teeth are acute angles, not right angles — equate the left-pointing sum to the right-pointing sum!' },
+              { text: 'Int. ∠s on same side = 180°', correct: false, trap: 'The zig-zag alternates left and right, forming chains of Alternate Z-angles!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: SET UP THE FRACTIONAL SAWTOOTH EQUATION',
+            choices: [
+              { text: `${left1} + ${left2} = ${a} + ${b}`, correct: true },
+              { text: `${left1} + ${a} = ${left2} + ${b}`, correct: false, trap: 'Group by direction! Both ' + left1 + '° and ' + left2 + '° point LEFT, while ' + a + '° and ' + b + '° point RIGHT.' },
+              { text: `${left1} + ${left2} + ${a} + ${b} = 180`, correct: false, trap: 'Left-pointing angles EQUAL right-pointing angles (' + totalRight + '°), they do not sum to 180°!' },
+              { text: `${left1} - ${left2} = ${b} - ${a}`, correct: false, trap: 'Add all left-pointing angles together and equate them to the sum of all right-pointing angles!' }
+            ]
+          },
+          {
+            prompt: 'STEP 3: SOLVE THE FRACTIONAL EQUATION FOR x',
+            choices: [
+              { text: `x = ${cfg.x}`, correct: true },
+              { text: `x = ${totalRight}`, correct: false, trap: `Don't forget the fractional coefficients! ${left1} + ${left2} = ${totalRight}, so x = ${cfg.x}.` },
+              { text: `x = ${Math.round(totalRight / 2)}`, correct: false, trap: `Find a common denominator to combine ${left1} + ${left2} = ${totalRight} accurately!` },
+              { text: `x = ${cfg.x + 18}`, correct: false, trap: `Check your fraction addition: ${cfg.x}/${cfg.p} + ${cfg.q}(${cfg.x})/${cfg.r} = ${totalRight}.` }
+            ]
+          }
+        ]
+      };
+    }
+
+    // --------------------------------------------------------------------------
+    // TIER 4 (ROUNDS 7+): COUPLED (x, y) PARALLEL-ISOSCELES SYSTEM
+    // --------------------------------------------------------------------------
+    genRound7_CoupledParallelXY() {
+      // Parallel rails AB // CD:
+      // Top ray meets AB at obtuse angle a° (e.g., 134°), goes down to isosceles vertex on CD
+      // with angle b° (e.g., 92°), and returns up to AB forming an isosceles triangle with tick marks!
+      // By Int. ∠s, AB // CD: angle at bottom-left = 180 - a (e.g. 46°) -> x = 180 - a
+      // Straight line on CD: x + b + baseAngle = 180 -> baseAngle = 180 - x - b = a - b (e.g. 42°)
+      // Since triangle is isosceles with equal base angles at bottom-right and top-right:
+      // y = 180 - 2 * baseAngle (or y = baseAngle depending on configuration; let's make y the apex angle!)
+      const x = randInt(38, 52);
+      const a = 180 - x; // e.g. 134°
+      const baseAngle = randInt(36, 48);
+      const b = 180 - x - baseAngle; // e.g. 92°
+      const y = 180 - 2 * baseAngle; // e.g. 96°
+      if (b < 75 || b > 110 || y < 78 || y > 112) return null;
+
+      const sig = `r7_xy_${a}_${b}_${x}_${y}`;
+
+      return {
+        sig,
+        tierName: 'TIER 4 • COUPLED (x, y) SYSTEM',
+        type: 'coupled_xy',
+        givens: `Parallel rails AB // CD bound an isosceles prism (equal-side tick marks) with angles ${a}° and ${b}°. Find both x and y.`,
+        params: { a, b, x, y, baseAngle },
+        steps: [
+          {
+            prompt: 'STEP 1: IDENTIFY THE COUPLED PARALLEL & ISOSCELES RULES',
+            choices: [
+              { text: 'Int. ∠s (AB // CD) + Base ∠s of isos. △', correct: true },
+              { text: 'Alt. ∠s (x = ' + a + '°) + Equilateral △', correct: false, trap: `x° and ${a}° lie on the SAME side of the transversal between AB // CD (C-shape interior = 180°), so x = 180° - ${a}° = ${x}°!` },
+              { text: 'Vert. Opp. ∠s + Ext. ∠ of △', correct: false, trap: 'Use Co-interior angles on AB // CD to unlock x first, then use the equal-side tick marks for y!' },
+              { text: '∠s at a pt = 360°', correct: false, trap: 'The bottom vertex lies along straight rail CD (180°), not a full 360° revolution!' }
+            ]
+          },
+          {
+            prompt: 'STEP 2: FORGE THE COUPLED SYSTEM FOR x AND y',
+            choices: [
+              { text: `x = 180 - ${a},  y = 180 - 2(180 - x - ${b})`, correct: true },
+              { text: `x = ${a},  y = 180 - 2(${b})`, correct: false, trap: `x° and ${a}° are C-shape interior angles summing to 180°, so x = 180 - ${a} = ${x}!` },
+              { text: `x = 180 - ${a},  y = 180 - x - ${b}`, correct: false, trap: `180 - x - ${b} (${baseAngle}°) gives ONE base angle of the isosceles triangle — subtract TWO base angles from 180° to get apex y!` },
+              { text: `x + y = ${a} + ${b}`, correct: false, trap: 'Solve sequentially: first find x from C-shape interior angles, then find the isosceles base angle on rail CD!' }
+            ]
+          },
+          {
+            prompt: 'STEP 3: LOCK IN BOTH x AND y TO COMPLETE THE CIRCUIT',
+            choices: [
+              { text: `x = ${x}, y = ${y}`, correct: true },
+              { text: `x = ${x}, y = ${baseAngle}`, correct: false, trap: `${baseAngle}° is the base angle of the isosceles triangle! Apex angle y = 180° - 2(${baseAngle}°) = ${y}°.` },
+              { text: `x = ${a}, y = ${y}`, correct: false, trap: `Interior C-shape angles sum to 180°: x = 180° - ${a}° = ${x}°, not ${a}°!` },
+              { text: `x = ${x + 10}, y = ${y - 10}`, correct: false, trap: `Double-check your straight-line subtraction on CD: 180° - ${x}° - ${b}° = ${baseAngle}°.` }
+            ]
+          }
+        ]
+      };
+    }
+  }
+
+  // ============================================================================
+  // 5. PARTICLE & VISUAL FX ENGINE
+  // ============================================================================
+  const particles = [];
+  function spawnBurst(x, y, color, count = 26, speed = 4.2) {
+    for (let i = 0; i < count; i++) {
+      const ang = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
+      const spd = speed * (0.4 + Math.random() * 0.85);
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        life: 1,
+        decay: 0.018 + Math.random() * 0.022,
+        size: 2 + Math.random() * 3.5,
+        color
+      });
+    }
+  }
+
+  function updateAndDrawParticles(ctx) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.life -= p.decay;
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ============================================================================
+  // 6. GAME STATE & CONTROLLER / INPUT MANAGEMENT
+  // ============================================================================
+  const generator = new ProblemGenerator();
+
+  const state = {
+    screen: 'TITLE', // 'TITLE' | 'PLAYING' | 'GAMEOVER'
+    mode: 'SOLO',    // 'SOLO' | 'COOP' | 'DUEL'
+    roundNumber: 1,
+    stepIndex: 0,    // 0, 1, 2
+    problem: null,
+    shields: 5,
+    maxShields: 5,
+    combo: 0,
+    score: 0,        // Used for SOLO and TEAM SCORE in COOP
+    p1Stars: 0,      // Used ONLY in DUEL
+    p2Stars: 0,      // Used ONLY in DUEL
+    p1Score: 0,      // Used ONLY in DUEL
+    p2Score: 0,      // Used ONLY in DUEL
+    roundStartTime: 0,
+    stepStartTime: 0,
+
+    // Visual animation states
+    auxProgress: 0,       // 0 -> 1 when Step 1 completes
+    prismCharge: 0,       // 0 -> 1 when Step 2 completes
+    finalBeamProgress: 0, // 0 -> 1 when Step 3 completes
+    roundTransitionTimer: 0,
+    redFlash: 0,
+    goldFlash: 0,
+    diagnosticAlert: null, // { text, timer }
+    wrongCards: new Set(),
+
+    // Reticles & Selection
+    mouseX: W / 2,
+    mouseY: H / 2,
+    p1Cursor: 0, // Card index 0..3
+    p2Cursor: 1, // Card index 0..3
+    titleCursor: 0, // 0: SOLO, 1: COOP, 2: DUEL
+    hoveredCard: -1,
+    hoveredTitleBtn: -1,
+    hoveredHudBtn: null, // 'MUTE' | 'MENU' | 'RESTART'
+
+    // Cached layout hitboxes
+    cardRects: [],
+    titleRects: [],
+    hudBtnRects: {},
+
+    // Gamepad tracking
+    gpCount: 0,
+    gpPrev: [{}, {}],
+    gpCooldown: [0, 0]
+  };
+
+  function startGame(mode) {
+    sfx.unlock();
+    sfx.playStepLock(2);
+    state.mode = mode;
+    state.screen = 'PLAYING';
+    state.roundNumber = 1;
+    state.shields = 5;
+    state.maxShields = 5;
+    state.combo = 0;
+    state.score = 0;
+    state.p1Stars = 0;
+    state.p2Stars = 0;
+    state.p1Score = 0;
+    state.p2Score = 0;
+    state.diagnosticAlert = null;
+    loadRound(1);
+  }
+
+  function loadRound(rNum) {
+    state.roundNumber = rNum;
+    state.stepIndex = 0;
+    state.problem = generator.generate(rNum);
+    state.auxProgress = 0;
+    state.prismCharge = 0;
+    state.finalBeamProgress = 0;
+    state.roundTransitionTimer = 0;
+    state.wrongCards.clear();
+    state.p1Cursor = 0;
+    state.p2Cursor = 1;
+    state.stepStartTime = performance.now();
+    state.roundStartTime = performance.now();
+  }
+
+  function getActiveCoopPlayer() {
+    // Alternates P1 and P2 every round on Steps 1 & 2; Step 3 is BOTH ('BOTH')
+    if (state.mode !== 'COOP') return 'ANY';
+    if (state.stepIndex === 2) return 'BOTH';
+    const oddRound = state.roundNumber % 2 === 1;
+    if (state.stepIndex === 0) return oddRound ? 'P1' : 'P2';
+    return oddRound ? 'P2' : 'P1';
+  }
+
+  function submitChoice(cardIdx, actor = 'P1') {
+    if (state.screen !== 'PLAYING' || state.roundTransitionTimer > 0) return;
+    if (cardIdx < 0 || cardIdx > 3) return;
+    if (state.wrongCards.has(cardIdx)) return;
+
+    // Enforce alternating turns in COOP mode
+    if (state.mode === 'COOP') {
+      const req = getActiveCoopPlayer();
+      if (req === 'P1' && actor === 'P2') {
+        state.diagnosticAlert = {
+          text: 'TEAM CO-OP: Player 1 (Red Reticle) controls this step! Swap turns next step.',
+          timer: 140
+        };
+        sfx.playTick(320);
+        return;
+      }
+      if (req === 'P2' && actor === 'P1') {
+        state.diagnosticAlert = {
+          text: 'TEAM CO-OP: Player 2 (Blue Reticle) controls this step! Swap turns next step.',
+          timer: 140
+        };
+        sfx.playTick(320);
+        return;
+      }
+    }
+
+    const step = state.problem.steps[state.stepIndex];
+    const choice = step.choices[cardIdx];
+    const rect = state.cardRects[cardIdx];
+    const bx = rect ? rect.x + rect.w / 2 : W / 2;
+    const by = rect ? rect.y + rect.h / 2 : H * 0.8;
+
+    if (choice.correct) {
+      state.wrongCards.clear();
+      state.diagnosticAlert = null;
+      state.combo++;
+      const elapsedSec = Math.max(0.5, (performance.now() - state.stepStartTime) / 1000);
+      const speedBonus = Math.max(20, Math.round(140 - elapsedSec * 12));
+      const mult = 1 + Math.min(state.combo, 8) * 0.15;
+      const pts = Math.round((150 + speedBonus) * mult);
+
+      if (state.mode === 'DUEL') {
+        if (actor === 'P2') state.p2Score += pts;
+        else state.p1Score += pts;
+      } else {
+        state.score += pts;
+      }
+
+      if (state.stepIndex === 0) {
+        state.stepIndex = 1;
+        state.stepStartTime = performance.now();
+        sfx.playStepLock(1);
+        spawnBurst(bx, by, '#ffd166', 24, 4.5);
+      } else if (state.stepIndex === 1) {
+        state.stepIndex = 2;
+        state.stepStartTime = performance.now();
+        sfx.playStepLock(2);
+        spawnBurst(bx, by, '#00f0ff', 28, 5);
+      } else {
+        // Step 3 completed -> Fire full prism laser & advance round!
+        state.roundTransitionTimer = 95; // ~1.55 sec celebration animation
+        state.goldFlash = 0.55;
+        sfx.playLaserBlast();
+        spawnBurst(bx, by, '#06d6a0', 36, 6);
+        spawnBurst(W * 0.5, H * 0.45, '#ffd166', 44, 6.8);
+
+        if (state.mode === 'DUEL') {
+          if (actor === 'P2') state.p2Stars++;
+          else state.p1Stars++;
+        }
+      }
+    } else {
+      // Misconception Trap Triggered!
+      state.wrongCards.add(cardIdx);
+      state.combo = 0;
+      state.shields = Math.max(0, state.shields - 1);
+      state.redFlash = 0.75;
+      sfx.playError();
+      spawnBurst(bx, by, '#ff2a55', 24, 4.2);
+
+      state.diagnosticAlert = {
+        text: choice.trap || 'Diagnostic Alert: Check the geometric rule and signs carefully!',
+        timer: 340
+      };
+
+      if (state.shields <= 0) {
+        setTimeout(() => {
+          if (state.shields <= 0) {
+            state.screen = 'GAMEOVER';
+          }
+        }, 650);
+      }
+    }
+  }
+
+  // ============================================================================
+  // 7. POINTER & KEYBOARD EVENT LISTENERS
+  // ============================================================================
+  function handlePointerMove(x, y) {
+    state.mouseX = x;
+    state.mouseY = y;
+
+    state.hoveredHudBtn = null;
+    for (const [key, r] of Object.entries(state.hudBtnRects)) {
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        state.hoveredHudBtn = key;
+      }
+    }
+
+    if (state.screen === 'TITLE') {
+      state.hoveredTitleBtn = -1;
+      state.titleRects.forEach((r, idx) => {
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+          state.hoveredTitleBtn = idx;
+          state.titleCursor = idx;
+        }
+      });
+    } else if (state.screen === 'PLAYING') {
+      state.hoveredCard = -1;
+      state.cardRects.forEach((r, idx) => {
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+          state.hoveredCard = idx;
+          state.p1Cursor = idx;
+        }
+      });
+    }
+  }
+
+  function handlePointerDown(x, y) {
+    sfx.unlock();
+    handlePointerMove(x, y);
+
+    if (state.hoveredHudBtn === 'MUTE') {
+      sfx.toggleMute();
+      return;
+    }
+    if (state.hoveredHudBtn === 'MENU') {
+      state.screen = 'TITLE';
+      sfx.playTick(440);
+      return;
+    }
+    if (state.hoveredHudBtn === 'RESTART') {
+      startGame(state.mode);
+      return;
+    }
+
+    if (state.screen === 'TITLE') {
+      if (state.hoveredTitleBtn === 0) startGame('SOLO');
+      else if (state.hoveredTitleBtn === 1) startGame('COOP');
+      else if (state.hoveredTitleBtn === 2) startGame('DUEL');
+    } else if (state.screen === 'PLAYING') {
+      if (state.hoveredCard >= 0) {
+        submitChoice(state.hoveredCard, 'P1');
+      }
+    } else if (state.screen === 'GAMEOVER') {
+      startGame(state.mode);
+    }
+  }
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    handlePointerMove(e.clientX - rect.left, e.clientY - rect.top);
+  });
+
+  canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    handlePointerDown(e.clientX - rect.left, e.clientY - rect.top);
+  });
+
+  canvas.addEventListener('touchstart', e => {
+    if (e.touches.length > 0) {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      handlePointerDown(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
+    }
+  }, { passive: false });
+
+  window.addEventListener('keydown', e => {
+    sfx.unlock();
+    const key = e.key;
+
+    if (key === 'm' || key === 'M') {
+      sfx.toggleMute();
+      return;
+    }
+
+    if (state.screen === 'TITLE') {
+      if (key === 'ArrowLeft' || key === 'a' || key === 'A') {
+        state.titleCursor = (state.titleCursor + 2) % 3;
+        sfx.playTick();
+      } else if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+        state.titleCursor = (state.titleCursor + 1) % 3;
+        sfx.playTick();
+      } else if (key === 'Enter' || key === ' ') {
+        const modes = ['SOLO', 'COOP', 'DUEL'];
+        startGame(modes[state.titleCursor]);
+      } else if (key === '1') startGame('SOLO');
+      else if (key === '2') startGame('COOP');
+      else if (key === '3') startGame('DUEL');
+      return;
+    }
+
+    if (state.screen === 'GAMEOVER') {
+      if (key === 'Enter' || key === ' ') {
+        startGame(state.mode);
+      } else if (key === 'Escape') {
+        state.screen = 'TITLE';
+      }
+      return;
+    }
+
+    if (state.screen === 'PLAYING') {
+      if (key === 'Escape') {
+        state.screen = 'TITLE';
+        return;
+      }
+      // Number keys 1-4 quick select
+      if (['1', '2', '3', '4'].includes(key)) {
+        const idx = parseInt(key, 10) - 1;
+        state.p1Cursor = idx;
+        submitChoice(idx, 'P1');
+        return;
+      }
+
+      if (state.mode === 'SOLO') {
+        if (key === 'ArrowLeft' || key === 'a' || key === 'A') {
+          state.p1Cursor = (state.p1Cursor + 3) % 4;
+          sfx.playTick();
+        } else if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+          state.p1Cursor = (state.p1Cursor + 1) % 4;
+          sfx.playTick();
+        } else if (key === 'ArrowUp' || key === 'w' || key === 'W') {
+          state.p1Cursor = (state.p1Cursor + 2) % 4;
+          sfx.playTick();
+        } else if (key === 'ArrowDown' || key === 's' || key === 'S') {
+          state.p1Cursor = (state.p1Cursor + 2) % 4;
+          sfx.playTick();
+        } else if (key === 'Enter' || key === ' ') {
+          submitChoice(state.p1Cursor, 'P1');
+        }
+      } else {
+        // Split Keyboard for COOP & DUEL
+        // P1: WASD + F / Space
+        if (key === 'a' || key === 'A') {
+          state.p1Cursor = (state.p1Cursor + 3) % 4;
+          sfx.playTick(620);
+        } else if (key === 'd' || key === 'D') {
+          state.p1Cursor = (state.p1Cursor + 1) % 4;
+          sfx.playTick(620);
+        } else if (key === 'w' || key === 'W' || key === 's' || key === 'S') {
+          state.p1Cursor = (state.p1Cursor + 2) % 4;
+          sfx.playTick(620);
+        } else if (key === 'f' || key === 'F' || key === ' ') {
+          submitChoice(state.p1Cursor, 'P1');
+        }
+
+        // P2: Arrow Keys + Enter
+        if (key === 'ArrowLeft') {
+          state.p2Cursor = (state.p2Cursor + 3) % 4;
+          sfx.playTick(780);
+        } else if (key === 'ArrowRight') {
+          state.p2Cursor = (state.p2Cursor + 1) % 4;
+          sfx.playTick(780);
+        } else if (key === 'ArrowUp' || key === 'ArrowDown') {
+          state.p2Cursor = (state.p2Cursor + 2) % 4;
+          sfx.playTick(780);
+        } else if (key === 'Enter') {
+          submitChoice(state.p2Cursor, 'P2');
+        }
+      }
+    }
+  });
+
+  // ============================================================================
+  // 8. DUAL 8BITDO GAMEPAD POLLING ENGINE
+  // ============================================================================
+  function pollGamepads() {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    let activeCount = 0;
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i] && pads[i].connected) activeCount++;
+    }
+    state.gpCount = activeCount;
+
+    [0, 1].forEach(gpIdx => {
+      const gp = pads[gpIdx];
+      if (!gp || !gp.connected) return;
+      sfx.unlock();
+
+      if (state.gpCooldown[gpIdx] > 0) state.gpCooldown[gpIdx]--;
+
+      const axX = gp.axes[0] || 0;
+      const axY = gp.axes[1] || 0;
+      const dLeft = (gp.buttons[14] && gp.buttons[14].pressed) || axX < -0.55;
+      const dRight = (gp.buttons[15] && gp.buttons[15].pressed) || axX > 0.55;
+      const dUp = (gp.buttons[12] && gp.buttons[12].pressed) || axY < -0.55;
+      const dDown = (gp.buttons[13] && gp.buttons[13].pressed) || axY > 0.55;
+      const btnA = (gp.buttons[0] && gp.buttons[0].pressed) || (gp.buttons[1] && gp.buttons[1].pressed);
+      const btnStart = gp.buttons[9] && gp.buttons[9].pressed;
+
+      const prev = state.gpPrev[gpIdx];
+      const actor = gpIdx === 0 ? 'P1' : 'P2';
+
+      if (state.gpCooldown[gpIdx] === 0) {
+        if (state.screen === 'TITLE') {
+          if (dLeft && !prev.dLeft) {
+            state.titleCursor = (state.titleCursor + 2) % 3;
+            state.gpCooldown[gpIdx] = 10;
+            sfx.playTick();
+          } else if (dRight && !prev.dRight) {
+            state.titleCursor = (state.titleCursor + 1) % 3;
+            state.gpCooldown[gpIdx] = 10;
+            sfx.playTick();
+          }
+        } else if (state.screen === 'PLAYING') {
+          const moveDelta = (dLeft && !prev.dLeft) ? 3 :
+                            (dRight && !prev.dRight) ? 1 :
+                            ((dUp && !prev.dUp) || (dDown && !prev.dDown)) ? 2 : 0;
+          if (moveDelta !== 0) {
+            if (gpIdx === 0) state.p1Cursor = (state.p1Cursor + moveDelta) % 4;
+            else state.p2Cursor = (state.p2Cursor + moveDelta) % 4;
+            state.gpCooldown[gpIdx] = 9;
+            sfx.playTick(gpIdx === 0 ? 620 : 780);
+          }
+        }
+      }
+
+      if (btnA && !prev.btnA) {
+        if (state.screen === 'TITLE') {
+          const modes = ['SOLO', 'COOP', 'DUEL'];
+          startGame(modes[state.titleCursor]);
+        } else if (state.screen === 'PLAYING') {
+          const targetIdx = gpIdx === 0 ? state.p1Cursor : state.p2Cursor;
+          submitChoice(targetIdx, actor);
+        } else if (state.screen === 'GAMEOVER') {
+          startGame(state.mode);
+        }
+      }
+
+      if (btnStart && !prev.btnStart && state.screen === 'PLAYING') {
+        state.screen = 'TITLE';
+      }
+
+      state.gpPrev[gpIdx] = { dLeft, dRight, dUp, dDown, btnA, btnStart };
+    });
+  }
+
+  // ============================================================================
+  // 9. GEOMETRIC PRISM & LASER DIAGRAM RENDERER (CENTER STAGE)
+  // ============================================================================
+  function drawParallelArrows(ctx, x1, y1, x2, y2, count = 1, color = '#00f0ff') {
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2;
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    for (let c = 0; c < count; c++) {
+      const offset = (c - (count - 1) / 2) * 8;
+      const px = mx + Math.cos(ang) * offset;
+      const py = my + Math.sin(ang) * offset;
+      ctx.beginPath();
+      ctx.moveTo(px - Math.cos(ang - 0.5) * 9, py - Math.sin(ang - 0.5) * 9);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px - Math.cos(ang + 0.5) * 9, py - Math.sin(ang + 0.5) * 9);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawRightAngleSquare(ctx, vx, vy, ang1, ang2, size = 15, color = '#ffd166') {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = 'rgba(255, 209, 102, 0.14)';
+    ctx.lineWidth = 2;
+    const p1x = vx + Math.cos(ang1) * size;
+    const p1y = vy + Math.sin(ang1) * size;
+    const p3x = vx + Math.cos(ang2) * size;
+    const p3y = vy + Math.sin(ang2) * size;
+    const p2x = p1x + Math.cos(ang2) * size;
+    const p2y = p1y + Math.sin(ang2) * size;
+    ctx.beginPath();
+    ctx.moveTo(vx, vy);
+    ctx.lineTo(p1x, p1y);
+    ctx.lineTo(p2x, p2y);
+    ctx.lineTo(p3x, p3y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawTickMarks(ctx, x1, y1, x2, y2, count = 1, color = '#ffd166') {
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2;
+    const ang = Math.atan2(y2 - y1, x2 - x1) + Math.PI / 2;
+    const tangent = Math.atan2(y2 - y1, x2 - x1);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.4;
+    for (let c = 0; c < count; c++) {
+      const shift = (c - (count - 1) / 2) * 6;
+      const sx = mx + Math.cos(tangent) * shift;
+      const sy = my + Math.sin(tangent) * shift;
+      ctx.beginPath();
+      ctx.moveTo(sx - Math.cos(ang) * 7, sy - Math.sin(ang) * 7);
+      ctx.lineTo(sx + Math.cos(ang) * 7, sy + Math.sin(ang) * 7);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Draws an exact angle wedge & arc between two ray directions (startAng, endAng)
+   * originating at vertex (vx, vy), guaranteeing flush contact with both rays.
+   * By default sweeps the shorter interior angle (<= PI); pass reflex = true for > PI.
+   */
+  function drawAngleArc(ctx, vx, vy, startAng, endAng, radius, label, color = '#00f0ff', labelDistOffset = 22, reflex = false) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color + '28';
+    ctx.lineWidth = 2.3;
+
+    // Normalize signed angular sweep in (-PI, PI] for interior angles
+    let diff = ((endAng - startAng + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    if (reflex) {
+      diff = diff >= 0 ? diff - Math.PI * 2 : diff + Math.PI * 2;
+    }
+    const targetAng = startAng + diff;
+    const anticlockwise = diff < 0;
+
+    ctx.beginPath();
+    ctx.moveTo(vx, vy);
+    ctx.arc(vx, vy, radius, startAng, targetAng, anticlockwise);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(vx, vy, radius, startAng, targetAng, anticlockwise);
+    ctx.stroke();
+
+    const midAng = startAng + diff / 2;
+    const lx = vx + Math.cos(midAng) * (radius + labelDistOffset);
+    const ly = vy + Math.sin(midAng) * (radius + labelDistOffset);
+
+    if (label) {
+      ctx.font = '700 13px "Segoe UI", system-ui, sans-serif';
+      const tw = Math.max(36, ctx.measureText(label.replace('/', '')).width + 14);
+      ctx.fillStyle = 'rgba(7, 12, 24, 0.90)';
+      ctx.strokeStyle = color + '99';
+      ctx.lineWidth = 1.2;
+      roundRect(ctx, lx - tw / 2, ly - 12, tw, 24, 6);
+      ctx.fill();
+      ctx.stroke();
+      drawMathText(ctx, label, lx, ly, 13, color, true, 120);
+    }
+    ctx.restore();
+  }
+
+  function drawLaserSegment(ctx, x1, y1, x2, y2, color = '#00f0ff', width = 3.5, dashed = false) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    if (dashed) {
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -(performance.now() * 0.03) % 14;
+    } else {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
+    }
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawParallelRails(ctx, area, topY, botY, showLabels = true) {
+    const xL = area.x + area.w * 0.12;
+    const xR = area.x + area.w * 0.88;
+    drawLaserSegment(ctx, xL, topY, xR, topY, '#00f0ff', 3.5);
+    drawLaserSegment(ctx, xL, botY, xR, botY, '#00f0ff', 3.5);
+    drawParallelArrows(ctx, xL, topY, xR, topY, 2, '#00f0ff');
+    drawParallelArrows(ctx, xL, botY, xR, botY, 2, '#00f0ff');
+
+    if (showLabels) {
+      ctx.save();
+      ctx.font = '800 15px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = '#00f0ff';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('A', xL - 10, topY);
+      ctx.fillText('C', xL - 10, botY);
+      ctx.textAlign = 'left';
+      ctx.fillText('B', xR + 10, topY);
+      ctx.fillText('D', xR + 10, botY);
+      ctx.restore();
+    }
+    return { xL, xR };
+  }
+
+  function drawCenterDiagram(ctx, area) {
+    const prob = state.problem;
+    if (!prob) return;
+
+    // Smoothly animate step visuals
+    const targetAux = state.stepIndex >= 1 ? 1 : 0;
+    const targetCharge = state.stepIndex >= 2 ? 1 : 0;
+    const targetFinal = state.roundTransitionTimer > 0 ? 1 : 0;
+    state.auxProgress += (targetAux - state.auxProgress) * 0.14;
+    state.prismCharge += (targetCharge - state.prismCharge) * 0.14;
+    state.finalBeamProgress += (targetFinal - state.finalBeamProgress) * 0.16;
+
+    const cx = area.x + area.w / 2;
+    const cy = area.y + area.h / 2;
+    const p = prob.params;
+
+    // Subtle optical chamber grid inside stage
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.055)';
+    ctx.lineWidth = 1;
+    const gridStep = 36;
+    for (let gx = area.x + gridStep; gx < area.x + area.w; gx += gridStep) {
+      ctx.beginPath();
+      ctx.moveTo(gx, area.y);
+      ctx.lineTo(gx, area.y + area.h);
+      ctx.stroke();
+    }
+    for (let gy = area.y + gridStep; gy < area.y + area.h; gy += gridStep) {
+      ctx.beginPath();
+      ctx.moveTo(area.x, gy);
+      ctx.lineTo(area.x + area.w, gy);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Render specific geometric diagram using exact ray endpoints & atan2 angles
+    if (prob.type === 'intersecting_vo') {
+      const len = Math.min(area.w * 0.36, area.h * 0.42);
+      const angLine1 = -0.35; // Ray MQ
+      const angLine2 = 0.58;  // Ray MS
+      const angPerp = angLine1 - Math.PI / 2; // 90° ray from M
+
+      const pP = { x: cx - Math.cos(angLine1) * len, y: cy - Math.sin(angLine1) * len };
+      const pQ = { x: cx + Math.cos(angLine1) * len, y: cy + Math.sin(angLine1) * len };
+      const pR = { x: cx - Math.cos(angLine2) * len, y: cy - Math.sin(angLine2) * len };
+      const pS = { x: cx + Math.cos(angLine2) * len, y: cy + Math.sin(angLine2) * len };
+      const pN = { x: cx + Math.cos(angPerp) * (len * 0.85), y: cy + Math.sin(angPerp) * (len * 0.85) };
+
+      drawLaserSegment(ctx, pP.x, pP.y, pQ.x, pQ.y, '#00f0ff', 3.5);
+      drawLaserSegment(ctx, pR.x, pR.y, pS.x, pS.y, '#ff2a85', 3.5);
+      drawLaserSegment(ctx, cx, cy, pN.x, pN.y, '#ffd166', 3);
+
+      const aMQ = Math.atan2(pQ.y - cy, pQ.x - cx);
+      const aMP = Math.atan2(pP.y - cy, pP.x - cx);
+      const aMS = Math.atan2(pS.y - cy, pS.x - cx);
+      const aMR = Math.atan2(pR.y - cy, pR.x - cx);
+      const aMN = Math.atan2(pN.y - cy, pN.x - cx);
+
+      drawRightAngleSquare(ctx, cx, cy, aMN, aMQ, 16, '#ffd166');
+      drawAngleArc(ctx, cx, cy, aMQ, aMS, 36, `${p.c}°`, '#ffd166', 24);
+      drawAngleArc(ctx, cx, cy, aMP, aMR, 40, p.expr, '#06d6a0', 34);
+
+      drawMathText(ctx, 'M', cx - 14, cy + 16, 14, '#ffffff', true);
+      if (state.auxProgress > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = state.auxProgress;
+        drawMathText(ctx, `Vert. Opp. Sector = 90° + ${p.c}°`, cx, area.y + area.h - 18, 13, '#ffd166', true);
+        ctx.restore();
+      }
+    }
+
+    else if (prob.type === 'point_360') {
+      const len = Math.min(area.w * 0.34, area.h * 0.4);
+      const rays = [-Math.PI / 2, 0, 1.15, 2.65].map(ang => ({
+        x: cx + Math.cos(ang) * len,
+        y: cy + Math.sin(ang) * len
+      }));
+
+      rays.forEach((pt, idx) => {
+        drawLaserSegment(ctx, cx, cy, pt.x, pt.y, idx < 2 ? '#ffd166' : '#00f0ff', 3.5);
+      });
+
+      const a0 = Math.atan2(rays[0].y - cy, rays[0].x - cx);
+      const a1 = Math.atan2(rays[1].y - cy, rays[1].x - cx);
+      const a2 = Math.atan2(rays[2].y - cy, rays[2].x - cx);
+      const a3 = Math.atan2(rays[3].y - cy, rays[3].x - cx);
+
+      drawRightAngleSquare(ctx, cx, cy, a0, a1, 16, '#ffd166');
+      drawAngleArc(ctx, cx, cy, a1, a2, 36, `${p.k}x°`, '#06d6a0', 26);
+      drawAngleArc(ctx, cx, cy, a2, a3, 34, `${p.d}°`, '#ff2a85', 24);
+      drawAngleArc(ctx, cx, cy, a3, a0, 38, `${p.k}x°`, '#06d6a0', 28);
+      drawMathText(ctx, 'M', cx - 12, cy - 12, 14, '#ffffff', true);
+    }
+
+    else if (prob.type === 'parallel_interior') {
+      const topY = area.y + area.h * 0.25;
+      const botY = area.y + area.h * 0.75;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      const vTop = { x: cx - 45, y: topY };
+      const vBot = { x: cx + 55, y: botY };
+      const pSplitEnd = { x: vBot.x + 70, y: (topY + botY) * 0.56 };
+
+      // Extend pink transversal cleanly past topY and botY along the exact line (vTop -> vBot)
+      const dxT = vBot.x - vTop.x;
+      const dyT = vBot.y - vTop.y;
+      drawLaserSegment(ctx, vTop.x - dxT * 0.22, vTop.y - dyT * 0.22,
+        vBot.x + dxT * 0.22, vBot.y + dyT * 0.22, '#ff2a85', 3.5);
+      drawLaserSegment(ctx, vTop.x, vTop.y, pSplitEnd.x, pSplitEnd.y, '#ffd166', 2.8);
+
+      const aTopRight = Math.atan2(topY - vTop.y, rails.xR - vTop.x);
+      const aTopSplit = Math.atan2(pSplitEnd.y - vTop.y, pSplitEnd.x - vTop.x);
+      const aTopTrans = Math.atan2(vBot.y - vTop.y, vBot.x - vTop.x);
+      const aBotTrans = Math.atan2(vTop.y - vBot.y, vTop.x - vBot.x);
+      const aBotRight = Math.atan2(botY - vBot.y, rails.xR - vBot.x);
+
+      drawAngleArc(ctx, vTop.x, vTop.y, aTopRight, aTopSplit, 34, `${p.c}°`, '#ffd166', 26);
+      drawAngleArc(ctx, vTop.x, vTop.y, aTopSplit, aTopTrans, 42, p.expr, '#06d6a0', 34);
+      drawAngleArc(ctx, vBot.x, vBot.y, aBotTrans, aBotRight, 36, `${p.d}°`, '#ff2a85', 26);
+
+      if (state.auxProgress > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = state.auxProgress;
+        drawMathText(ctx, 'C-Shape Interior Sum = 180°', cx + 135, cy, 13, '#ffd166', true);
+        ctx.restore();
+      }
+    }
+
+    else if (prob.type === 'parallel_alt') {
+      const topY = area.y + area.h * 0.26;
+      const botY = area.y + area.h * 0.74;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      // Compute exact intersection points (vTop, vBot) on topY and botY so arcs & Z-path touch flush
+      const isObtuse = p.c > 90;
+      const vTop = { x: isObtuse ? cx - 55 : cx + 65, y: topY };
+      const vBot = { x: isObtuse ? cx + 55 : cx - 65, y: botY };
+
+      const dxT = vBot.x - vTop.x;
+      const dyT = vBot.y - vTop.y;
+      // Extend pink transversal past AB and CD along exact vector (vTop -> vBot)
+      drawLaserSegment(ctx, vTop.x - dxT * 0.24, vTop.y - dyT * 0.24,
+        vBot.x + dxT * 0.24, vBot.y + dyT * 0.24, '#ff2a85', 3.5);
+
+      const aTopLeft = Math.atan2(topY - vTop.y, rails.xL - vTop.x);
+      const aTopTrans = Math.atan2(vBot.y - vTop.y, vBot.x - vTop.x);
+      const aBotTrans = Math.atan2(vTop.y - vBot.y, vTop.x - vBot.x);
+      const aBotRight = Math.atan2(botY - vBot.y, rails.xR - vBot.x);
+
+      drawAngleArc(ctx, vTop.x, vTop.y, aTopLeft, aTopTrans, 40, p.expr, '#06d6a0', 34);
+      drawAngleArc(ctx, vBot.x, vBot.y, aBotTrans, aBotRight, 38, `${p.c}°`, '#ffd166', 26);
+
+      if (state.auxProgress > 0.05) {
+        ctx.save();
+        ctx.globalAlpha = state.auxProgress * 0.9;
+        // Glowing Z-highlight snapped directly to exact vertices vTop and vBot
+        drawLaserSegment(ctx, area.x + area.w * 0.2, vTop.y, vTop.x, vTop.y, '#ffd166', 5);
+        drawLaserSegment(ctx, vTop.x, vTop.y, vBot.x, vBot.y, '#ffd166', 5);
+        drawLaserSegment(ctx, vBot.x, vBot.y, area.x + area.w * 0.8, vBot.y, '#ffd166', 5);
+        drawMathText(ctx, 'Z-Path Alternate Angles Equal', cx, area.y + area.h - 16, 13, '#ffd166', true);
+        ctx.restore();
+      }
+    }
+
+    else if (prob.type === 'tri_exterior') {
+      const baseY = area.y + area.h * 0.74;
+      const pLeft = { x: area.x + area.w * 0.22, y: baseY };
+      const pVert = { x: area.x + area.w * 0.62, y: baseY };
+      const pExt = { x: area.x + area.w * 0.86, y: baseY };
+      const pTop = { x: area.x + area.w * 0.44, y: area.y + area.h * 0.22 };
+
+      drawLaserSegment(ctx, pLeft.x, pLeft.y, pExt.x, pExt.y, '#00f0ff', 3.5);
+      drawLaserSegment(ctx, pLeft.x, pLeft.y, pTop.x, pTop.y, '#ff2a85', 3.5);
+      drawLaserSegment(ctx, pTop.x, pTop.y, pVert.x, pVert.y, '#ff2a85', 3.5);
+
+      const aLeftTop = Math.atan2(pTop.y - pLeft.y, pTop.x - pLeft.x);
+      const aLeftRight = Math.atan2(pVert.y - pLeft.y, pVert.x - pLeft.x);
+      const aVertLeft = Math.atan2(pLeft.y - pVert.y, pLeft.x - pVert.x);
+      const aVertTop = Math.atan2(pTop.y - pVert.y, pTop.x - pVert.x);
+      const aVertExt = Math.atan2(pExt.y - pVert.y, pExt.x - pVert.x);
+
+      drawAngleArc(ctx, pLeft.x, pLeft.y, aLeftTop, aLeftRight, 36, `${p.c}x°`, '#06d6a0', 26);
+      drawAngleArc(ctx, pVert.x, pVert.y, aVertLeft, aVertTop, 34, `${p.b}°`, '#ff2a85', 26);
+      drawAngleArc(ctx, pVert.x, pVert.y, aVertTop, aVertExt, 38, `${p.a}x°`, '#ffd166', 28);
+    }
+
+    else if (prob.type === 'bow_tie') {
+      // Exact symmetric crossing segments through M so M is the true geometric intersection!
+      const mX = cx;
+      const mY = cy;
+      const dx1 = area.w * 0.21;
+      const dy1 = area.h * 0.29;
+      const dx2 = area.w * 0.18;
+      const dy2 = area.h * 0.29;
+
+      const tL = { x: mX - dx1, y: mY - dy1 };
+      const bR = { x: mX + dx1, y: mY + dy1 };
+      const tR = { x: mX + dx2, y: mY - dy2 };
+      const bL = { x: mX - dx2, y: mY + dy2 };
+
+      drawLaserSegment(ctx, tL.x, tL.y, bR.x, bR.y, '#00f0ff', 3.5);
+      drawLaserSegment(ctx, tR.x, tR.y, bL.x, bL.y, '#00f0ff', 3.5);
+      drawLaserSegment(ctx, tL.x, tL.y, tR.x, tR.y, '#ff2a85', 3.5);
+      drawLaserSegment(ctx, bL.x, bL.y, bR.x, bR.y, '#ff2a85', 3.5);
+
+      drawAngleArc(ctx, tL.x, tL.y,
+        Math.atan2(tR.y - tL.y, tR.x - tL.x),
+        Math.atan2(mY - tL.y, mX - tL.x), 30, `${p.a}°`, '#ffd166', 24);
+      drawAngleArc(ctx, tR.x, tR.y,
+        Math.atan2(mY - tR.y, mX - tR.x),
+        Math.atan2(tL.y - tR.y, tL.x - tR.x), 30, `${p.b}°`, '#ffd166', 24);
+      drawAngleArc(ctx, bL.x, bL.y,
+        Math.atan2(mY - bL.y, mX - bL.x),
+        Math.atan2(bR.y - bL.y, bR.x - bL.x), 30, `${p.c}°`, '#00f0ff', 24);
+      drawAngleArc(ctx, bR.x, bR.y,
+        Math.atan2(bL.y - bR.y, bL.x - bR.x),
+        Math.atan2(mY - bR.y, mX - bR.x), 30, `${p.k}x°`, '#06d6a0', 26);
+
+      drawMathText(ctx, 'M', mX, mY - 16, 13, '#ffffff', true);
+    }
+
+    else if (prob.type === 'isosceles_corner') {
+      // Straight base at V with exactly three upper angles:
+      //   [isos base] + [expr] + [full 90° right corner] = 180°
+      // A d° splitter ray sits inside the 90° as a distractor only.
+      const baseY = area.y + area.h * 0.76;
+      const vPt = { x: cx + 20, y: baseY };
+      const tL = { x: cx - 150, y: baseY };
+      const tApex = { x: cx - 70, y: area.y + area.h * 0.22 };
+      const baseLeft = { x: area.x + area.w * 0.12, y: baseY };
+      const baseRight = { x: area.x + area.w * 0.88, y: baseY };
+      const perpLen = 120;
+      const pPerpEnd = { x: vPt.x, y: vPt.y - perpLen }; // vertical up — ⊥ base
+      const splitRad = (p.d * Math.PI) / 180;
+      const pSplitEnd = {
+        x: vPt.x + Math.sin(splitRad) * 115,
+        y: vPt.y - Math.cos(splitRad) * 115
+      };
+
+      drawLaserSegment(ctx, baseLeft.x, baseLeft.y, baseRight.x, baseRight.y, '#00f0ff', 3.5);
+      drawLaserSegment(ctx, tL.x, tL.y, tApex.x, tApex.y, '#ff2a85', 3.5);
+      drawLaserSegment(ctx, tApex.x, tApex.y, vPt.x, vPt.y, '#ff2a85', 3.5);
+      drawTickMarks(ctx, tL.x, tL.y, tApex.x, tApex.y, 2, '#ffd166');
+      drawTickMarks(ctx, tApex.x, tApex.y, vPt.x, vPt.y, 2, '#ffd166');
+      drawLaserSegment(ctx, vPt.x, vPt.y, pPerpEnd.x, pPerpEnd.y, '#ffd166', 3.2);
+      drawLaserSegment(ctx, vPt.x, vPt.y, pSplitEnd.x, pSplitEnd.y, '#ffd166', 2.6, true);
+
+      const aVIso = Math.atan2(tApex.y - vPt.y, tApex.x - vPt.x);
+      const aVPerp = Math.atan2(pPerpEnd.y - vPt.y, pPerpEnd.x - vPt.x);
+      const aVBaseL = Math.atan2(baseLeft.y - vPt.y, baseLeft.x - vPt.x);
+      const aVBaseR = Math.atan2(baseRight.y - vPt.y, baseRight.x - vPt.x);
+      const aVSplit = Math.atan2(pSplitEnd.y - vPt.y, pSplitEnd.x - vPt.x);
+
+      drawRightAngleSquare(ctx, vPt.x, vPt.y, aVPerp, aVBaseR, 15, '#ffd166');
+      drawAngleArc(ctx, tApex.x, tApex.y,
+        Math.atan2(vPt.y - tApex.y, vPt.x - tApex.x),
+        Math.atan2(tL.y - tApex.y, tL.x - tApex.x), 28, `${p.c}°`, '#ff2a85', 22);
+      // Unlabeled base-angle mark (student must compute (180-c)/2)
+      drawAngleArc(ctx, vPt.x, vPt.y, aVBaseL, aVIso, 26, '', '#ff2a85', 18);
+      drawAngleArc(ctx, vPt.x, vPt.y, aVIso, aVPerp, 40, p.expr, '#06d6a0', 34);
+      // Full 90° corner against the base; dashed splitter only marks the distractor d°
+      drawAngleArc(ctx, vPt.x, vPt.y, aVPerp, aVSplit, 32, `${p.d}°`, '#ffd166', 24);
+      drawMathText(ctx, '90°', vPt.x + 48, vPt.y - 36, 13, '#ffd166', true);
+    }
+
+    else if (prob.type === 'crook_1bend') {
+      const topY = area.y + area.h * 0.22;
+      const botY = area.y + area.h * 0.78;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      const p0 = { x: cx - 80, y: topY };
+      const v1 = { x: cx + 65, y: area.y + area.h * 0.43 };
+      const v2 = { x: cx - 55, y: area.y + area.h * 0.62 };
+      const p3 = { x: cx + 85, y: botY };
+
+      drawLaserSegment(ctx, p0.x, p0.y, v1.x, v1.y, '#ff2a85', 3.8);
+      drawLaserSegment(ctx, v1.x, v1.y, v2.x, v2.y, '#ff2a85', 3.8);
+      drawLaserSegment(ctx, v2.x, v2.y, p3.x, p3.y, '#ff2a85', 3.8);
+
+      if (state.auxProgress > 0.05) {
+        const span = 140 * state.auxProgress;
+        drawLaserSegment(ctx, v1.x - span, v1.y, v1.x + span * 0.7, v1.y, '#ffd166', 2.4, true);
+        drawLaserSegment(ctx, v2.x - span * 0.7, v2.y, v2.x + span, v2.y, '#ffd166', 2.4, true);
+        drawMathText(ctx, `${p.a}°`, v1.x - 46, v1.y - 12, 12, '#ffd166', true);
+        drawMathText(ctx, `${p.splitLowerB}°`, v1.x - 46, v1.y + 13, 12, '#ffd166', true);
+        drawMathText(ctx, `${p.splitUpperX}°`, v2.x + 48, v2.y - 12, 12, '#ffd166', true);
+        drawMathText(ctx, `${p.c}°`, v2.x + 48, v2.y + 13, 12, '#ffd166', true);
+      }
+
+      drawAngleArc(ctx, p0.x, p0.y,
+        Math.atan2(topY - p0.y, rails.xR - p0.x),
+        Math.atan2(v1.y - p0.y, v1.x - p0.x), 30, `${p.a}°`, '#00f0ff', 24);
+      drawAngleArc(ctx, v1.x, v1.y,
+        Math.atan2(v2.y - v1.y, v2.x - v1.x),
+        Math.atan2(p0.y - v1.y, p0.x - v1.x), 26, `${p.b}°`, '#ff2a85', 24);
+      drawAngleArc(ctx, v2.x, v2.y,
+        Math.atan2(v1.y - v2.y, v1.x - v2.x),
+        Math.atan2(p3.y - v2.y, p3.x - v2.x), 28, `x°`, '#06d6a0', 24);
+      drawAngleArc(ctx, p3.x, p3.y,
+        Math.atan2(botY - p3.y, rails.xL - p3.x),
+        Math.atan2(v2.y - p3.y, v2.x - p3.x), 32, `${p.c}°`, '#00f0ff', 24);
+    }
+
+    else if (prob.type === 'crook_2bend') {
+      const topY = area.y + area.h * 0.22;
+      const botY = area.y + area.h * 0.78;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      const p0 = { x: cx - 75, y: topY };
+      const v1 = { x: cx - 10, y: area.y + area.h * 0.42 };
+      const v2 = { x: cx + 75, y: area.y + area.h * 0.60 };
+      const p3 = { x: cx - 35, y: botY };
+
+      drawLaserSegment(ctx, p0.x, p0.y, v1.x, v1.y, '#ff2a85', 3.8);
+      drawLaserSegment(ctx, v1.x, v1.y, v2.x, v2.y, '#ff2a85', 3.8);
+      drawLaserSegment(ctx, v2.x, v2.y, p3.x, p3.y, '#ff2a85', 3.8);
+
+      if (state.auxProgress > 0.05) {
+        const span = 135 * state.auxProgress;
+        drawLaserSegment(ctx, v1.x - span, v1.y, v1.x + span, v1.y, '#ffd166', 2.4, true);
+        drawLaserSegment(ctx, v2.x - span, v2.y, v2.x + span * 0.7, v2.y, '#ffd166', 2.4, true);
+        drawMathText(ctx, `${p.upperX}°`, v1.x + 48, v1.y - 12, 12, '#ffd166', true);
+        drawMathText(ctx, `${p.lowerX}°`, v1.x + 48, v1.y + 13, 12, '#ffd166', true);
+      }
+
+      drawAngleArc(ctx, p0.x, p0.y,
+        Math.atan2(topY - p0.y, rails.xR - p0.x),
+        Math.atan2(v1.y - p0.y, v1.x - p0.x), 30, `${p.a}°`, '#00f0ff', 24);
+      // Reflex angle (> 180°) on the right side of bend v1
+      drawAngleArc(ctx, v1.x, v1.y,
+        Math.atan2(p0.y - v1.y, p0.x - v1.x),
+        Math.atan2(v2.y - v1.y, v2.x - v1.x), 24, `x°`, '#06d6a0', 24, true);
+      drawAngleArc(ctx, v2.x, v2.y,
+        Math.atan2(p3.y - v2.y, p3.x - v2.x),
+        Math.atan2(v1.y - v2.y, v1.x - v2.x), 26, `${p.b}°`, '#ff2a85', 24);
+      drawAngleArc(ctx, p3.x, p3.y,
+        Math.atan2(v2.y - p3.y, v2.x - p3.x),
+        Math.atan2(botY - p3.y, rails.xR - p3.x), 30, `${p.c}°`, '#00f0ff', 24);
+    }
+
+    else if (prob.type === 'sawtooth') {
+      const topY = area.y + area.h * 0.20;
+      const botY = area.y + area.h * 0.80;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      const pts = [
+        { x: cx - 75, y: topY },
+        { x: cx + 65, y: area.y + area.h * 0.35 },
+        { x: cx - 55, y: area.y + area.h * 0.50 },
+        { x: cx + 75, y: area.y + area.h * 0.65 },
+        { x: cx - 65, y: botY }
+      ];
+
+      for (let i = 0; i < pts.length - 1; i++) {
+        drawLaserSegment(ctx, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, '#ff2a85', 3.6);
+      }
+
+      if (state.auxProgress > 0.05) {
+        const span = 120 * state.auxProgress;
+        [pts[1], pts[2], pts[3]].forEach(pt => {
+          drawLaserSegment(ctx, pt.x - span, pt.y, pt.x + span, pt.y, '#ffd166', 2.2, true);
+        });
+      }
+
+      drawAngleArc(ctx, pts[0].x, pts[0].y,
+        Math.atan2(topY - pts[0].y, rails.xR - pts[0].x),
+        Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x), 28, `${p.a}°`, '#00f0ff', 24);
+      drawAngleArc(ctx, pts[1].x, pts[1].y,
+        Math.atan2(pts[2].y - pts[1].y, pts[2].x - pts[1].x),
+        Math.atan2(pts[0].y - pts[1].y, pts[0].x - pts[1].x), 26, `${p.left1}°`, '#06d6a0', 26);
+      drawAngleArc(ctx, pts[2].x, pts[2].y,
+        Math.atan2(pts[1].y - pts[2].y, pts[1].x - pts[2].x),
+        Math.atan2(pts[3].y - pts[2].y, pts[3].x - pts[2].x), 26, `${p.b}°`, '#00f0ff', 24);
+      drawAngleArc(ctx, pts[3].x, pts[3].y,
+        Math.atan2(pts[4].y - pts[3].y, pts[4].x - pts[3].x),
+        Math.atan2(pts[2].y - pts[3].y, pts[2].x - pts[3].x), 26, `${p.left2}°`, '#06d6a0', 28);
+    }
+
+    else if (prob.type === 'coupled_xy') {
+      const topY = area.y + area.h * 0.24;
+      const botY = area.y + area.h * 0.76;
+      const rails = drawParallelRails(ctx, area, topY, botY);
+
+      const pTopL = { x: cx - 105, y: topY };
+      const pBot = { x: cx - 15, y: botY };
+      const pTopR = { x: cx + 95, y: topY };
+
+      drawLaserSegment(ctx, pTopL.x, pTopL.y, pBot.x, pBot.y, '#ff2a85', 3.6);
+      drawLaserSegment(ctx, pBot.x, pBot.y, pTopR.x, pTopR.y, '#ff2a85', 3.6);
+      drawTickMarks(ctx, pBot.x, pBot.y, pTopR.x, pTopR.y, 2, '#ffd166');
+      drawTickMarks(ctx, pBot.x, pBot.y, pTopR.x, topY, 2, '#ffd166');
+
+      drawAngleArc(ctx, pTopL.x, pTopL.y,
+        Math.atan2(pBot.y - pTopL.y, pBot.x - pTopL.x),
+        Math.atan2(topY - pTopL.y, rails.xL - pTopL.x), 30, `${p.a}°`, '#00f0ff', 24);
+      drawAngleArc(ctx, pBot.x, pBot.y,
+        Math.atan2(botY - pBot.y, rails.xL - pBot.x),
+        Math.atan2(pTopL.y - pBot.y, pTopL.x - pBot.x), 30, `x°`, '#06d6a0', 22);
+      drawAngleArc(ctx, pBot.x, pBot.y,
+        Math.atan2(pTopL.y - pBot.y, pTopL.x - pBot.x),
+        Math.atan2(pTopR.y - pBot.y, pTopR.x - pBot.x), 28, `${p.b}°`, '#ffd166', 24);
+      drawAngleArc(ctx, pTopR.x, pTopR.y,
+        Math.atan2(pBot.y - pTopR.y, pBot.x - pTopR.x),
+        Math.atan2(topY - pTopR.y, rails.xL - pTopR.x), 30, `y°`, '#06d6a0', 24);
+    }
+
+    // Step 2 Prism Core Energizer Ring
+    if (state.prismCharge > 0.05) {
+      ctx.save();
+      ctx.globalAlpha = state.prismCharge * 0.85;
+      ctx.strokeStyle = '#00f0ff';
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 16;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 24 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Step 3 Final Radiant Laser Beam Lock-In
+    if (state.finalBeamProgress > 0.05) {
+      ctx.save();
+      ctx.globalAlpha = state.finalBeamProgress;
+      ctx.strokeStyle = '#ffd166';
+      ctx.shadowColor = '#ffd166';
+      ctx.shadowBlur = 24;
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.moveTo(area.x + 20, cy);
+      ctx.lineTo(area.x + 20 + (area.w - 40) * state.finalBeamProgress, cy);
+      ctx.stroke();
+
+      // Badge announcing verified solution
+      const solText = prob.steps[2].choices.find(c => c.correct).text;
+      ctx.fillStyle = 'rgba(6, 214, 160, 0.94)';
+      roundRect(ctx, cx - 130, area.y + 12, 260, 34, 10);
+      ctx.fill();
+      ctx.fillStyle = '#051018';
+      ctx.font = '800 16px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`BEAM LOCKED: ${solText}`, cx, area.y + 29);
+      ctx.restore();
+    }
+  }
+
+  // ============================================================================
+  // 10. UI & LAYOUT HELPERS (STRICT ZERO-OVERLAP 4-ZONE ARCHITECTURE)
+  // ============================================================================
+  function roundRect(ctx, x, y, w, h, r) {
+    const radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
+  }
+
+  function wrapTextLines(ctx, text, maxWidth) {
+    const words = text.split(' ');
+    const lines = [];
+    let current = '';
+    for (const w of words) {
+      const test = current ? current + ' ' + w : w;
+      if (ctx.measureText(test).width <= maxWidth) {
+        current = test;
+      } else {
+        if (current) lines.push(current);
+        current = w;
+      }
+    }
+    if (current) lines.push(current);
+    return lines;
+  }
+
+  function drawTopHUD(ctx, hudH) {
+    ctx.save();
+    ctx.fillStyle = '#090f1d';
+    ctx.fillRect(0, 0, W, hudH);
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, hudH);
+    ctx.lineTo(W, hudH);
+    ctx.stroke();
+
+    const midY = hudH / 2;
+
+    // Left: Mode & Round Badge
+    const modeLabel = state.mode === 'SOLO' ? 'SOLO LAB' :
+                      state.mode === 'COOP' ? '2P TEAM CO-OP' : '2P DUEL RACE';
+    const badgeColor = state.mode === 'SOLO' ? '#00f0ff' :
+                       state.mode === 'COOP' ? '#06d6a0' : '#ff2a85';
+
+    ctx.fillStyle = badgeColor + '22';
+    ctx.strokeStyle = badgeColor;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, 12, 9, 134, hudH - 18, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = badgeColor;
+    ctx.font = '800 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(modeLabel, 79, midY);
+
+    // Round & Tier
+    const tierShort = state.problem ? state.problem.tierName.split('•')[0].trim() : 'TIER 1';
+    ctx.fillStyle = '#e6f1ff';
+    ctx.font = '800 15px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`ROUND ${state.roundNumber} (${tierShort})`, 158, midY);
+
+    // Center: Shields & Combo
+    const shieldStartX = Math.max(330, W * 0.36);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(state.mode === 'COOP' ? 'TEAM SHIELDS' : 'SHIELDS', shieldStartX, midY - 10);
+
+    for (let i = 0; i < state.maxShields; i++) {
+      const sx = shieldStartX + i * 22;
+      const sy = midY + 8;
+      ctx.fillStyle = i < state.shields ? '#06d6a0' : 'rgba(148, 163, 184, 0.22)';
+      ctx.strokeStyle = i < state.shields ? '#06d6a0' : 'rgba(148, 163, 184, 0.4)';
+      ctx.lineWidth = 1.4;
+      roundRect(ctx, sx, sy - 6, 17, 12, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Combo badge
+    const comboX = shieldStartX + 125;
+    ctx.fillStyle = state.combo > 1 ? '#ffd166' : '#64748b';
+    ctx.font = '800 14px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(`COMBO x${Math.max(1, state.combo)}`, comboX, midY);
+
+    // Right: Score / Team Score / Duel Stars + Mute & Menu Buttons
+    const btnW = 76;
+    const btnH = 32;
+    const menuRect = { x: W - btnW - 12, y: (hudH - btnH) / 2, w: btnW, h: btnH };
+    const muteRect = { x: menuRect.x - btnW - 8, y: (hudH - btnH) / 2, w: btnW, h: btnH };
+    state.hudBtnRects = { MENU: menuRect, MUTE: muteRect };
+
+    // Score Display strictly respecting mode rules
+    const scoreRightX = muteRect.x - 18;
+    ctx.textAlign = 'right';
+    if (state.mode === 'COOP') {
+      // ONLY unified TEAM SCORE in Co-op Mode (no individual P1/P2 scores or stars)
+      ctx.fillStyle = '#06d6a0';
+      ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('TEAM SCORE', scoreRightX, midY - 10);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 19px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`${state.score.toLocaleString()}`, scoreRightX, midY + 9);
+    } else if (state.mode === 'DUEL') {
+      // P1 vs P2 Star Tally + Speed Score
+      ctx.fillStyle = '#ff3b5c';
+      ctx.font = '800 14px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`P1 ★ ${state.p1Stars} (${state.p1Score})`, scoreRightX - 135, midY);
+      ctx.fillStyle = '#00d4ff';
+      ctx.fillText(`P2 ★ ${state.p2Stars} (${state.p2Score})`, scoreRightX, midY);
+    } else {
+      ctx.fillStyle = '#00f0ff';
+      ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('SCORE', scoreRightX, midY - 10);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 19px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`${state.score.toLocaleString()}`, scoreRightX, midY + 9);
+    }
+
+    // Mute Button
+    ctx.fillStyle = state.hoveredHudBtn === 'MUTE' ? 'rgba(0, 240, 255, 0.22)' : 'rgba(15, 23, 42, 0.9)';
+    ctx.strokeStyle = sfx.muted ? '#ff2a55' : '#00f0ff';
+    ctx.lineWidth = 1.4;
+    roundRect(ctx, muteRect.x, muteRect.y, muteRect.w, muteRect.h, 7);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = sfx.muted ? '#ff2a55' : '#e6f1ff';
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(sfx.muted ? 'UNMUTE' : 'MUTE', muteRect.x + muteRect.w / 2, midY);
+
+    // Menu Button
+    ctx.fillStyle = state.hoveredHudBtn === 'MENU' ? 'rgba(255, 209, 102, 0.22)' : 'rgba(15, 23, 42, 0.9)';
+    ctx.strokeStyle = '#ffd166';
+    roundRect(ctx, menuRect.x, menuRect.y, menuRect.w, menuRect.h, 7);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffd166';
+    ctx.fillText('MENU', menuRect.x + menuRect.w / 2, midY);
+
+    ctx.restore();
+  }
+
+  function drawBriefingStrip(ctx, topY, stripH) {
+    const prob = state.problem;
+    if (!prob) return;
+    const step = prob.steps[state.stepIndex];
+
+    ctx.save();
+    ctx.fillStyle = '#0c1426';
+    ctx.fillRect(0, topY, W, stripH);
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, topY + stripH);
+    ctx.lineTo(W, topY + stripH);
+    ctx.stroke();
+
+    // Givens line
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    drawMathText(ctx, prob.givens, W / 2, topY + stripH * 0.32, 14, '#e2e8f0', false, W - 40);
+
+    // Step indicator + Co-op turn indicator
+    let stepPrompt = step.prompt;
+    let promptColor = '#ffd166';
+    if (state.mode === 'COOP') {
+      const activeP = getActiveCoopPlayer();
+      if (activeP === 'P1') {
+        stepPrompt = `[P1 RED TURN] ${stepPrompt}`;
+        promptColor = '#ff5c77';
+      } else if (activeP === 'P2') {
+        stepPrompt = `[P2 BLUE TURN] ${stepPrompt}`;
+        promptColor = '#38bdf8';
+      } else {
+        stepPrompt = `[TEAM SYNC — P1 OR P2] ${stepPrompt}`;
+        promptColor = '#06d6a0';
+      }
+    } else if (state.mode === 'DUEL') {
+      stepPrompt = `[RACE TO LOCK IN!] ${stepPrompt}`;
+    }
+
+    drawMathText(ctx, stepPrompt, W / 2, topY + stripH * 0.72, 15, promptColor, true, W - 40);
+    ctx.restore();
+  }
+
+  function drawCommandDeck(ctx, deckY, deckH) {
+    const prob = state.problem;
+    if (!prob) return;
+    const step = prob.steps[state.stepIndex];
+
+    ctx.save();
+    ctx.fillStyle = '#080e1b';
+    ctx.fillRect(0, deckY, W, deckH);
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, deckY);
+    ctx.lineTo(W, deckY);
+    ctx.stroke();
+
+    const padX = Math.max(16, W * 0.03);
+    const gap = Math.max(12, W * 0.016);
+    const totalW = W - padX * 2;
+    const cardW = (totalW - gap * 3) / 4;
+    const cardH = Math.min(112, deckH - 28);
+    const cardY = deckY + (deckH - cardH) / 2;
+
+    state.cardRects = [];
+
+    step.choices.forEach((choice, idx) => {
+      const cx = padX + idx * (cardW + gap);
+      state.cardRects.push({ x: cx, y: cardY, w: cardW, h: cardH });
+
+      const isWrong = state.wrongCards.has(idx);
+      const isP1 = state.p1Cursor === idx;
+      const isP2 = (state.mode === 'COOP' || state.mode === 'DUEL') && state.p2Cursor === idx;
+
+      let bg = '#0f192e';
+      let border = 'rgba(0, 240, 255, 0.35)';
+      if (isWrong) {
+        bg = 'rgba(255, 42, 85, 0.16)';
+        border = '#ff2a55';
+      } else if (isP1 && isP2) {
+        bg = 'rgba(168, 85, 247, 0.22)';
+        border = '#c084fc';
+      } else if (isP1) {
+        bg = state.mode === 'SOLO' ? 'rgba(0, 240, 255, 0.16)' : 'rgba(255, 59, 92, 0.18)';
+        border = state.mode === 'SOLO' ? '#00f0ff' : '#ff3b5c';
+      } else if (isP2) {
+        bg = 'rgba(0, 212, 255, 0.18)';
+        border = '#00d4ff';
+      }
+
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = border;
+      ctx.lineWidth = (isP1 || isP2) ? 2.8 : 1.6;
+      roundRect(ctx, cx, cardY, cardW, cardH, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      // Top-left shortcut badge [1]-[4]
+      ctx.fillStyle = isWrong ? '#ff2a55' : '#94a3b8';
+      ctx.font = '800 12px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`[${idx + 1}]`, cx + 10, cardY + 8);
+
+      // Reticle indicators on card top-right
+      if (isP1) {
+        ctx.fillStyle = state.mode === 'SOLO' ? '#00f0ff' : '#ff3b5c';
+        ctx.textAlign = 'right';
+        ctx.fillText(state.mode === 'SOLO' ? '● LOCK' : '● P1', cx + cardW - 10, cardY + 8);
+      }
+      if (isP2) {
+        ctx.fillStyle = '#00d4ff';
+        ctx.textAlign = 'right';
+        ctx.fillText('● P2', cx + cardW - (isP1 ? 48 : 10), cardY + 8);
+      }
+
+      // Choice mathematical text
+      const textColor = isWrong ? '#fda4af' : '#ffffff';
+      drawMathText(ctx, choice.text, cx + cardW / 2, cardY + cardH * 0.56, 15, textColor, true, cardW - 22);
+    });
+
+    ctx.restore();
+  }
+
+  function drawDiagnosticBanner(ctx, stageArea) {
+    if (!state.diagnosticAlert || state.diagnosticAlert.timer <= 0) return;
+    state.diagnosticAlert.timer--;
+
+    const bannerW = Math.min(W - 48, 760);
+    const bannerH = 66;
+    const bx = (W - bannerW) / 2;
+    const by = stageArea.y + stageArea.h - bannerH - 10;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(35, 8, 18, 0.96)';
+    ctx.strokeStyle = '#ff2a55';
+    ctx.shadowColor = '#ff2a55';
+    ctx.shadowBlur = 16;
+    ctx.lineWidth = 2.2;
+    roundRect(ctx, bx, by, bannerW, bannerH, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ff5c77';
+    ctx.font = '800 12px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('⚠ DIAGNOSTIC TRAP ALERT', bx + 16, by + 9);
+
+    ctx.fillStyle = '#ffe4e6';
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    const lines = wrapTextLines(ctx, state.diagnosticAlert.text, bannerW - 32);
+    lines.slice(0, 2).forEach((ln, idx) => {
+      ctx.fillText(ln, bx + 16, by + 27 + idx * 17);
+    });
+    ctx.restore();
+  }
+
+  // ============================================================================
+  // 11. TITLE SCREEN & GAMEOVER SCREEN RENDERERS
+  // ============================================================================
+  function drawTitleScreen(ctx) {
+    // Deep optical chamber backdrop with laser beams
+    const grad = ctx.createRadialGradient(W / 2, H * 0.35, 40, W / 2, H * 0.5, Math.max(W, H) * 0.75);
+    grad.addColorStop(0, '#101d38');
+    grad.addColorStop(1, '#060a12');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Decorative diagonal neon laser beams
+    drawLaserSegment(ctx, 0, H * 0.18, W, H * 0.18, 'rgba(0, 240, 255, 0.28)', 2.5);
+    drawLaserSegment(ctx, 0, H * 0.84, W, H * 0.84, 'rgba(0, 240, 255, 0.28)', 2.5);
+    drawLaserSegment(ctx, W * 0.15, H * 0.18, W * 0.45, H * 0.48, 'rgba(255, 42, 133, 0.25)', 2.5);
+    drawLaserSegment(ctx, W * 0.45, H * 0.48, W * 0.30, H * 0.68, 'rgba(255, 209, 102, 0.25)', 2.5);
+    drawLaserSegment(ctx, W * 0.30, H * 0.68, W * 0.78, H * 0.84, 'rgba(6, 214, 160, 0.25)', 2.5);
+
+    // Top-right Mute Button
+    const muteRect = { x: W - 96, y: 16, w: 80, h: 34 };
+    state.hudBtnRects = { MUTE: muteRect };
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.strokeStyle = sfx.muted ? '#ff2a55' : '#00f0ff';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, muteRect.x, muteRect.y, muteRect.w, muteRect.h, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = sfx.muted ? '#ff2a55' : '#e6f1ff';
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(sfx.muted ? 'UNMUTE' : 'MUTE', muteRect.x + muteRect.w / 2, muteRect.y + muteRect.h / 2);
+
+    // Hero Title
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = '800 13px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('SINGAPORE SEC 1 G3 MATHEMATICS • TOPIC 10 OPTICAL LAB', W / 2, H * 0.11);
+
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `900 ${Math.min(46, Math.max(26, Math.floor(W * 0.038)))}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillText('PRISM BREAKER', W / 2, H * 0.21);
+
+    ctx.shadowColor = '#ffd166';
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = '#ffd166';
+    ctx.font = `800 ${Math.min(24, Math.max(16, Math.floor(W * 0.02)))}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillText('PARALLEL & CROOK LASER LAB', W / 2, H * 0.27);
+    ctx.restore();
+
+    // Subtitle
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '500 14px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Fire auxiliary parallel splitters, master Z / F / C angle rules & solve zig-zag laser crooks!', W / 2, H * 0.33);
+
+    // 3 Mode Cards
+    const modes = [
+      {
+        title: '1. SOLO MODE',
+        tag: 'MOUSE + KEYBOARD + 8BITDO',
+        desc: 'Click cards directly or use WASD/Arrows + Space. Escalate from straight lines to coupled (x, y) sawtooth prisms.',
+        color: '#00f0ff'
+      },
+      {
+        title: '2. 2P TEAM CO-OP',
+        tag: 'DUAL 8BITDO / SPLIT KEYS • TEAM SCORE',
+        desc: 'P1 (Red: WASD+F / GP0) & P2 (Blue: Arrows+Enter / GP1) alternate Steps 1 & 2, syncing on Step 3 for one unified Team Score!',
+        color: '#06d6a0'
+      },
+      {
+        title: '3. 2P DUEL RACE',
+        tag: 'HEAD-TO-HEAD SPEED & STARS',
+        desc: 'Race simultaneously on the same prism diagram! Fastest lock-ins earn speed bonuses and Step 3 awards Winner Stars.',
+        color: '#ff2a85'
+      }
+    ];
+
+    const cardW = Math.min(310, (W - 72) / 3);
+    const cardH = Math.min(220, H * 0.34);
+    const gap = 18;
+    const startX = (W - (cardW * 3 + gap * 2)) / 2;
+    const cardY = H * 0.40;
+    state.titleRects = [];
+
+    modes.forEach((m, idx) => {
+      const cx = startX + idx * (cardW + gap);
+      state.titleRects.push({ x: cx, y: cardY, w: cardW, h: cardH });
+      const selected = state.titleCursor === idx;
+
+      ctx.save();
+      ctx.fillStyle = selected ? m.color + '24' : 'rgba(13, 21, 38, 0.92)';
+      ctx.strokeStyle = selected ? m.color : 'rgba(148, 163, 184, 0.35)';
+      ctx.shadowColor = selected ? m.color : 'transparent';
+      ctx.shadowBlur = selected ? 18 : 0;
+      ctx.lineWidth = selected ? 2.8 : 1.5;
+      roundRect(ctx, cx, cardY, cardW, cardH, 14);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = m.color;
+      ctx.font = '800 17px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(m.title, cx + cardW / 2, cardY + 32);
+
+      ctx.fillStyle = '#ffd166';
+      ctx.font = '700 10.5px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(m.tag, cx + cardW / 2, cardY + 54);
+
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '500 12.5px "Segoe UI", system-ui, sans-serif';
+      const lines = wrapTextLines(ctx, m.desc, cardW - 26);
+      lines.forEach((ln, li) => {
+        ctx.fillText(ln, cx + cardW / 2, cardY + 84 + li * 18);
+      });
+
+      // Play CTA pill
+      ctx.fillStyle = selected ? m.color : 'rgba(255,255,255,0.1)';
+      roundRect(ctx, cx + 28, cardY + cardH - 42, cardW - 56, 30, 8);
+      ctx.fill();
+      ctx.fillStyle = selected ? '#051018' : '#ffffff';
+      ctx.font = '800 12px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(selected ? 'PRESS START / CLICK' : 'SELECT MODE', cx + cardW / 2, cardY + cardH - 27);
+      ctx.restore();
+    });
+
+    // Bottom Controller & Controls Status Bar
+    ctx.fillStyle = state.gpCount > 0 ? '#06d6a0' : '#94a3b8';
+    ctx.font = '700 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    const gpText = state.gpCount > 0
+      ? `🎮 ${state.gpCount} 8BitDo / Gamepad Controller(s) Connected & Ready!`
+      : '🎮 Plug in 1 or 2 8BitDo Gamepads anytime — or play instantly with Mouse & Keyboard!';
+    ctx.fillText(gpText, W / 2, H * 0.80);
+  }
+
+  function drawGameOverScreen(ctx) {
+    ctx.fillStyle = 'rgba(6, 10, 18, 0.94)';
+    ctx.fillRect(0, 0, W, H);
+
+    const boxW = Math.min(540, W - 40);
+    const boxH = 310;
+    const bx = (W - boxW) / 2;
+    const by = (H - boxH) / 2;
+
+    ctx.save();
+    ctx.fillStyle = '#0d1526';
+    ctx.strokeStyle = '#ff2a55';
+    ctx.shadowColor = '#ff2a55';
+    ctx.shadowBlur = 24;
+    ctx.lineWidth = 2.5;
+    roundRect(ctx, bx, by, boxW, boxH, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff5c77';
+    ctx.font = '900 30px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('PRISM SHIELDS DEPLETED', W / 2, by + 54);
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(`Reached Round ${state.roundNumber} (${state.problem ? state.problem.tierName : ''})`, W / 2, by + 96);
+
+    if (state.mode === 'COOP') {
+      ctx.fillStyle = '#06d6a0';
+      ctx.font = '800 24px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`FINAL TEAM SCORE: ${state.score.toLocaleString()}`, W / 2, by + 146);
+    } else if (state.mode === 'DUEL') {
+      ctx.fillStyle = '#ffd166';
+      ctx.font = '800 22px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`P1 ★ ${state.p1Stars} (${state.p1Score})   vs   P2 ★ ${state.p2Stars} (${state.p2Score})`, W / 2, by + 146);
+    } else {
+      ctx.fillStyle = '#00f0ff';
+      ctx.font = '800 24px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`FINAL SCORE: ${state.score.toLocaleString()}`, W / 2, by + 146);
+    }
+
+    // Play Again CTA
+    const btnW = 240;
+    const btnH = 46;
+    const btnX = (W - btnW) / 2;
+    const btnY = by + 210;
+    state.hudBtnRects = { RESTART: { x: btnX, y: btnY, w: btnW, h: btnH } };
+
+    ctx.fillStyle = '#06d6a0';
+    roundRect(ctx, btnX, btnY, btnW, btnH, 10);
+    ctx.fill();
+    ctx.fillStyle = '#041218';
+    ctx.font = '800 15px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('RELAUNCH OPTICAL LAB', W / 2, btnY + btnH / 2 + 1);
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('Click anywhere or press Space / Enter / Button A', W / 2, by + 280);
+    ctx.restore();
+  }
+
+  // ============================================================================
+  // 12. MAIN 60 FPS GAME LOOP
+  // ============================================================================
+  function frame() {
+    pollGamepads();
+
+    // Clear canvas
+    ctx.fillStyle = '#070b14';
+    ctx.fillRect(0, 0, W, H);
+
+    if (state.screen === 'TITLE') {
+      drawTitleScreen(ctx);
+    } else if (state.screen === 'PLAYING') {
+      // Handle round transition timer after Step 3 laser lock-in
+      if (state.roundTransitionTimer > 0) {
+        state.roundTransitionTimer--;
+        if (state.roundTransitionTimer === 0) {
+          loadRound(state.roundNumber + 1);
+        }
+      }
+
+      // Strict Zero-Overlap 4-Zone Vertical Budget
+      const hudH = 54;
+      const briefingH = 62;
+      const deckH = Math.max(128, Math.min(156, H * 0.24));
+      const stageArea = {
+        x: 0,
+        y: hudH + briefingH,
+        w: W,
+        h: H - hudH - briefingH - deckH
+      };
+
+      // Zone 3: Center Stage Diagram
+      drawCenterDiagram(ctx, stageArea);
+      drawDiagnosticBanner(ctx, stageArea);
+
+      // Zone 1: Top HUD Bar
+      drawTopHUD(ctx, hudH);
+
+      // Zone 2: Upper Briefing Strip
+      drawBriefingStrip(ctx, hudH, briefingH);
+
+      // Zone 4: Bottom Command Deck
+      drawCommandDeck(ctx, H - deckH, deckH);
+
+      // Screen Flash Feedback
+      if (state.redFlash > 0.01) {
+        ctx.fillStyle = `rgba(255, 42, 85, ${state.redFlash * 0.35})`;
+        ctx.fillRect(0, 0, W, H);
+        state.redFlash *= 0.90;
+      }
+      if (state.goldFlash > 0.01) {
+        ctx.fillStyle = `rgba(255, 209, 102, ${state.goldFlash * 0.28})`;
+        ctx.fillRect(0, 0, W, H);
+        state.goldFlash *= 0.92;
+      }
+    } else if (state.screen === 'GAMEOVER') {
+      drawGameOverScreen(ctx);
+    }
+
+    updateAndDrawParticles(ctx);
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
