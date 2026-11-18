@@ -1859,12 +1859,9 @@ function activate(pid) {
   }
   if (!canControl(pid)) return;
   const pilot = state[pid];
-  if (pilot.focus === 4) { submit(pid); return; }
-  if (pilot.selected === pilot.focus) submit(pid);
-  else {
-    pilot.selected = pilot.focus;
-    sfxClick();
-  }
+  if (pilot.focus < 0 || pilot.focus > 3) return;
+  pilot.selected = pilot.focus;
+  submit(pid);
 }
 function moveFocus(pid, dx, dy) {
   if (state.screen === 'title') {
@@ -1879,17 +1876,11 @@ function moveFocus(pid, dx, dy) {
   const pilot = state[pid];
   const cols = layout.cols;
   const rows = cols === 2 ? 2 : 1;
-  if (pilot.focus === 4) {
-    if (dy < 0) pilot.focus = pilot.selected >= 0 ? pilot.selected : 0;
-    return;
-  }
+  if (pilot.focus < 0 || pilot.focus > 3) pilot.focus = 0;
   let r = Math.floor(pilot.focus / cols);
   let c = pilot.focus % cols;
   if (dx) c = clamp(c + dx, 0, cols - 1);
-  if (dy > 0) {
-    if (r + 1 < rows) r += 1;
-    else { pilot.focus = 4; return; }
-  }
+  if (dy > 0 && r + 1 < rows) r += 1;
   if (dy < 0 && r > 0) r -= 1;
   pilot.focus = r * cols + c;
 }
@@ -2040,7 +2031,6 @@ function drainPointer() {
       for (let i = 0; i < cards.length; i++) {
         if (inside(pointer.x, pointer.y, cards[i])) state[pid].focus = i;
       }
-      if (inside(pointer.x, pointer.y, layout.exec)) state[pid].focus = 4;
     }
     pointer.moved = false;
   }
@@ -2067,14 +2057,10 @@ function drainPointer() {
     for (let i = 0; i < cards.length; i++) {
       if (inside(c.x, c.y, cards[i])) {
         state[pid].focus = i;
-        if (state[pid].selected === i) submit(pid);
-        else { state[pid].selected = i; sfxClick(); }
+        state[pid].selected = i;
+        submit(pid);
         return;
       }
-    }
-    if (inside(c.x, c.y, layout.exec)) {
-      state[pid].focus = 4;
-      submit(pid);
     }
   });
 }
@@ -2275,8 +2261,7 @@ function computeLayout() {
   const cols = (W < 560 || (W < 980 && H >= 620)) ? 2 : 4;
   const rows = cols === 2 ? 2 : 1;
   const gap = clamp(W * 0.01, 8, 14);
-  const execH = clamp(deckH * 0.18, 42, 54);
-  const cardsBlock = deckH - execH - gap - 16;
+  const cardsBlock = deckH - 16;
   const cardH = (cardsBlock - gap * (rows - 1)) / rows;
   const cardW = (W - pad * 2 - gap * (cols - 1)) / cols;
   const cards = [];
@@ -2285,8 +2270,6 @@ function computeLayout() {
       cards.push({ x: pad + c * (cardW + gap), y: deckY + 8 + r * (cardH + gap), w: cardW, h: cardH });
     }
   }
-  const execW = Math.min(460, W - pad * 2);
-  const exec = { x: (W - execW) / 2, y: deckY + 8 + cardsBlock + gap, w: execW, h: execH };
   const busGap = 8;
   const header = 28;
   let scaffoldWant = state.step === 3 ? Math.min(58, Math.max(34, stageH * 0.16)) : 0;
@@ -2306,7 +2289,7 @@ function computeLayout() {
     : null;
   layout = {
     pad, hudH, brief: { x: pad, y: briefY + 4, w: W - pad * 2, h: briefH - 10 },
-    stageY, stageH, deckY, cards, cols, exec, bus1, bus2, scaffold,
+    stageY, stageH, deckY, deckH, cards, cols, bus1, bus2, scaffold,
     menu: { x: pad, y: 10, w: 62, h: 24 }
   };
 }
@@ -2691,22 +2674,6 @@ function drawCards() {
       if (state.p2.focus === i && canControl('p2')) reticle(card, state.p2.color, 6);
     }
   });
-  const exec = layout.exec;
-  const armed = state.p1.selected >= 0 || (state.mode !== 'solo' && state.p2.selected >= 0);
-  roundRect(ctx, exec.x, exec.y, exec.w, exec.h, 12);
-  ctx.fillStyle = armed ? 'rgba(48, 36, 8, 0.98)' : 'rgba(10, 14, 28, 0.98)';
-  ctx.fill();
-  ctx.strokeStyle = armed ? '#ffcc4d' : 'rgba(255,255,255,0.35)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = armed ? '#ffe7a8' : '#c5d4ea';
-  ctx.font = '700 16px ' + MONO_FONT;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const execLabel = state.step === 3 ? 'LOCK SOLUTION' : state.step === 2 ? 'EXECUTE EXPANSION' : 'EXECUTE INJECTION';
-  ctx.fillText(execLabel, exec.x + exec.w / 2, exec.y + exec.h / 2);
-  if (state.p1.focus === 4 && canControl('p1')) reticle(exec, state.mode === 'solo' ? '#ffcc4d' : state.p1.color, 0);
-  if (state.mode !== 'solo' && state.p2.focus === 4 && canControl('p2')) reticle(exec, state.p2.color, 0);
 }
 function pinRow(x, y, w) {
   ctx.fillStyle = '#d7b15a';
@@ -2886,7 +2853,7 @@ function drawToast() {
   ctx.fillStyle = '#ffe7a8';
   ctx.font = '700 14px ' + MONO_FONT;
   ctx.textAlign = 'center';
-  ctx.fillText(state.toast, W / 2, layout && layout.exec ? layout.exec.y - 8 : H - 20);
+  ctx.fillText(state.toast, W / 2, layout && layout.deckY != null ? layout.deckY + (layout.deckH || 0) - 10 : H - 20);
   ctx.globalAlpha = 1;
 }
 
