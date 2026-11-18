@@ -1,0 +1,2388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Arcane Rounder: Wizard's Place-Value Spellbook</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #87d2ff;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+  #live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<div id="live" aria-live="polite"></div>
+<noscript><p>Arcane Rounder needs JavaScript to open the spellbook.</p></noscript>
+<script>
+(() => {
+  'use strict';
+
+  const VIEW_W = 1280;
+  const VIEW_H = 720;
+  const FONT = '"Trebuchet MS", "Segoe UI", sans-serif';
+  const FONT_NUM = 'Georgia, "Palatino Linotype", Palatino, serif';
+  const TOTAL_SPELLS = 8;
+  const SCALE = 10000;
+
+  const COL = {
+    ink: '#2a2140',
+    gold: '#ffc857',
+    goldDeep: '#d88800',
+    parchment: '#fff6df',
+    edge: '#e4c27a',
+    crimson: '#e23b4a',
+    azure: '#2f7dff',
+    emerald: '#17a85c'
+  };
+
+  const PLAYERS = [
+    { name: 'P1', full: 'PLAYER 1', wizard: 'Crimson Wizard', color: COL.crimson, ink: '#7a1424', keys: ['1', '2', '3'], keyLabel: ['1', '2', '3'], pad: ['X', 'A', 'B'] },
+    { name: 'P2', full: 'PLAYER 2', wizard: 'Azure Wizard', color: COL.azure, ink: '#0d3f93', keys: ['v', 'b', 'n'], keyLabel: ['V', 'B', 'N'], pad: ['X', 'A', 'B'] },
+    { name: 'P3', full: 'PLAYER 3', wizard: 'Emerald Wizard', color: COL.emerald, ink: '#0c6a34', keys: ['ArrowLeft', 'ArrowDown', 'ArrowRight'], keyLabel: ['←', '↓', '→'], pad: ['X', 'A', 'B'] }
+  ];
+
+  const WHOLE_META = {
+    ten: { divisor: 10, power: 1, label: 'TEN', digitName: 'tens', neighborName: 'ones' },
+    hundred: { divisor: 100, power: 2, label: 'HUNDRED', digitName: 'hundreds', neighborName: 'tens' },
+    thousand: { divisor: 1000, power: 3, label: 'THOUSAND', digitName: 'thousands', neighborName: 'hundreds' }
+  };
+  const DEC_META = {
+    tenth: { places: 1, label: 'TENTH', digitName: 'tenths', neighborName: 'hundredths' },
+    hundredth: { places: 2, label: 'HUNDREDTH', digitName: 'hundredths', neighborName: 'thousandths' },
+    thousandth: { places: 3, label: 'THOUSANDTH', digitName: 'thousandths', neighborName: 'ten-thousandths' }
+  };
+  const SPELL_INDEX = { ten: 0, hundred: 1, thousand: 2, tenth: 0, hundredth: 1, thousandth: 2 };
+  const TOME_STYLE = [
+    { fill: '#14c4b4', dark: '#0b7c74', light: '#d9fff8', ink: '#064743' },
+    { fill: '#ffb703', dark: '#c47c00', light: '#fff3cc', ink: '#5c3d00' },
+    { fill: '#ff4f9a', dark: '#c21868', light: '#ffd4e8', ink: '#641038' }
+  ];
+  const DIFFS = [
+    { id: 'easy', name: 'EASY', title: 'Apprentice Mage', time: 15, lines: ['Whole numbers', 'up to 5 digits', '15 seconds'] },
+    { id: 'medium', name: 'MEDIUM', title: 'Adept Sorcerer', time: 8, lines: ['Tricky whole numbers', 'up to 6 digits', '8 seconds'] },
+    { id: 'hard', name: 'HARD', title: 'Archmage of Decimals', time: 8, lines: ['Decimals up to', '4 decimal places', '8 seconds'] },
+    { id: 'extreme', name: 'EXTREME', title: 'Grand Wizard Blitz', time: 4.5, lines: ['Boundary decimals', 'carry-over cases', '4.5 seconds'] }
+  ];
+  const TOME_SUB = {
+    ten: 'nearest 10',
+    hundred: 'nearest 100',
+    thousand: 'nearest 1 000',
+    tenth: 'nearest 0.1',
+    hundredth: 'nearest 0.01',
+    thousandth: 'nearest 0.001'
+  };
+
+  const SCROLL = { x: 408, y: 184, w: 836, h: 292 };
+  const CARD_Y = 508;
+  const CARD_H = 128;
+  const CARD_W = 360;
+  const CARD_GAP = 24;
+  const LEGEND_Y = 646;
+
+  const CLOUDS = [
+    { x: 90, y: 118, s: 1 },
+    { x: 340, y: 78, s: 0.72 },
+    { x: 690, y: 96, s: 1.05 },
+    { x: 1040, y: 64, s: 0.8 },
+    { x: 520, y: 48, s: 0.48 }
+  ];
+  const FLOWERS = [];
+  for (let i = 0; i < 16; i++) {
+    FLOWERS.push({ x: 28 + (i * 22) % 340, y: 452 + (i % 3) * 9, kind: i % 3 });
+  }
+  for (let i = 0; i < 6; i++) {
+    FLOWERS.push({ x: 1168 + (i % 3) * 22, y: 448 + i * 6, kind: i % 3 });
+  }
+
+  // ============================================================================
+  // AUDIO
+  // ============================================================================
+  const audio = {
+    ctx: null,
+    master: null,
+    musicGain: null,
+    sfxGain: null,
+    muted: false,
+    unlocked: false,
+    step: 0,
+    nextTime: 0,
+    timer: null,
+    lead: [
+      659.25, 783.99, 1046.50, 783.99, 880.00, 783.99, 659.25, 587.33,
+      659.25, 783.99, 1046.50, 1174.66, 1046.50, 783.99, 659.25, 523.25,
+      587.33, 698.46, 880.00, 698.46, 783.99, 659.25, 587.33, 523.25,
+      659.25, 783.99, 1046.50, 1318.51, 1174.66, 1046.50, 783.99, 659.25
+    ],
+    bass: [
+      130.81, 0, 130.81, 0, 174.61, 0, 174.61, 0,
+      196.00, 0, 196.00, 0, 130.81, 0, 164.81, 0,
+      174.61, 0, 174.61, 0, 220.00, 0, 196.00, 0,
+      130.81, 0, 174.61, 0, 196.00, 0, 130.81, 0
+    ],
+    unlock() {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!this.ctx) {
+          this.ctx = new AC();
+          this.master = this.ctx.createGain();
+          this.master.gain.value = 0.85;
+          this.master.connect(this.ctx.destination);
+          this.musicGain = this.ctx.createGain();
+          this.sfxGain = this.ctx.createGain();
+          const filter = this.ctx.createBiquadFilter();
+          filter.type = 'lowpass';
+          filter.frequency.value = 2400;
+          this.musicGain.connect(filter);
+          filter.connect(this.master);
+          this.sfxGain.connect(this.master);
+        }
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        this.applyMute();
+        this.unlocked = true;
+        this.startMusic();
+      } catch (err) {
+        this.unlocked = false;
+      }
+    },
+    applyMute() {
+      if (!this.musicGain || !this.sfxGain) return;
+      const m = this.muted ? 0 : 0.62;
+      const s = this.muted ? 0 : 0.95;
+      const now = this.ctx.currentTime;
+      this.musicGain.gain.setTargetAtTime(m, now, 0.03);
+      this.sfxGain.gain.setTargetAtTime(s, now, 0.02);
+    },
+    toggleMute() {
+      this.muted = !this.muted;
+      this.applyMute();
+      return this.muted;
+    },
+    tone(freq, type, dur, vol, delay, dest) {
+      if (!this.ctx || this.muted || freq <= 0) return;
+      this.toneAt(this.ctx.currentTime + (delay || 0), freq, type, dur, vol, dest || this.sfxGain);
+    },
+    toneAt(when, freq, type, dur, vol, dest) {
+      if (!this.ctx || freq <= 0 || !dest) return;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, when);
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), when + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + Math.max(0.03, dur));
+      osc.connect(gain);
+      gain.connect(dest);
+      osc.start(when);
+      osc.stop(when + dur + 0.03);
+    },
+    noise(dur, vol, freq) {
+      if (!this.ctx || this.muted) return;
+      const n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
+      const buffer = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = freq || 900;
+      const gain = this.ctx.createGain();
+      const now = this.ctx.currentTime;
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.sfxGain);
+      src.start(now);
+      src.stop(now + dur + 0.02);
+    },
+    playSelect() { this.tone(740, 'sine', 0.07, 0.05); },
+    playCast() {
+      this.tone(620, 'sine', 0.08, 0.05, 0);
+      this.tone(930, 'triangle', 0.12, 0.04, 0.05);
+    },
+    playChime() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+        this.tone(f, 'triangle', 0.28, 0.09, i * 0.06);
+        this.tone(f * 2, 'sine', 0.18, 0.03, i * 0.06);
+      });
+    },
+    playFizzle() {
+      this.noise(0.28, 0.18, 700);
+      this.tone(210, 'sawtooth', 0.22, 0.06, 0, this.sfxGain);
+      this.tone(140, 'triangle', 0.26, 0.05, 0.08);
+    },
+    playTick() {
+      this.tone(880, 'square', 0.05, 0.04);
+      this.tone(660, 'square', 0.06, 0.03, 0.06);
+    },
+    playDeny() { this.tone(180, 'triangle', 0.12, 0.05); },
+    playStart() {
+      [523.25, 659.25, 783.99].forEach((f, i) => this.tone(f, 'triangle', 0.16, 0.07, i * 0.07));
+    },
+    playFanfare() {
+      [523.25, 659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.51].forEach((f, i) => {
+        this.tone(f, 'triangle', 0.24, 0.1, i * 0.11);
+        this.tone(f / 2, 'sine', 0.24, 0.04, i * 0.11);
+      });
+    },
+    playGameOver() {
+      [392, 349.23, 329.63, 261.63].forEach((f, i) => this.tone(f, 'triangle', 0.28, 0.08, i * 0.16));
+    },
+    startMusic() {
+      if (!this.ctx || this.timer) return;
+      this.nextTime = this.ctx.currentTime + 0.08;
+      const eighth = 60 / 124 / 2;
+      const schedule = () => {
+        if (!this.ctx) return;
+        if (this.nextTime < this.ctx.currentTime - 0.02) this.nextTime = this.ctx.currentTime + 0.05;
+        const horizon = this.ctx.currentTime + 0.28;
+        while (this.nextTime < horizon) {
+          const i = this.step % this.lead.length;
+          this.toneAt(this.nextTime, this.lead[i], 'triangle', eighth * 0.86, 0.055, this.musicGain);
+          if (this.bass[i]) this.toneAt(this.nextTime, this.bass[i], 'square', eighth * 0.9, 0.028, this.musicGain);
+          this.nextTime += eighth;
+          this.step++;
+        }
+      };
+      this.timer = setInterval(schedule, 80);
+      schedule();
+    }
+  };
+
+  // ============================================================================
+  // MATH
+  // ============================================================================
+  function formatInt(n) {
+    const neg = n < 0;
+    const s = String(Math.abs(Math.trunc(n)));
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 === 0) out += ' ';
+      out += s[i];
+    }
+    return (neg ? '-' : '') + out;
+  }
+
+  function digitAt(n, power) {
+    if (power < 0) return 0;
+    return Math.floor(Math.abs(Math.trunc(n)) / Math.pow(10, power)) % 10;
+  }
+
+  function setDigit(n, power, digit) {
+    const cur = digitAt(n, power);
+    return n - cur * Math.pow(10, power) + digit * Math.pow(10, power);
+  }
+
+  function roundToMultiple(value, unit) {
+    const v = Math.trunc(value);
+    const u = Math.trunc(unit);
+    if (u <= 0) return v;
+    const rem = ((v % u) + u) % u;
+    const base = v - rem;
+    if (rem * 2 >= u) return base + u;
+    return base;
+  }
+
+  function countTrailingZeros(n) {
+    n = Math.abs(Math.trunc(n));
+    if (n === 0) return 0;
+    let c = 0;
+    while (n % 10 === 0 && c < 8) {
+      n = Math.floor(n / 10);
+      c++;
+    }
+    return c;
+  }
+
+  function tzPhrase(c) {
+    const words = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+    const word = words[c] || String(c);
+    if (c === 0) return 'no trailing zeros';
+    return word + ' trailing zero' + (c === 1 ? '' : 's');
+  }
+
+  function roundWhole(n, placeId) {
+    return roundToMultiple(n, WHOLE_META[placeId].divisor);
+  }
+
+  function uniqueWhole(n, placeId) {
+    const target = roundWhole(n, placeId);
+    let count = 0;
+    Object.keys(WHOLE_META).forEach((id) => {
+      if (roundWhole(n, id) === target) count++;
+    });
+    return count === 1;
+  }
+
+  function roundScaled(scaled, placeId) {
+    const unit = Math.pow(10, 4 - DEC_META[placeId].places);
+    return roundToMultiple(scaled, unit);
+  }
+
+  function formatDecimalFixed(scaled, places) {
+    const unit = Math.pow(10, 4 - places);
+    const shown = Math.floor((Math.abs(Math.trunc(scaled)) + Math.floor(unit / 2)) / unit);
+    const scale = Math.pow(10, places);
+    const intPart = Math.floor(shown / scale);
+    const frac = shown % scale;
+    const body = formatInt(intPart) + '.' + String(frac).padStart(places, '0');
+    return scaled < 0 ? '-' + body : body;
+  }
+
+  function formatAnswer(scaled, placeId) {
+    return formatDecimalFixed(roundScaled(scaled, placeId), DEC_META[placeId].places);
+  }
+
+  function uniqueDecimal(scaled, placeId) {
+    const targetFmt = formatAnswer(scaled, placeId);
+    let count = 0;
+    Object.keys(DEC_META).forEach((id) => {
+      if (formatAnswer(scaled, id) === targetFmt) count++;
+    });
+    return count === 1;
+  }
+
+  function digitsOf(n) {
+    return String(Math.abs(Math.trunc(n))).length;
+  }
+
+  function allowedWholeDigits(diff, placeId, d) {
+    if (diff === 'easy') {
+      if (d < 2 || d > 5) return false;
+      if (placeId === 'thousand' && d < 4) return false;
+      return true;
+    }
+    if (diff === 'medium') {
+      if (d < 3 || d > 6) return false;
+      if (placeId === 'thousand' && d < 4) return false;
+      return true;
+    }
+    return false;
+  }
+
+  function buildWholeQuestion(n, placeId) {
+    const meta = WHOLE_META[placeId];
+    const rounded = roundWhole(n, placeId);
+    const originalText = formatInt(n);
+    const roundedText = formatInt(rounded);
+    const td = digitAt(n, meta.power);
+    const rd = digitAt(rounded, meta.power);
+    const nd = digitAt(n, meta.power - 1);
+    const tz = rounded === 0 ? 'the rounded result is 0' : tzPhrase(countTrailingZeros(rounded));
+    let change;
+    if (td !== rd) change = 'the ' + meta.digitName + ' digit changed from ' + td + ' to ' + rd;
+    else {
+      const reason = nd >= 5 ? '5 or more' : 'less than 5';
+      change = 'the ' + meta.digitName + ' digit stayed ' + td + ' because the ' + meta.neighborName + ' digit was ' + nd + ' (' + reason + ')';
+    }
+    const tip = 'Look at ' + originalText + ' → ' + roundedText + ': ' + tz + ' and ' + change + ', so it was rounded to the nearest ' + meta.label + '!';
+    let shortReason;
+    if (rounded === 0) shortReason = 'The result is 0, so this was the nearest ' + meta.label + '.';
+    else if (td !== rd) shortReason = tzPhrase(countTrailingZeros(rounded)) + ' · ' + meta.digitName + ' digit ' + td + ' → ' + rd;
+    else shortReason = meta.neighborName + ' digit ' + nd + ' · ' + meta.digitName + ' digit stays ' + td;
+    return {
+      kind: 'whole',
+      placeId,
+      placeLabel: meta.label,
+      spellIndex: SPELL_INDEX[placeId],
+      originalText,
+      roundedText,
+      targetPower: meta.power,
+      neighborPower: meta.power - 1,
+      targetDp: 0,
+      neighborDp: 0,
+      tip,
+      shortReason,
+      key: originalText + '|' + roundedText + '|' + placeId,
+      digits: digitsOf(n)
+    };
+  }
+
+  function buildDecimalQuestion(intPart, frac, origDp, placeId) {
+    const meta = DEC_META[placeId];
+    const digits = frac.slice(0, origDp);
+    const scaled = intPart * SCALE + frac[0] * 1000 + frac[1] * 100 + frac[2] * 10 + frac[3];
+    const roundedScaled = roundScaled(scaled, placeId);
+    const originalText = formatInt(intPart) + '.' + digits.join('');
+    const roundedText = formatDecimalFixed(roundedScaled, meta.places);
+    const deciding = frac[meta.places];
+    const dpWord = ['', 'one decimal place remains', 'two decimal places remain', 'three decimal places remain'][meta.places];
+    const why = deciding >= 5 ? '5 or more, so that place rounded up' : 'less than 5, so that place stayed the same';
+    const tip = 'Look at ' + originalText + ' → ' + roundedText + ': ' + dpWord + ', so it was rounded to the nearest ' + meta.label + '! The ' + meta.neighborName + ' digit was ' + deciding + ' (' + why + ').';
+    const shortReason = dpWord.charAt(0).toUpperCase() + dpWord.slice(1) + ' · ' + meta.neighborName + ' digit ' + deciding;
+    return {
+      kind: 'decimal',
+      placeId,
+      placeLabel: meta.label,
+      spellIndex: SPELL_INDEX[placeId],
+      originalText,
+      roundedText,
+      targetPower: -1,
+      neighborPower: -1,
+      targetDp: meta.places,
+      neighborDp: meta.places + 1,
+      tip,
+      shortReason,
+      key: originalText + '|' + roundedText + '|' + placeId,
+      digits: digits.length,
+      scaled
+    };
+  }
+
+  function recentPlace(history) {
+    if (history.length < 2) return '';
+    const a = history[history.length - 1].split('|').pop();
+    const b = history[history.length - 2].split('|').pop();
+    return a === b ? a : '';
+  }
+
+  function pickPlace(ids, history) {
+    const blocked = recentPlace(history);
+    const pool = blocked ? ids.filter((id) => id !== blocked) : ids.slice();
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  function finalizeWhole(n, placeId, diff, history, relaxed) {
+    if (!Number.isFinite(n) || n < 0) return null;
+    const d = digitsOf(n);
+    if (!relaxed && !allowedWholeDigits(diff, placeId, d)) return null;
+    if (!uniqueWhole(n, placeId)) return null;
+    const rounded = roundWhole(n, placeId);
+    if (!relaxed && diff === 'easy' && rounded === 0) return null;
+    if (!relaxed && n === rounded && Math.random() < 0.72) return null;
+    const q = buildWholeQuestion(n, placeId);
+    if (history.indexOf(q.key) !== -1) return null;
+    return q;
+  }
+
+  function attemptWhole(diff, history, tricky) {
+    let placeId = pickPlace(['ten', 'hundred', 'thousand'], history);
+    let n = 0;
+    if (tricky) {
+      const roll = Math.random();
+      const six = Math.random() < 0.55;
+      const high = six ? 100 + Math.floor(Math.random() * 800) : 10 + Math.floor(Math.random() * 89);
+      if (roll < 0.42) {
+        const huns = 5 + Math.floor(Math.random() * 5);
+        n = high * 1000 + huns * 100;
+        placeId = 'thousand';
+      } else if (roll < 0.72) {
+        const huns = 5 + Math.floor(Math.random() * 4);
+        const rest = Math.floor(Math.random() * 100);
+        n = high * 1000 + huns * 100 + rest;
+        placeId = 'thousand';
+      } else {
+        placeId = Math.random() < 0.5 ? 'hundred' : 'ten';
+        const digits = 4 + Math.floor(Math.random() * 3);
+        const min = Math.pow(10, digits - 1);
+        const max = Math.pow(10, digits) - 1;
+        n = min + Math.floor(Math.random() * (max - min));
+        const meta = WHOLE_META[placeId];
+        const roundUp = Math.random() < 0.55;
+        let neighbor = roundUp ? 5 + Math.floor(Math.random() * 5) : Math.floor(Math.random() * 5);
+        n = setDigit(n, meta.power - 1, neighbor);
+        if (placeId === 'hundred' && Math.random() < 0.5) n = Math.floor(n / 10) * 10;
+      }
+      return finalizeWhole(n, placeId, diff, history, false);
+    }
+    const ranges = {
+      easy: { ten: [2, 5], hundred: [3, 5], thousand: [4, 5] },
+      medium: { ten: [3, 6], hundred: [3, 6], thousand: [4, 6] }
+    };
+    const range = ranges[diff][placeId];
+    const digits = range[0] + Math.floor(Math.random() * (range[1] - range[0] + 1));
+    const min = Math.pow(10, digits - 1);
+    const max = Math.pow(10, digits) - 1;
+    n = min + Math.floor(Math.random() * (max - min + 1));
+    const meta = WHOLE_META[placeId];
+    const roundUp = Math.random() < 0.6;
+    let neighbor = roundUp ? 5 + Math.floor(Math.random() * 5) : Math.floor(Math.random() * 5);
+    if (meta.power - 1 >= 0) n = setDigit(n, meta.power - 1, neighbor);
+    if (digitsOf(n) !== digits) return null;
+    return finalizeWhole(n, placeId, diff, history, false);
+  }
+
+  function generateWhole(diff, history) {
+    const trickyBudget = diff === 'medium' ? 90 : 0;
+    for (let i = 0; i < 280; i++) {
+      const q = attemptWhole(diff, history, i < trickyBudget);
+      if (q) return q;
+    }
+    const min = diff === 'easy' ? 20 : 1000;
+    const max = diff === 'easy' ? 99999 : 999999;
+    for (let n = min; n <= max; n += 41) {
+      const ids = ['ten', 'hundred', 'thousand'];
+      for (let p = 0; p < ids.length; p++) {
+        const q = finalizeWhole(n, ids[p], diff, history, false);
+        if (q) return q;
+      }
+    }
+    for (let n = min; n <= max; n += 41) {
+      const ids = ['ten', 'hundred', 'thousand'];
+      for (let p = 0; p < ids.length; p++) {
+        const q = finalizeWhole(n, ids[p], diff, [], true);
+        if (q) return q;
+      }
+    }
+    const fallback = buildWholeQuestion(268, 'hundred');
+    fallback.fallback = true;
+    return fallback;
+  }
+
+  function finalizeDecimal(intPart, frac, origDp, placeId, history) {
+    if (origDp < DEC_META[placeId].places + 1 || origDp > 4) return null;
+    if (frac[origDp - 1] === 0) return null;
+    const scaled = intPart * SCALE + frac[0] * 1000 + frac[1] * 100 + frac[2] * 10 + frac[3];
+    if (scaled <= 0) return null;
+    if (!uniqueDecimal(scaled, placeId)) return null;
+    const q = buildDecimalQuestion(intPart, frac.slice(), origDp, placeId);
+    if (history.indexOf(q.key) !== -1) return null;
+    if (q.originalText.indexOf('.') < 0 || q.roundedText.indexOf('.') < 0) return null;
+    return q;
+  }
+
+  function attemptDecimal(diff, history) {
+    const placeId = pickPlace(['tenth', 'hundredth', 'thousandth'], history);
+    const meta = DEC_META[placeId];
+    let origDp = meta.places + 1;
+    if (origDp < 4 && Math.random() < 0.55) origDp++;
+    if (origDp < 4 && Math.random() < 0.35) origDp++;
+    origDp = Math.min(4, origDp);
+    let intPart = Math.floor(Math.random() * (diff === 'extreme' ? 80 : 50));
+    const frac = [0, 0, 0, 0];
+    for (let i = 0; i < origDp; i++) frac[i] = Math.floor(Math.random() * 10);
+    const boundary = diff === 'extreme' ? Math.random() < 0.58 : Math.random() < 0.2;
+    if (boundary) {
+      origDp = Math.min(4, Math.max(origDp, meta.places + 1));
+      for (let i = 0; i < meta.places; i++) frac[i] = 9;
+      frac[meta.places] = 5 + Math.floor(Math.random() * 5);
+      for (let i = meta.places + 1; i < origDp; i++) frac[i] = Math.floor(Math.random() * 10);
+      if (frac[origDp - 1] === 0) frac[origDp - 1] = 1 + Math.floor(Math.random() * 9);
+      intPart = 9 + Math.floor(Math.random() * 6) * 10;
+    } else {
+      const roundUp = Math.random() < 0.62;
+      let deciding = roundUp ? 5 + Math.floor(Math.random() * 5) : Math.floor(Math.random() * 5);
+      const decIdx = meta.places;
+      if (decIdx === origDp - 1 && deciding === 0) deciding = 1 + Math.floor(Math.random() * 4);
+      frac[decIdx] = deciding;
+      if (frac[origDp - 1] === 0) frac[origDp - 1] = 1 + Math.floor(Math.random() * 9);
+    }
+    for (let i = origDp; i < 4; i++) frac[i] = 0;
+    return finalizeDecimal(intPart, frac, origDp, placeId, history);
+  }
+
+  function generateDecimal(diff, history) {
+    for (let i = 0; i < 220; i++) {
+      const q = attemptDecimal(diff, history);
+      if (q) return q;
+    }
+    const places = ['tenth', 'hundredth', 'thousandth'];
+    for (let n = 1; n <= 400; n++) {
+      const placeId = places[n % 3];
+      const need = DEC_META[placeId].places + 1;
+      const frac = [0, 0, 0, 0];
+      const intPart = n % 30;
+      let seed = 1000 + n * 37;
+      for (let d = 0; d < need; d++) {
+        frac[d] = seed % 10;
+        seed = Math.floor(seed / 3) + 11;
+      }
+      if (frac[need - 1] === 0) frac[need - 1] = 3;
+      frac[DEC_META[placeId].places] = 6;
+      const q = finalizeDecimal(intPart, frac, need, placeId, history);
+      if (q) return q;
+    }
+    const fallback = buildDecimalQuestion(4, [3, 6, 8, 0], 3, 'hundredth');
+    fallback.fallback = true;
+    return fallback;
+  }
+
+  function generateQuestion(diff, history) {
+    if (diff === 'hard' || diff === 'extreme') return generateDecimal(diff, history);
+    return generateWhole(diff, history);
+  }
+
+  function runSelfCheck() {
+    const errors = [];
+    function assert(cond, msg) {
+      if (!cond) errors.push(msg);
+    }
+    assert(roundWhole(268, 'hundred') === 300, '268 hundred');
+    assert(roundWhole(268, 'ten') === 270, '268 ten');
+    assert(roundWhole(268, 'thousand') === 0, '268 thousand');
+    assert(roundWhole(347, 'ten') === 350, '347 ten');
+    assert(roundWhole(634, 'ten') === 630, '634 ten');
+    assert(roundWhole(18520, 'thousand') === 19000, '18520 thousand');
+    assert(roundWhole(7634, 'hundred') === 7600, '7634 hundred');
+    assert(roundWhole(34800, 'thousand') === 35000, '34800 thousand');
+    assert(uniqueWhole(268, 'hundred') === true, '268 unique');
+    assert(uniqueWhole(295, 'ten') === false, '295 ambiguous ten/hundred');
+    assert(uniqueWhole(300, 'ten') === false, '300 ambiguous');
+    assert(uniqueWhole(34800, 'thousand') === true, '34800 unique thousand');
+    const q268 = buildWholeQuestion(268, 'hundred');
+    assert(q268.originalText === '268' && q268.roundedText === '300', '268 text');
+    assert(q268.tip === 'Look at 268 → 300: two trailing zeros and the hundreds digit changed from 2 to 3, so it was rounded to the nearest HUNDRED!', '268 tip');
+    const q185 = buildWholeQuestion(18520, 'thousand');
+    assert(q185.originalText === '18 520' && q185.roundedText === '19 000', '18520 text');
+    const q348 = buildWholeQuestion(34800, 'thousand');
+    assert(q348.roundedText === '35 000', '34800 text');
+    assert(q348.tip.indexOf('thousands digit changed from 4 to 5') > 0, '34800 tip');
+    const q7634 = buildWholeQuestion(7634, 'hundred');
+    assert(q7634.originalText === '7 634' && q7634.roundedText === '7 600', '7634 text');
+    const q634 = buildWholeQuestion(634, 'ten');
+    assert(q634.tip.indexOf('ones digit was 4') > 0, '634 tip');
+    function dec(intPart, frac, dp, place) {
+      return buildDecimalQuestion(intPart, frac.concat([0, 0, 0, 0]).slice(0, 4), dp, place);
+    }
+    assert(dec(4, [3, 6, 8], 3, 'hundredth').roundedText === '4.37', '4.368');
+    assert(dec(12, [8, 4], 2, 'tenth').roundedText === '12.8', '12.84');
+    assert(dec(7, [4, 9, 2, 6], 4, 'thousandth').roundedText === '7.493', '7.4926');
+    assert(dec(0, [8, 5, 4], 3, 'tenth').roundedText === '0.9', '0.854');
+    assert(dec(19, [3, 0, 7], 3, 'hundredth').roundedText === '19.31', '19.307');
+    assert(dec(9, [9, 9, 6], 3, 'hundredth').roundedText === '10.00', '9.996');
+    assert(dec(9, [9, 6], 2, 'tenth').roundedText === '10.0', '9.96');
+    assert(dec(6, [4, 7, 2], 3, 'tenth').roundedText === '6.5', '6.472');
+    assert(dec(14, [3, 8, 6], 3, 'hundredth').roundedText === '14.39', '14.386');
+    assert(dec(3, [1, 4, 1, 6], 4, 'thousandth').roundedText === '3.142', '3.1416');
+    const tip4368 = dec(4, [3, 6, 8], 3, 'hundredth').tip;
+    assert(tip4368.indexOf('Look at 4.368 → 4.37: two decimal places remain, so it was rounded to the nearest HUNDREDTH!') === 0, 'decimal tip');
+    ['easy', 'medium', 'hard', 'extreme'].forEach((diff) => {
+      const hist = [];
+      for (let i = 0; i < 40; i++) {
+        const q = generateQuestion(diff, hist);
+        assert(!!q && !q.fallback, diff + ' generated a fallback at ' + i);
+        if (!q) return;
+        assert(hist.indexOf(q.key) === -1, diff + ' repeated ' + q.key);
+        if (q.kind === 'whole') {
+          assert(uniqueWhole(Number(q.originalText.replace(/ /g, '')), q.placeId), 'unique ' + q.key);
+          assert(q.digits <= (diff === 'easy' ? 5 : 6), 'digits ' + q.key);
+          assert(q.roundedText === formatInt(roundWhole(Number(q.originalText.replace(/ /g, '')), q.placeId)), 'format ' + q.key);
+        } else {
+          assert(q.originalText.indexOf('.') > 0, 'decimal point ' + q.key);
+          const places = DEC_META[q.placeId].places;
+          const fracLen = q.originalText.split('.')[1].length;
+          assert(fracLen > places && fracLen <= 4, 'dp length ' + q.key);
+          assert(q.roundedText.split('.')[1].length === places, 'rounded dp ' + q.key);
+        }
+        assert(q.tip.indexOf(q.placeLabel) > 0, 'tip label ' + q.key);
+        hist.push(q.key);
+        if (hist.length > 8) hist.shift();
+      }
+    });
+    return { ok: errors.length === 0, errors, tested: 160 };
+  }
+
+  // ============================================================================
+  // GAME STATE
+  // ============================================================================
+  const G = {
+    screen: 'title',
+    players: 1,
+    mode: 'solo',
+    difficulty: 'easy',
+    history: [],
+    mouse: { x: -1, y: -1, inside: false },
+    cursor: 'default',
+    hoverCard: -1,
+    hoverId: '',
+    anim: 0,
+    question: null,
+    qIndex: 0,
+    timeLeft: 15,
+    timeMax: 15,
+    hearts: 3,
+    score: 0,
+    scores: [0, 0, 0],
+    stars: [0, 0, 0],
+    streak: 0,
+    correctCount: 0,
+    activePlayer: 0,
+    selection: 0,
+    status: 'ask',
+    statusTime: 0,
+    statusMax: 0,
+    stun: [0, 0, 0],
+    tip: '',
+    successLine: '',
+    chosenSpell: -1,
+    roundWinner: -1,
+    deadHeat: [],
+    tint: 0,
+    shake: 0,
+    tickBucket: 0,
+    particles: [],
+    floaters: [],
+    bolt: 0,
+    cardFlash: [0, 0, 0],
+    cardFlashColor: ['#ffffff', '#ffffff', '#ffffff'],
+    resultKind: '',
+    winners: []
+  };
+
+  const queue = [];
+  const padMemory = [0, 1, 2].map(() => ({ buttons: new Array(16).fill(false), stick: false }));
+  const view = { scale: 1, ox: 0, oy: 0 };
+  let canvas;
+  let ctx;
+  let liveEl;
+  let lastTs = 0;
+
+  function announce(text) {
+    if (liveEl) liveEl.textContent = text;
+  }
+
+  function nowMs() {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  function isDecimalMode() {
+    return G.difficulty === 'hard' || G.difficulty === 'extreme';
+  }
+
+  function tomePlaceId(index) {
+    return isDecimalMode()
+      ? ['tenth', 'hundredth', 'thousandth'][index]
+      : ['ten', 'hundred', 'thousand'][index];
+  }
+
+  function tomeLabel(index) {
+    return isDecimalMode()
+      ? ['TENTH', 'HUNDREDTH', 'THOUSANDTH'][index]
+      : ['TEN', 'HUNDRED', 'THOUSAND'][index];
+  }
+
+  function diffInfo() {
+    for (let i = 0; i < DIFFS.length; i++) if (DIFFS[i].id === G.difficulty) return DIFFS[i];
+    return DIFFS[0];
+  }
+
+  function pointIn(r, x, y) {
+    return x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+  }
+
+  function muteRect() {
+    return { x: VIEW_W - 118, y: 12, w: 102, h: 40 };
+  }
+
+  function layoutCards() {
+    const total = CARD_W * 3 + CARD_GAP * 2;
+    const x0 = (VIEW_W - total) / 2;
+    return [0, 1, 2].map((i) => ({
+      x: x0 + i * (CARD_W + CARD_GAP),
+      y: CARD_Y,
+      w: CARD_W,
+      h: CARD_H,
+      spell: i
+    }));
+  }
+
+  function titleLayout() {
+    const playerBtns = [1, 2, 3].map((n, i) => ({
+      id: 'players-' + n,
+      x: 130 + i * 340,
+      y: 198,
+      w: 312,
+      h: 54,
+      players: n,
+      enabled: true
+    }));
+    const modeDefs = [
+      { id: 'mode-solo', mode: 'solo', enabled: G.players === 1, label: 'SOLO', sub: 'One wizard' },
+      { id: 'mode-coop', mode: 'coop', enabled: G.players >= 2, label: 'CO-OP', sub: 'Shared team score' },
+      { id: 'mode-vs', mode: 'vs', enabled: G.players >= 2, label: 'VS', sub: 'Fastest hand wins' }
+    ];
+    const modeBtns = modeDefs.map((m, i) => ({
+      x: 130 + i * 340,
+      y: 300,
+      w: 312,
+      h: 54,
+      id: m.id,
+      mode: m.mode,
+      enabled: m.enabled,
+      label: m.label,
+      sub: m.sub
+    }));
+    const diffBtns = DIFFS.map((d, i) => ({
+      id: 'diff-' + d.id,
+      diff: d.id,
+      x: 112 + i * 270,
+      y: 404,
+      w: 252,
+      h: 118,
+      enabled: true
+    }));
+    const start = { id: 'start', x: 430, y: 548, w: 420, h: 64, enabled: true };
+    return { playerBtns, modeBtns, diffBtns, start, all: playerBtns.concat(modeBtns, diffBtns, [start]) };
+  }
+
+  function resultLayout() {
+    return {
+      again: { id: 'again', x: 300, y: 520, w: 300, h: 58, enabled: true },
+      title: { id: 'back', x: 680, y: 520, w: 300, h: 58, enabled: true }
+    };
+  }
+
+  function scrollCenter() {
+    return { x: SCROLL.x + SCROLL.w * 0.62, y: SCROLL.y + 118 };
+  }
+
+  function spawnParticle(p) {
+    G.particles.push(p);
+    if (G.particles.length > 220) G.particles.splice(0, G.particles.length - 220);
+  }
+
+  function burstAt(x, y) {
+    const colors = ['#ffd45a', '#ff4f9a', '#2ee6d6', '#ffffff', '#7dff6b', '#8ab4ff', '#ff9f43'];
+    for (let i = 0; i < 56; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 70 + Math.random() * 280;
+      spawnParticle({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        g: 30,
+        life: 0.55 + Math.random() * 0.55,
+        max: 1,
+        r: 2 + Math.random() * 3.6,
+        color: colors[i % colors.length],
+        kind: i % 3 === 0 ? 'star' : 'dot'
+      });
+    }
+  }
+
+  function smokeAt(x, y) {
+    for (let i = 0; i < 16; i++) {
+      spawnParticle({
+        x: x + (Math.random() - 0.5) * 50,
+        y: y + (Math.random() - 0.5) * 16,
+        vx: (Math.random() - 0.5) * 50,
+        vy: -24 - Math.random() * 55,
+        g: -8,
+        life: 0.7 + Math.random() * 0.45,
+        max: 1.1,
+        r: 12 + Math.random() * 18,
+        color: i % 2 ? '#c9a6ff' : '#8d6bdc',
+        kind: 'smoke'
+      });
+    }
+  }
+
+  function spawnFloater(x, y, text, color) {
+    G.floaters.push({ x, y, text, color, life: 1.15, max: 1.15 });
+  }
+
+  function setPlayers(n) {
+    G.players = n;
+    if (n === 1) G.mode = 'solo';
+    else if (G.mode === 'solo') G.mode = 'coop';
+  }
+
+  function beginQuestion() {
+    G.question = generateQuestion(G.difficulty, G.history);
+    G.history.push(G.question.key);
+    if (G.history.length > 8) G.history.shift();
+    const info = diffInfo();
+    G.timeMax = info.time;
+    G.timeLeft = info.time;
+    G.status = 'ask';
+    G.statusTime = 0;
+    G.statusMax = 0;
+    G.tip = '';
+    G.successLine = '';
+    G.chosenSpell = -1;
+    G.roundWinner = -1;
+    G.deadHeat = [];
+    G.stun = [0, 0, 0];
+    G.tickBucket = 0;
+    G.bolt = 0;
+    G.cardFlash = [0, 0, 0];
+    G.tint = G.mode === 'coop' ? G.activePlayer : (G.mode === 'vs' ? 3 : 0);
+    syncPads();
+    const turn = G.mode === 'coop' ? PLAYERS[G.activePlayer].full + "'S TURN. " : '';
+    announce(turn + G.question.originalText + ' is ' + G.question.roundedText + ' when rounded to the nearest blank.');
+  }
+
+  function startTrial() {
+    if (G.players === 1) G.mode = 'solo';
+    if (G.players > 1 && G.mode === 'solo') G.mode = 'coop';
+    audio.unlock();
+    audio.playStart();
+    G.screen = 'play';
+    G.qIndex = 0;
+    G.hearts = 3;
+    G.score = 0;
+    G.scores = [0, 0, 0];
+    G.stars = [0, 0, 0];
+    G.streak = 0;
+    G.correctCount = 0;
+    G.activePlayer = 0;
+    G.selection = 0;
+    G.shake = 0;
+    G.particles = [];
+    G.floaters = [];
+    G.winners = [];
+    G.resultKind = '';
+    beginQuestion();
+  }
+
+  function endTrial(kind) {
+    G.screen = 'result';
+    G.resultKind = kind;
+    G.status = 'done';
+    G.winners = [];
+    if (kind === 'duel') {
+      let bestStar = -1;
+      let bestScore = -1;
+      for (let i = 0; i < G.players; i++) {
+        if (G.stars[i] > bestStar || (G.stars[i] === bestStar && G.scores[i] > bestScore)) {
+          bestStar = G.stars[i];
+          bestScore = G.scores[i];
+        }
+      }
+      for (let i = 0; i < G.players; i++) {
+        if (G.stars[i] === bestStar && G.scores[i] === bestScore) G.winners.push(i);
+      }
+    }
+    if (kind === 'defeat') audio.playGameOver();
+    else audio.playFanfare();
+    if (kind === 'clear') announce('Trial complete. Team score ' + G.score + '.');
+    else if (kind === 'defeat') announce('Mana shattered. Score ' + G.score + '.');
+    else announce('Duel complete.');
+  }
+
+  function finishFeedback() {
+    if (G.status === 'transition' || G.screen !== 'play') return;
+    G.status = 'transition';
+    if (G.mode !== 'vs' && G.hearts <= 0) {
+      endTrial('defeat');
+      return;
+    }
+    if (G.qIndex + 1 >= TOTAL_SPELLS) {
+      endTrial(G.mode === 'vs' ? 'duel' : 'clear');
+      return;
+    }
+    G.qIndex += 1;
+    if (G.mode === 'coop') G.activePlayer = (G.activePlayer + 1) % G.players;
+    beginQuestion();
+  }
+
+  function openFeedback(kind, duration) {
+    G.status = kind;
+    G.statusMax = duration;
+    G.statusTime = duration;
+  }
+
+  function awardTeam(spell) {
+    const ratio = Math.max(0, Math.min(1, G.timeLeft / G.timeMax));
+    const bonus = Math.round(ratio * 120);
+    const streakBonus = Math.min(G.streak, 6) * 15;
+    const pts = 100 + bonus + streakBonus;
+    G.score += pts;
+    G.streak += 1;
+    G.correctCount += 1;
+    G.chosenSpell = spell;
+    G.successLine = 'NEAREST ' + G.question.placeLabel + '!  +' + pts;
+    G.tip = '';
+    openFeedback('correct', 1.7);
+    G.bolt = 0.5;
+    G.cardFlash[G.question.spellIndex] = 1.7;
+    G.cardFlashColor[G.question.spellIndex] = '#7dff6b';
+    audio.playCast();
+    audio.playChime();
+    const c = scrollCenter();
+    burstAt(c.x, c.y);
+    spawnFloater(c.x, c.y - 20, '+' + pts, '#e39b00');
+    announce('Correct. Nearest ' + G.question.placeLabel + '. Plus ' + pts + '. ' + G.question.shortReason);
+  }
+
+  function awardPlayers(players, deadHeat) {
+    const ratio = Math.max(0, Math.min(1, G.timeLeft / G.timeMax));
+    const pts = 100 + Math.round(ratio * 80);
+    players.forEach((p) => {
+      G.stars[p] += 1;
+      G.scores[p] += pts;
+    });
+    G.correctCount += 1;
+    G.roundWinner = players[0];
+    G.deadHeat = deadHeat ? players.slice() : [];
+    G.tint = players[0];
+    G.chosenSpell = G.question.spellIndex;
+    if (deadHeat) {
+      G.successLine = 'DEAD HEAT! ' + players.map((p) => PLAYERS[p].name).join(' + ') + '  +1 STAR';
+    } else {
+      G.successLine = PLAYERS[players[0]].full + ' FASTEST HAND! +1 STAR';
+    }
+    G.tip = '';
+    openFeedback('correct', 1.6);
+    G.bolt = 0.45;
+    G.cardFlash[G.question.spellIndex] = 1.6;
+    G.cardFlashColor[G.question.spellIndex] = '#7dff6b';
+    audio.playCast();
+    audio.playChime();
+    burstAt(scrollCenter().x, scrollCenter().y);
+    announce(G.successLine + '. ' + G.question.shortReason);
+  }
+
+  function failSolo(spell, timedOut) {
+    G.hearts = Math.max(0, G.hearts - 1);
+    G.streak = 0;
+    G.chosenSpell = spell;
+    G.tip = (timedOut ? "Time's up! " : '') + G.question.tip;
+    G.successLine = timedOut ? "TIME'S UP!" : 'THE SPELL FIZZLED!';
+    openFeedback(timedOut ? 'timeout' : 'wrong', 3.45);
+    G.shake = 0.32;
+    if (spell >= 0 && spell !== G.question.spellIndex) {
+      G.cardFlash[spell] = 0.7;
+      G.cardFlashColor[spell] = '#ff6b86';
+    }
+    G.cardFlash[G.question.spellIndex] = 3.45;
+    G.cardFlashColor[G.question.spellIndex] = '#7dff6b';
+    audio.playFizzle();
+    smokeAt(scrollCenter().x, scrollCenter().y);
+    spawnFloater(VIEW_W * 0.5, 250, '-1 MANA', '#b06bff');
+    announce(G.tip);
+  }
+
+  function failVSTimeout() {
+    G.chosenSpell = -1;
+    G.tip = G.question.tip;
+    G.successLine = "TIME'S UP! NOBODY CLAIMED THE STAR.";
+    openFeedback('timeout', 3.2);
+    G.cardFlash[G.question.spellIndex] = 3.2;
+    G.cardFlashColor[G.question.spellIndex] = '#7dff6b';
+    audio.playFizzle();
+    smokeAt(scrollCenter().x, scrollCenter().y);
+    announce(G.successLine + ' ' + G.tip);
+  }
+
+  function applyStun(player, spell) {
+    G.stun[player] = 1.5;
+    if (spell >= 0) {
+      G.cardFlash[spell] = 0.35;
+      G.cardFlashColor[spell] = '#ff6b86';
+    }
+    audio.playFizzle();
+    smokeAt(scrollCenter().x, scrollCenter().y - 10);
+    spawnFloater(SCROLL.x + 80 + player * 180, SCROLL.y + 40, PLAYERS[player].name + ' FIZZLE!', PLAYERS[player].color);
+  }
+
+  function resolveCoopOrSolo(player, spell) {
+    if (G.mode === 'coop' && player !== G.activePlayer) {
+      audio.playDeny();
+      spawnFloater(VIEW_W / 2, 168, PLAYERS[G.activePlayer].full + "'S TURN!", PLAYERS[G.activePlayer].color);
+      return;
+    }
+    audio.playCast();
+    if (tomePlaceId(spell) === G.question.placeId) awardTeam(spell);
+    else failSolo(spell, false);
+  }
+
+  function flushQueue() {
+    if (G.screen !== 'play' || G.status !== 'ask') {
+      queue.length = 0;
+      return;
+    }
+    if (!queue.length) return;
+    queue.sort((a, b) => a.t - b.t || a.player - b.player);
+    const items = queue.splice(0, queue.length);
+    if (G.mode !== 'vs') {
+      for (let i = 0; i < items.length; i++) {
+        if (G.status !== 'ask') break;
+        resolveCoopOrSolo(items[i].player, items[i].spell);
+      }
+      return;
+    }
+    let i = 0;
+    while (i < items.length && G.status === 'ask') {
+      const t0 = items[i].t;
+      const windowItems = [];
+      while (i < items.length && items[i].t - t0 <= 45) {
+        windowItems.push(items[i]);
+        i++;
+      }
+      const correct = [];
+      const wrong = [];
+      const seen = {};
+      for (let k = 0; k < windowItems.length; k++) {
+        const item = windowItems[k];
+        if (item.player >= G.players || G.stun[item.player] > 0 || seen[item.player]) continue;
+        seen[item.player] = true;
+        if (tomePlaceId(item.spell) === G.question.placeId) correct.push(item.player);
+        else wrong.push(item);
+      }
+      if (correct.length > 1) {
+        wrong.forEach((w) => applyStun(w.player, w.spell));
+        awardPlayers(correct, true);
+        return;
+      }
+      if (correct.length === 1) {
+        wrong.forEach((w) => applyStun(w.player, w.spell));
+        awardPlayers(correct, false);
+        return;
+      }
+      wrong.forEach((w) => applyStun(w.player, w.spell));
+    }
+  }
+
+  function enqueueCast(player, spell, defer) {
+    if (G.screen !== 'play' || G.status !== 'ask') return;
+    if (player < 0 || player >= G.players) return;
+    if (spell < 0 || spell > 2) return;
+    queue.push({ player, spell, t: nowMs() });
+    if (!defer) flushQueue();
+  }
+
+  function syncPads() {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    for (let i = 0; i < 3; i++) {
+      const pad = pads[i];
+      const mem = padMemory[i];
+      if (!pad || !pad.connected) {
+        mem.buttons.fill(false);
+        mem.stick = false;
+        continue;
+      }
+      for (let b = 0; b < mem.buttons.length; b++) {
+        const btn = pad.buttons[b];
+        mem.buttons[b] = !!(btn && (btn.pressed || btn.value > 0.5));
+      }
+      const ax = pad.axes && pad.axes.length > 0 ? pad.axes[0] : 0;
+      const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] : 0;
+      mem.stick = Math.hypot(ax, ay) > 0.45;
+    }
+  }
+
+  function onTimeout() {
+    if (G.status !== 'ask') return;
+    if (G.mode === 'vs') failVSTimeout();
+    else failSolo(-1, true);
+  }
+
+  function trySkipFeedback() {
+    if (G.screen !== 'play') return;
+    if (G.status !== 'correct' && G.status !== 'wrong' && G.status !== 'timeout') return;
+    const elapsed = G.statusMax - G.statusTime;
+    if (elapsed < 0.85) return;
+    finishFeedback();
+  }
+
+  function spellFromKey(e) {
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    for (let p = 0; p < PLAYERS.length; p++) {
+      const idx = PLAYERS[p].keys.indexOf(key);
+      if (idx >= 0) return { player: p, spell: idx };
+    }
+    return null;
+  }
+
+  function pollPads() {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    for (let i = 0; i < 3; i++) {
+      const pad = pads[i];
+      const mem = padMemory[i];
+      if (!pad || !pad.connected) {
+        mem.buttons.fill(false);
+        mem.stick = false;
+        continue;
+      }
+      const dpad = [14, 13, 15];
+      const face = [2, 0, 1];
+      for (let s = 0; s < 3; s++) {
+        if (edgeButton(pad, mem, dpad[s]) || edgeButton(pad, mem, face[s])) enqueueCast(i, s, true);
+      }
+      if (edgeButton(pad, mem, 3)) enqueueCast(i, 1, true);
+      const ax = pad.axes && pad.axes.length > 0 ? pad.axes[0] : 0;
+      const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] : 0;
+      let dir = -1;
+      if (Math.abs(ax) > 0.58 || Math.abs(ay) > 0.58) {
+        if (Math.abs(ax) > Math.abs(ay)) dir = ax < 0 ? 0 : 2;
+        else if (ay > 0.58) dir = 1;
+      }
+      if (dir >= 0 && !mem.stick) {
+        mem.stick = true;
+        enqueueCast(i, dir, true);
+      } else if (dir < 0 && Math.hypot(ax, ay) < 0.35) {
+        mem.stick = false;
+      }
+    }
+    flushQueue();
+  }
+
+  function edgeButton(pad, mem, index) {
+    const b = pad.buttons[index];
+    const down = !!(b && (b.pressed || b.value > 0.5));
+    const was = !!mem.buttons[index];
+    mem.buttons[index] = down;
+    return down && !was;
+  }
+
+  function clickTitle(x, y) {
+    const lay = titleLayout();
+    for (let i = 0; i < lay.playerBtns.length; i++) {
+      const b = lay.playerBtns[i];
+      if (pointIn(b, x, y)) {
+        setPlayers(b.players);
+        audio.playSelect();
+        return;
+      }
+    }
+    for (let i = 0; i < lay.modeBtns.length; i++) {
+      const b = lay.modeBtns[i];
+      if (!pointIn(b, x, y)) continue;
+      if (!b.enabled) {
+        audio.playDeny();
+        return;
+      }
+      G.mode = b.mode;
+      audio.playSelect();
+      return;
+    }
+    for (let i = 0; i < lay.diffBtns.length; i++) {
+      const b = lay.diffBtns[i];
+      if (pointIn(b, x, y)) {
+        G.difficulty = b.diff;
+        audio.playSelect();
+        return;
+      }
+    }
+    if (pointIn(lay.start, x, y)) startTrial();
+  }
+
+  function clickResult(x, y) {
+    const lay = resultLayout();
+    if (pointIn(lay.again, x, y)) startTrial();
+    else if (pointIn(lay.title, x, y)) {
+      G.screen = 'title';
+      announce('Arcane Rounder title screen.');
+    }
+  }
+
+  function handlePointer(x, y) {
+    audio.unlock();
+    if (pointIn(muteRect(), x, y)) {
+      audio.toggleMute();
+      audio.playSelect();
+      return;
+    }
+    if (G.screen === 'title') {
+      clickTitle(x, y);
+      return;
+    }
+    if (G.screen === 'result') {
+      clickResult(x, y);
+      return;
+    }
+    if (G.status !== 'ask') {
+      trySkipFeedback();
+      return;
+    }
+    const cards = layoutCards();
+    for (let i = 0; i < cards.length; i++) {
+      const r = cards[i];
+      if (x >= r.x && x <= r.x + r.w && y >= r.y - 12 && y <= r.y + r.h) {
+        const player = G.mode === 'coop' ? G.activePlayer : 0;
+        enqueueCast(player, i, false);
+        return;
+      }
+    }
+  }
+
+  function onKey(e) {
+    if (e.repeat) return;
+    audio.unlock();
+    if (e.code === 'Space' || (e.key && e.key.indexOf('Arrow') === 0)) e.preventDefault();
+    if (e.key === 'm' || e.key === 'M') {
+      audio.toggleMute();
+      return;
+    }
+    if (G.screen === 'title') {
+      if (e.key === 'Enter') startTrial();
+      return;
+    }
+    if (G.screen === 'result') {
+      if (e.key === 'Enter') startTrial();
+      if (e.key === 'Escape') G.screen = 'title';
+      return;
+    }
+    if (G.status !== 'ask') {
+      trySkipFeedback();
+      return;
+    }
+    if (G.mode === 'solo') {
+      if (e.key === 'ArrowLeft') {
+        G.selection = (G.selection + 2) % 3;
+        audio.playSelect();
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        G.selection = (G.selection + 1) % 3;
+        audio.playSelect();
+        return;
+      }
+      if (e.key === ' ' || e.key === 'Enter') {
+        const spell = G.hoverCard >= 0 ? G.hoverCard : G.selection;
+        enqueueCast(0, spell, false);
+        return;
+      }
+    }
+    const mapped = spellFromKey(e);
+    if (mapped) enqueueCast(mapped.player, mapped.spell, false);
+  }
+
+  function updateHover() {
+    G.hoverCard = -1;
+    G.hoverId = '';
+    G.cursor = 'default';
+    if (!G.mouse.inside) return;
+    const x = G.mouse.x;
+    const y = G.mouse.y;
+    if (pointIn(muteRect(), x, y)) {
+      G.hoverId = 'mute';
+      G.cursor = 'pointer';
+      return;
+    }
+    if (G.screen === 'title') {
+      const lay = titleLayout();
+      for (let i = 0; i < lay.all.length; i++) {
+        const b = lay.all[i];
+        if (b.enabled !== false && pointIn(b, x, y)) {
+          G.hoverId = b.id;
+          G.cursor = 'pointer';
+          return;
+        }
+      }
+      return;
+    }
+    if (G.screen === 'result') {
+      const lay = resultLayout();
+      if (pointIn(lay.again, x, y) || pointIn(lay.title, x, y)) G.cursor = 'pointer';
+      return;
+    }
+    const cards = layoutCards();
+    for (let i = 0; i < cards.length; i++) {
+      const r = cards[i];
+      if (x >= r.x && x <= r.x + r.w && y >= r.y - 12 && y <= r.y + r.h) {
+        G.hoverCard = i;
+        G.cursor = 'pointer';
+        return;
+      }
+    }
+    if (G.status !== 'ask') G.cursor = 'pointer';
+  }
+
+  function update(dt) {
+    G.anim += dt;
+    updateHover();
+    if (canvas) canvas.style.cursor = G.cursor;
+    for (let i = 0; i < 3; i++) G.cardFlash[i] = Math.max(0, G.cardFlash[i] - dt);
+    G.bolt = Math.max(0, G.bolt - dt);
+    G.shake = Math.max(0, G.shake - dt);
+    for (let i = G.particles.length - 1; i >= 0; i--) {
+      const p = G.particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += (p.g || 0) * dt;
+      if (p.life <= 0) G.particles.splice(i, 1);
+    }
+    for (let i = G.floaters.length - 1; i >= 0; i--) {
+      const f = G.floaters[i];
+      f.life -= dt;
+      f.y -= 26 * dt;
+      if (f.life <= 0) G.floaters.splice(i, 1);
+    }
+    if (G.screen !== 'play' || G.status === 'transition' || G.status === 'done') return;
+    if (G.status === 'ask') {
+      for (let i = 0; i < 3; i++) G.stun[i] = Math.max(0, G.stun[i] - dt);
+      G.timeLeft -= dt;
+      if (G.timeLeft <= 0) {
+        G.timeLeft = 0;
+        onTimeout();
+      } else if (G.timeLeft < 3) {
+        const bucket = Math.ceil(G.timeLeft);
+        if (bucket >= 1 && bucket <= 3 && bucket !== G.tickBucket) {
+          G.tickBucket = bucket;
+          audio.playTick();
+        }
+      }
+      pollPads();
+    } else {
+      G.statusTime -= dt;
+      if (G.statusTime <= 0) finishFeedback();
+    }
+  }
+
+  // ============================================================================
+  // DRAW
+  // ============================================================================
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function fillRound(x, y, w, h, r, color) {
+    ctx.fillStyle = color;
+    roundRect(x, y, w, h, r);
+    ctx.fill();
+  }
+
+  function strokeRound(x, y, w, h, r, color, width) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    roundRect(x, y, w, h, r);
+    ctx.stroke();
+  }
+
+  function textAt(str, x, y, size, color, align, weight, family) {
+    ctx.fillStyle = color;
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + (family || FONT);
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(str, x, y);
+  }
+
+  function fitSize(str, maxW, size, min, weight, family) {
+    let s = size;
+    const fam = family || FONT;
+    const wgt = weight || 700;
+    while (s > min) {
+      ctx.font = wgt + ' ' + s + 'px ' + fam;
+      if (ctx.measureText(str).width <= maxW) return s;
+      s -= 1;
+    }
+    return min;
+  }
+
+  function wrapLines(str, maxW, size, weight, family) {
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + (family || FONT);
+    const words = str.split(' ');
+    const lines = [];
+    let cur = '';
+    for (let i = 0; i < words.length; i++) {
+      const trial = cur ? cur + ' ' + words[i] : words[i];
+      if (ctx.measureText(trial).width > maxW && cur) {
+        lines.push(cur);
+        cur = words[i];
+      } else cur = trial;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  function drawStar(x, y, r, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+      const b = a + Math.PI / 5;
+      ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      ctx.lineTo(Math.cos(b) * r * 0.45, Math.sin(b) * r * 0.45);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCrystal(x, y, s, filled, color) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - s);
+    ctx.lineTo(x + s * 0.7, y - s * 0.18);
+    ctx.lineTo(x + s * 0.42, y + s);
+    ctx.lineTo(x, y + s * 0.48);
+    ctx.lineTo(x - s * 0.42, y + s);
+    ctx.lineTo(x - s * 0.7, y - s * 0.18);
+    ctx.closePath();
+    if (filled) {
+      const g = ctx.createLinearGradient(x - s, y - s, x + s, y + s);
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0.45, color);
+      g.addColorStop(1, '#7a4dff');
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+    ctx.strokeStyle = filled ? '#ffffff' : 'rgba(90,70,120,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function drawCloud(x, y, s) {
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.ellipse(x, y, 46 * s, 22 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x + 32 * s, y + 6 * s, 34 * s, 18 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x - 30 * s, y + 8 * s, 28 * s, 16 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBackground() {
+    const sky = ctx.createLinearGradient(0, 0, 0, VIEW_H);
+    sky.addColorStop(0, '#79d2ff');
+    sky.addColorStop(0.42, '#c9bdff');
+    sky.addColorStop(0.72, '#ffe3b8');
+    sky.addColorStop(1, '#8ee7a4');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+    const sunX = 1080;
+    const sunY = 120;
+    const glow = ctx.createRadialGradient(sunX, sunY, 10, sunX, sunY, 120);
+    glow.addColorStop(0, 'rgba(255,244,180,0.95)');
+    glow.addColorStop(1, 'rgba(255,244,180,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 120, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffe56a';
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 38, 0, Math.PI * 2);
+    ctx.fill();
+
+    CLOUDS.forEach((c, i) => {
+      const drift = (G.anim * (8 + i * 2) + c.x) % (VIEW_W + 160) - 80;
+      drawCloud(drift, c.y, c.s);
+    });
+
+    ctx.fillStyle = '#8fd9a4';
+    ctx.beginPath();
+    ctx.moveTo(0, 430);
+    ctx.quadraticCurveTo(220, 390, 460, 424);
+    ctx.quadraticCurveTo(700, 458, 980, 410);
+    ctx.quadraticCurveTo(1140, 392, VIEW_W, 420);
+    ctx.lineTo(VIEW_W, 520);
+    ctx.lineTo(0, 520);
+    ctx.fill();
+
+    drawCastle(78, 286);
+    drawTree(348, 430);
+    drawTree(1216, 424);
+
+    const grass = ctx.createLinearGradient(0, 470, 0, 720);
+    grass.addColorStop(0, '#67d98b');
+    grass.addColorStop(1, '#24924c');
+    ctx.fillStyle = grass;
+    ctx.fillRect(0, 470, VIEW_W, 250);
+
+    FLOWERS.forEach((f) => {
+      const colors = ['#ff5fa2', '#ffd15c', '#7af0ff'];
+      ctx.fillStyle = colors[f.kind];
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff3b0';
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    for (let i = 0; i < 16; i++) {
+      const x = (i * 83 + G.anim * (10 + (i % 4) * 4)) % VIEW_W;
+      const y = 150 + (i * 47) % 250 + Math.sin(G.anim * 1.4 + i) * 8;
+      ctx.globalAlpha = 0.35 + (i % 5) * 0.08;
+      ctx.fillStyle = i % 2 ? '#fff' : '#ffe28a';
+      drawStar(x, y, 2 + (i % 3), ctx.fillStyle);
+      ctx.globalAlpha = 1;
+    }
+
+    const orbs = [
+      { x: 250, y: 210, c: '#ff4f9a' },
+      { x: 1188, y: 230, c: '#2ee6d6' },
+      { x: 990, y: 168, c: '#ffb703' }
+    ];
+    orbs.forEach((o, i) => {
+      const oy = o.y + Math.sin(G.anim * 1.3 + i) * 8;
+      ctx.fillStyle = o.c;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(o.x, oy, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.arc(o.x, oy, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawCastle(x, y) {
+    ctx.fillStyle = '#f7f1ff';
+    ctx.fillRect(x + 30, y + 40, 70, 90);
+    ctx.fillRect(x + 100, y + 58, 54, 72);
+    ctx.fillStyle = '#6d4b9a';
+    ctx.beginPath();
+    ctx.moveTo(x + 22, y + 40);
+    ctx.lineTo(x + 65, y + 6);
+    ctx.lineTo(x + 108, y + 40);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + 94, y + 58);
+    ctx.lineTo(x + 127, y + 28);
+    ctx.lineTo(x + 160, y + 58);
+    ctx.fill();
+    ctx.fillStyle = '#ffe08a';
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 2; c++) {
+        ctx.fillRect(x + 46 + c * 26, y + 54 + r * 20, 10, 12);
+      }
+    }
+    ctx.fillStyle = '#5b3b86';
+    ctx.fillRect(x + 54, y + 104, 18, 26);
+    ctx.strokeStyle = COL.gold;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 65, y + 6);
+    ctx.lineTo(x + 65, y - 10);
+    ctx.stroke();
+    ctx.fillStyle = '#ff5f8a';
+    ctx.beginPath();
+    ctx.moveTo(x + 65, y - 10);
+    ctx.lineTo(x + 80, y - 4);
+    ctx.lineTo(x + 65, y + 2);
+    ctx.fill();
+  }
+
+  function drawTree(x, y) {
+    ctx.fillStyle = '#8a5a34';
+    ctx.fillRect(x - 6, y - 28, 12, 32);
+    ctx.fillStyle = '#3cb86a';
+    ctx.beginPath();
+    ctx.arc(x, y - 46, 26, 0, Math.PI * 2);
+    ctx.arc(x - 16, y - 34, 18, 0, Math.PI * 2);
+    ctx.arc(x + 16, y - 32, 18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawMute() {
+    const r = muteRect();
+    const hot = G.hoverId === 'mute';
+    fillRound(r.x, r.y, r.w, r.h, 12, hot ? '#fff' : 'rgba(255,255,255,0.92)');
+    strokeRound(r.x, r.y, r.w, r.h, 12, audio.muted ? '#e23b4a' : '#1fbf6a', 2);
+    textAt(audio.muted ? 'MUTED' : 'SOUND', r.x + r.w / 2, r.y + r.h / 2, 14, audio.muted ? '#e23b4a' : '#0e7a43', 'center', 800);
+  }
+
+  function drawWizard(x, y, tintIndex, casting) {
+    const bob = Math.sin(G.anim * 2.1) * 4;
+    const yy = y + bob;
+    const tint = tintIndex === 0 ? COL.crimson : tintIndex === 1 ? COL.azure : tintIndex === 2 ? COL.emerald : '#7c4dff';
+    ctx.save();
+    ctx.fillStyle = 'rgba(70, 40, 90, 0.13)';
+    ctx.beginPath();
+    ctx.ellipse(x + 10, yy + 118, 58, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = tint;
+    ctx.globalAlpha = 0.16;
+    ctx.beginPath();
+    ctx.arc(x + 6, yy + 10, 78 + Math.sin(G.anim * 3) * 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = '#f4f0ff';
+    ctx.beginPath();
+    ctx.moveTo(x - 48, yy + 28);
+    ctx.quadraticCurveTo(x - 58, yy + 110, x + 8, yy + 116);
+    ctx.quadraticCurveTo(x + 74, yy + 110, x + 58, yy + 24);
+    ctx.quadraticCurveTo(x + 8, yy + 48, x - 48, yy + 28);
+    ctx.fill();
+    ctx.strokeStyle = tint;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    ctx.fillStyle = COL.gold;
+    ctx.fillRect(x - 28, yy + 62, 70, 10);
+    ctx.fillStyle = tint;
+    ctx.beginPath();
+    ctx.arc(x + 8, yy + 67, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    const arm = casting ? -26 : -8;
+    ctx.strokeStyle = '#f4f0ff';
+    ctx.lineWidth = 12;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + 36, yy + 48);
+    ctx.quadraticCurveTo(x + 78, yy + 30 + arm, x + 96, yy - 20 + arm);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#8a5a34';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(x + 92, yy + 78);
+    ctx.lineTo(x + 112, yy - 78 + arm * 0.3);
+    ctx.stroke();
+
+    const crystalX = x + 112;
+    const crystalY = yy - 96 + arm * 0.25;
+    ctx.save();
+    ctx.shadowColor = '#8ef6ff';
+    ctx.shadowBlur = 16;
+    ctx.fillStyle = '#bff7ff';
+    ctx.beginPath();
+    ctx.moveTo(crystalX, crystalY - 16);
+    ctx.lineTo(crystalX + 12, crystalY);
+    ctx.lineTo(crystalX, crystalY + 18);
+    ctx.lineTo(crystalX - 12, crystalY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(crystalX - 3, crystalY - 6, 4, 8);
+
+    ctx.fillStyle = '#ffd2b8';
+    ctx.beginPath();
+    ctx.arc(x + 4, yy - 8, 28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffb7c8';
+    ctx.beginPath();
+    ctx.arc(x - 12, yy + 2, 5, 0, Math.PI * 2);
+    ctx.arc(x + 20, yy + 2, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    const blink = Math.sin(G.anim * 0.7) > 0.97;
+    ctx.fillStyle = '#2a2140';
+    if (blink) {
+      ctx.fillRect(x - 12, yy - 10, 12, 2);
+      ctx.fillRect(x + 6, yy - 10, 12, 2);
+    } else {
+      ctx.beginPath();
+      ctx.arc(x - 7, yy - 8, 3.3, 0, Math.PI * 2);
+      ctx.arc(x + 12, yy - 8, 3.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#c47b74';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x + 4, yy + 6, 8, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(x + 4, yy + 18, 16, 12, 0, 0, Math.PI * 2);
+    ctx.ellipse(x - 10, yy + 12, 10, 8, 0, 0, Math.PI * 2);
+    ctx.ellipse(x + 18, yy + 12, 10, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = tint;
+    ctx.beginPath();
+    ctx.moveTo(x - 32, yy - 24);
+    ctx.lineTo(x + 4, yy - 92);
+    ctx.lineTo(x + 40, yy - 24);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(x - 40, yy - 28, 88, 10);
+    ctx.fillStyle = COL.gold;
+    ctx.fillRect(x - 8, yy - 52, 22, 8);
+    drawStar(x + 4, yy - 70, 7, '#ffe56a');
+    ctx.restore();
+    return { x: crystalX, y: crystalY };
+  }
+
+  function drawBolt(from, to, life) {
+    if (life <= 0) return;
+    const t = 1 - life / 0.5;
+    const x = from.x + (to.x - from.x) * t;
+    const y = from.y + (to.y - from.y) * t;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 220, 90, 0.9)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.quadraticCurveTo((from.x + to.x) / 2, from.y - 30, x, y);
+    ctx.stroke();
+    ctx.fillStyle = '#fff7c8';
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function tokenizeNumber(text, side) {
+    const tokens = [];
+    const dot = text.indexOf('.');
+    const intStr = dot === -1 ? text : text.slice(0, dot);
+    const fracStr = dot === -1 ? '' : text.slice(dot + 1);
+    const intDigits = intStr.split('').filter((ch) => ch >= '0' && ch <= '9');
+    let power = intDigits.length - 1;
+    for (let i = 0; i < intStr.length; i++) {
+      const ch = intStr.charAt(i);
+      if (ch === ' ') tokens.push({ ch, type: 'sep', side });
+      else {
+        tokens.push({ ch, type: 'digit', side, power, dp: 0 });
+        power--;
+      }
+    }
+    if (dot !== -1) {
+      tokens.push({ ch: '.', type: 'dot', side });
+      for (let i = 0; i < fracStr.length; i++) {
+        tokens.push({ ch: fracStr.charAt(i), type: 'digit', side, power: -1, dp: i + 1 });
+      }
+    }
+    return tokens;
+  }
+
+  function tokenRole(token, q) {
+    if (!q || token.type !== 'digit') return '';
+    if (q.kind === 'whole') {
+      if (token.power === q.targetPower) return 'target';
+      if (token.side === 'orig' && token.power === q.neighborPower) return 'neighbor';
+    } else if (token.dp) {
+      if (token.dp === q.targetDp) return 'target';
+      if (token.side === 'orig' && token.dp === q.neighborDp) return 'neighbor';
+    }
+    return '';
+  }
+
+  function drawGlyphNumber(value, cx, cy, size, side, reveal) {
+    ctx.font = '700 ' + size + 'px ' + FONT_NUM;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const tokens = tokenizeNumber(value, side);
+    const widths = tokens.map((t) => ctx.measureText(t.ch).width);
+    let total = 0;
+    widths.forEach((w) => { total += w; });
+    let x = cx - total / 2;
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      const w = widths[i];
+      const role = reveal ? tokenRole(token, G.question) : '';
+      if (role) {
+        ctx.fillStyle = role === 'target' ? 'rgba(255, 196, 40, 0.98)' : 'rgba(255, 236, 170, 0.98)';
+        roundRect(x - 3, cy - size * 0.62, w + 6, size * 1.22, 6);
+        ctx.fill();
+        ctx.strokeStyle = '#e39b00';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      ctx.font = '700 ' + size + 'px ' + FONT_NUM;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = role ? '#6a3e00' : (token.type === 'sep' ? '#a78455' : '#3a2a12');
+      ctx.fillText(token.ch, x, cy);
+      x += w;
+    }
+  }
+
+  function drawScroll() {
+    const q = G.question;
+    const floatY = Math.sin(G.anim * 1.6) * 3;
+    const x = SCROLL.x;
+    const y = SCROLL.y + floatY;
+    const w = SCROLL.w;
+    const h = SCROLL.h;
+    ctx.save();
+    if (G.shake > 0) {
+      ctx.translate(Math.sin(G.anim * 48) * 7 * G.shake, Math.cos(G.anim * 42) * 3 * G.shake);
+    }
+    ctx.fillStyle = 'rgba(120, 70, 20, 0.12)';
+    roundRect(x + 10, y + 16, w, h, 22);
+    ctx.fill();
+    const g = ctx.createLinearGradient(x, y, x, y + h);
+    g.addColorStop(0, '#fffaf0');
+    g.addColorStop(1, '#f3ddb0');
+    ctx.fillStyle = g;
+    roundRect(x, y, w, h, 22);
+    ctx.fill();
+    ctx.strokeStyle = '#e0b45e';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(196, 146, 52, 0.45)';
+    ctx.lineWidth = 2;
+    roundRect(x + 10, y + 10, w - 20, h - 20, 16);
+    ctx.stroke();
+
+    textAt('TRANSFORMATION SCROLL', x + w / 2, y + 28, 14, '#a56b22', 'center', 800);
+    const reveal = G.status === 'correct' || G.status === 'wrong' || G.status === 'timeout';
+    const numSize = reveal ? 40 : 52;
+    const left = x + w * 0.28;
+    const right = x + w * 0.73;
+    const mid = x + w * 0.5;
+    const numY = reveal ? y + 92 : y + 128;
+    textAt('ORIGINAL', left, numY - 46, 12, '#8a6840', 'center', 800);
+    textAt('ROUNDED', right, numY - 46, 12, '#8a6840', 'center', 800);
+    drawGlyphNumber(q.originalText, left, numY, fitSize(q.originalText, w * 0.36, numSize, 26, 700, FONT_NUM), 'orig', reveal);
+    drawGlyphNumber(q.roundedText, right, numY, fitSize(q.roundedText, w * 0.36, numSize, 26, 700, FONT_NUM), 'round', reveal);
+    ctx.strokeStyle = '#d88800';
+    ctx.fillStyle = '#d88800';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(mid - 28, numY);
+    ctx.lineTo(mid + 18, numY);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mid + 8, numY - 10);
+    ctx.lineTo(mid + 24, numY);
+    ctx.lineTo(mid + 8, numY + 10);
+    ctx.fill();
+
+    if (reveal) {
+      textAt('Dark gold = place digit     Pale gold = deciding digit', x + w / 2, y + 138, 13, '#8a5a16', 'center', 700);
+      if (G.status === 'correct') {
+        const size = fitSize(G.successLine, w - 80, 26, 16, 800);
+        textAt(G.successLine, x + w / 2, y + 176, size, '#1c8a4a', 'center', 800);
+        const lines = wrapLines(q.shortReason, w - 90, 16, 700);
+        lines.forEach((line, i) => textAt(line, x + w / 2, y + 210 + i * 22, 16, COL.ink, 'center', 700));
+      } else {
+        textAt(G.successLine, x + w / 2, y + 164, 20, '#a23b78', 'center', 800);
+        let size = 16;
+        let lines = wrapLines(G.tip, w - 70, size, 700);
+        if (lines.length > 4) {
+          size = 14;
+          lines = wrapLines(G.tip, w - 70, size, 700);
+        }
+        const start = y + 192;
+        lines.slice(0, 4).forEach((line, i) => textAt(line, x + w / 2, start + i * (size + 6), size, COL.ink, 'center', 700));
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawParticles() {
+    G.particles.forEach((p) => {
+      const alpha = Math.max(0, p.life / p.max);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      if (p.kind === 'smoke') {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r * (1.2 - alpha), 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.kind === 'star') {
+        drawStar(p.x, p.y, p.r, p.color);
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+    ctx.globalAlpha = 1;
+    G.floaters.forEach((f) => {
+      ctx.globalAlpha = Math.max(0, f.life / f.max);
+      textAt(f.text, f.x, f.y, 22, f.color, 'center', 800);
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHud() {
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(0, 0, VIEW_W, 64);
+    ctx.fillStyle = '#f0c36a';
+    ctx.fillRect(0, 62, VIEW_W, 3);
+
+    const modeLabel = G.mode === 'coop' ? 'CO-OP' : G.mode === 'vs' ? 'VS' : 'SOLO';
+    fillRound(16, 12, 92, 40, 12, '#efe6ff');
+    textAt(modeLabel, 62, 32, 16, '#5b3b86', 'center', 800);
+    const info = diffInfo();
+    const diffColor = G.difficulty === 'easy' ? '#1fbf6a' : G.difficulty === 'medium' ? '#2f7dff' : G.difficulty === 'hard' ? '#9b5cff' : '#ff7a1a';
+    fillRound(118, 12, 168, 40, 12, diffColor);
+    textAt(info.name, 202, 32, 16, '#fff', 'center', 800);
+    textAt('Spell ' + (G.qIndex + 1) + ' / ' + TOTAL_SPELLS, 304, 32, 16, COL.ink, 'left', 800);
+
+    if (G.mode === 'vs') {
+      const n = G.players;
+      const bw = 168;
+      const gap = 12;
+      const total = n * bw + (n - 1) * gap;
+      let x = (VIEW_W - total) / 2 + 40;
+      let leadStar = -1;
+      let leadScore = -1;
+      for (let i = 0; i < n; i++) {
+        if (G.stars[i] > leadStar || (G.stars[i] === leadStar && G.scores[i] > leadScore)) {
+          leadStar = G.stars[i];
+          leadScore = G.scores[i];
+        }
+      }
+      for (let i = 0; i < n; i++) {
+        const lead = G.stars[i] === leadStar && G.scores[i] === leadScore && leadStar > 0;
+        fillRound(x, 10, bw, 44, 12, '#fff');
+        strokeRound(x, 10, bw, 44, 12, PLAYERS[i].color, lead ? 4 : 2);
+        textAt(PLAYERS[i].full, x + 10, 24, 11, PLAYERS[i].ink, 'left', 800);
+        drawStar(x + 118, 24, 8, COL.goldDeep);
+        textAt(String(G.stars[i]), x + 132, 24, 16, COL.ink, 'left', 800);
+        textAt(String(G.scores[i]) + ' pts', x + 10, 40, 11, '#6d6280', 'left', 700);
+        x += bw + gap;
+      }
+    } else {
+      const label = G.mode === 'coop' ? 'TEAM SCORE' : 'SCORE';
+      textAt(label, 620, 22, 12, '#6d6280', 'center', 800);
+      textAt(formatInt(G.score), 620, 42, 22, COL.ink, 'center', 800);
+      if (G.streak >= 2) textAt('STREAK x' + G.streak, 760, 42, 14, '#d88800', 'left', 800);
+      textAt(G.mode === 'coop' ? 'TEAM MANA' : 'MANA', 930, 22, 11, '#6d6280', 'left', 800);
+      for (let i = 0; i < 3; i++) drawCrystal(958 + i * 32, 44, 12, i < G.hearts, '#5ad0ff');
+    }
+    drawMute();
+  }
+
+  function drawPrompt() {
+    const q = G.question;
+    fillRound(28, 72, VIEW_W - 56, 18, 9, 'rgba(255,255,255,0.55)');
+    const ratio = G.timeMax <= 0 ? 0 : Math.max(0, Math.min(1, G.timeLeft / G.timeMax));
+    ctx.save();
+    roundRect(28, 72, (VIEW_W - 56) * ratio, 18, 9);
+    ctx.clip();
+    const bar = ctx.createLinearGradient(28, 0, VIEW_W - 28, 0);
+    bar.addColorStop(0, '#ff5ea8');
+    bar.addColorStop(0.25, '#ffb703');
+    bar.addColorStop(0.5, '#7dff6b');
+    bar.addColorStop(0.75, '#2ee6d6');
+    bar.addColorStop(1, '#6aa6ff');
+    ctx.fillStyle = bar;
+    ctx.fillRect(28, 72, VIEW_W - 56, 18);
+    if (G.timeLeft < 3 && G.status === 'ask') {
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.25 + Math.sin(G.anim * 12) * 0.2) + ')';
+      ctx.fillRect(28, 72, VIEW_W - 56, 18);
+    }
+    ctx.restore();
+    const timeColor = G.timeLeft < 3 ? '#c81e4a' : '#2a2140';
+    textAt(G.timeLeft.toFixed(1) + 's', VIEW_W - 78, 81, 12, timeColor, 'right', 800);
+
+    fillRound(28, 98, VIEW_W - 56, 44, 12, 'rgba(255,250,240,0.94)');
+    const sentence = q.originalText + ' is ' + q.roundedText + ' when rounded to the nearest ______.';
+    const size = fitSize(sentence, VIEW_W - 90, 24, 15, 800);
+    textAt(sentence, VIEW_W / 2, 120, size, COL.ink, 'center', 800);
+
+    let banner = 'Click a tome  ·  Keys 1  2  3  ·  ← → then Space';
+    let bg = '#5b3b86';
+    if (G.mode === 'coop') {
+      banner = PLAYERS[G.activePlayer].full + "'S TURN — keys or click";
+      bg = PLAYERS[G.activePlayer].color;
+    } else if (G.mode === 'vs') {
+      banner = 'Fastest correct spell wins the star  ·  a wrong spell stuns for 1.5s';
+      bg = '#7c4dff';
+    }
+    const bw = Math.min(920, banner.length * 11 + 48);
+    fillRound((VIEW_W - bw) / 2, 148, bw, 30, 15, bg);
+    textAt(banner, VIEW_W / 2, 163, 15, '#fff', 'center', 800);
+  }
+
+  function drawTome(card, index) {
+    const hot = G.hoverCard === index;
+    const selected = G.mode === 'solo' && G.selection === index;
+    const lift = hot ? 8 : 0;
+    const x = card.x;
+    const y = card.y - lift;
+    const style = TOME_STYLE[index];
+    ctx.save();
+    ctx.fillStyle = 'rgba(70, 40, 20, 0.18)';
+    roundRect(x + 6, y + 10, card.w, card.h, 16);
+    ctx.fill();
+    if (G.cardFlash[index] > 0) {
+      ctx.shadowColor = G.cardFlashColor[index];
+      ctx.shadowBlur = 18;
+    } else if (selected) {
+      ctx.shadowColor = COL.gold;
+      ctx.shadowBlur = 12;
+    }
+    const g = ctx.createLinearGradient(x, y, x, y + card.h);
+    g.addColorStop(0, style.light);
+    g.addColorStop(0.4, style.fill);
+    g.addColorStop(1, style.dark);
+    ctx.fillStyle = g;
+    roundRect(x, y, card.w, card.h, 16);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = style.dark;
+    roundRect(x, y, 26, card.h, 12);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 4; i++) ctx.fillRect(x + card.w - 28, y + 22 + i * 16, 14, 3);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x + 48, y + 36, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = style.ink;
+    ctx.beginPath();
+    ctx.arc(x + 48, y + 36, 5, 0, Math.PI * 2);
+    ctx.fill();
+    const label = tomeLabel(index);
+    const labelSize = fitSize(label, card.w - 70, 32, 18, 800);
+    textAt(label, x + card.w / 2 + 8, y + 58, labelSize, '#fff', 'center', 800);
+    textAt(TOME_SUB[tomePlaceId(index)], x + card.w / 2 + 8, y + 96, 16, style.light, 'center', 700);
+    if (selected) strokeRound(x + 3, y + 3, card.w - 6, card.h - 6, 14, '#fff4c4', 3);
+    if (G.status !== 'ask' && G.question && index === G.question.spellIndex) {
+      textAt('ANSWER', x + card.w - 58, y + 20, 11, '#145c32', 'center', 800);
+    }
+    ctx.restore();
+  }
+
+  function drawLegends(cards) {
+    const count = G.players;
+    cards.forEach((card, si) => {
+      const pillW = count === 1 ? 220 : count === 2 ? 156 : 112;
+      const gap = 8;
+      const total = count * pillW + (count - 1) * gap;
+      let x = card.x + card.w / 2 - total / 2;
+      for (let p = 0; p < count; p++) {
+        const player = PLAYERS[p];
+        const active = G.mode === 'coop' && p === G.activePlayer;
+        const stunned = G.stun[p] > 0 && G.status === 'ask';
+        fillRound(x, LEGEND_Y, pillW, 42, 10, stunned ? '#efe2ff' : '#fffaf0');
+        strokeRound(x, LEGEND_Y, pillW, 42, 10, stunned ? '#8d6bdc' : player.color, active ? 4 : 2);
+        const line = count === 1
+          ? 'CLICK · ' + player.keyLabel[si] + ' · Pad ' + player.pad[si]
+          : player.name + '  ' + player.keyLabel[si] + ' · ' + player.pad[si];
+        textAt(stunned ? player.name + ' STUN ' + G.stun[p].toFixed(1) : line, x + pillW / 2, LEGEND_Y + 21, count === 3 ? 12 : 13, player.ink, 'center', 800);
+        x += pillW + gap;
+      }
+    });
+    if (G.mode === 'solo') {
+      textAt('Arrow keys move the glow, then Space or Enter casts. Gamepad: X  A  B or D-pad ← ↓ →.', VIEW_W / 2, 706, 13, '#f7fff4', 'center', 700);
+    } else {
+      textAt('Pad face buttons X · A · B match D-pad ← · ↓ · →. P1 red, P2 blue, P3 green.', VIEW_W / 2, 706, 13, '#f7fff4', 'center', 700);
+    }
+  }
+
+  function drawPlay() {
+    drawBackground();
+    drawHud();
+    drawPrompt();
+    const wiz = drawWizard(150, 392, G.tint, G.bolt > 0 || G.status === 'correct');
+    drawScroll();
+    if (G.bolt > 0) drawBolt(wiz, { x: SCROLL.x + 80, y: SCROLL.y + 120 }, G.bolt);
+    drawParticles();
+    ctx.fillStyle = '#8b5a32';
+    roundRect(18, 494, VIEW_W - 36, 214, 18);
+    ctx.fill();
+    ctx.fillStyle = '#a56b3d';
+    roundRect(28, 502, VIEW_W - 56, 198, 14);
+    ctx.fill();
+    const cards = layoutCards();
+    const dim = G.status !== 'ask';
+    cards.forEach((card, i) => {
+      ctx.save();
+      if (dim && G.question && i !== G.question.spellIndex && G.cardFlash[i] <= 0) ctx.globalAlpha = 0.78;
+      drawTome(card, i);
+      ctx.restore();
+    });
+    drawLegends(cards);
+  }
+
+  function drawButton(rect, label, sub, selected, enabled, hot) {
+    ctx.save();
+    ctx.globalAlpha = enabled ? 1 : 0.4;
+    const fill = selected ? '#fff4c8' : (hot ? '#ffffff' : '#fffaf2');
+    fillRound(rect.x, rect.y, rect.w, rect.h, 14, fill);
+    strokeRound(rect.x, rect.y, rect.w, rect.h, 14, selected ? '#e39b00' : '#d9c7ef', selected ? 4 : 2);
+    if (sub) {
+      textAt(label, rect.x + rect.w / 2, rect.y + 20, 16, COL.ink, 'center', 800);
+      textAt(sub, rect.x + rect.w / 2, rect.y + 40, 13, '#6d6280', 'center', 700);
+    } else {
+      textAt(label, rect.x + rect.w / 2, rect.y + rect.h / 2, 18, COL.ink, 'center', 800);
+    }
+    ctx.restore();
+  }
+
+  function drawTitle() {
+    drawBackground();
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    textAt('ARCANE ROUNDER', VIEW_W / 2, 46, 52, '#5b2d82', 'center', 800, FONT_NUM);
+    textAt("Wizard's Place-Value Spellbook", VIEW_W / 2, 88, 22, '#6a3f16', 'center', 700);
+    textAt('Singapore Primary 3–5   ·   Reverse rounding & place value', VIEW_W / 2, 116, 16, COL.ink, 'center', 700);
+
+    fillRound(80, 138, 1120, 470, 24, 'rgba(255,248,236,0.94)');
+    strokeRound(80, 138, 1120, 470, 24, '#e4c27a', 4);
+    textAt('How many wizards?', 130, 176, 16, '#5b3b86', 'left', 800);
+    const lay = titleLayout();
+    lay.playerBtns.forEach((b) => {
+      const selected = G.players === b.players;
+      drawButton(b, b.players === 1 ? '1 PLAYER' : b.players + ' PLAYERS', b.players === 1 ? 'Solo spellbook' : 'Shared courtyard', selected, true, G.hoverId === b.id);
+    });
+    textAt('How will you play?', 130, 278, 16, '#5b3b86', 'left', 800);
+    lay.modeBtns.forEach((b) => {
+      drawButton(b, b.label, b.sub, G.mode === b.mode && b.enabled, b.enabled, G.hoverId === b.id);
+    });
+    textAt('Choose a trial', 112, 380, 16, '#5b3b86', 'left', 800);
+    lay.diffBtns.forEach((b, i) => {
+      const d = DIFFS[i];
+      const selected = G.difficulty === d.id;
+      const hot = G.hoverId === b.id;
+      ctx.fillStyle = selected ? '#fff4c8' : (hot ? '#ffffff' : '#fffaf2');
+      roundRect(b.x, b.y, b.w, b.h, 14);
+      ctx.fill();
+      strokeRound(b.x, b.y, b.w, b.h, 14, selected ? '#e39b00' : '#d9c7ef', selected ? 4 : 2);
+      textAt(d.name, b.x + b.w / 2, b.y + 22, 16, COL.ink, 'center', 800);
+      const titleSize = fitSize(d.title, b.w - 16, 13, 10, 700);
+      textAt(d.title, b.x + b.w / 2, b.y + 44, titleSize, '#5b3b86', 'center', 700);
+      d.lines.forEach((line, li) => textAt(line, b.x + b.w / 2, b.y + 66 + li * 15, 12, '#6d6280', 'center', 700));
+    });
+    const startHot = G.hoverId === 'start';
+    fillRound(lay.start.x, lay.start.y, lay.start.w, lay.start.h, 16, startHot ? '#ffe08a' : '#ffc857');
+    strokeRound(lay.start.x, lay.start.y, lay.start.w, lay.start.h, 16, '#a86b00', 3);
+    textAt('START TRIAL', lay.start.x + lay.start.w / 2, lay.start.y + lay.start.h / 2, 26, '#5c3b00', 'center', 800);
+
+    textAt('P1 Crimson: click, keys 1 2 3, pad X A B or D-pad ← ↓ →', VIEW_W / 2, 648, 14, COL.ink, 'center', 700);
+    textAt('P2 Azure: keys V B N, gamepad 2     ·     P3 Emerald: keys ← ↓ →, gamepad 3', VIEW_W / 2, 670, 14, COL.ink, 'center', 700);
+    textAt('Co-op keeps one team score and shared mana. VS awards a star to the fastest correct hand.', VIEW_W / 2, 696, 14, '#4d4166', 'center', 700);
+    drawMute();
+  }
+
+  function drawResult() {
+    drawBackground();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    fillRound(210, 90, 860, 470, 24, 'rgba(255,248,236,0.96)');
+    strokeRound(210, 90, 860, 470, 24, '#e4c27a', 4);
+    let title = 'TRIAL COMPLETE!';
+    let sub = 'The spellbook glows. You named the place values.';
+    if (G.resultKind === 'defeat') {
+      title = 'MANA SHATTERED';
+      sub = 'The deciding digit sits just beside the place being rounded.';
+    } else if (G.resultKind === 'duel') {
+      if (G.winners.length === 1) {
+        title = PLAYERS[G.winners[0]].full + ' WINS THE DUEL!';
+        sub = 'Fastest correct hands take the stars.';
+      } else if (G.winners.length > 1) {
+        title = 'DRAW!';
+        sub = G.winners.map((i) => PLAYERS[i].full).join(' and ') + ' tied on stars and points.';
+      } else {
+        title = 'DUEL COMPLETE';
+        sub = 'Every wizard kept their wand raised.';
+      }
+    }
+    const titleSize = fitSize(title, 780, 36, 22, 800, FONT_NUM);
+    textAt(title, VIEW_W / 2, 140, titleSize, '#5b2d82', 'center', 800, FONT_NUM);
+    const subLines = wrapLines(sub, 740, 16, 700);
+    subLines.forEach((line, i) => textAt(line, VIEW_W / 2, 176 + i * 22, 16, COL.ink, 'center', 700));
+
+    if (G.mode === 'vs') {
+      for (let i = 0; i < G.players; i++) {
+        const y = 250 + i * 70;
+        fillRound(300, y, 680, 60, 14, '#fff');
+        strokeRound(300, y, 680, 60, 14, PLAYERS[i].color, 3);
+        textAt(PLAYERS[i].full, 330, y + 30, 20, PLAYERS[i].ink, 'left', 800);
+        drawStar(700, y + 30, 12, COL.goldDeep);
+        textAt(String(G.stars[i]) + ' stars', 724, y + 22, 18, COL.ink, 'left', 800);
+        textAt(formatInt(G.scores[i]) + ' pts', 724, y + 42, 13, '#6d6280', 'left', 700);
+      }
+    } else {
+      const scoreLabel = G.mode === 'coop' ? 'FINAL TEAM SCORE' : 'FINAL SCORE';
+      textAt(scoreLabel, VIEW_W / 2, 250, 16, '#6d6280', 'center', 800);
+      textAt(formatInt(G.score), VIEW_W / 2, 300, 48, COL.ink, 'center', 800, FONT_NUM);
+      textAt('Place values named: ' + G.correctCount + ' / ' + TOTAL_SPELLS, VIEW_W / 2, 360, 20, '#1c8a4a', 'center', 800);
+      textAt('Mana crystals left: ' + G.hearts, VIEW_W / 2, 396, 18, '#5b3b86', 'center', 700);
+      textAt(isDecimalMode()
+        ? 'Count the decimal places that remain. Trailing zeros still count.'
+        : 'Trailing zeros plus the digit that changed name the place.', VIEW_W / 2, 440, 16, COL.ink, 'center', 700);
+    }
+
+    const lay = resultLayout();
+    const againHot = pointIn(lay.again, G.mouse.x, G.mouse.y) && G.mouse.inside;
+    const titleHot = pointIn(lay.title, G.mouse.x, G.mouse.y) && G.mouse.inside;
+    fillRound(lay.again.x, lay.again.y, lay.again.w, lay.again.h, 14, againHot ? '#ffe08a' : '#ffc857');
+    textAt('PLAY AGAIN', lay.again.x + lay.again.w / 2, lay.again.y + 29, 20, '#5c3b00', 'center', 800);
+    fillRound(lay.title.x, lay.title.y, lay.title.w, lay.title.h, 14, titleHot ? '#fff' : '#efe6ff');
+    strokeRound(lay.title.x, lay.title.y, lay.title.w, lay.title.h, 14, '#5b3b86', 2);
+    textAt('TITLE SCREEN', lay.title.x + lay.title.w / 2, lay.title.y + 29, 20, '#5b3b86', 'center', 800);
+    drawMute();
+  }
+
+  function render() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#87d2ff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    if (G.screen === 'title') drawTitle();
+    else if (G.screen === 'play') drawPlay();
+    else drawResult();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function frame(ts) {
+    const dt = Math.min(0.033, Math.max(0, (ts - lastTs) / 1000 || 0));
+    lastTs = ts;
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+    const scale = Math.min(canvas.width / VIEW_W, canvas.height / VIEW_H);
+    view.scale = scale;
+    view.ox = (canvas.width - VIEW_W * scale) / 2;
+    view.oy = (canvas.height - VIEW_H * scale) / 2;
+  }
+
+  function toLogical(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+    return { x: (x - view.ox) / view.scale, y: (y - view.oy) / view.scale };
+  }
+
+  function boot() {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    liveEl = document.getElementById('live');
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('keydown', onKey);
+    canvas.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const p = toLogical(e);
+      G.mouse.x = p.x;
+      G.mouse.y = p.y;
+      G.mouse.inside = true;
+      handlePointer(p.x, p.y);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const p = toLogical(e);
+      G.mouse.x = p.x;
+      G.mouse.y = p.y;
+      G.mouse.inside = true;
+    });
+    canvas.addEventListener('pointerleave', () => {
+      G.mouse.inside = false;
+      G.hoverCard = -1;
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    announce("Arcane Rounder. Choose players, mode, and difficulty, then start the trial.");
+    requestAnimationFrame(frame);
+  }
+
+  const selfCheck = runSelfCheck();
+  if (!selfCheck.ok) {
+    console.error('Arcane Rounder self-check failed');
+    selfCheck.errors.forEach((err) => console.error(err));
+    if (typeof document === 'undefined') {
+      throw new Error(selfCheck.errors.join('\n'));
+    }
+  }
+  if (typeof document !== 'undefined') boot();
+})();
+</script>
+</body>
+</html>
