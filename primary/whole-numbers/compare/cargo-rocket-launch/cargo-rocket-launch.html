@@ -1,0 +1,2230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cargo Rocket Launch: Odd & Even Thrusters</title>
+<style>
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background-color: #050814;
+    color: #e2e8f0;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    display: block;
+    background: #070b1e;
+    box-shadow: 0 0 40px rgba(0, 240, 255, 0.18);
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+(() => {
+  'use strict';
+
+  // =========================================================================
+  // 1. CANVAS & RESPONSIVE SCALING SETUP (1280x720 LOGICAL RESOLUTION)
+  // =========================================================================
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const LOGICAL_W = 1280;
+  const LOGICAL_H = 720;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  function resizeCanvas() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    scale = Math.min(winW / LOGICAL_W, winH / LOGICAL_H);
+    canvas.width = Math.floor(LOGICAL_W * scale);
+    canvas.height = Math.floor(LOGICAL_H * scale);
+    offsetX = (winW - canvas.width) / 2;
+    offsetY = (winH - canvas.height) / 2;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function clientToLogical(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) / scale,
+      y: (clientY - rect.top) / scale
+    };
+  }
+
+  // =========================================================================
+  // 2. PROCEDURAL WEB AUDIO ENGINE (CHIPTUNE BGM + ARCADE SFX)
+  // =========================================================================
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.bgmTimer = null;
+      this.bgmStep = 0;
+      this.isPlayingBgm = false;
+    }
+
+    init() {
+      if (!this.ctx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          this.ctx = new AudioCtx();
+        }
+      }
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume();
+      }
+      if (!this.isPlayingBgm && this.ctx) {
+        this.startBgm();
+      }
+    }
+
+    toggleMute() {
+      this.init();
+      this.muted = !this.muted;
+      if (this.muted) {
+        this.stopBgm();
+      } else {
+        this.startBgm();
+      }
+      return this.muted;
+    }
+
+    playTone(freq, type, duration, vol = 0.12, slideTo = null, delay = 0) {
+      if (this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      if (slideTo) {
+        osc.frequency.exponentialRampToValueAtTime(slideTo, now + duration);
+      }
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration);
+    }
+
+    playNoise(duration, vol = 0.15) {
+      if (this.muted || !this.ctx) return;
+      const bufferSize = this.ctx.sampleRate * duration;
+      const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 350;
+      const gain = this.ctx.createGain();
+      const now = this.ctx.currentTime;
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.ctx.destination);
+      noise.start(now);
+      noise.stop(now + duration);
+    }
+
+    sfxTick() {
+      this.playTone(680, 'square', 0.04, 0.04);
+    }
+
+    sfxLock() {
+      this.playTone(523.25, 'triangle', 0.09, 0.14, null, 0);
+      this.playTone(783.99, 'sine', 0.14, 0.14, null, 0.06);
+    }
+
+    sfxBounce() {
+      this.playTone(220, 'sawtooth', 0.18, 0.12, 480, 0);
+    }
+
+    sfxError() {
+      this.playTone(190, 'sawtooth', 0.18, 0.15, 130, 0);
+      this.playTone(145, 'square', 0.25, 0.15, 95, 0.12);
+    }
+
+    sfxLaunch() {
+      this.playNoise(0.95, 0.18);
+      this.playTone(261.63, 'triangle', 0.15, 0.14, null, 0);
+      this.playTone(329.63, 'triangle', 0.15, 0.14, null, 0.1);
+      this.playTone(392.00, 'triangle', 0.15, 0.14, null, 0.2);
+      this.playTone(523.25, 'square', 0.35, 0.14, 659.25, 0.3);
+    }
+
+    startBgm() {
+      if (this.muted || !this.ctx || this.isPlayingBgm) return;
+      this.isPlayingBgm = true;
+      const bassNotes = [110, 110, 146.83, 130.81, 164.81, 164.81, 146.83, 196.00];
+      const leadNotes = [440, 0, 523.25, 659.25, 587.33, 0, 493.88, 392.00];
+      this.bgmTimer = setInterval(() => {
+        if (this.muted || !this.ctx || this.ctx.state !== 'running') return;
+        const b = bassNotes[this.bgmStep % bassNotes.length];
+        const l = leadNotes[this.bgmStep % leadNotes.length];
+        if (b > 0) this.playTone(b, 'triangle', 0.16, 0.035);
+        if (l > 0) this.playTone(l, 'square', 0.11, 0.02);
+        this.bgmStep++;
+      }, 220);
+    }
+
+    stopBgm() {
+      this.isPlayingBgm = false;
+      if (this.bgmTimer) {
+        clearInterval(this.bgmTimer);
+        this.bgmTimer = null;
+      }
+    }
+  }
+  const sfx = new SoundEngine();
+
+  // =========================================================================
+  // 3. PROCEDURAL MATHEMATICS GENERATOR & ANTI-REPEAT HISTORY BUFFER
+  // =========================================================================
+  const historyBuffer = []; // Tracks last 6 problem signatures
+
+  function shuffleArray(arr) {
+    const copy = arr.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  function formatDigitsList(digits) {
+    return digits.join(', ');
+  }
+
+  // Computes exact valid smallest/greatest odd/even permutation using all digits
+  function solvePayload(digits, extrema, parity) {
+    const results = [];
+    const used = new Array(digits.length).fill(false);
+    const current = [];
+
+    function backtrack() {
+      if (current.length === digits.length) {
+        if (current[0] === 0) return; // Leading zero guard
+        const lastDigit = current[current.length - 1];
+        const isOdd = lastDigit % 2 === 1;
+        if ((parity === 'ODD' && isOdd) || (parity === 'EVEN' && !isOdd)) {
+          results.push(current.join(''));
+        }
+        return;
+      }
+      for (let i = 0; i < digits.length; i++) {
+        if (used[i]) continue;
+        used[i] = true;
+        current.push(digits[i]);
+        backtrack();
+        current.pop();
+        used[i] = false;
+      }
+    }
+
+    backtrack();
+    if (results.length === 0) return null;
+    results.sort((a, b) => Number(a) - Number(b));
+    return extrema === 'SMALLEST' ? results[0] : results[results.length - 1];
+  }
+
+  function generateProblem(roundNumber) {
+    const missionTypes = [
+      { extrema: 'SMALLEST', parity: 'ODD' },
+      { extrema: 'SMALLEST', parity: 'EVEN' },
+      { extrema: 'GREATEST', parity: 'ODD' },
+      { extrema: 'GREATEST', parity: 'EVEN' }
+    ];
+
+    let attempt = 0;
+    while (attempt < 80) {
+      attempt++;
+      let numDigits = 3;
+      let includeZero = false;
+
+      if (roundNumber <= 2) {
+        // Rounds 1-2: 3-Stage Rockets Without Zero
+        numDigits = 3;
+        includeZero = false;
+      } else if (roundNumber <= 4) {
+        // Rounds 3-4: 3-Stage Rockets With 0 & Nose-Cone Zero Traps
+        numDigits = 3;
+        includeZero = true;
+      } else if (roundNumber <= 6) {
+        // Rounds 5-6: 4-Stage Heavy-Lift Rockets Across All Four Target Types
+        numDigits = 4;
+        includeZero = Math.random() < 0.65;
+      } else {
+        // Rounds 7+: Endless Master Mode (mixed 4-stage & high-trap 3-stage with 0)
+        numDigits = Math.random() < 0.8 ? 4 : 3;
+        includeZero = Math.random() < 0.75;
+      }
+
+      const mission = missionTypes[(roundNumber + Math.floor(Math.random() * 4)) % 4];
+      const digits = [];
+
+      // Guarantee at least one odd non-zero and one even non-zero so both parities + nose cone are always solvable
+      const oddPool = shuffleArray([1, 3, 5, 7, 9]);
+      const evenNonZeroPool = shuffleArray([2, 4, 6, 8]);
+
+      if (includeZero) {
+        digits.push(0);
+        digits.push(oddPool.pop());
+        digits.push(evenNonZeroPool.pop());
+        if (numDigits === 4) {
+          const extraPool = shuffleArray([...oddPool, ...evenNonZeroPool]);
+          digits.push(extraPool.pop());
+        }
+      } else {
+        digits.push(oddPool.pop());
+        digits.push(evenNonZeroPool.pop());
+        const remaining = shuffleArray([...oddPool, ...evenNonZeroPool]);
+        while (digits.length < numDigits) {
+          digits.push(remaining.pop());
+        }
+      }
+
+      // Ensure at least two parity choices exist when testing "wasted smallest pod" richness
+      const oddCount = digits.filter(d => d % 2 === 1).length;
+      const evenCount = digits.filter(d => d % 2 === 0).length;
+      if (mission.parity === 'ODD' && oddCount < 2 && roundNumber <= 2) continue;
+      if (mission.parity === 'EVEN' && evenCount < 2 && roundNumber <= 2) continue;
+
+      const correctAnswer = solvePayload(digits, mission.extrema, mission.parity);
+      if (!correctAnswer) continue;
+
+      const sortedDigits = digits.slice().sort((a, b) => a - b);
+      const signature = `${sortedDigits.join('')}-${mission.extrema}-${mission.parity}`;
+      if (historyBuffer.includes(signature)) continue;
+
+      // Record into anti-repeat buffer (max 6)
+      historyBuffer.push(signature);
+      if (historyBuffer.length > 6) historyBuffer.shift();
+
+      const podList = shuffleArray(digits).map((val, idx) => ({
+        id: idx,
+        value: val,
+        parity: val % 2 === 1 ? 'ODD' : 'EVEN'
+      }));
+
+      // Step 1 Target: Ones digit of the optimal solution
+      const correctOnesDigit = Number(correctAnswer[correctAnswer.length - 1]);
+      // Step 2 Target: Leading digit (Thousands or Hundreds) of the optimal solution
+      const correctNoseDigit = Number(correctAnswer[0]);
+
+      // Build Step 1 choices (4 unique cards from pods or strategic digit options)
+      const step1Cards = buildStep1Cards(digits, mission, correctOnesDigit, correctNoseDigit);
+      // Build Step 2 choices (remaining pods after locking Step 1 Ones pod)
+      const step2Cards = buildStep2Cards(digits, mission, correctOnesDigit, correctNoseDigit);
+      // Build Step 3 choices (4 full 3-digit or 4-digit payloads with targeted misconception traps)
+      const step3Cards = buildStep3Cards(digits, mission, correctAnswer, correctOnesDigit, correctNoseDigit);
+
+      return {
+        roundNumber,
+        numDigits,
+        digits: podList,
+        rawDigits: digits,
+        extrema: mission.extrema,
+        parity: mission.parity,
+        missionTitle: `${mission.extrema} ${mission.parity}`,
+        correctAnswer,
+        correctOnesDigit,
+        correctNoseDigit,
+        step1Cards,
+        step2Cards,
+        step3Cards
+      };
+    }
+
+    // Fallback safe generator if random loop hits buffer edge
+    const fallbackDigits = [4, 1, 3];
+    const correctAnswer = '143';
+    return {
+      roundNumber,
+      numDigits: 3,
+      digits: fallbackDigits.map((v, i) => ({ id: i, value: v, parity: v % 2 === 1 ? 'ODD' : 'EVEN' })),
+      rawDigits: fallbackDigits,
+      extrema: 'SMALLEST',
+      parity: 'ODD',
+      missionTitle: 'SMALLEST ODD',
+      correctAnswer,
+      correctOnesDigit: 3,
+      correctNoseDigit: 1,
+      step1Cards: buildStep1Cards(fallbackDigits, { extrema: 'SMALLEST', parity: 'ODD' }, 3, 1),
+      step2Cards: buildStep2Cards(fallbackDigits, { extrema: 'SMALLEST', parity: 'ODD' }, 3, 1),
+      step3Cards: buildStep3Cards(fallbackDigits, { extrema: 'SMALLEST', parity: 'ODD' }, '143', 3, 1)
+    };
+  }
+
+  function buildStep1Cards(digits, mission, correctOnes, correctNose) {
+    const cards = [];
+    const usedVals = new Set();
+
+    const parityLabel = mission.parity;
+    const isOddMission = parityLabel === 'ODD';
+
+    // 1. Correct card
+    cards.push({
+      value: String(correctOnes),
+      sublabel: `${correctOnes % 2 === 1 ? 'ODD' : 'EVEN'} POD`,
+      correct: true,
+      diagnostic: ''
+    });
+    usedVals.add(correctOnes);
+
+    // 2. Trap: Other parity pod from given digits (Wrong Parity in Ones Place)
+    const wrongParityDigits = digits.filter(d => (isOddMission ? d % 2 === 0 : d % 2 === 1) && !usedVals.has(d));
+    if (wrongParityDigits.length > 0) {
+      const trapD = wrongParityDigits[0];
+      usedVals.add(trapD);
+      cards.push({
+        value: String(trapD),
+        sublabel: `${trapD % 2 === 1 ? 'ODD' : 'EVEN'} POD`,
+        correct: false,
+        diagnostic: `Thruster misfire! Odd rockets must end in 1, 3, 5, 7, or 9; even rockets must end in 0, 2, 4, 6, or 8!`
+      });
+    }
+
+    // 3. Trap: Sub-optimal same-parity pod (e.g. putting smallest odd 1 into Ones instead of saving for nose cone)
+    const sameParityOthers = digits.filter(d => (isOddMission ? d % 2 === 1 : d % 2 === 0) && !usedVals.has(d));
+    if (sameParityOthers.length > 0) {
+      const trapD = sameParityOthers[0];
+      usedVals.add(trapD);
+      const reason = mission.extrema === 'SMALLEST'
+        ? `Save your smaller pod (${trapD}) for the front nose cone! Load ${correctOnes} into the Ones thruster so the front stays as small as possible!`
+        : `Save your larger pod (${trapD}) for the front nose cone! Load ${correctOnes} into the Ones thruster so the front stays as big as possible!`;
+      cards.push({
+        value: String(trapD),
+        sublabel: `${trapD % 2 === 1 ? 'ODD' : 'EVEN'} POD`,
+        correct: false,
+        diagnostic: reason
+      });
+    }
+
+    // 4. Fill remaining cards up to 4 from remaining given digits or nearby distractors
+    for (const d of digits) {
+      if (cards.length >= 4) break;
+      if (usedVals.has(d)) continue;
+      usedVals.add(d);
+      const wrongParity = isOddMission ? (d % 2 === 0) : (d % 2 === 1);
+      cards.push({
+        value: String(d),
+        sublabel: `${d % 2 === 1 ? 'ODD' : 'EVEN'} POD`,
+        correct: false,
+        diagnostic: wrongParity
+          ? `Thruster misfire! Odd rockets must end in 1, 3, 5, 7, or 9; even rockets must end in 0, 2, 4, 6, or 8!`
+          : `Pod ${d} is needed in an earlier bay to build the ${mission.extrema.toLowerCase()} rocket. Lock pod ${correctOnes} into the Ones thruster!`
+      });
+    }
+
+    // If still < 4 cards (for 3-digit rounds), add a clear parity/non-available pod distractor
+    const extraCandidates = isOddMission ? [0, 2, 4, 6, 8, 1, 3, 5, 7, 9] : [1, 3, 5, 7, 9, 0, 2, 4, 6, 8];
+    for (const cand of extraCandidates) {
+      if (cards.length >= 4) break;
+      if (usedVals.has(cand)) continue;
+      usedVals.add(cand);
+      const inGantry = digits.includes(cand);
+      cards.push({
+        value: String(cand),
+        sublabel: inGantry ? `${cand % 2 === 1 ? 'ODD' : 'EVEN'} POD` : 'NOT IN BAY',
+        correct: false,
+        diagnostic: !inGantry
+          ? `Pod ${cand} is not on the launch gantry! Choose only from your loaded fuel pods: ${formatDigitsList(digits)}.`
+          : `Thruster misfire! Odd rockets must end in 1, 3, 5, 7, or 9; even rockets must end in 0, 2, 4, 6, or 8!`
+      });
+    }
+
+    return shuffleArray(cards);
+  }
+
+  function buildStep2Cards(digits, mission, correctOnes, correctNose) {
+    // Remaining digits after locking correctOnes into Ones bay
+    const remaining = [];
+    let removedOnes = false;
+    for (const d of digits) {
+      if (d === correctOnes && !removedOnes) {
+        removedOnes = true;
+        continue;
+      }
+      remaining.push(d);
+    }
+
+    const cards = [];
+    const usedVals = new Set();
+
+    // 1. Correct nose cone pod
+    cards.push({
+      value: String(correctNose),
+      sublabel: 'NOSE POD',
+      correct: true,
+      isZeroTrap: false,
+      diagnostic: ''
+    });
+    usedVals.add(correctNose);
+
+    // 2. Zero-Gravity Nose-Cone Trap if 0 is in remaining
+    if (remaining.includes(0) && !usedVals.has(0)) {
+      usedVals.add(0);
+      cards.push({
+        value: '0',
+        sublabel: 'ZERO POD',
+        correct: false,
+        isZeroTrap: true,
+        diagnostic: `A ${digits.length}-digit rocket cannot start with 0! Load the ${mission.extrema === 'SMALLEST' ? 'smallest' : 'greatest'} non-zero pod (${correctNose}) into the nose cone first, then put 0 in the next bay!`
+      });
+    }
+
+    // 3. Other remaining pods
+    for (const d of remaining) {
+      if (cards.length >= 4) break;
+      if (usedVals.has(d)) continue;
+      usedVals.add(d);
+      const diag = mission.extrema === 'SMALLEST'
+        ? `Pod ${d} makes the front place value too big! For the SMALLEST rocket, seal the nose cone with the smallest non-zero pod (${correctNose})!`
+        : `Pod ${d} makes the front place value too small! For the GREATEST rocket, seal the nose cone with the largest remaining pod (${correctNose})!`;
+      cards.push({
+        value: String(d),
+        sublabel: 'REMAINING POD',
+        correct: false,
+        isZeroTrap: false,
+        diagnostic: diag
+      });
+    }
+
+    // 4. Pad to 4 cards if needed (e.g., already-locked Ones pod trap or non-bay pod)
+    if (cards.length < 4 && !usedVals.has(correctOnes)) {
+      usedVals.add(correctOnes);
+      cards.push({
+        value: String(correctOnes),
+        sublabel: 'LOCKED IN ONES',
+        correct: false,
+        isZeroTrap: false,
+        diagnostic: `Pod ${correctOnes} is already locked into the Ones tail thruster! Each pod can only be used once.`
+      });
+    }
+
+    const filler = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    for (const f of filler) {
+      if (cards.length >= 4) break;
+      if (usedVals.has(f)) continue;
+      usedVals.add(f);
+      cards.push({
+        value: String(f),
+        sublabel: 'NOT IN BAY',
+        correct: false,
+        isZeroTrap: false,
+        diagnostic: `Pod ${f} is not available in the remaining gantry pods! Seal the nose cone with pod ${correctNose}.`
+      });
+    }
+
+    return shuffleArray(cards);
+  }
+
+  function buildStep3Cards(digits, mission, correctAnswer, correctOnes, correctNose) {
+    const cards = [];
+    const usedStrings = new Set();
+
+    // 1. Correct full rocket payload
+    cards.push({
+      value: correctAnswer,
+      sublabel: `${digits.length}-STAGE PAYLOAD`,
+      correct: true,
+      diagnostic: ''
+    });
+    usedStrings.add(correctAnswer);
+
+    const asc = digits.slice().sort((a, b) => a - b);
+    const desc = digits.slice().sort((a, b) => b - a);
+
+    // 2. Trap A: Zero-Gravity Nose-Cone Error (e.g. 015 or 0382)
+    if (digits.includes(0)) {
+      const zeroLead = mission.extrema === 'SMALLEST'
+        ? asc.join('')
+        : ['0', ...desc.filter(d => d !== 0)].join('');
+      if (!usedStrings.has(zeroLead)) {
+        usedStrings.add(zeroLead);
+        cards.push({
+          value: zeroLead,
+          sublabel: 'NOSE-CONE ERROR',
+          correct: false,
+          diagnostic: `A ${digits.length}-digit rocket cannot start with 0! Load the smallest non-zero pod into the nose cone first, then put 0 in the next bay!`
+        });
+      }
+    }
+
+    // 3. Trap B: Ignoring Parity Completely (pure ascending for smallest, pure descending for greatest)
+    let pureExtrema = '';
+    if (mission.extrema === 'SMALLEST') {
+      const nonZeroAsc = asc.filter(d => d !== 0);
+      const zeros = asc.filter(d => d === 0);
+      pureExtrema = [nonZeroAsc[0], ...zeros, ...nonZeroAsc.slice(1)].join('');
+    } else {
+      pureExtrema = desc.join('');
+    }
+    if (!usedStrings.has(pureExtrema)) {
+      usedStrings.add(pureExtrema);
+      const lastD = Number(pureExtrema[pureExtrema.length - 1]);
+      const actualParity = lastD % 2 === 1 ? 'ODD' : 'EVEN';
+      cards.push({
+        value: pureExtrema,
+        sublabel: 'PARITY IGNORED',
+        correct: false,
+        diagnostic: `${pureExtrema} is the ${mission.extrema.toLowerCase()} number overall, but it is ${actualParity}! Check flight control: we need the ${mission.extrema.toLowerCase()} ${mission.parity} rocket!`
+      });
+    }
+
+    // 4. Trap C: Wasted Smallest/Greatest Pod in Ones Thruster (e.g., 431 instead of 143)
+    const sameParityDigits = digits.filter(d => mission.parity === 'ODD' ? d % 2 === 1 : d % 2 === 0);
+    if (sameParityDigits.length >= 2) {
+      const altOnes = mission.extrema === 'SMALLEST'
+        ? Math.min(...sameParityDigits)
+        : Math.max(...sameParityDigits);
+      if (altOnes !== correctOnes) {
+        const rem = [];
+        let removed = false;
+        for (const d of digits) {
+          if (d === altOnes && !removed) {
+            removed = true;
+            continue;
+          }
+          rem.push(d);
+        }
+        let body = '';
+        if (mission.extrema === 'SMALLEST') {
+          rem.sort((a, b) => a - b);
+          if (rem[0] === 0 && rem.length > 1) {
+            const firstNonZeroIdx = rem.findIndex(x => x !== 0);
+            if (firstNonZeroIdx > 0) {
+              const nz = rem.splice(firstNonZeroIdx, 1)[0];
+              rem.unshift(nz);
+            }
+          }
+          body = rem.join('');
+        } else {
+          rem.sort((a, b) => b - a);
+          body = rem.join('');
+        }
+        const wastedPayload = body + String(altOnes);
+        if (!usedStrings.has(wastedPayload) && wastedPayload[0] !== '0') {
+          usedStrings.add(wastedPayload);
+          const diag = mission.extrema === 'SMALLEST'
+            ? `Save your smallest pod (${altOnes}) for the front nose cone! Load the larger ${mission.parity.toLowerCase()} pod (${correctOnes}) into the Ones thruster to launch ${correctAnswer}!`
+            : `Save your greatest pod (${altOnes}) for the front nose cone! Load the smaller ${mission.parity.toLowerCase()} pod (${correctOnes}) into the Ones thruster to launch ${correctAnswer}!`;
+          cards.push({
+            value: wastedPayload,
+            sublabel: 'THRUSTER SWAP',
+            correct: false,
+            diagnostic: diag
+          });
+        }
+      }
+    }
+
+    // 5. Trap D: Swapped middle stages (valid nose & valid Ones, wrong middle order)
+    if (cards.length < 4 && digits.length === 4) {
+      const chars = correctAnswer.split('');
+      const swappedMid = `${chars[0]}${chars[2]}${chars[1]}${chars[3]}`;
+      if (!usedStrings.has(swappedMid)) {
+        usedStrings.add(swappedMid);
+        cards.push({
+          value: swappedMid,
+          sublabel: 'MID-STAGE ORDER',
+          correct: false,
+          diagnostic: `Right nose cone and right thruster, but check the middle bays! Order the middle pods from ${mission.extrema === 'SMALLEST' ? 'smallest to largest' : 'largest to smallest'} to get ${correctAnswer}.`
+        });
+      }
+    }
+
+    // 6. Fill any remaining slot with another permutation of digits
+    const allPerms = [];
+    function genAll(arr, idx) {
+      if (idx === arr.length) {
+        allPerms.push(arr.join(''));
+        return;
+      }
+      for (let i = idx; i < arr.length; i++) {
+        [arr[idx], arr[i]] = [arr[i], arr[idx]];
+        genAll(arr, idx + 1);
+        [arr[idx], arr[i]] = [arr[i], arr[idx]];
+      }
+    }
+    genAll(digits.slice(), 0);
+    for (const p of shuffleArray(allPerms)) {
+      if (cards.length >= 4) break;
+      if (usedStrings.has(p)) continue;
+      usedStrings.add(p);
+      const lastD = Number(p[p.length - 1]);
+      const pParity = lastD % 2 === 1 ? 'ODD' : 'EVEN';
+      const diag = p[0] === '0'
+        ? `A ${digits.length}-digit rocket cannot start with 0! Load the smallest non-zero pod into the nose cone first!`
+        : pParity !== mission.parity
+          ? `Thruster misfire! ${p} is ${pParity}, but flight control requires an ${mission.parity} rocket!`
+          : `Check place value order! Using pods ${formatDigitsList(digits)}, the ${mission.extrema.toLowerCase()} ${mission.parity.toLowerCase()} rocket is ${correctAnswer}.`;
+      cards.push({
+        value: p,
+        sublabel: 'MISALIGNED BAY',
+        correct: false,
+        diagnostic: diag
+      });
+    }
+
+    return shuffleArray(cards);
+  }
+
+  // =========================================================================
+  // 4. GAME STATE & PARTICLES
+  // =========================================================================
+  const GAME_MODES = {
+    SOLO: 'SOLO',
+    COOP: 'COOP',
+    DUEL: 'DUEL'
+  };
+
+  const state = {
+    screen: 'TITLE', // 'TITLE' | 'PLAYING' | 'GAMEOVER'
+    mode: GAME_MODES.SOLO,
+    roundNumber: 1,
+    step: 1, // 1: Parity Tail Thruster (Ones), 2: Nose Cone, 3: Full Payload & Launch
+    problem: null,
+
+    // Solo / Team Co-op unified stats
+    score: 0,
+    shields: 5,
+    maxShields: 5,
+    combo: 0,
+    bestCombo: 0,
+    rocketsLaunched: 0,
+
+    // Duel mode stats
+    p1Stars: 0,
+    p2Stars: 0,
+    p1Score: 0,
+    p2Score: 0,
+    p1Step: 1,
+    p2Step: 1,
+    p1LockedOnes: null,
+    p1LockedNose: null,
+    p2LockedOnes: null,
+    p2LockedNose: null,
+    duelStepStartTime: 0,
+    duelRoundWinner: null,
+
+    // Locked visual slots for Solo/Co-op rocket
+    lockedOnes: null,
+    lockedNose: null,
+    lockedFull: null,
+
+    // Reticles & Input cursors (0..3 for cards)
+    p1Cursor: 0,
+    p2Cursor: 1,
+    mouseX: 640,
+    mouseY: 360,
+    hoveredCard: -1,
+    hoveredTitleBtn: -1,
+    hoveredMuteBtn: false,
+    hoveredRestartBtn: false,
+
+    // Animations & Feedback
+    particles: [],
+    stars: [],
+    rocketLaunchY: 0,
+    rocketLaunching: false,
+    thrusterGlow: 0,
+    noseForcefieldPulse: 0,
+    zeroBounceAnim: 0,
+    screenShake: 0,
+    diagnosticAlert: null, // { text, timer, isSuccess }
+    roundTransitionTimer: 0,
+    step3CoopReady: { p1: false, p2: false },
+
+    // Gamepad edge detection
+    prevGpButtons: [[], []],
+    prevGpAxes: [[0, 0], [0, 0]],
+    connectedGamepads: [false, false]
+  };
+
+  // Initialize starfield
+  for (let i = 0; i < 95; i++) {
+    state.stars.push({
+      x: Math.random() * LOGICAL_W,
+      y: Math.random() * LOGICAL_H,
+      r: Math.random() * 1.8 + 0.4,
+      speed: Math.random() * 18 + 6,
+      alpha: Math.random() * 0.7 + 0.3
+    });
+  }
+
+  function spawnParticles(x, y, color, count = 24, speedMax = 220) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const spd = Math.random() * speedMax + 40;
+      state.particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * spd,
+        vy: Math.sin(angle) * spd,
+        life: 1.0,
+        decay: Math.random() * 1.4 + 0.8,
+        size: Math.random() * 4 + 2,
+        color
+      });
+    }
+  }
+
+  function triggerDiagnostic(text, isSuccess = false, duration = 4.2) {
+    state.diagnosticAlert = {
+      text,
+      timer: duration,
+      isSuccess
+    };
+  }
+
+  // =========================================================================
+  // 5. ROUND & STEP PROGRESSION LOGIC
+  // =========================================================================
+  function startGame(mode) {
+    sfx.init();
+    state.mode = mode;
+    state.screen = 'PLAYING';
+    state.roundNumber = 1;
+    state.score = 0;
+    state.shields = 5;
+    state.combo = 0;
+    state.bestCombo = 0;
+    state.rocketsLaunched = 0;
+    state.p1Stars = 0;
+    state.p2Stars = 0;
+    state.p1Score = 0;
+    state.p2Score = 0;
+    historyBuffer.length = 0;
+    loadRound(1);
+  }
+
+  function loadRound(roundNum) {
+    state.roundNumber = roundNum;
+    state.problem = generateProblem(roundNum);
+    state.step = 1;
+    state.lockedOnes = null;
+    state.lockedNose = null;
+    state.lockedFull = null;
+    state.rocketLaunchY = 0;
+    state.rocketLaunching = false;
+    state.thrusterGlow = 0;
+    state.zeroBounceAnim = 0;
+    state.diagnosticAlert = null;
+    state.roundTransitionTimer = 0;
+    state.step3CoopReady = { p1: false, p2: false };
+
+    // Duel reset per round
+    state.p1Step = 1;
+    state.p2Step = 1;
+    state.p1LockedOnes = null;
+    state.p1LockedNose = null;
+    state.p2LockedOnes = null;
+    state.p2LockedNose = null;
+    state.duelStepStartTime = performance.now();
+    state.duelRoundWinner = null;
+
+    state.p1Cursor = 0;
+    state.p2Cursor = 1;
+  }
+
+  function getActiveStepCards(playerIdx = 0) {
+    const p = state.problem;
+    if (!p) return [];
+    const currentStep = state.mode === GAME_MODES.DUEL
+      ? (playerIdx === 0 ? state.p1Step : state.p2Step)
+      : state.step;
+    if (currentStep === 1) return p.step1Cards;
+    if (currentStep === 2) return p.step2Cards;
+    return p.step3Cards;
+  }
+
+  function getActiveCoopPlayer() {
+    // Alternates roles every round: Odd rounds P1 does Step 1, P2 does Step 2; Even rounds P2 does Step 1, P1 does Step 2
+    const oddRound = state.roundNumber % 2 === 1;
+    if (state.step === 1) return oddRound ? 0 : 1;
+    if (state.step === 2) return oddRound ? 1 : 0;
+    return -1; // Both players confirm Step 3 together
+  }
+
+  function handleCardSelect(cardIndex, playerIdx = 0) {
+    if (state.screen !== 'PLAYING' || state.rocketLaunching || state.roundTransitionTimer > 0) return;
+    const p = state.problem;
+    if (!p) return;
+
+    // Co-op role enforcement
+    if (state.mode === GAME_MODES.COOP) {
+      const requiredPlayer = getActiveCoopPlayer();
+      if (requiredPlayer !== -1 && playerIdx !== requiredPlayer) {
+        sfx.sfxTick();
+        triggerDiagnostic(`Role handoff! Player ${requiredPlayer + 1} operates Step ${state.step} this round.`, false, 2.2);
+        return;
+      }
+    }
+
+    if (state.mode === GAME_MODES.DUEL) {
+      handleDuelCardSelect(cardIndex, playerIdx);
+      return;
+    }
+
+    const cards = getActiveStepCards(0);
+    const chosen = cards[cardIndex];
+    if (!chosen) return;
+
+    const cardRect = getCardRect(cardIndex);
+    const cx = cardRect.x + cardRect.w / 2;
+    const cy = cardRect.y + cardRect.h / 2;
+
+    if (chosen.correct) {
+      if (state.step === 1) {
+        sfx.sfxLock();
+        state.lockedOnes = chosen.value;
+        state.thrusterGlow = 1.0;
+        state.score += 100 + state.combo * 15;
+        spawnParticles(cx, cy, p.parity === 'ODD' ? '#f59e0b' : '#00f0ff', 22);
+        triggerDiagnostic(`Tail thruster locked with ${chosen.value} (${p.parity})! Now seal the nose cone.`, true, 2.5);
+        state.step = 2;
+      } else if (state.step === 2) {
+        sfx.sfxLock();
+        state.lockedNose = chosen.value;
+        state.noseForcefieldPulse = 1.0;
+        state.score += 120 + state.combo * 15;
+        spawnParticles(cx, cy, '#10b981', 22);
+        triggerDiagnostic(`Nose cone sealed with ${chosen.value}! Final step: lock the complete ${p.numDigits}-stage payload.`, true, 2.5);
+        state.step = 3;
+        state.step3CoopReady = { p1: false, p2: false };
+      } else if (state.step === 3) {
+        if (state.mode === GAME_MODES.COOP) {
+          if (playerIdx === 0) state.step3CoopReady.p1 = true;
+          if (playerIdx === 1) state.step3CoopReady.p2 = true;
+          sfx.sfxLock();
+          if (!(state.step3CoopReady.p1 && state.step3CoopReady.p2)) {
+            const waitingFor = state.step3CoopReady.p1 ? 'Player 2' : 'Player 1';
+            triggerDiagnostic(`Payload ${chosen.value} armed! Waiting for ${waitingFor} to confirm launch!`, true, 3.0);
+            return;
+          }
+        }
+        // Launch sequence!
+        sfx.sfxLaunch();
+        state.lockedFull = chosen.value;
+        state.combo++;
+        if (state.combo > state.bestCombo) state.bestCombo = state.combo;
+        state.rocketsLaunched++;
+        const bonus = 350 + (state.combo - 1) * 50;
+        state.score += bonus;
+        state.rocketLaunching = true;
+        state.roundTransitionTimer = 2.4;
+        spawnParticles(640, 340, '#00f0ff', 35, 300);
+        spawnParticles(640, 340, '#f59e0b', 35, 280);
+        triggerDiagnostic(`LIFTOFF! Payload ${chosen.value} (${p.missionTitle}) launched into orbit! +${bonus} pts!`, true, 2.4);
+      }
+    } else {
+      // Targeted misconception trap triggered
+      if (chosen.isZeroTrap) {
+        sfx.sfxBounce();
+        state.zeroBounceAnim = 1.0;
+      } else {
+        sfx.sfxError();
+      }
+      state.screenShake = 0.4;
+      state.combo = 0;
+      state.shields = Math.max(0, state.shields - 1);
+      spawnParticles(cx, cy, '#ef4444', 26, 200);
+      triggerDiagnostic(chosen.diagnostic, false, 5.2);
+
+      if (state.shields <= 0) {
+        setTimeout(() => {
+          if (state.shields <= 0 && state.screen === 'PLAYING') {
+            state.screen = 'GAMEOVER';
+          }
+        }, 900);
+      }
+    }
+  }
+
+  function handleDuelCardSelect(cardIndex, playerIdx) {
+    const p = state.problem;
+    const cards = getActiveStepCards(playerIdx);
+    const chosen = cards[cardIndex];
+    if (!chosen) return;
+
+    const cardRect = getCardRect(cardIndex);
+    const cx = cardRect.x + cardRect.w / 2;
+    const cy = cardRect.y + cardRect.h / 2;
+
+    const isP1 = playerIdx === 0;
+    const currentStep = isP1 ? state.p1Step : state.p2Step;
+
+    if (chosen.correct) {
+      const elapsedSec = (performance.now() - state.duelStepStartTime) / 1000;
+      const speedBonus = Math.max(20, Math.round(120 - elapsedSec * 12));
+
+      if (currentStep === 1) {
+        sfx.sfxLock();
+        if (isP1) {
+          state.p1LockedOnes = chosen.value;
+          state.p1Step = 2;
+          state.p1Score += 100 + speedBonus;
+        } else {
+          state.p2LockedOnes = chosen.value;
+          state.p2Step = 2;
+          state.p2Score += 100 + speedBonus;
+        }
+        spawnParticles(cx, cy, isP1 ? '#ef4444' : '#3b82f6', 18);
+      } else if (currentStep === 2) {
+        sfx.sfxLock();
+        if (isP1) {
+          state.p1LockedNose = chosen.value;
+          state.p1Step = 3;
+          state.p1Score += 120 + speedBonus;
+        } else {
+          state.p2LockedNose = chosen.value;
+          state.p2Step = 3;
+          state.p2Score += 120 + speedBonus;
+        }
+        spawnParticles(cx, cy, isP1 ? '#ef4444' : '#3b82f6', 18);
+      } else if (currentStep === 3) {
+        // Round winner!
+        sfx.sfxLaunch();
+        state.lockedFull = chosen.value;
+        state.lockedOnes = p.correctOnesDigit;
+        state.lockedNose = p.correctNoseDigit;
+        state.rocketLaunching = true;
+        state.roundTransitionTimer = 2.5;
+        if (isP1) {
+          state.p1Stars++;
+          state.p1Score += 350 + speedBonus;
+          state.duelRoundWinner = 'PLAYER 1';
+        } else {
+          state.p2Stars++;
+          state.p2Score += 350 + speedBonus;
+          state.duelRoundWinner = 'PLAYER 2';
+        }
+        state.rocketsLaunched++;
+        spawnParticles(640, 340, isP1 ? '#ef4444' : '#3b82f6', 45, 300);
+        triggerDiagnostic(`${state.duelRoundWinner} wins Round ${state.roundNumber} with ${chosen.value}! (+1 Winner Star)`, true, 2.5);
+      }
+    } else {
+      if (chosen.isZeroTrap) {
+        sfx.sfxBounce();
+        state.zeroBounceAnim = 1.0;
+      } else {
+        sfx.sfxError();
+      }
+      state.screenShake = 0.35;
+      if (isP1) {
+        state.p1Score = Math.max(0, state.p1Score - 50);
+      } else {
+        state.p2Score = Math.max(0, state.p2Score - 50);
+      }
+      spawnParticles(cx, cy, '#ef4444', 20);
+      triggerDiagnostic(`[P${playerIdx + 1}] ${chosen.diagnostic}`, false, 4.5);
+    }
+  }
+
+  // =========================================================================
+  // 6. LAYOUT GEOMETRY (STRICT ZERO-OVERLAP ZONES)
+  // =========================================================================
+  // Zone 1: Top HUD Bar: y = 0..62
+  // Zone 2: Upper Briefing Strip: y = 68..154
+  // Zone 3: Center Stage (Rocket + Gantry + Diagnostic): y = 160..515
+  // Zone 4: Bottom Command Deck (4 Choice Cards): y = 524..698
+
+  const MUTE_BTN_RECT = { x: 1152, y: 12, w: 110, h: 38 };
+
+  const TITLE_BUTTONS = [
+    { mode: GAME_MODES.SOLO, label: '1P SOLO FLIGHT', sub: 'Mouse / Keyboard / 8BitDo', x: 180, y: 470, w: 280, h: 96, color: '#00f0ff' },
+    { mode: GAME_MODES.COOP, label: '2P TEAM CO-OP', sub: 'Unified Team Score & Shields', x: 500, y: 470, w: 280, h: 96, color: '#10b981' },
+    { mode: GAME_MODES.DUEL, label: '2P COMPETITIVE DUEL', sub: 'Head-to-Head Star Race', x: 820, y: 470, w: 280, h: 96, color: '#f59e0b' }
+  ];
+
+  const RESTART_BTN_RECT = { x: 470, y: 540, w: 340, h: 74 };
+
+  function getCardRect(index) {
+    const totalW = 1140;
+    const startX = (LOGICAL_W - totalW) / 2;
+    const gap = 24;
+    const cardW = (totalW - gap * 3) / 4; // 267px each
+    return {
+      x: startX + index * (cardW + gap),
+      y: 536,
+      w: cardW,
+      h: 156
+    };
+  }
+
+  function pointInRect(px, py, r) {
+    return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+  }
+
+  // =========================================================================
+  // 7. INPUT HANDLING (MOUSE, KEYBOARD, DUAL 8BITDO GAMEPADS)
+  // =========================================================================
+  canvas.addEventListener('mousemove', (e) => {
+    const pos = clientToLogical(e.clientX, e.clientY);
+    state.mouseX = pos.x;
+    state.mouseY = pos.y;
+
+    state.hoveredMuteBtn = pointInRect(pos.x, pos.y, MUTE_BTN_RECT);
+
+    if (state.screen === 'TITLE') {
+      state.hoveredTitleBtn = TITLE_BUTTONS.findIndex(b => pointInRect(pos.x, pos.y, b));
+    } else if (state.screen === 'PLAYING') {
+      let found = -1;
+      for (let i = 0; i < 4; i++) {
+        if (pointInRect(pos.x, pos.y, getCardRect(i))) {
+          found = i;
+          break;
+        }
+      }
+      if (found !== -1 && found !== state.hoveredCard) {
+        sfx.sfxTick();
+        if (state.mode === GAME_MODES.SOLO) {
+          state.p1Cursor = found;
+        }
+      }
+      state.hoveredCard = found;
+    } else if (state.screen === 'GAMEOVER') {
+      state.hoveredRestartBtn = pointInRect(pos.x, pos.y, RESTART_BTN_RECT);
+    }
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    sfx.init();
+    const pos = clientToLogical(e.clientX, e.clientY);
+
+    if (pointInRect(pos.x, pos.y, MUTE_BTN_RECT)) {
+      sfx.toggleMute();
+      return;
+    }
+
+    if (state.screen === 'TITLE') {
+      const idx = TITLE_BUTTONS.findIndex(b => pointInRect(pos.x, pos.y, b));
+      if (idx !== -1) {
+        startGame(TITLE_BUTTONS[idx].mode);
+      }
+    } else if (state.screen === 'PLAYING') {
+      for (let i = 0; i < 4; i++) {
+        if (pointInRect(pos.x, pos.y, getCardRect(i))) {
+          state.p1Cursor = i;
+          handleCardSelect(i, 0);
+          return;
+        }
+      }
+    } else if (state.screen === 'GAMEOVER') {
+      if (pointInRect(pos.x, pos.y, RESTART_BTN_RECT)) {
+        state.screen = 'TITLE';
+      }
+    }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    sfx.init();
+    const key = e.key.toLowerCase();
+
+    if (key === 'm') {
+      sfx.toggleMute();
+      return;
+    }
+
+    if (state.screen === 'TITLE') {
+      if (key === 'a' || key === 'arrowleft') {
+        state.p1Cursor = (state.p1Cursor + 2) % 3;
+        sfx.sfxTick();
+      } else if (key === 'd' || key === 'arrowright') {
+        state.p1Cursor = (state.p1Cursor + 1) % 3;
+        sfx.sfxTick();
+      } else if (key === ' ' || key === 'enter') {
+        e.preventDefault();
+        startGame(TITLE_BUTTONS[state.p1Cursor % 3].mode);
+      }
+      return;
+    }
+
+    if (state.screen === 'GAMEOVER') {
+      if (key === ' ' || key === 'enter') {
+        e.preventDefault();
+        state.screen = 'TITLE';
+      }
+      return;
+    }
+
+    if (state.screen === 'PLAYING') {
+      // Player 1 controls: W/A/S/D + F / Spacebar (and Arrows/Enter in Solo)
+      if (key === 'a' || (state.mode === GAME_MODES.SOLO && key === 'arrowleft')) {
+        state.p1Cursor = (state.p1Cursor + 3) % 4;
+        sfx.sfxTick();
+      } else if (key === 'd' || (state.mode === GAME_MODES.SOLO && key === 'arrowright')) {
+        state.p1Cursor = (state.p1Cursor + 1) % 4;
+        sfx.sfxTick();
+      } else if (key === 'f' || key === ' ' || (state.mode === GAME_MODES.SOLO && key === 'enter')) {
+        e.preventDefault();
+        handleCardSelect(state.p1Cursor, 0);
+      }
+
+      // Player 2 controls in Co-op or Duel: ArrowLeft / ArrowRight + Enter
+      if (state.mode !== GAME_MODES.SOLO) {
+        if (key === 'arrowleft') {
+          state.p2Cursor = (state.p2Cursor + 3) % 4;
+          sfx.sfxTick();
+        } else if (key === 'arrowright') {
+          state.p2Cursor = (state.p2Cursor + 1) % 4;
+          sfx.sfxTick();
+        } else if (key === 'enter') {
+          e.preventDefault();
+          handleCardSelect(state.p2Cursor, 1);
+        }
+      }
+    }
+  });
+
+  function pollGamepads() {
+    if (!navigator.getGamepads) return;
+    const gamepads = navigator.getGamepads();
+    for (let gpIdx = 0; gpIdx < 2; gpIdx++) {
+      const gp = gamepads[gpIdx];
+      state.connectedGamepads[gpIdx] = Boolean(gp && gp.connected);
+      if (!gp || !gp.connected) continue;
+
+      const btnPressed = (bIdx) => Boolean(gp.buttons[bIdx] && gp.buttons[bIdx].pressed);
+      const prevBtns = state.prevGpButtons[gpIdx];
+      const justPressed = (bIdx) => btnPressed(bIdx) && !prevBtns[bIdx];
+
+      const axisX = gp.axes[0] || 0;
+      const prevAxisX = state.prevGpAxes[gpIdx][0] || 0;
+
+      const moveLeft = justPressed(14) || (axisX < -0.55 && prevAxisX >= -0.55);
+      const moveRight = justPressed(15) || (axisX > 0.55 && prevAxisX <= 0.55);
+      // 8BitDo A/B buttons (0 or 1)
+      const confirmBtn = justPressed(0) || justPressed(1);
+
+      if (moveLeft || moveRight || confirmBtn) {
+        sfx.init();
+      }
+
+      if (state.screen === 'TITLE') {
+        if (moveLeft) {
+          state.p1Cursor = (state.p1Cursor + 2) % 3;
+          sfx.sfxTick();
+        } else if (moveRight) {
+          state.p1Cursor = (state.p1Cursor + 1) % 3;
+          sfx.sfxTick();
+        } else if (confirmBtn) {
+          startGame(TITLE_BUTTONS[state.p1Cursor % 3].mode);
+        }
+      } else if (state.screen === 'GAMEOVER') {
+        if (confirmBtn) {
+          state.screen = 'TITLE';
+        }
+      } else if (state.screen === 'PLAYING') {
+        if (gpIdx === 0) {
+          if (moveLeft) {
+            state.p1Cursor = (state.p1Cursor + 3) % 4;
+            sfx.sfxTick();
+          } else if (moveRight) {
+            state.p1Cursor = (state.p1Cursor + 1) % 4;
+            sfx.sfxTick();
+          } else if (confirmBtn) {
+            handleCardSelect(state.p1Cursor, 0);
+          }
+        } else if (gpIdx === 1 && state.mode !== GAME_MODES.SOLO) {
+          if (moveLeft) {
+            state.p2Cursor = (state.p2Cursor + 3) % 4;
+            sfx.sfxTick();
+          } else if (moveRight) {
+            state.p2Cursor = (state.p2Cursor + 1) % 4;
+            sfx.sfxTick();
+          } else if (confirmBtn) {
+            handleCardSelect(state.p2Cursor, 1);
+          }
+        }
+      }
+
+      state.prevGpButtons[gpIdx] = gp.buttons.map(b => Boolean(b && b.pressed));
+      state.prevGpAxes[gpIdx] = [axisX, gp.axes[1] || 0];
+    }
+  }
+
+  // =========================================================================
+  // 8. UPDATE LOOP (60 FPS ANIMATIONS & TIMERS)
+  // =========================================================================
+  let lastTime = performance.now();
+
+  function update(dt) {
+    pollGamepads();
+
+    // Update background stars
+    for (const s of state.stars) {
+      s.y += s.speed * dt * (state.rocketLaunching ? 6 : 1);
+      if (s.y > LOGICAL_H) {
+        s.y = 0;
+        s.x = Math.random() * LOGICAL_W;
+      }
+    }
+
+    // Update particles
+    for (let i = state.particles.length - 1; i >= 0; i--) {
+      const pt = state.particles[i];
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      pt.life -= pt.decay * dt;
+      if (pt.life <= 0) {
+        state.particles.splice(i, 1);
+      }
+    }
+
+    if (state.screenShake > 0) {
+      state.screenShake = Math.max(0, state.screenShake - dt);
+    }
+    if (state.zeroBounceAnim > 0) {
+      state.zeroBounceAnim = Math.max(0, state.zeroBounceAnim - dt * 1.4);
+    }
+    if (state.noseForcefieldPulse > 0) {
+      state.noseForcefieldPulse = Math.max(0, state.noseForcefieldPulse - dt * 1.2);
+    }
+
+    if (state.diagnosticAlert && state.diagnosticAlert.timer > 0) {
+      state.diagnosticAlert.timer -= dt;
+      if (state.diagnosticAlert.timer <= 0) {
+        state.diagnosticAlert = null;
+      }
+    }
+
+    if (state.rocketLaunching) {
+      state.rocketLaunchY -= 260 * dt;
+      if (Math.random() < 0.7) {
+        spawnParticles(865, 340 + state.rocketLaunchY, '#f59e0b', 2, 110);
+        spawnParticles(865, 340 + state.rocketLaunchY, '#00f0ff', 2, 110);
+      }
+    }
+
+    if (state.roundTransitionTimer > 0) {
+      state.roundTransitionTimer -= dt;
+      if (state.roundTransitionTimer <= 0) {
+        loadRound(state.roundNumber + 1);
+      }
+    }
+  }
+
+  // =========================================================================
+  // 9. CANVAS DRAWING HELPERS (HIGH-CONTRAST NEON ARCADE)
+  // =========================================================================
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawWrappedText(text, x, y, maxWidth, lineHeight) {
+    const words = text.split(' ');
+    let line = '';
+    let curY = y;
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + ' ';
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line.trim(), x, curY);
+        line = words[n] + ' ';
+        curY += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line.trim(), x, curY);
+  }
+
+  function drawStarfieldAndGrid() {
+    ctx.fillStyle = '#060a1c';
+    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+    // Subtle orbital grid lines
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.045)';
+    ctx.lineWidth = 1;
+    for (let gx = 0; gx < LOGICAL_W; gx += 64) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, LOGICAL_H);
+      ctx.stroke();
+    }
+    for (let gy = 0; gy < LOGICAL_H; gy += 64) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(LOGICAL_W, gy);
+      ctx.stroke();
+    }
+
+    // Starfield
+    for (const s of state.stars) {
+      ctx.fillStyle = `rgba(226, 232, 240, ${s.alpha})`;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawMuteButton() {
+    const r = MUTE_BTN_RECT;
+    ctx.save();
+    roundRect(r.x, r.y, r.w, r.h, 8);
+    ctx.fillStyle = state.hoveredMuteBtn ? '#1e293b' : '#0f172a';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = sfx.muted ? '#ef4444' : '#00f0ff';
+    ctx.stroke();
+
+    ctx.fillStyle = sfx.muted ? '#fca5a5' : '#00f0ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(sfx.muted ? 'AUDIO: OFF' : 'AUDIO: ON', r.x + r.w / 2, r.y + r.h / 2);
+    ctx.restore();
+  }
+
+  function drawParticles() {
+    for (const pt of state.particles) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, pt.life);
+      ctx.fillStyle = pt.color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // =========================================================================
+  // 10. TITLE SCREEN RENDERING
+  // =========================================================================
+  function drawTitleScreen() {
+    drawStarfieldAndGrid();
+    drawMuteButton();
+
+    // Title Banner
+    ctx.save();
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('SINGAPORE MOE PRIMARY 2–4 MATHEMATICS • PLACE VALUE & NUMBER FORMATION', LOGICAL_W / 2, 86);
+
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '900 54px "Segoe UI", sans-serif';
+    ctx.fillText('CARGO ROCKET LAUNCH', LOGICAL_W / 2, 148);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.font = '800 32px "Segoe UI", sans-serif';
+    ctx.fillText('ODD & EVEN THRUSTERS', LOGICAL_W / 2, 194);
+
+    // Decorative Mini Rocket Preview
+    drawPreviewRocket(LOGICAL_W / 2, 315);
+
+    // Core Flight Rules Strip
+    roundRect(180, 392, 920, 54, 12);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '600 16px "Segoe UI", sans-serif';
+    ctx.fillText('STEP 1: Ignite Parity Tail Thruster (Ones)   ➔   STEP 2: Seal Nose Cone (No Leading 0!)   ➔   STEP 3: Launch Payload', LOGICAL_W / 2, 424);
+
+    // 3 Mode Cards
+    TITLE_BUTTONS.forEach((btn, idx) => {
+      const isSelected = state.hoveredTitleBtn === idx || (state.p1Cursor % 3) === idx;
+      roundRect(btn.x, btn.y, btn.w, btn.h, 14);
+      ctx.fillStyle = isSelected ? 'rgba(30, 41, 59, 0.98)' : 'rgba(15, 23, 42, 0.9)';
+      ctx.fill();
+      ctx.lineWidth = isSelected ? 3.5 : 2;
+      ctx.strokeStyle = btn.color;
+      ctx.stroke();
+
+      if (isSelected) {
+        ctx.shadowColor = btn.color;
+        ctx.shadowBlur = 14;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+
+      ctx.fillStyle = btn.color;
+      ctx.font = '800 20px "Segoe UI", sans-serif';
+      ctx.fillText(btn.label, btn.x + btn.w / 2, btn.y + 38);
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '500 14px "Segoe UI", sans-serif';
+      ctx.fillText(btn.sub, btn.x + btn.w / 2, btn.y + 68);
+    });
+
+    // Gamepad & Keyboard Status Bar
+    const gp0 = state.connectedGamepads[0] ? 'CONNECTED' : 'READY (WASD+SPACE)';
+    const gp1 = state.connectedGamepads[1] ? 'CONNECTED' : 'READY (ARROWS+ENTER)';
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '14px monospace';
+    ctx.fillText(`P1 CONTROLLER: ${gp0}   |   P2 CONTROLLER: ${gp1}   |   CLICK OR PRESS SPACE/A TO LAUNCH`, LOGICAL_W / 2, 624);
+
+    ctx.restore();
+  }
+
+  function drawPreviewRocket(cx, cy) {
+    ctx.save();
+    // Nose cone
+    ctx.beginPath();
+    ctx.moveTo(cx - 210, cy);
+    ctx.lineTo(cx - 140, cy - 36);
+    ctx.lineTo(cx - 140, cy + 36);
+    ctx.closePath();
+    ctx.fillStyle = '#10b981';
+    ctx.fill();
+
+    const bays = [
+      { label: 'THOUSANDS', val: '1', col: '#00f0ff' },
+      { label: 'HUNDREDS', val: '0', col: '#00f0ff' },
+      { label: 'TENS', val: '4', col: '#00f0ff' },
+      { label: 'ONES (ODD)', val: '7', col: '#f59e0b' }
+    ];
+    bays.forEach((b, i) => {
+      const bx = cx - 140 + i * 74;
+      roundRect(bx + 2, cy - 36, 70, 72, 8);
+      ctx.fillStyle = '#0f172a';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = b.col;
+      ctx.stroke();
+
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(b.label, bx + 37, cy - 18);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 28px monospace';
+      ctx.fillText(b.val, bx + 37, cy + 16);
+    });
+
+    // Thruster flame
+    ctx.beginPath();
+    ctx.moveTo(cx + 158, cy - 22);
+    ctx.lineTo(cx + 215 + Math.sin(performance.now() / 60) * 10, cy);
+    ctx.lineTo(cx + 158, cy + 22);
+    ctx.closePath();
+    ctx.fillStyle = '#f59e0b';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // =========================================================================
+  // 11. GAMEPLAY SCREEN RENDERING (4 STRICT ZERO-OVERLAP ZONES)
+  // =========================================================================
+  function drawGameplayScreen() {
+    ctx.save();
+    if (state.screenShake > 0) {
+      const mag = state.screenShake * 14;
+      ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+    }
+
+    drawStarfieldAndGrid();
+
+    // -----------------------------------------------------------------------
+    // ZONE 1: TOP HUD BAR (y = 0..62)
+    // -----------------------------------------------------------------------
+    ctx.fillStyle = 'rgba(10, 16, 36, 0.95)';
+    ctx.fillRect(0, 0, LOGICAL_W, 62);
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 62);
+    ctx.lineTo(LOGICAL_W, 62);
+    ctx.stroke();
+
+    // Mode Badge
+    const modeLabel = state.mode === GAME_MODES.SOLO
+      ? '1P SOLO FLIGHT'
+      : state.mode === GAME_MODES.COOP
+        ? '2P TEAM CO-OP'
+        : '2P COMPETITIVE DUEL';
+    roundRect(18, 12, 210, 38, 8);
+    ctx.fillStyle = '#1e293b';
+    ctx.fill();
+    ctx.strokeStyle = '#00f0ff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(modeLabel, 123, 31);
+
+    // Round & Difficulty Tier
+    const tierName = state.roundNumber <= 2
+      ? 'WARM-UP (3-STAGE)'
+      : state.roundNumber <= 4
+        ? 'ZERO-GUARD (3-STAGE)'
+        : state.roundNumber <= 6
+          ? 'HEAVY-LIFT (4-STAGE)'
+          : 'MASTER DIRECTOR';
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`ROUND ${state.roundNumber} • ${tierName}`, 248, 31);
+
+    if (state.mode === GAME_MODES.DUEL) {
+      // Duel HUD: P1 Stars/Score vs P2 Stars/Score
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#f87171';
+      ctx.font = 'bold 17px monospace';
+      ctx.fillText(`P1: ★${state.p1Stars} (${state.p1Score})`, 860, 31);
+
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillText(`P2: ★${state.p2Stars} (${state.p2Score})`, 1130, 31);
+    } else {
+      // Solo or Unified Team Co-op HUD (ONLY unified TEAM SCORE and shared Shields)
+      const shieldLabel = state.mode === GAME_MODES.COOP ? 'TEAM SHIELDS:' : 'SHIELDS:';
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(shieldLabel, 695, 31);
+
+      for (let s = 0; s < state.maxShields; s++) {
+        const sx = 706 + s * 22;
+        roundRect(sx, 20, 16, 22, 4);
+        ctx.fillStyle = s < state.shields ? '#10b981' : '#1e293b';
+        ctx.fill();
+        ctx.strokeStyle = s < state.shields ? '#6ee7b7' : '#334155';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      // Combo
+      ctx.fillStyle = state.combo > 1 ? '#f59e0b' : '#94a3b8';
+      ctx.font = 'bold 15px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(`COMBO x${Math.max(1, state.combo)}`, 935, 31);
+
+      // Unified Score
+      const scoreLabel = state.mode === GAME_MODES.COOP ? 'TEAM SCORE' : 'SCORE';
+      ctx.fillStyle = '#00f0ff';
+      ctx.font = '900 18px monospace';
+      ctx.fillText(`${scoreLabel}: ${state.score}`, 1132, 31);
+    }
+
+    drawMuteButton();
+
+    // -----------------------------------------------------------------------
+    // ZONE 2: UPPER BRIEFING STRIP (y = 68..154)
+    // -----------------------------------------------------------------------
+    const p = state.problem;
+    roundRect(24, 68, LOGICAL_W - 48, 86, 12);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = p.parity === 'ODD' ? '#f59e0b' : '#00f0ff';
+    ctx.stroke();
+
+    // Left: Mission Directive Badge
+    roundRect(38, 80, 310, 62, 10);
+    ctx.fillStyle = p.parity === 'ODD' ? 'rgba(245, 158, 11, 0.16)' : 'rgba(0, 240, 255, 0.14)';
+    ctx.fill();
+    ctx.strokeStyle = p.parity === 'ODD' ? '#f59e0b' : '#00f0ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('FLIGHT CONTROL TARGET', 193, 97);
+
+    ctx.fillStyle = p.parity === 'ODD' ? '#fbbf24' : '#38bdf8';
+    ctx.font = '900 24px "Segoe UI", sans-serif';
+    ctx.fillText(p.missionTitle, 193, 126);
+
+    // Center: Word Problem Prompt
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '700 19px "Segoe UI", sans-serif';
+    ctx.fillText(
+      `Form the ${p.extrema} ${p.parity} ${p.numDigits}-digit number using all fuel pods once each:`,
+      368,
+      102
+    );
+
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '600 16px "Segoe UI", sans-serif';
+    const stepInstruction = getStepInstructionText();
+    ctx.fillText(stepInstruction, 368, 132);
+
+    // -----------------------------------------------------------------------
+    // ZONE 3: CENTER STAGE (y = 160..520)
+    // -----------------------------------------------------------------------
+    drawFuelPodGantry(p);
+    drawCargoRocketStage(p);
+    drawDiagnosticBanner();
+
+    // -----------------------------------------------------------------------
+    // ZONE 4: BOTTOM COMMAND DECK (y = 528..704)
+    // -----------------------------------------------------------------------
+    drawCommandDeck();
+
+    drawParticles();
+    ctx.restore();
+  }
+
+  function getStepInstructionText() {
+    const p = state.problem;
+    if (state.mode === GAME_MODES.DUEL) {
+      return `DUEL RACE — P1 on Step ${state.p1Step}/3  |  P2 on Step ${state.p2Step}/3  (Fastest lock-in wins!)`;
+    }
+
+    let roleTag = '';
+    if (state.mode === GAME_MODES.COOP) {
+      const activeP = getActiveCoopPlayer();
+      roleTag = activeP === 0
+        ? '[PLAYER 1 TURN] '
+        : activeP === 1
+          ? '[PLAYER 2 TURN] '
+          : '[BOTH P1 & P2 CONFIRM] ';
+    }
+
+    if (state.step === 1) {
+      return `${roleTag}STEP 1 OF 3: Select the ${p.parity} pod to ignite the ONES tail thruster first!`;
+    }
+    if (state.step === 2) {
+      return `${roleTag}STEP 2 OF 3: Seal the front NOSE CONE (${p.numDigits === 4 ? 'Thousands' : 'Hundreds'} bay — no leading 0!).`;
+    }
+    return `${roleTag}STEP 3 OF 3: Lock in the complete ordered ${p.numDigits}-digit rocket payload for launch!`;
+  }
+
+  function drawFuelPodGantry(p) {
+    // Left panel on Center Stage: Fuel Pod Loading Gantry (x = 24..370, y = 166..444)
+    roundRect(24, 166, 346, 278, 14);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('AVAILABLE FUEL PODS (USE ALL ONCE)', 197, 192);
+
+    const podCount = p.digits.length;
+    const cols = 2;
+    const podW = 132;
+    const podH = 92;
+    const startX = 48;
+    const startY = 214;
+    const gapX = 34;
+    const gapY = 22;
+
+    p.digits.forEach((pod, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const px = startX + col * (podW + gapX);
+      const py = startY + row * (podH + gapY);
+
+      // Check if pod is already locked in Solo/Co-op
+      const isLockedOnes = state.lockedOnes !== null && Number(state.lockedOnes) === pod.value &&
+        p.digits.findIndex(d => d.value === pod.value) === i;
+      const isLockedNose = state.lockedNose !== null && Number(state.lockedNose) === pod.value && !isLockedOnes &&
+        p.digits.findIndex((d, idx) => d.value === pod.value && !(state.lockedOnes !== null && Number(state.lockedOnes) === pod.value && p.digits.findIndex(x => x.value === pod.value) === idx)) === i;
+      const isUsed = isLockedOnes || isLockedNose || state.lockedFull !== null;
+
+      roundRect(px, py, podW, podH, 12);
+      ctx.fillStyle = isUsed ? 'rgba(30, 41, 59, 0.45)' : '#0f172a';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = isUsed
+        ? '#475569'
+        : pod.value === 0
+          ? '#a855f7'
+          : pod.parity === 'ODD'
+            ? '#f59e0b'
+            : '#00f0ff';
+      ctx.stroke();
+
+      // Digit
+      ctx.fillStyle = isUsed ? '#64748b' : '#ffffff';
+      ctx.font = '900 38px monospace';
+      ctx.fillText(String(pod.value), px + podW / 2, py + 46);
+
+      // Parity badge
+      const tag = isUsed
+        ? 'LOADED'
+        : pod.value === 0
+          ? 'EVEN (ZERO)'
+          : pod.parity;
+      ctx.fillStyle = isUsed
+        ? '#64748b'
+        : pod.value === 0
+          ? '#d8b4fe'
+          : pod.parity === 'ODD'
+            ? '#fbbf24'
+            : '#38bdf8';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(tag, px + podW / 2, py + 76);
+    });
+  }
+
+  function drawCargoRocketStage(p) {
+    // Right panel on Center Stage: Rocket Launchpad Bay (x = 390..1256, y = 166..444)
+    roundRect(390, 166, 866, 278, 14);
+    ctx.fillStyle = 'rgba(11, 18, 38, 0.88)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.25)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Step Progress Indicator Pills at top of Rocket Bay
+    const stepLabels = [
+      '1. PARITY TAIL THRUSTER (ONES)',
+      '2. ZERO-GUARD NOSE CONE',
+      '3. FULL PAYLOAD & LAUNCH'
+    ];
+    stepLabels.forEach((lbl, idx) => {
+      const activeStep = state.mode === GAME_MODES.DUEL ? Math.max(state.p1Step, state.p2Step) : state.step;
+      const isDone = activeStep > idx + 1 || state.rocketLaunching;
+      const isCurr = activeStep === idx + 1 && !state.rocketLaunching;
+      const bx = 414 + idx * 276;
+      roundRect(bx, 178, 264, 28, 6);
+      ctx.fillStyle = isDone ? 'rgba(16, 185, 129, 0.22)' : isCurr ? 'rgba(0, 240, 255, 0.2)' : 'rgba(30, 41, 59, 0.6)';
+      ctx.fill();
+      ctx.strokeStyle = isDone ? '#10b981' : isCurr ? '#00f0ff' : '#334155';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.fillStyle = isDone ? '#6ee7b7' : isCurr ? '#ffffff' : '#64748b';
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(lbl, bx + 132, 196);
+    });
+
+    // Rocket Assembly Coordinates
+    const ry = 315 + state.rocketLaunchY;
+    const is4Digit = p.numDigits === 4;
+    const bayW = 112;
+    const bayH = 116;
+    const totalBaysW = p.numDigits * bayW;
+    const startBayX = 810 - totalBaysW / 2;
+
+    // Zero-Gravity Nose-Cone Forcefield Arc on Left
+    const shieldPulse = 0.55 + 0.45 * Math.sin(performance.now() / 220) + state.zeroBounceAnim * 0.6;
+    ctx.save();
+    ctx.strokeStyle = state.zeroBounceAnim > 0
+      ? `rgba(239, 68, 68, ${Math.min(1, shieldPulse)})`
+      : `rgba(168, 85, 247, ${Math.min(1, shieldPulse * 0.75)})`;
+    ctx.lineWidth = state.zeroBounceAnim > 0 ? 5 : 3;
+    ctx.beginPath();
+    ctx.arc(startBayX - 88, ry, 76, Math.PI * 0.65, Math.PI * 1.35);
+    ctx.stroke();
+
+    ctx.fillStyle = state.zeroBounceAnim > 0 ? '#fca5a5' : '#d8b4fe';
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ZERO-GUARD', startBayX - 134, ry - 10);
+    ctx.fillText('NO LEADING 0', startBayX - 134, ry + 8);
+    ctx.restore();
+
+    // Rocket Nose Cone (Left tip)
+    ctx.beginPath();
+    ctx.moveTo(startBayX - 92, ry);
+    ctx.lineTo(startBayX, ry - bayH / 2);
+    ctx.lineTo(startBayX, ry + bayH / 2);
+    ctx.closePath();
+    ctx.fillStyle = state.lockedNose !== null ? '#10b981' : '#1e293b';
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = state.lockedNose !== null ? '#6ee7b7' : '#475569';
+    ctx.stroke();
+
+    // Rocket Fins (Top & Bottom near tail)
+    const tailX = startBayX + totalBaysW;
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#64748b';
+    ctx.lineWidth = 2;
+    // Upper fin
+    ctx.beginPath();
+    ctx.moveTo(tailX - 75, ry - bayH / 2);
+    ctx.lineTo(tailX + 10, ry - bayH / 2 - 34);
+    ctx.lineTo(tailX, ry - bayH / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // Lower fin
+    ctx.beginPath();
+    ctx.moveTo(tailX - 75, ry + bayH / 2);
+    ctx.lineTo(tailX + 10, ry + bayH / 2 + 34);
+    ctx.lineTo(tailX, ry + bayH / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Place Value Stages
+    const placeLabels = is4Digit
+      ? ['THOUSANDS', 'HUNDREDS', 'TENS', 'ONES']
+      : ['HUNDREDS', 'TENS', 'ONES'];
+
+    for (let i = 0; i < p.numDigits; i++) {
+      const bx = startBayX + i * bayW;
+      const isNose = i === 0;
+      const isOnes = i === p.numDigits - 1;
+
+      let displayDigit = '?';
+      let isFilled = false;
+
+      if (state.lockedFull !== null) {
+        displayDigit = state.lockedFull[i];
+        isFilled = true;
+      } else if (isOnes && state.lockedOnes !== null) {
+        displayDigit = String(state.lockedOnes);
+        isFilled = true;
+      } else if (isNose && state.lockedNose !== null) {
+        displayDigit = String(state.lockedNose);
+        isFilled = true;
+      }
+
+      const isActiveTarget =
+        (state.step === 1 && isOnes) ||
+        (state.step === 2 && isNose) ||
+        (state.step === 3);
+
+      const borderCol = isOnes
+        ? (p.parity === 'ODD' ? '#f59e0b' : '#00f0ff')
+        : isNose
+          ? '#10b981'
+          : isFilled
+            ? '#00f0ff'
+            : '#475569';
+
+      roundRect(bx + 3, ry - bayH / 2, bayW - 6, bayH, 10);
+      ctx.fillStyle = isFilled ? 'rgba(15, 23, 42, 0.96)' : 'rgba(15, 23, 42, 0.72)';
+      ctx.fill();
+      ctx.lineWidth = isActiveTarget ? 3.5 : 2;
+      ctx.strokeStyle = borderCol;
+      ctx.stroke();
+
+      if (isActiveTarget && !state.rocketLaunching) {
+        ctx.shadowColor = borderCol;
+        ctx.shadowBlur = 12;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+
+      // Place value header
+      ctx.fillStyle = isOnes
+        ? (p.parity === 'ODD' ? '#fbbf24' : '#38bdf8')
+        : isNose
+          ? '#6ee7b7'
+          : '#94a3b8';
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(placeLabels[i], bx + bayW / 2, ry - 34);
+
+      // Digit readout
+      ctx.fillStyle = isFilled ? '#ffffff' : 'rgba(148, 163, 184, 0.35)';
+      ctx.font = '900 44px monospace';
+      ctx.fillText(displayDigit, bx + bayW / 2, ry + 16);
+
+      // Sub-tag on Ones or Nose
+      if (isOnes) {
+        ctx.fillStyle = p.parity === 'ODD' ? '#f59e0b' : '#00f0ff';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText(`${p.parity} THRUSTER`, bx + bayW / 2, ry + 42);
+      } else if (isNose) {
+        ctx.fillStyle = '#10b981';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillText('NOSE CONE', bx + bayW / 2, ry + 42);
+      }
+    }
+
+    // Tail Thruster Nozzle & Plasma Ring (Right side of rocket)
+    const thrusterCol = p.parity === 'ODD' ? '#f59e0b' : '#00f0ff';
+    ctx.fillStyle = '#334155';
+    ctx.beginPath();
+    ctx.moveTo(tailX, ry - 32);
+    ctx.lineTo(tailX + 26, ry - 44);
+    ctx.lineTo(tailX + 26, ry + 44);
+    ctx.lineTo(tailX, ry + 32);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = thrusterCol;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Glowing Parity Plasma Ring
+    ctx.save();
+    ctx.strokeStyle = thrusterCol;
+    ctx.lineWidth = state.lockedOnes !== null ? 4 : 2;
+    ctx.beginPath();
+    ctx.ellipse(tailX + 34, ry, 10, 42, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    if (state.lockedOnes !== null || state.rocketLaunching) {
+      const flameLen = state.rocketLaunching
+        ? 95 + Math.random() * 35
+        : 42 + Math.sin(performance.now() / 70) * 10;
+      ctx.beginPath();
+      ctx.moveTo(tailX + 36, ry - 26);
+      ctx.lineTo(tailX + 36 + flameLen, ry);
+      ctx.lineTo(tailX + 36, ry + 26);
+      ctx.closePath();
+      ctx.fillStyle = thrusterCol;
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Duel progress mini-status inside stage
+    if (state.mode === GAME_MODES.DUEL) {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#f87171';
+      ctx.font = 'bold 13px monospace';
+      ctx.fillText(
+        `P1 PROGRESS: Ones=[${state.p1LockedOnes ?? '?'}]  Nose=[${state.p1LockedNose ?? '?'}]  Step ${state.p1Step}/3`,
+        414,
+        428
+      );
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillText(
+        `P2 PROGRESS: Ones=[${state.p2LockedOnes ?? '?'}]  Nose=[${state.p2LockedNose ?? '?'}]  Step ${state.p2Step}/3`,
+        1234,
+        428
+      );
+    }
+  }
+
+  function drawDiagnosticBanner() {
+    // Dedicated Diagnostic Strip between Center Stage and Bottom Command Deck (y = 452..522)
+    roundRect(24, 452, LOGICAL_W - 48, 68, 10);
+
+    if (state.diagnosticAlert) {
+      const isOk = state.diagnosticAlert.isSuccess;
+      ctx.fillStyle = isOk ? 'rgba(6, 78, 59, 0.94)' : 'rgba(127, 29, 29, 0.95)';
+      ctx.fill();
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = isOk ? '#10b981' : '#ef4444';
+      ctx.stroke();
+
+      ctx.fillStyle = isOk ? '#6ee7b7' : '#fecaca';
+      ctx.font = 'bold 13px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(isOk ? 'FLIGHT TELEMETRY CONFIRMED:' : 'DIAGNOSTIC ALERT — COURSE CORRECTION REQUIRED:', 42, 474);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '600 15px "Segoe UI", sans-serif';
+      drawWrappedText(state.diagnosticAlert.text, 42, 498, LOGICAL_W - 84, 20);
+    } else {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+      ctx.stroke();
+
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '600 15px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      const tip = state.step === 1
+        ? 'TIP: Always lock the ONES tail thruster first to satisfy ODD or EVEN parity!'
+        : state.step === 2
+          ? 'TIP: Never put 0 in the leftmost nose cone — choose the smallest/greatest valid non-zero pod!'
+          : 'TIP: Verify all digits are used once each and match the mission target before ignition!';
+      ctx.fillText(tip, LOGICAL_W / 2, 491);
+    }
+  }
+
+  function drawCommandDeck() {
+    // Zone 4: 4 Tactical Choice Cards (y = 536..692)
+    const cards = getActiveStepCards(0);
+    const p = state.problem;
+
+    for (let i = 0; i < 4; i++) {
+      const card = cards[i];
+      if (!card) continue;
+      const r = getCardRect(i);
+
+      const isP1Hover = state.p1Cursor === i || state.hoveredCard === i;
+      const isP2Hover = state.mode !== GAME_MODES.SOLO && state.p2Cursor === i;
+
+      roundRect(r.x, r.y, r.w, r.h, 14);
+      ctx.fillStyle = (isP1Hover || isP2Hover) ? 'rgba(30, 41, 59, 0.98)' : 'rgba(15, 23, 42, 0.92)';
+      ctx.fill();
+
+      // Card border
+      ctx.lineWidth = (isP1Hover || isP2Hover) ? 3.5 : 2;
+      ctx.strokeStyle = isP1Hover && isP2Hover
+        ? '#a855f7'
+        : isP1Hover
+          ? (state.mode === GAME_MODES.SOLO ? '#00f0ff' : '#ef4444')
+          : isP2Hover
+            ? '#3b82f6'
+            : '#334155';
+      ctx.stroke();
+
+      // Slot hotkey badge
+      ctx.fillStyle = '#64748b';
+      ctx.font = 'bold 12px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`BAY ${i + 1}`, r.x + 14, r.y + 22);
+
+      // Player reticle badges on card
+      if (isP1Hover) {
+        roundRect(r.x + r.w - 64, r.y + 8, 52, 20, 5);
+        ctx.fillStyle = state.mode === GAME_MODES.SOLO ? '#00f0ff' : '#ef4444';
+        ctx.fill();
+        ctx.fillStyle = '#050814';
+        ctx.font = '900 11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(state.mode === GAME_MODES.SOLO ? 'LOCK' : 'P1', r.x + r.w - 38, r.y + 22);
+      }
+      if (isP2Hover) {
+        const badgeX = isP1Hover ? r.x + r.w - 122 : r.x + r.w - 64;
+        roundRect(badgeX, r.y + 8, 52, 20, 5);
+        ctx.fillStyle = '#3b82f6';
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '900 11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('P2', badgeX + 26, r.y + 22);
+      }
+
+      // Main candidate value
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff';
+      const fontSize = card.value.length >= 4 ? 44 : card.value.length === 3 ? 48 : 54;
+      ctx.font = `900 ${fontSize}px monospace`;
+      ctx.fillText(card.value, r.x + r.w / 2, r.y + 92);
+
+      // Sublabel
+      ctx.fillStyle = state.step === 1
+        ? (p.parity === 'ODD' ? '#fbbf24' : '#38bdf8')
+        : '#94a3b8';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(card.sublabel, r.x + r.w / 2, r.y + 132);
+    }
+  }
+
+  // =========================================================================
+  // 12. GAME OVER SCREEN RENDERING
+  // =========================================================================
+  function drawGameOverScreen() {
+    drawStarfieldAndGrid();
+    drawMuteButton();
+
+    ctx.save();
+    ctx.textAlign = 'center';
+
+    ctx.fillStyle = '#ef4444';
+    ctx.font = '900 50px "Segoe UI", sans-serif';
+    ctx.fillText('SHIELDS DEPLETED — MISSION HALTED', LOGICAL_W / 2, 165);
+
+    roundRect(330, 220, 620, 270, 16);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+    ctx.fill();
+    ctx.strokeStyle = '#00f0ff';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    const finalScoreLabel = state.mode === GAME_MODES.COOP ? 'UNIFIED TEAM SCORE' : 'FINAL SCORE';
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(finalScoreLabel, LOGICAL_W / 2, 270);
+
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = '900 54px monospace';
+    ctx.fillText(String(state.score), LOGICAL_W / 2, 330);
+
+    ctx.fillStyle = '#e2e8f0';
+    ctx.font = '600 20px "Segoe UI", sans-serif';
+    ctx.fillText(
+      `Rockets Launched: ${state.rocketsLaunched}   •   Highest Round: ${state.roundNumber}   •   Best Combo: x${Math.max(1, state.bestCombo)}`,
+      LOGICAL_W / 2,
+      400
+    );
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = '600 16px "Segoe UI", sans-serif';
+    ctx.fillText('Remember: Lock the Ones parity thruster first, and never put 0 in the nose cone!', LOGICAL_W / 2, 448);
+
+    // Return to Launchpad button
+    const r = RESTART_BTN_RECT;
+    roundRect(r.x, r.y, r.w, r.h, 14);
+    ctx.fillStyle = state.hoveredRestartBtn ? '#1e293b' : '#0f172a';
+    ctx.fill();
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.fillStyle = '#10b981';
+    ctx.font = '800 22px "Segoe UI", sans-serif';
+    ctx.fillText('RETURN TO LAUNCHPAD', r.x + r.w / 2, r.y + 45);
+
+    ctx.restore();
+  }
+
+  // =========================================================================
+  // 13. MAIN RENDER & ANIMATION LOOP
+  // =========================================================================
+  function render() {
+    ctx.save();
+    ctx.scale(scale, scale);
+
+    if (state.screen === 'TITLE') {
+      drawTitleScreen();
+    } else if (state.screen === 'PLAYING') {
+      drawGameplayScreen();
+    } else if (state.screen === 'GAMEOVER') {
+      drawGameOverScreen();
+    }
+
+    ctx.restore();
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
