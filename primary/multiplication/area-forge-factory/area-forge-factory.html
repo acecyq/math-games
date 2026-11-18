@@ -1,0 +1,2005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Area-Forge Factory: Split-Grid Blueprints</title>
+<style>
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background-color: #050811;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // --- RESPONSIVE VIRTUAL RESOLUTION (1280x720) ---
+  const V_W = 1280;
+  const V_H = 720;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = winW * dpr;
+    canvas.height = winH * dpr;
+    scale = Math.min(winW / V_W, winH / V_H);
+    offsetX = (winW - V_W * scale) / 2;
+    offsetY = (winH - V_H * scale) / 2;
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function screenToVirtual(clientX, clientY) {
+    return {
+      x: (clientX - offsetX) / scale,
+      y: (clientY - offsetY) / scale
+    };
+  }
+
+  // --- PROCEDURAL WEB AUDIO ENGINE ---
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.bgmInterval = null;
+      this.stepIdx = 0;
+      this.unlocked = false;
+    }
+
+    unlock() {
+      if (this.unlocked) return;
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      this.ctx = new AudioCtx();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+      this.unlocked = true;
+      this.startBGM();
+    }
+
+    toggleMute() {
+      this.unlock();
+      this.muted = !this.muted;
+      if (!this.muted && this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    }
+
+    playTone(freq, type, duration, vol = 0.08, delay = 0, slideTo = null) {
+      if (this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime + delay;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, now + duration);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    }
+
+    playTick() {
+      this.playTone(820, 'square', 0.04, 0.03);
+    }
+
+    playShoot() {
+      this.playTone(980, 'sawtooth', 0.12, 0.08, 0, 260);
+    }
+
+    playLock(combo = 1) {
+      const base = 440 * Math.pow(1.06, Math.min(combo, 10));
+      this.playTone(base, 'triangle', 0.1, 0.1, 0);
+      this.playTone(base * 1.5, 'triangle', 0.16, 0.1, 0.06);
+    }
+
+    playShieldSlam() {
+      this.playTone(150, 'square', 0.18, 0.12, 0, 55);
+      this.playTone(587.33, 'triangle', 0.2, 0.09, 0.08);
+    }
+
+    playFusionBlast() {
+      const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+      notes.forEach((n, i) => {
+        this.playTone(n, 'square', 0.15, 0.08, i * 0.045);
+      });
+    }
+
+    playOverdrive() {
+      const notes = [440, 554.37, 659.25, 880, 1108.73];
+      notes.forEach((n, i) => {
+        this.playTone(n, 'sawtooth', 0.18, 0.07, i * 0.04);
+      });
+    }
+
+    playError() {
+      this.playTone(180, 'sawtooth', 0.18, 0.12, 0, 110);
+      this.playTone(135, 'sawtooth', 0.25, 0.12, 0.11, 85);
+    }
+
+    startBGM() {
+      if (this.bgmInterval) return;
+      const bass = [130.81, 130.81, 155.56, 130.81, 174.61, 174.61, 196.0, 233.08];
+      const lead = [523.25, 0, 622.25, 783.99, 698.46, 622.25, 523.25, 466.16];
+      this.bgmInterval = setInterval(() => {
+        if (this.muted || !this.ctx || gameState.screen === 'TITLE') return;
+        const idx = this.stepIdx % bass.length;
+        const speedBoost = gameState.overdrive > 0 ? 1.12 : 1.0;
+        this.playTone(bass[idx] * speedBoost, 'triangle', 0.14, 0.024);
+        if (lead[idx] > 0) {
+          this.playTone(lead[idx] * speedBoost, 'sine', 0.1, 0.015);
+        }
+        this.stepIdx++;
+      }, 190);
+    }
+  }
+
+  const sfx = new SoundEngine();
+
+  // --- PALETTE ---
+  const COLORS = {
+    bgDeep: '#050811',
+    bgPanel: '#0b1224',
+    bgCard: '#111c38',
+    bgCardHover: '#192b54',
+    borderDim: '#1e3561',
+    cyan: '#00f0ff',
+    cyanDim: 'rgba(0, 240, 255, 0.18)',
+    magenta: '#ff2a85',
+    magentaDim: 'rgba(255, 42, 133, 0.2)',
+    gold: '#ffd13b',
+    goldDim: 'rgba(255, 209, 59, 0.2)',
+    emerald: '#10f587',
+    emeraldDim: 'rgba(16, 245, 135, 0.2)',
+    redAlert: '#ff3b4e',
+    p1Red: '#ff4757',
+    p2Blue: '#2ed5ff',
+    textBright: '#f4f8ff',
+    textMuted: '#8ea4cc'
+  };
+
+  // --- GAME STATE ---
+  const gameState = {
+    screen: 'TITLE', // TITLE, PLAYING, GAMEOVER
+    mode: 'SOLO',    // SOLO, COOP, DUEL
+    roundNumber: 1,
+    shields: 5,
+    maxShields: 5,
+    score: 0,
+    combo: 0,
+    overdrive: 0,      // 0..100 charge; triggers 2X HYPER FORGE!
+    overdriveTimer: 0, // seconds remaining in 2X Overdrive
+    waferTimer: 1.0,   // 1.0 -> 0.0 conveyor pressure gauge (speed bonus!)
+    waferDuration: 28, // seconds per wafer batch
+    step: 0,           // 0 = Step 1, 1 = Step 2, 2 = Step 3, 3 = Round Complete launch!
+    stepProgress: 0,   // smooth animation interpolation
+    zeroShieldDropY: 0,
+    waferSlideX: 0,
+    waferLaunchX: 0,
+    p1Stars: 0,
+    p2Stars: 0,
+    duelLocked: false,
+    duelBanner: '',
+    duelBannerTimer: 0,
+    shakeTimer: 0,
+    shakeIntensity: 0,
+    flashAlpha: 0,
+    flashColor: '#ffffff',
+    diagnosticAlert: null,
+    problem: null,
+    history: [],
+    particles: [],
+    beams: [],
+    floatingTexts: [],
+    // Inputs & Cursors
+    mouse: { x: V_W / 2, y: V_H / 2 },
+    p1Index: 0,
+    p2Index: 1,
+    titleIndex: 0,
+    muteBtnRect: { x: V_W - 116, y: 11, w: 100, h: 36 },
+    menuBtnRect: { x: V_W - 224, y: 11, w: 98, h: 36 }
+  };
+
+  // --- VISUAL EFFECTS ---
+  function spawnParticles(x, y, color, count = 26, speed = 6) {
+    for (let i = 0; i < count; i++) {
+      const a = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
+      const spd = speed * (0.4 + Math.random() * 0.9);
+      gameState.particles.push({
+        x, y,
+        vx: Math.cos(a) * spd,
+        vy: Math.sin(a) * spd,
+        life: 1.0,
+        decay: 0.018 + Math.random() * 0.02,
+        size: 3 + Math.random() * 4.5,
+        color
+      });
+    }
+  }
+
+  function spawnPlasmaBeam(x1, y1, x2, y2, color) {
+    gameState.beams.push({
+      x1, y1, x2, y2,
+      color,
+      life: 1.0
+    });
+  }
+
+  function spawnFloatingText(x, y, text, color, size = 21) {
+    gameState.floatingTexts.push({
+      x, y,
+      vy: -1.5,
+      text,
+      color,
+      size,
+      life: 1.0
+    });
+  }
+
+  function triggerScreenFlash(color, alpha = 0.25) {
+    gameState.flashColor = color;
+    gameState.flashAlpha = alpha;
+  }
+
+  // --- RANDOM & HELPERS ---
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function shuffleArray(arr) {
+    const copy = arr.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  function makeUniqueOptions(correctObj, distractors) {
+    const used = new Set([correctObj.value]);
+    const list = [correctObj];
+    for (const d of distractors) {
+      let val = d.value;
+      let guard = 0;
+      while (used.has(val) && guard < 20) {
+        guard++;
+        const n = parseInt(val, 10);
+        val = !isNaN(n) ? String(Math.max(1, n + (guard % 2 === 0 ? 11 : -9))) : val + '?';
+      }
+      used.add(val);
+      list.push({ ...d, value: val });
+    }
+    return shuffleArray(list);
+  }
+
+  // --- PROCEDURAL CURRICULUM GENERATOR ---
+  function generateProblem(roundNumber) {
+    let prob = null;
+    let attempts = 0;
+    while (attempts < 40) {
+      attempts++;
+      if (roundNumber <= 2) {
+        prob = buildStandardRound(roundNumber, false);
+      } else if (roundNumber <= 4) {
+        prob = buildStandardRound(roundNumber, true);
+      } else if (roundNumber <= 6) {
+        prob = buildMultiplierBoxRound(roundNumber);
+      } else {
+        prob = (roundNumber % 2 === 1)
+          ? buildTopMultiplicandBoxRound(roundNumber)
+          : buildMultiplierBoxRound(roundNumber);
+      }
+      if (!gameState.history.includes(prob.signature)) break;
+    }
+    gameState.history.push(prob.signature);
+    if (gameState.history.length > 6) gameState.history.shift();
+    return prob;
+  }
+
+  function buildStandardRound(roundNumber, advancedCarries) {
+    let A, B;
+    if (!advancedCarries) {
+      A = randInt(1, 6) * 100 + randInt(2, 8) * 10 + randInt(2, 9);
+      B = randInt(2, 7) * 10 + randInt(2, 8);
+    } else if (roundNumber === 3 || Math.random() < 0.55) {
+      A = randInt(3, 8) * 100 + randInt(4, 9); // Internal zero (e.g., 406)
+      B = randInt(4, 8) * 10 + randInt(4, 9);
+    } else {
+      A = randInt(6, 9) * 100 + randInt(5, 9) * 10 + randInt(6, 9);
+      B = randInt(5, 9) * 10 + randInt(6, 9);
+    }
+
+    const onesDigit = B % 10;
+    const tensDigit = Math.floor(B / 10);
+    const tensVal = tensDigit * 10;
+    const row1 = A * onesDigit;
+    const row2 = A * tensVal;
+    const row2NoZero = A * tensDigit;
+    const total = row1 + row2;
+    const hasInternalZero = Math.floor((A % 100) / 10) === 0;
+
+    const s1Wrong1 = hasInternalZero
+      ? (Math.floor(A / 100) * onesDigit * 100 + (A % 10) * onesDigit)
+      : (row1 - 10);
+
+    const step1Options = makeUniqueOptions(
+      { value: String(row1), correct: true },
+      [
+        {
+          value: String(s1Wrong1 !== row1 ? s1Wrong1 : row1 - 20),
+          correct: false,
+          trapTitle: hasInternalZero ? 'INTERNAL ZERO CARRY DROP!' : 'REGROUPING CARRY ERROR!',
+          trapMsg: hasInternalZero
+            ? `Watch the 0 in ${A}! ${(A % 10)} × ${onesDigit} = ${(A % 10) * onesDigit}; carry tens into 0 × ${onesDigit} -> ${row1}!`
+            : `Check your right-to-left regrouping carry for ${A} × ${onesDigit} = ${row1}!`
+        },
+        {
+          value: String(A * tensDigit !== row1 ? A * tensDigit : row1 + 10),
+          correct: false,
+          trapTitle: 'WRONG MULTIPLIER DIGIT!',
+          trapMsg: `Step 1 energizes the ONES Strip (${A} × ${onesDigit} = ${row1}), not the Tens digit (${tensDigit})!`
+        },
+        {
+          value: String(row1 + 100),
+          correct: false,
+          trapTitle: 'HUNDREDS OVER-CARRY!',
+          trapMsg: `Recheck column carries from right to left: ${A} × ${onesDigit} = ${row1}.`
+        }
+      ]
+    );
+
+    const step2Options = makeUniqueOptions(
+      { value: String(row2), correct: true },
+      [
+        {
+          value: String(row2NoZero),
+          correct: false,
+          trapTitle: 'MISSING TRAILING 0 PLACEHOLDER!',
+          trapMsg: `The ${tensDigit} in ${B} is ${tensDigit} TENS (${tensVal}), not ${tensDigit} ones! Lock a 0 placeholder into Row 2 (${row2})!`
+        },
+        {
+          value: String(row2 + 100),
+          correct: false,
+          trapTitle: 'TENS BLOCK CARRY OVERFLOW!',
+          trapMsg: `Multiply ${A} × ${tensDigit} = ${row2NoZero}, then lock the trailing 0 placeholder -> ${row2}.`
+        },
+        {
+          value: String(row2 - 100),
+          correct: false,
+          trapTitle: 'DROPPED REGROUPING CARRY!',
+          trapMsg: `A carry digit was dropped in ${A} × ${tensVal} = ${row2}.`
+        }
+      ]
+    );
+
+    const step3Options = makeUniqueOptions(
+      { value: String(total), correct: true },
+      [
+        {
+          value: String(row1 + row2NoZero !== total ? row1 + row2NoZero : total - 200),
+          correct: false,
+          trapTitle: 'UNALIGNED PLACE VALUES!',
+          trapMsg: `Row 2 has a trailing 0 placeholder (${row2}), so add ${row1} + ${row2} = ${total}, not ${row1} + ${row2NoZero}!`
+        },
+        {
+          value: String(total - 100),
+          correct: false,
+          trapTitle: 'COLUMN ADDITION CARRY ERROR!',
+          trapMsg: `Check your vertical addition from right to left — carry when a column sums to 10 or more (${row1} + ${row2} = ${total})!`
+        },
+        {
+          value: String(total + 10),
+          correct: false,
+          trapTitle: 'TENS COLUMN MISALIGNMENT!',
+          trapMsg: `Align Ones under Ones and Tens under Tens when fusing ${row1} + ${row2} = ${total}.`
+        }
+      ]
+    );
+
+    return {
+      type: 'STANDARD',
+      signature: `STD:${A}x${B}`,
+      tierLabel: advancedCarries ? 'TIER 2 · ZERO & CARRY FORGE' : 'TIER 1 · SPLIT-GRID WARM-UP',
+      A, B, onesDigit, tensDigit, tensVal, row1, row2, total,
+      briefing: `Wafer ${A} × ${B}: Fire Ones Strip (${A} × ${onesDigit}), slam 0-Shield for Tens Block (${A} × ${tensVal}), & fuse!`,
+      steps: [
+        { prompt: `STEP 1: Fire ONES STRIP Laser — Compute ${A} × ${onesDigit}`, options: step1Options },
+        { prompt: `STEP 2: Slam 0-SHIELD & Fire TENS BLOCK — Compute ${A} × ${tensVal}`, options: step2Options },
+        { prompt: `STEP 3: FUSE ZONES & LAUNCH WAFER — Add ${row1} + ${row2}`, options: step3Options }
+      ]
+    };
+  }
+
+  function buildMultiplierBoxRound(roundNumber) {
+    const subMode = Math.random() < 0.5 ? 'MISSING_TENS_B' : 'MISSING_ONES_B';
+
+    if (subMode === 'MISSING_TENS_B') {
+      const A = Math.random() < 0.5 ? randInt(54, 96) : (randInt(2, 5) * 100 + randInt(1, 9) * 10 + randInt(3, 9));
+      const t = randInt(3, 8);
+      let u = randInt(2, 9);
+      if (u === t) u = (t % 8) + 2;
+      const B = t * 10 + u;
+      const row1 = A * u;
+      const row2 = A * (t * 10);
+      const total = row1 + row2;
+
+      return {
+        type: 'BOX_TENS_B',
+        signature: `BOXTB:${A}x_${u}`,
+        tierLabel: roundNumber >= 7 ? 'MASTER TIER · REVERSE BLUEPRINT' : 'TIER 3 · CORRUPTED MULTIPLIER BOX',
+        A, B, onesDigit: u, tensDigit: t, tensVal: t * 10, row1, row2, total,
+        briefing: `Corrupted Wafer ${A} × □${u}: Row 2 Tens Block = ${row2}. Decode □, rebuild Row 1, & launch!`,
+        steps: [
+          {
+            prompt: `STEP 1: Decode Missing Tens Digit □ in □${u} (${row2} ÷ ${A} = ${t * 10})`,
+            options: makeUniqueOptions(
+              { value: String(t), correct: true },
+              [
+                {
+                  value: String(t * 10),
+                  correct: false,
+                  trapTitle: 'PLACE-VALUE BOX CONFUSION!',
+                  trapMsg: `The box □ sits in the TENS place of □${u}! Since ${A} × ${t * 10} = ${row2}, the single digit in □ is ${t} (making ${B})!`
+                },
+                {
+                  value: String(u),
+                  correct: false,
+                  trapTitle: 'SWAPPED MULTIPLIER DIGITS!',
+                  trapMsg: `${u} is already in the Ones place of □${u}. Divide ${row2} ÷ ${A * 10} = ${t}!`
+                },
+                {
+                  value: String(t === 9 ? 7 : t + 1),
+                  correct: false,
+                  trapTitle: 'INVERSE DIVISION MISMATCH!',
+                  trapMsg: `Check ${A} × ${t}0 = ${row2}.`
+                }
+              ]
+            )
+          },
+          {
+            prompt: `STEP 2: Reconstruct Row 1 Ones Strip (${A} × ${u})`,
+            options: makeUniqueOptions(
+              { value: String(row1), correct: true },
+              [
+                {
+                  value: String(row1 * 10),
+                  correct: false,
+                  trapTitle: 'EXTRA ZERO IN ROW 1!',
+                  trapMsg: `Row 1 multiplies ${A} by the ONES digit (${u}), so there is no trailing tens zero: ${A} × ${u} = ${row1}!`
+                },
+                {
+                  value: String(row1 - 10),
+                  correct: false,
+                  trapTitle: 'ROW 1 CARRY ERROR!',
+                  trapMsg: `Recheck regrouping in ${A} × ${u}: the exact product is ${row1}.`
+                },
+                {
+                  value: String(A * t),
+                  correct: false,
+                  trapTitle: 'MULTIPLIED BY TENS DIGIT!',
+                  trapMsg: `Row 2 already used ${t} tens. Row 1 needs ${A} × ${u} = ${row1}!`
+                }
+              ]
+            )
+          },
+          {
+            prompt: `STEP 3: Fuse Both Rows & Launch Wafer (${row1} + ${row2})`,
+            options: makeUniqueOptions(
+              { value: String(total), correct: true },
+              [
+                {
+                  value: String(row1 + A * t),
+                  correct: false,
+                  trapTitle: 'DROPPED ROW 2 ZERO!',
+                  trapMsg: `Keep the trailing 0 in Row 2: ${row1} + ${row2} = ${total}!`
+                },
+                {
+                  value: String(total - 100),
+                  correct: false,
+                  trapTitle: 'COLUMN ADDITION CARRY ERROR!',
+                  trapMsg: `Check vertical carries from right to left: ${row1} + ${row2} = ${total}.`
+                },
+                {
+                  value: String(total + 100),
+                  correct: false,
+                  trapTitle: 'HUNDREDS OVER-CARRY!',
+                  trapMsg: `Recheck carries when summing ${row1} + ${row2} = ${total}.`
+                }
+              ]
+            )
+          }
+        ]
+      };
+    } else {
+      const h = randInt(3, 7);
+      const mid = Math.random() < 0.65 ? 0 : randInt(1, 6);
+      const aOnes = randInt(4, 9);
+      const A = h * 100 + mid * 10 + aOnes;
+      const t = randInt(2, 6);
+      const u = randInt(4, 9);
+      const B = t * 10 + u;
+      const row1 = A * u;
+      const row2 = A * (t * 10);
+      const total = row1 + row2;
+
+      return {
+        type: 'BOX_ONES_B',
+        signature: `BOXOB:${A}x${t}_`,
+        tierLabel: roundNumber >= 7 ? 'MASTER TIER · REVERSE BLUEPRINT' : 'TIER 3 · CORRUPTED MULTIPLIER BOX',
+        A, B, onesDigit: u, tensDigit: t, tensVal: t * 10, row1, row2, total,
+        briefing: `Corrupted Wafer ${A} × ${t}□: Row 1 Ones Strip = ${row1}. Decode □, build Row 2, & launch!`,
+        steps: [
+          {
+            prompt: `STEP 1: Decode Missing Ones Digit □ in ${t}□ (Inverse Division: ${row1} ÷ ${A})`,
+            options: makeUniqueOptions(
+              { value: String(u), correct: true },
+              [
+                {
+                  value: String(u === 9 ? 7 : u + 1),
+                  correct: false,
+                  trapTitle: 'ONES-DIGIT INVERSE MISMATCH!',
+                  trapMsg: `${aOnes} × ${u} ends in ${(aOnes * u) % 10}, giving ${A} × ${u} = ${row1}!`
+                },
+                {
+                  value: String(t),
+                  correct: false,
+                  trapTitle: 'CONFUSED TENS & ONES DIGITS!',
+                  trapMsg: `${t} is already the Tens digit in ${t}□. Divide ${row1} ÷ ${A} = ${u}!`
+                },
+                {
+                  value: String(u * 10),
+                  correct: false,
+                  trapTitle: 'PLACE-VALUE CONFUSION!',
+                  trapMsg: `The box □ is in the ONES place of ${t}□, so it holds a single digit (${u}), not ${u * 10}!`
+                }
+              ]
+            )
+          },
+          {
+            prompt: `STEP 2: Fire Row 2 Tens Block (${A} × ${t * 10}) with 0-Shield`,
+            options: makeUniqueOptions(
+              { value: String(row2), correct: true },
+              [
+                {
+                  value: String(A * t),
+                  correct: false,
+                  trapTitle: 'FORGOT TRAILING 0 IN ROW 2!',
+                  trapMsg: `The ${t} in ${B} is ${t} TENS (${t * 10}). Lock the trailing 0: ${A} × ${t * 10} = ${row2}!`
+                },
+                {
+                  value: String(row2 - 100),
+                  correct: false,
+                  trapTitle: 'ROW 2 REGROUPING ERROR!',
+                  trapMsg: `Watch carries across ${A}: ${A} × ${t * 10} = ${row2}.`
+                },
+                {
+                  value: String(row2 + 100),
+                  correct: false,
+                  trapTitle: 'ROW 2 CARRY OVERFLOW!',
+                  trapMsg: `Recheck ${A} × ${t} = ${A * t}, then append the 0 placeholder -> ${row2}.`
+                }
+              ]
+            )
+          },
+          {
+            prompt: `STEP 3: Fuse Both Rows & Launch Wafer (${row1} + ${row2})`,
+            options: makeUniqueOptions(
+              { value: String(total), correct: true },
+              [
+                {
+                  value: String(row1 + A * t),
+                  correct: false,
+                  trapTitle: 'UNALIGNED PARTIAL PRODUCTS!',
+                  trapMsg: `Add ${row1} + ${row2} (with Row 2's trailing 0) to get ${total}!`
+                },
+                {
+                  value: String(total - 100),
+                  correct: false,
+                  trapTitle: 'VERTICAL ADDITION CARRY ERROR!',
+                  trapMsg: `Check column carries from right to left: ${row1} + ${row2} = ${total}.`
+                },
+                {
+                  value: String(total + 10),
+                  correct: false,
+                  trapTitle: 'COLUMN ALIGNMENT ERROR!',
+                  trapMsg: `Line up place-value columns carefully: ${row1} + ${row2} = ${total}.`
+                }
+              ]
+            )
+          }
+        ]
+      };
+    }
+  }
+
+  function buildTopMultiplicandBoxRound(roundNumber) {
+    const missingHundreds = Math.random() < 0.5;
+    const h = randInt(4, 9);
+    const t = randInt(2, 8);
+    const u = randInt(2, 8);
+    const A = h * 100 + t * 10 + u;
+    const bTens = randInt(4, 8);
+    const bOnes = randInt(2, 4);
+    const B = bTens * 10 + bOnes;
+
+    const row1 = A * bOnes;
+    const row2 = A * (bTens * 10);
+    const total = row1 + row2;
+
+    const targetDigit = missingHundreds ? h : t;
+    const maskedA = missingHundreds ? `□${t}${u}` : `${h}□${u}`;
+
+    return {
+      type: missingHundreds ? 'BOX_TOP_H' : 'BOX_TOP_T',
+      signature: `BOXTOP:${A}x${B}:${missingHundreds ? 'H' : 'T'}`,
+      tierLabel: 'ENDLESS MASTER · CRYPTARITHMETIC ARCHITECT',
+      A, B, maskedA, missingHundreds,
+      onesDigit: bOnes, tensDigit: bTens, tensVal: bTens * 10, row1, row2, total,
+      briefing: `Master Wafer ${maskedA} × ${B}: Row 1 = ${row1}. Decode □ (${row1} ÷ ${bOnes}), cascade Row 2, & launch!`,
+      steps: [
+        {
+          prompt: `STEP 1: Decode Missing Digit □ in ${maskedA} (${row1} ÷ ${bOnes} = ${maskedA})`,
+          options: makeUniqueOptions(
+            { value: String(targetDigit), correct: true },
+            [
+              {
+                value: String(targetDigit === 9 ? 7 : targetDigit + 1),
+                correct: false,
+                trapTitle: 'INVERSE DIVISION CARRY TRAP!',
+                trapMsg: `Divide Row 1 (${row1}) by ${bOnes}: ${row1} ÷ ${bOnes} = ${A}, so □ in ${maskedA} is ${targetDigit}!`
+              },
+              {
+                value: String(targetDigit === 1 ? 3 : targetDigit - 1),
+                correct: false,
+                trapTitle: 'FORGOT REGROUPED CARRY IN DIVISION!',
+                trapMsg: `Remember the carried digit from (${u} × ${bOnes} = ${u * bOnes})! ${row1} ÷ ${bOnes} = ${A} -> □ = ${targetDigit}.`
+              },
+              {
+                value: String(bOnes),
+                correct: false,
+                trapTitle: 'COPIED MULTIPLIER DIGIT!',
+                trapMsg: `${bOnes} is the multiplier's Ones digit. Compute ${row1} ÷ ${bOnes} = ${A} to unlock □ = ${targetDigit}!`
+              }
+            ]
+          )
+        },
+        {
+          prompt: `STEP 2: Cascade Row 2 Tens Block (${A} × ${bTens * 10}) with 0-Shield`,
+          options: makeUniqueOptions(
+            { value: String(row2), correct: true },
+            [
+              {
+                value: String(A * bTens),
+                correct: false,
+                trapTitle: 'MISSING TRAILING 0 IN ROW 2!',
+                trapMsg: `Multiply ${A} × ${bTens}0 (not ${bTens}) so the 0 placeholder locks into the Ones column: ${row2}!`
+              },
+              {
+                value: String(row2 - 1000),
+                correct: false,
+                trapTitle: 'THOUSANDS REGROUPING ERROR!',
+                trapMsg: `Check your hundreds-to-thousands carry in ${A} × ${bTens * 10} = ${row2}.`
+              },
+              {
+                value: String(row2 + 100),
+                correct: false,
+                trapTitle: 'TENS BLOCK CARRY OVERFLOW!',
+                trapMsg: `Recheck ${A} × ${bTens} = ${A * bTens}, then append the 0 placeholder -> ${row2}.`
+              }
+            ]
+          )
+        },
+        {
+          prompt: `STEP 3: Complete Blueprint & Launch Wafer (${row1} + ${row2})`,
+          options: makeUniqueOptions(
+            { value: String(total), correct: true },
+            [
+              {
+                value: String(row1 + A * bTens),
+                correct: false,
+                trapTitle: 'UNALIGNED SUMMATION!',
+                trapMsg: `Ensure Row 2 ends with its trailing 0 placeholder: ${row1} + ${row2} = ${total}!`
+              },
+              {
+                value: String(total - 100),
+                correct: false,
+                trapTitle: 'COLUMN ADDITION CARRY ERROR!',
+                trapMsg: `Add from right to left carrying tens into hundreds: ${row1} + ${row2} = ${total}.`
+              },
+              {
+                value: String(total + 1000),
+                correct: false,
+                trapTitle: 'THOUSANDS CARRY OVERFLOW!',
+                trapMsg: `Recheck column carries when adding ${row1} + ${row2} = ${total}.`
+              }
+            ]
+          )
+        }
+      ]
+    };
+  }
+
+  // --- START / ROUND MANAGEMENT ---
+  function startGame(mode) {
+    sfx.unlock();
+    sfx.playLock(1);
+    gameState.mode = mode;
+    gameState.screen = 'PLAYING';
+    gameState.roundNumber = 1;
+    gameState.shields = 5;
+    gameState.score = 0;
+    gameState.combo = 0;
+    gameState.overdrive = 0;
+    gameState.overdriveTimer = 0;
+    gameState.p1Stars = 0;
+    gameState.p2Stars = 0;
+    gameState.history = [];
+    gameState.particles = [];
+    gameState.beams = [];
+    gameState.floatingTexts = [];
+    loadRound(1);
+  }
+
+  function loadRound(rNum) {
+    gameState.roundNumber = rNum;
+    gameState.step = 0;
+    gameState.stepProgress = 0;
+    gameState.zeroShieldDropY = -120;
+    gameState.waferSlideX = -450; // Wafer rolls in from left conveyor!
+    gameState.waferLaunchX = 0;
+    gameState.waferTimer = 1.0;
+    gameState.waferDuration = Math.max(18, 30 - rNum * 0.8);
+    gameState.duelLocked = false;
+    gameState.duelBanner = '';
+    gameState.duelBannerTimer = 0;
+    gameState.diagnosticAlert = null;
+    gameState.p1Index = 0;
+    gameState.p2Index = 1;
+    gameState.problem = generateProblem(rNum);
+  }
+
+  // --- ACTION SUBMISSION & ARCADE JUICE ---
+  function submitChoice(optionIndex, playerNum = 1) {
+    if (gameState.screen !== 'PLAYING') return;
+    if (gameState.step >= 3 || gameState.duelLocked) return;
+
+    const prob = gameState.problem;
+    const currentStepObj = prob.steps[gameState.step];
+    const chosen = currentStepObj.options[optionIndex];
+    if (!chosen) return;
+
+    const cardRect = getCardRect(optionIndex);
+    const cx = cardRect.x + cardRect.w / 2;
+    const cy = cardRect.y + cardRect.h / 2;
+
+    if (chosen.correct) {
+      gameState.diagnosticAlert = null;
+      gameState.combo++;
+
+      // Build Overdrive Energy
+      if (gameState.overdriveTimer <= 0) {
+        gameState.overdrive = Math.min(100, gameState.overdrive + 22);
+        if (gameState.overdrive >= 100) {
+          gameState.overdriveTimer = 14.0;
+          gameState.overdrive = 0;
+          sfx.playOverdrive();
+          triggerScreenFlash(COLORS.gold, 0.35);
+          spawnFloatingText(V_W / 2, 260, '⚡ 2X HYPER-FORGE OVERDRIVE ACTIVATED! ⚡', COLORS.gold, 28);
+        }
+      }
+
+      const mult = gameState.overdriveTimer > 0 ? 2 : 1;
+      const stepPts = (100 + gameState.combo * 20) * mult;
+      gameState.score += stepPts;
+
+      if (gameState.mode === 'DUEL') {
+        gameState.duelLocked = true;
+        gameState.duelBanner = `PLAYER ${playerNum} LOCKED STEP ${gameState.step + 1} FIRST!`;
+        gameState.duelBannerTimer = 0.95;
+        if (playerNum === 1) gameState.p1Stars++;
+        else gameState.p2Stars++;
+      }
+
+      if (gameState.step === 0) {
+        sfx.playShoot();
+        sfx.playLock(gameState.combo);
+        spawnPlasmaBeam(cx, cy - 30, 310, 260, COLORS.cyan);
+        spawnPlasmaBeam(310, 260, 960, 345, COLORS.cyan);
+        spawnParticles(310, 260, COLORS.cyan, 30, 6.5);
+        spawnFloatingText(cx, cy - 24, `ONES STRIP ENERGIZED! +${stepPts}`, COLORS.cyan);
+        gameState.step = 1;
+        gameState.stepProgress = 0;
+      } else if (gameState.step === 1) {
+        sfx.playShoot();
+        sfx.playShieldSlam();
+        gameState.zeroShieldDropY = -140;
+        gameState.shakeTimer = 0.25;
+        gameState.shakeIntensity = 5;
+        spawnPlasmaBeam(cx, cy - 30, 310, 395, COLORS.magenta);
+        spawnPlasmaBeam(310, 395, 1090, 405, COLORS.emerald);
+        spawnParticles(310, 395, COLORS.magenta, 34, 7);
+        spawnParticles(1091, 405, COLORS.emerald, 28, 6);
+        spawnFloatingText(cx, cy - 24, `0-SHIELD SLAMMED! +${stepPts}`, COLORS.emerald);
+        gameState.step = 2;
+        gameState.stepProgress = 0;
+      } else if (gameState.step === 2) {
+        sfx.playFusionBlast();
+        const speedBonus = Math.round(gameState.waferTimer * 250) * mult;
+        const architectBonus = 350 * mult;
+        gameState.score += architectBonus + speedBonus;
+        gameState.shakeTimer = 0.38;
+        gameState.shakeIntensity = 7;
+        triggerScreenFlash(COLORS.gold, 0.28);
+
+        if (gameState.mode === 'DUEL') {
+          if (playerNum === 1) gameState.p1Stars += 2;
+          else gameState.p2Stars += 2;
+          gameState.duelBanner = `PLAYER ${playerNum} LAUNCHED GOLD CHIP! (+2 STARS)`;
+        }
+
+        spawnPlasmaBeam(cx, cy - 30, 640, 340, COLORS.gold);
+        spawnParticles(310, 340, COLORS.gold, 45, 8.5);
+        spawnParticles(960, 360, COLORS.gold, 45, 8.5);
+        spawnFloatingText(640, 290, `+${architectBonus} ARCHITECT + ${speedBonus} SPEED BONUS!`, COLORS.gold, 24);
+        gameState.step = 3;
+        gameState.waferLaunchX = 1; // Trigger conveyor launch!
+
+        setTimeout(() => {
+          if (gameState.screen === 'PLAYING' && gameState.step === 3) {
+            loadRound(gameState.roundNumber + 1);
+          }
+        }, 1500);
+      }
+    } else {
+      // Misconception Trap Triggered!
+      sfx.playError();
+      gameState.combo = 0;
+      gameState.overdrive = Math.max(0, gameState.overdrive - 30);
+      gameState.shields = Math.max(0, gameState.shields - 1);
+      gameState.shakeTimer = 0.45;
+      gameState.shakeIntensity = 10;
+      triggerScreenFlash(COLORS.redAlert, 0.32);
+      spawnParticles(cx, cy, COLORS.redAlert, 32, 6.5);
+      spawnFloatingText(cx, cy - 24, `-1 SHIELD!`, COLORS.redAlert, 23);
+
+      gameState.diagnosticAlert = {
+        title: chosen.trapTitle || 'BLUEPRINT ERROR DETECTED!',
+        message: chosen.trapMsg || 'Recheck place-value alignment and regrouping carries.',
+        timer: 6.5
+      };
+
+      if (gameState.shields <= 0) {
+        setTimeout(() => {
+          if (gameState.shields <= 0) {
+            gameState.screen = 'GAMEOVER';
+          }
+        }, 850);
+      }
+    }
+  }
+
+  // --- LAYOUT GEOMETRY (ZERO-OVERLAP 4-ZONE ARENA) ---
+  function getCardRect(idx) {
+    const marginX = 34;
+    const gap = 22;
+    const totalW = V_W - marginX * 2;
+    const cardW = (totalW - gap * 3) / 4;
+    return {
+      x: marginX + idx * (cardW + gap),
+      y: 594,
+      w: cardW,
+      h: 106
+    };
+  }
+
+  function getTitleBtnRect(idx) {
+    const btnW = 365;
+    const btnH = 114;
+    const gap = 26;
+    const totalW = btnW * 3 + gap * 2;
+    const startX = (V_W - totalW) / 2;
+    return {
+      x: startX + idx * (btnW + gap),
+      y: 455,
+      w: btnW,
+      h: btnH
+    };
+  }
+
+  // --- INPUT LISTENERS ---
+  window.addEventListener('mousemove', (e) => {
+    const pt = screenToVirtual(e.clientX, e.clientY);
+    gameState.mouse.x = pt.x;
+    gameState.mouse.y = pt.y;
+
+    if (gameState.screen === 'TITLE') {
+      for (let i = 0; i < 3; i++) {
+        const r = getTitleBtnRect(i);
+        if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
+          if (gameState.titleIndex !== i) {
+            gameState.titleIndex = i;
+            sfx.playTick();
+          }
+        }
+      }
+    } else if (gameState.screen === 'PLAYING') {
+      for (let i = 0; i < 4; i++) {
+        const r = getCardRect(i);
+        if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
+          if (gameState.p1Index !== i) {
+            gameState.p1Index = i;
+            sfx.playTick();
+          }
+        }
+      }
+    }
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    sfx.unlock();
+    const pt = screenToVirtual(e.clientX, e.clientY);
+    gameState.mouse.x = pt.x;
+    gameState.mouse.y = pt.y;
+
+    const mr = gameState.muteBtnRect;
+    if (pt.x >= mr.x && pt.x <= mr.x + mr.w && pt.y >= mr.y && pt.y <= mr.y + mr.h) {
+      sfx.toggleMute();
+      return;
+    }
+
+    if (gameState.screen === 'PLAYING' || gameState.screen === 'GAMEOVER') {
+      const menR = gameState.menuBtnRect;
+      if (pt.x >= menR.x && pt.x <= menR.x + menR.w && pt.y >= menR.y && pt.y <= menR.y + menR.h) {
+        sfx.playTick();
+        gameState.screen = 'TITLE';
+        return;
+      }
+    }
+
+    if (gameState.screen === 'TITLE') {
+      const modes = ['SOLO', 'COOP', 'DUEL'];
+      for (let i = 0; i < 3; i++) {
+        const r = getTitleBtnRect(i);
+        if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
+          startGame(modes[i]);
+          return;
+        }
+      }
+    } else if (gameState.screen === 'PLAYING') {
+      for (let i = 0; i < 4; i++) {
+        const r = getCardRect(i);
+        if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
+          submitChoice(i, 1);
+          return;
+        }
+      }
+    } else if (gameState.screen === 'GAMEOVER') {
+      if (pt.x >= V_W / 2 - 180 && pt.x <= V_W / 2 + 180 && pt.y >= 490 && pt.y <= 560) {
+        startGame(gameState.mode);
+      }
+    }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    sfx.unlock();
+    const key = e.key;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(key)) {
+      e.preventDefault();
+    }
+    if (key === 'm' || key === 'M') {
+      sfx.toggleMute();
+      return;
+    }
+
+    if (gameState.screen === 'TITLE') {
+      const modes = ['SOLO', 'COOP', 'DUEL'];
+      if (key === 'a' || key === 'A' || key === 'ArrowLeft') {
+        gameState.titleIndex = (gameState.titleIndex + 2) % 3;
+        sfx.playTick();
+      } else if (key === 'd' || key === 'D' || key === 'ArrowRight') {
+        gameState.titleIndex = (gameState.titleIndex + 1) % 3;
+        sfx.playTick();
+      } else if (key === ' ' || key === 'Enter' || key === 'f' || key === 'F') {
+        startGame(modes[gameState.titleIndex]);
+      }
+      return;
+    }
+
+    if (gameState.screen === 'GAMEOVER') {
+      if (key === ' ' || key === 'Enter') startGame(gameState.mode);
+      return;
+    }
+
+    if (gameState.screen === 'PLAYING') {
+      if (gameState.mode === 'SOLO') {
+        if (key === 'a' || key === 'A' || key === 'ArrowLeft') {
+          gameState.p1Index = (gameState.p1Index + 3) % 4;
+          sfx.playTick();
+        } else if (key === 'd' || key === 'D' || key === 'ArrowRight') {
+          gameState.p1Index = (gameState.p1Index + 1) % 4;
+          sfx.playTick();
+        } else if (key === ' ' || key === 'Enter' || key === 'f' || key === 'F') {
+          submitChoice(gameState.p1Index, 1);
+        } else if (['1', '2', '3', '4'].includes(key)) {
+          submitChoice(parseInt(key, 10) - 1, 1);
+        }
+      } else {
+        if (key === 'a' || key === 'A') {
+          gameState.p1Index = (gameState.p1Index + 3) % 4;
+          sfx.playTick();
+        } else if (key === 'd' || key === 'D') {
+          gameState.p1Index = (gameState.p1Index + 1) % 4;
+          sfx.playTick();
+        } else if (key === 'f' || key === 'F' || key === ' ') {
+          handlePlayerConfirm(1);
+        }
+
+        if (key === 'ArrowLeft') {
+          gameState.p2Index = (gameState.p2Index + 3) % 4;
+          sfx.playTick();
+        } else if (key === 'ArrowRight') {
+          gameState.p2Index = (gameState.p2Index + 1) % 4;
+          sfx.playTick();
+        } else if (key === 'Enter') {
+          handlePlayerConfirm(2);
+        }
+      }
+    }
+  });
+
+  function handlePlayerConfirm(playerNum) {
+    if (gameState.mode === 'COOP') {
+      const oddRound = gameState.roundNumber % 2 === 1;
+      const activePlayerForStep =
+        gameState.step === 0 ? (oddRound ? 1 : 2) :
+        gameState.step === 1 ? (oddRound ? 2 : 1) : 0;
+
+      if (activePlayerForStep === 0 || activePlayerForStep === playerNum) {
+        const idx = playerNum === 1 ? gameState.p1Index : gameState.p2Index;
+        submitChoice(idx, playerNum);
+      } else {
+        sfx.playTick();
+        spawnFloatingText(
+          V_W / 2,
+          565,
+          `TEAM RELAY: PLAYER ${activePlayerForStep}'S TURN ON STEP ${gameState.step + 1}!`,
+          activePlayerForStep === 1 ? COLORS.p1Red : COLORS.p2Blue,
+          19
+        );
+      }
+    } else if (gameState.mode === 'DUEL') {
+      const idx = playerNum === 1 ? gameState.p1Index : gameState.p2Index;
+      submitChoice(idx, playerNum);
+    } else {
+      submitChoice(gameState.p1Index, 1);
+    }
+  }
+
+  // --- DUAL 8BITDO GAMEPAD POLLING ---
+  const padPrev = [
+    { left: false, right: false, a: false },
+    { left: false, right: false, a: false }
+  ];
+
+  function pollGamepads() {
+    if (!navigator.getGamepads) return;
+    const pads = navigator.getGamepads();
+    for (let p = 0; p < 2; p++) {
+      const gp = pads[p];
+      if (!gp) continue;
+      const axisX = gp.axes[0] || 0;
+      const dLeft = (gp.buttons[14] && gp.buttons[14].pressed) || axisX < -0.5;
+      const dRight = (gp.buttons[15] && gp.buttons[15].pressed) || axisX > 0.5;
+      const btnA = (gp.buttons[0] && gp.buttons[0].pressed) || (gp.buttons[1] && gp.buttons[1].pressed);
+
+      if (dLeft && !padPrev[p].left) {
+        sfx.unlock();
+        sfx.playTick();
+        if (gameState.screen === 'TITLE') {
+          gameState.titleIndex = (gameState.titleIndex + 2) % 3;
+        } else if (gameState.screen === 'PLAYING') {
+          if (p === 0) gameState.p1Index = (gameState.p1Index + 3) % 4;
+          else gameState.p2Index = (gameState.p2Index + 3) % 4;
+        }
+      }
+      if (dRight && !padPrev[p].right) {
+        sfx.unlock();
+        sfx.playTick();
+        if (gameState.screen === 'TITLE') {
+          gameState.titleIndex = (gameState.titleIndex + 1) % 3;
+        } else if (gameState.screen === 'PLAYING') {
+          if (p === 0) gameState.p1Index = (gameState.p1Index + 1) % 4;
+          else gameState.p2Index = (gameState.p2Index + 1) % 4;
+        }
+      }
+      if (btnA && !padPrev[p].a) {
+        sfx.unlock();
+        const modes = ['SOLO', 'COOP', 'DUEL'];
+        if (gameState.screen === 'TITLE') {
+          startGame(modes[gameState.titleIndex]);
+        } else if (gameState.screen === 'GAMEOVER') {
+          startGame(gameState.mode);
+        } else if (gameState.screen === 'PLAYING') {
+          handlePlayerConfirm(p + 1);
+        }
+      }
+      padPrev[p].left = dLeft;
+      padPrev[p].right = dRight;
+      padPrev[p].a = btnA;
+    }
+  }
+
+  // --- DRAWING HELPERS ---
+  function roundRect(x, y, w, h, r, fill, stroke, lineWidth = 2) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+    }
+  }
+
+  function drawFactoryBackground(time) {
+    ctx.fillStyle = COLORS.bgDeep;
+    ctx.fillRect(0, 0, V_W, V_H);
+
+    // Animated Conveyor Grid Lines
+    const isHyper = gameState.overdriveTimer > 0;
+    ctx.strokeStyle = isHyper ? 'rgba(255, 209, 59, 0.08)' : 'rgba(0, 240, 255, 0.045)';
+    ctx.lineWidth = 1;
+    const gridSize = 44;
+    const scroll = (time * (isHyper ? 55 : 22)) % gridSize;
+    for (let x = scroll; x < V_W; x += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, V_H);
+      ctx.stroke();
+    }
+    for (let y = 0; y < V_H; y += gridSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(V_W, y);
+      ctx.stroke();
+    }
+
+    // Animated Conveyor Belt Track along Center Stage
+    const beltY = 524;
+    ctx.fillStyle = '#091122';
+    ctx.fillRect(28, beltY, V_W - 56, 10);
+    const cogOffset = (time * (isHyper ? 120 : 50)) % 36;
+    ctx.fillStyle = isHyper ? COLORS.gold : COLORS.cyan;
+    for (let x = 36 + cogOffset; x < V_W - 44; x += 36) {
+      ctx.fillRect(x, beltY + 3, 14, 4);
+    }
+  }
+
+  // --- ZONE 1: TOP HUD BAR (WITH OVERDRIVE METER & SPEED GAUGE) ---
+  function drawTopHUD(time) {
+    const isHyper = gameState.overdriveTimer > 0;
+    roundRect(0, 0, V_W, 58, 0, isHyper ? '#1d1608' : '#091022', isHyper ? COLORS.gold : COLORS.borderDim, 1.8);
+
+    // Title & Mode
+    ctx.fillStyle = isHyper ? COLORS.gold : COLORS.cyan;
+    ctx.font = 'bold 17px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('AREA-FORGE FACTORY', 20, 24);
+
+    ctx.fillStyle = COLORS.textMuted;
+    ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
+    const modeLabel =
+      gameState.mode === 'SOLO' ? 'SOLO ARCHITECT' :
+      gameState.mode === 'COOP' ? '2P TEAM CO-OP' : '2P SPEED DUEL';
+    ctx.fillText(`${modeLabel} · ROUND ${gameState.roundNumber}`, 20, 44);
+
+    // Shields
+    const shieldX = 270;
+    ctx.fillStyle = COLORS.textMuted;
+    ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(gameState.mode === 'COOP' ? 'TEAM SHIELDS' : 'CORE SHIELDS', shieldX, 20);
+    for (let i = 0; i < gameState.maxShields; i++) {
+      const active = i < gameState.shields;
+      roundRect(shieldX + i * 24, 28, 19, 18, 4, active ? COLORS.emerald : '#15223d', active ? '#7affc2' : '#263a63', 1.4);
+    }
+
+    // Overdrive Hyper-Forge Gauge
+    const odX = 415;
+    ctx.fillStyle = isHyper ? COLORS.gold : COLORS.cyan;
+    ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(isHyper ? `⚡ 2X OVERDRIVE (${gameState.overdriveTimer.toFixed(1)}s)` : 'HYPER-FORGE CHARGE', odX, 20);
+    roundRect(odX, 28, 165, 18, 5, '#131d36', isHyper ? COLORS.gold : COLORS.borderDim, 1.4);
+    const fillRatio = isHyper ? (gameState.overdriveTimer / 14.0) : (gameState.overdrive / 100);
+    if (fillRatio > 0) {
+      roundRect(odX + 2, 30, Math.max(8, (161) * fillRatio), 14, 4, isHyper ? COLORS.gold : COLORS.cyan, null);
+    }
+
+    // Speed Bonus Bar (Wafer Conveyor Pace)
+    const spX = 605;
+    ctx.fillStyle = COLORS.magenta;
+    ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('WAFER SPEED BONUS', spX, 20);
+    roundRect(spX, 28, 135, 18, 5, '#131d36', COLORS.borderDim, 1.4);
+    roundRect(spX + 2, 30, Math.max(6, 131 * gameState.waferTimer), 14, 4, COLORS.magenta, null);
+
+    // Score / Star Tally
+    const scoreX = 768;
+    if (gameState.mode === 'COOP') {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`UNIFIED TEAM SCORE (×${gameState.combo})`, scoreX, 20);
+      ctx.fillStyle = COLORS.textBright;
+      ctx.font = 'bold 21px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`${gameState.score} PTS`, scoreX, 45);
+    } else if (gameState.mode === 'DUEL') {
+      ctx.fillStyle = COLORS.p1Red;
+      ctx.font = 'bold 16px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`P1 ★ ${gameState.p1Stars}`, scoreX, 36);
+      ctx.fillStyle = COLORS.textMuted;
+      ctx.fillText('VS', scoreX + 86, 36);
+      ctx.fillStyle = COLORS.p2Blue;
+      ctx.fillText(`P2 ★ ${gameState.p2Stars}`, scoreX + 122, 36);
+    } else {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 11px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`ARCHITECT SCORE (STREAK ×${gameState.combo})`, scoreX, 20);
+      ctx.fillStyle = COLORS.textBright;
+      ctx.font = 'bold 21px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`${gameState.score} PTS`, scoreX, 45);
+    }
+
+    // Menu & Mute Buttons
+    const menR = gameState.menuBtnRect;
+    roundRect(menR.x, menR.y, menR.w, menR.h, 8, '#13203d', COLORS.borderDim, 1.5);
+    ctx.fillStyle = COLORS.textBright;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('☰ MODES', menR.x + menR.w / 2, menR.y + 23);
+
+    const mr = gameState.muteBtnRect;
+    roundRect(mr.x, mr.y, mr.w, mr.h, 8, sfx.muted ? '#2b1320' : '#13203d', sfx.muted ? COLORS.magenta : COLORS.cyan, 1.5);
+    ctx.fillStyle = sfx.muted ? COLORS.magenta : COLORS.cyan;
+    ctx.fillText(sfx.muted ? '🔇 MUTED' : '🔊 AUDIO', mr.x + mr.w / 2, mr.y + 23);
+  }
+
+  // --- ZONE 2: UPPER BRIEFING STRIP ---
+  function drawBriefingStrip() {
+    const prob = gameState.problem;
+    roundRect(28, 66, V_W - 56, 54, 10, COLORS.bgPanel, COLORS.borderDim, 1.5);
+
+    roundRect(42, 75, 330, 36, 7, COLORS.cyanDim, COLORS.cyan, 1.2);
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(prob.tierLabel, 207, 98);
+
+    ctx.fillStyle = COLORS.textBright;
+    ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(prob.briefing, 390, 98);
+  }
+
+  // --- ZONE 3: CENTER STAGE (SILICON WAFER SPLIT-GRID + VERTICAL STACK) ---
+  function drawCenterStage(time) {
+    const prob = gameState.problem;
+    const step1Done = gameState.step >= 1;
+    const step2Done = gameState.step >= 2;
+    const step3Done = gameState.step >= 3;
+
+    // Left Panel: Holographic Silicon Wafer Fabrication Chamber
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(28, 128, 596, 396);
+    ctx.clip();
+
+    roundRect(28, 128, 596, 396, 14, COLORS.bgPanel, COLORS.borderDim, 2);
+
+    // Laser Emitter Turret at Top of Chamber
+    const laserX = 310 + Math.sin(time * 2.5) * 35;
+    roundRect(laserX - 24, 132, 48, 18, 5, '#192b54', COLORS.cyan, 1.5);
+    ctx.fillStyle = gameState.step === 0 ? COLORS.cyan : gameState.step === 1 ? COLORS.magenta : COLORS.gold;
+    ctx.beginPath();
+    ctx.arc(laserX, 152, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('SILICON WAFER SPLIT-GRID CHAMBER', 46, 156);
+
+    // Apply Wafer Conveyor Slide-In & Launch Offset
+    const waferOffsetX = gameState.waferSlideX + gameState.waferLaunchX;
+    ctx.translate(waferOffsetX, 0);
+
+    let topWidthLabel = String(prob.A);
+    if ((prob.type === 'BOX_TOP_H' || prob.type === 'BOX_TOP_T') && !step1Done) {
+      topWidthLabel = prob.maskedA;
+    }
+
+    let onesHeightLabel = String(prob.onesDigit);
+    let tensHeightLabel = String(prob.tensVal);
+    if (prob.type === 'BOX_ONES_B' && !step1Done) onesHeightLabel = '□';
+    if (prob.type === 'BOX_TENS_B' && !step1Done) tensHeightLabel = '□0';
+
+    const gridX = 112;
+    const gridY = 208;
+    const gridW = 396;
+    const onesH = 94;
+    const tensH = 186;
+
+    // Silicon Microchip Outer Die Frame with Gold Pins
+    roundRect(gridX - 12, gridY - 12, gridW + 24, onesH + tensH + 34, 12, '#070e1f', step3Done ? COLORS.gold : '#274375', step3Done ? 3 : 2);
+    ctx.fillStyle = step3Done ? COLORS.gold : '#395a96';
+    for (let px = gridX + 10; px < gridX + gridW; px += 34) {
+      ctx.fillRect(px, gridY - 18, 14, 6);
+      ctx.fillRect(px, gridY + onesH + tensH + 22, 14, 6);
+    }
+
+    // Top Dimension Label
+    ctx.fillStyle = topWidthLabel.includes('□') ? COLORS.gold : COLORS.textBright;
+    ctx.font = 'bold 24px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(topWidthLabel, gridX + gridW / 2, gridY - 24);
+
+    // Zone 1: ONES STRIP
+    const onesFill = step1Done
+      ? (step3Done ? 'rgba(255, 209, 59, 0.25)' : 'rgba(0, 240, 255, 0.25)')
+      : 'rgba(0, 240, 255, 0.08)';
+    const onesStroke = step1Done ? (step3Done ? COLORS.gold : COLORS.cyan) : (gameState.step === 0 ? COLORS.cyan : '#294578');
+    roundRect(gridX, gridY, gridW, onesH, 8, onesFill, onesStroke, gameState.step === 0 ? 3 : 2);
+
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('ONES STRIP (ROW 1)', gridX + 14, gridY + 23);
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 23px "Courier New", monospace';
+    if (step1Done || prob.type === 'BOX_ONES_B' || prob.type === 'BOX_TOP_H' || prob.type === 'BOX_TOP_T') {
+      const showRow1 = step1Done || prob.type !== 'BOX_TENS_B';
+      if (showRow1) {
+        ctx.fillStyle = step3Done ? COLORS.gold : COLORS.textBright;
+        ctx.fillText(`${prob.A} × ${prob.onesDigit} = ${prob.row1}`, gridX + gridW / 2, gridY + 61);
+      } else {
+        ctx.fillStyle = COLORS.textMuted;
+        ctx.fillText(`${prob.A} × ${prob.onesDigit} = ?`, gridX + gridW / 2, gridY + 61);
+      }
+    } else {
+      ctx.fillStyle = COLORS.cyan;
+      ctx.fillText(`${topWidthLabel} × ${onesHeightLabel} = ?`, gridX + gridW / 2, gridY + 61);
+    }
+
+    ctx.fillStyle = onesHeightLabel === '□' ? COLORS.gold : COLORS.cyan;
+    ctx.font = 'bold 24px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(onesHeightLabel, gridX + gridW + 20, gridY + onesH / 2 + 8);
+
+    // Zone 2: TENS BLOCK
+    const tensY = gridY + onesH + 10;
+    const tensFill = step2Done
+      ? (step3Done ? 'rgba(255, 209, 59, 0.25)' : 'rgba(255, 42, 133, 0.25)')
+      : 'rgba(255, 42, 133, 0.08)';
+    const tensStroke = step2Done ? (step3Done ? COLORS.gold : COLORS.magenta) : (gameState.step === 1 ? COLORS.magenta : '#294578');
+    roundRect(gridX, tensY, gridW, tensH, 8, tensFill, tensStroke, gameState.step === 1 ? 3 : 2);
+
+    ctx.fillStyle = COLORS.magenta;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('TENS BLOCK (ROW 2 · WITH 0-SHIELD)', gridX + 14, tensY + 25);
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 25px "Courier New", monospace';
+    if (step2Done || prob.type === 'BOX_TENS_B') {
+      ctx.fillStyle = step3Done ? COLORS.gold : COLORS.textBright;
+      ctx.fillText(`${prob.A} × ${prob.tensVal} = ${prob.row2}`, gridX + gridW / 2, tensY + 92);
+
+      const badgeW = 248;
+      roundRect(gridX + (gridW - badgeW) / 2, tensY + 116, badgeW, 34, 6, 'rgba(16, 245, 135, 0.18)', COLORS.emerald, 1.5);
+      ctx.fillStyle = COLORS.emerald;
+      ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('🛡 0-SHIELD LOCKED IN ONES!', gridX + gridW / 2, tensY + 138);
+    } else {
+      ctx.fillStyle = gameState.step === 1 ? COLORS.magenta : COLORS.textMuted;
+      ctx.fillText(`${topWidthLabel} × ${tensHeightLabel} = ?`, gridX + gridW / 2, tensY + 92);
+      ctx.fillStyle = COLORS.textMuted;
+      ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('Multiplying by Tens slams a 0-Shield into Row 2', gridX + gridW / 2, tensY + 125);
+    }
+
+    ctx.fillStyle = tensHeightLabel.includes('□') ? COLORS.gold : COLORS.magenta;
+    ctx.font = 'bold 24px "Courier New", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(tensHeightLabel, gridX + gridW + 20, tensY + tensH / 2 + 8);
+
+    ctx.restore();
+
+    // Right Panel: Synchronized Vertical Multiplication Stack
+    roundRect(644, 128, 608, 396, 14, COLORS.bgPanel, COLORS.borderDim, 2);
+    ctx.fillStyle = COLORS.gold;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('SYNCHRONIZED VERTICAL MULTIPLICATION STACK', 666, 156);
+
+    const cols = ['TTh', 'Th', 'H', 'T', 'O'];
+    const colStartX = 835;
+    const colStep = 64;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    for (let c = 0; c < 5; c++) {
+      const cx = colStartX + c * colStep;
+      const isOnesCol = c === 4;
+      ctx.fillStyle = isOnesCol ? COLORS.emerald : COLORS.textMuted;
+      ctx.fillText(cols[c], cx, 188);
+      ctx.strokeStyle = 'rgba(142, 164, 204, 0.12)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, 196);
+      ctx.lineTo(cx, 500);
+      ctx.stroke();
+    }
+
+    function drawAlignedDigits(strVal, rowY, color, highlightTrailingZero = false, dropOffsetY = 0) {
+      const chars = strVal.split('');
+      const startCol = 5 - chars.length;
+      ctx.font = 'bold 34px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      for (let i = 0; i < chars.length; i++) {
+        const colIdx = startCol + i;
+        const cx = colStartX + colIdx * colStep;
+        const ch = chars[i];
+        const isLastChar = i === chars.length - 1;
+
+        if (ch === '□' || ch === '?') {
+          roundRect(cx - 22, rowY - 30, 44, 40, 7, COLORS.goldDim, COLORS.gold, 2);
+          ctx.fillStyle = COLORS.gold;
+          ctx.fillText(ch, cx, rowY);
+        } else if (highlightTrailingZero && isLastChar && ch === '0') {
+          const yPos = rowY + dropOffsetY;
+          roundRect(cx - 22, yPos - 30, 44, 40, 7, COLORS.emeraldDim, COLORS.emerald, 2.4);
+          ctx.fillStyle = COLORS.emerald;
+          ctx.fillText('0', cx, yPos);
+        } else {
+          ctx.fillStyle = color;
+          ctx.fillText(ch, cx, rowY);
+        }
+      }
+    }
+
+    let stackTopStr = String(prob.A);
+    if ((prob.type === 'BOX_TOP_H' || prob.type === 'BOX_TOP_T') && !step1Done) {
+      stackTopStr = prob.maskedA;
+    }
+    drawAlignedDigits(stackTopStr, 232, COLORS.textBright);
+
+    let stackBotStr = String(prob.B);
+    if (prob.type === 'BOX_TENS_B' && !step1Done) stackBotStr = `□${prob.onesDigit}`;
+    if (prob.type === 'BOX_ONES_B' && !step1Done) stackBotStr = `${prob.tensDigit}□`;
+
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 32px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('×', colStartX + colStep, 282);
+    drawAlignedDigits(stackBotStr, 282, COLORS.textBright);
+
+    ctx.strokeStyle = COLORS.cyan;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(colStartX - 24, 300);
+    ctx.lineTo(colStartX + 4 * colStep + 26, 300);
+    ctx.stroke();
+
+    const row1KnownInitially =
+      prob.type === 'BOX_ONES_B' || prob.type === 'BOX_TOP_H' || prob.type === 'BOX_TOP_T';
+    const showRow1Val = step1Done || row1KnownInitially;
+    const row1Str = showRow1Val ? String(prob.row1) : '?'.repeat(String(prob.row1).length);
+    drawAlignedDigits(row1Str, 346, showRow1Val ? COLORS.cyan : COLORS.textMuted);
+
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`← ${stackTopStr} × ${stackBotStr.slice(-1)}`, colStartX + 4 * colStep + 34, 340);
+
+    const row2KnownInitially = prob.type === 'BOX_TENS_B';
+    const showRow2Val = step2Done || row2KnownInitially;
+    ctx.fillStyle = COLORS.magenta;
+    ctx.font = 'bold 28px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('+', colStartX - 18, 404);
+
+    if (showRow2Val) {
+      drawAlignedDigits(String(prob.row2), 404, COLORS.magenta, true, gameState.zeroShieldDropY);
+    } else {
+      const len = String(prob.row2).length;
+      const previewStr = '?'.repeat(len - 1) + '0';
+      drawAlignedDigits(previewStr, 404, COLORS.textMuted, true, 0);
+    }
+
+    ctx.fillStyle = COLORS.magenta;
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`← ${stackTopStr} × ${stackBotStr[0]}0`, colStartX + 4 * colStep + 34, 398);
+
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(colStartX - 24, 422);
+    ctx.lineTo(colStartX + 4 * colStep + 26, 422);
+    ctx.stroke();
+
+    const sumKnownInitially = prob.type === 'BOX_TENS_B';
+    const showTotalVal = step3Done || sumKnownInitially;
+    const totalStr = showTotalVal ? String(prob.total) : '□'.repeat(String(prob.total).length);
+    drawAlignedDigits(totalStr, 472, step3Done ? COLORS.gold : COLORS.textBright);
+
+    ctx.fillStyle = COLORS.gold;
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('← FUSED SUM', colStartX + 4 * colStep + 34, 466);
+
+    // Gold Microchip Stamp Overlay upon Step 3 Completion
+    if (gameState.step === 3) {
+      ctx.save();
+      ctx.translate(640, 330);
+      ctx.rotate(-0.07);
+      roundRect(-255, -42, 510, 84, 12, 'rgba(8, 15, 30, 0.94)', COLORS.gold, 4);
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 28px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('★ GOLD CHIP LAUNCHED! ★', 0, -4);
+      ctx.fillStyle = COLORS.emerald;
+      ctx.font = 'bold 15px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('BLUEPRINT VERIFIED & SHIPPED DOWN CONVEYOR', 0, 24);
+      ctx.restore();
+    }
+  }
+
+  // --- ZONE 4: BOTTOM COMMAND DECK ---
+  function drawCommandDeck() {
+    const prob = gameState.problem;
+    const stepIdx = Math.min(gameState.step, 2);
+    const currentStepObj = prob.steps[stepIdx];
+
+    const stepAccent = stepIdx === 0 ? COLORS.cyan : stepIdx === 1 ? COLORS.magenta : COLORS.gold;
+    roundRect(28, 540, V_W - 56, 42, 9, '#0d1830', stepAccent, 1.8);
+
+    ctx.fillStyle = stepAccent;
+    ctx.font = 'bold 17px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(currentStepObj.prompt, 46, 567);
+
+    if (gameState.mode === 'COOP') {
+      const oddRound = gameState.roundNumber % 2 === 1;
+      const roleText =
+        gameState.step === 0 ? (oddRound ? 'ACTIVE OPERATOR: P1 (RED)' : 'ACTIVE OPERATOR: P2 (BLUE)') :
+        gameState.step === 1 ? (oddRound ? 'ACTIVE OPERATOR: P2 (BLUE)' : 'ACTIVE OPERATOR: P1 (RED)') :
+        'CO-OP FUSION: P1 OR P2 LAUNCH!';
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 14px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(roleText, V_W - 46, 566);
+    } else if (gameState.mode === 'DUEL') {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 14px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('P1: A/D + F   |   P2: ◄/► + ENTER', V_W - 46, 566);
+    }
+
+    const labels = ['A', 'B', 'C', 'D'];
+    for (let i = 0; i < 4; i++) {
+      const r = getCardRect(i);
+      const opt = currentStepObj.options[i];
+      const p1Sel = gameState.p1Index === i;
+      const p2Sel = (gameState.mode === 'COOP' || gameState.mode === 'DUEL') && gameState.p2Index === i;
+
+      let fill = COLORS.bgCard;
+      let stroke = COLORS.borderDim;
+      let lw = 2;
+
+      if (p1Sel && p2Sel) {
+        fill = '#1b2b52';
+        stroke = COLORS.gold;
+        lw = 3.5;
+      } else if (p1Sel) {
+        fill = COLORS.bgCardHover;
+        stroke = gameState.mode === 'SOLO' ? COLORS.cyan : COLORS.p1Red;
+        lw = 3.2;
+      } else if (p2Sel) {
+        fill = COLORS.bgCardHover;
+        stroke = COLORS.p2Blue;
+        lw = 3.2;
+      }
+
+      roundRect(r.x, r.y, r.w, r.h, 12, fill, stroke, lw);
+
+      roundRect(r.x + 12, r.y + 12, 28, 26, 6, 'rgba(255,255,255,0.07)', stroke, 1.2);
+      ctx.fillStyle = stroke;
+      ctx.font = 'bold 14px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(labels[i], r.x + 26, r.y + 30);
+
+      if (p1Sel && gameState.mode !== 'SOLO') {
+        roundRect(r.x + r.w - 54, r.y + 10, 42, 22, 5, COLORS.p1Red, null);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px "Segoe UI", system-ui, sans-serif';
+        ctx.fillText('P1', r.x + r.w - 33, r.y + 25);
+      }
+      if (p2Sel) {
+        const yOff = p1Sel ? 36 : 10;
+        roundRect(r.x + r.w - 54, r.y + yOff, 42, 22, 5, COLORS.p2Blue, null);
+        ctx.fillStyle = '#060a14';
+        ctx.font = 'bold 12px "Segoe UI", system-ui, sans-serif';
+        ctx.fillText('P2', r.x + r.w - 33, r.y + yOff + 15);
+      }
+
+      ctx.fillStyle = COLORS.textBright;
+      ctx.font = 'bold 34px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(opt.value, r.x + r.w / 2, r.y + 69);
+    }
+  }
+
+  // --- DIAGNOSTIC ALERT BANNER ---
+  function drawDiagnosticAlert() {
+    if (!gameState.diagnosticAlert) return;
+    const al = gameState.diagnosticAlert;
+    const boxW = 940;
+    const boxH = 74;
+    const bx = (V_W - boxW) / 2;
+    const by = 136;
+
+    roundRect(bx, by, boxW, boxH, 10, 'rgba(32, 8, 14, 0.96)', COLORS.redAlert, 2.5);
+    ctx.fillStyle = COLORS.redAlert;
+    ctx.font = 'bold 15px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`⚠ ${al.title}`, bx + 18, by + 26);
+
+    ctx.fillStyle = COLORS.textBright;
+    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(al.message, bx + 18, by + 52);
+  }
+
+  // --- TITLE SCREEN ---
+  function drawTitleScreen(time) {
+    drawFactoryBackground(time);
+
+    const mr = gameState.muteBtnRect;
+    roundRect(mr.x, mr.y, mr.w, mr.h, 8, sfx.muted ? '#2b1320' : '#13203d', sfx.muted ? COLORS.magenta : COLORS.cyan, 1.5);
+    ctx.fillStyle = sfx.muted ? COLORS.magenta : COLORS.cyan;
+    ctx.font = 'bold 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(sfx.muted ? '🔇 MUTED' : '🔊 AUDIO', mr.x + mr.w / 2, mr.y + 23);
+
+    roundRect(140, 68, V_W - 280, 345, 18, 'rgba(11, 18, 36, 0.9)', COLORS.cyan, 2);
+
+    ctx.fillStyle = COLORS.gold;
+    ctx.font = 'bold 15px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SINGAPORE PRIMARY 4–5 MATHEMATICS · HIGH-SPEED WAFER FABRICATION', V_W / 2, 112);
+
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 54px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('AREA-FORGE FACTORY', V_W / 2, 174);
+
+    ctx.fillStyle = COLORS.magenta;
+    ctx.font = 'bold 26px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('SPLIT-GRID BLUEPRINTS & CRYPTARITHMETIC', V_W / 2, 214);
+
+    roundRect(240, 240, 800, 142, 12, '#070e1f', COLORS.borderDim, 1.5);
+    ctx.fillStyle = COLORS.textBright;
+    ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('⚡ Fire plasma lasers to energize the Ones Strip & slam the 0-Shield into the Tens Block!', V_W / 2, 276);
+    ctx.fillText('🔥 Build combos to trigger 2X HYPER-FORGE OVERDRIVE & beat the conveyor speed bar!', V_W / 2, 312);
+    ctx.fillText('🧩 Decode corrupted □ boxes using inverse division & launch gold microchips!', V_W / 2, 348);
+
+    const modeCards = [
+      {
+        title: '1P SOLO ARCHITECT',
+        sub: 'Mouse Click, Keyboard (A/D + Space)',
+        sub2: 'or 8BitDo Gamepad 0',
+        accent: COLORS.cyan
+      },
+      {
+        title: '2P TEAM CO-OP',
+        sub: 'Alternating Step Relay · Unified Team Score',
+        sub2: 'Dual 8BitDo or Split Keyboard (P1/P2)',
+        accent: COLORS.emerald
+      },
+      {
+        title: '2P SPEED DUEL',
+        sub: 'Head-to-Head Plasma Lock-In Race',
+        sub2: 'First to Launch Gold Chip Wins Stars ★',
+        accent: COLORS.magenta
+      }
+    ];
+
+    for (let i = 0; i < 3; i++) {
+      const r = getTitleBtnRect(i);
+      const selected = gameState.titleIndex === i;
+      const mc = modeCards[i];
+      roundRect(
+        r.x, r.y, r.w, r.h, 14,
+        selected ? '#16274d' : COLORS.bgCard,
+        selected ? mc.accent : COLORS.borderDim,
+        selected ? 3.5 : 1.8
+      );
+
+      ctx.fillStyle = mc.accent;
+      ctx.font = 'bold 21px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(mc.title, r.x + r.w / 2, r.y + 40);
+
+      ctx.fillStyle = COLORS.textBright;
+      ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(mc.sub, r.x + r.w / 2, r.y + 68);
+
+      ctx.fillStyle = COLORS.textMuted;
+      ctx.font = '12px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(mc.sub2, r.x + r.w / 2, r.y + 90);
+    }
+
+    ctx.fillStyle = COLORS.textMuted;
+    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('CLICK ANY MODE CARD OR PRESS [LEFT / RIGHT + ENTER / SPACE / GAMEPAD A] TO LAUNCH', V_W / 2, 622);
+  }
+
+  // --- GAME OVER SCREEN ---
+  function drawGameOverScreen(time) {
+    drawFactoryBackground(time);
+    drawTopHUD(time);
+
+    roundRect(300, 170, V_W - 600, 410, 18, COLORS.bgPanel, COLORS.redAlert, 3);
+
+    ctx.fillStyle = COLORS.redAlert;
+    ctx.font = 'bold 42px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('CORE SHIELDS DEPLETED', V_W / 2, 242);
+
+    ctx.fillStyle = COLORS.textBright;
+    ctx.font = '600 20px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(`BLUEPRINT TIER REACHED: ROUND ${gameState.roundNumber}`, V_W / 2, 305);
+
+    if (gameState.mode === 'COOP') {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 34px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`FINAL TEAM SCORE: ${gameState.score} PTS`, V_W / 2, 368);
+    } else if (gameState.mode === 'DUEL') {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 30px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`P1 ★ ${gameState.p1Stars}   —   P2 ★ ${gameState.p2Stars}`, V_W / 2, 368);
+    } else {
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 34px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(`FINAL ARCHITECT SCORE: ${gameState.score} PTS`, V_W / 2, 368);
+    }
+
+    roundRect(V_W / 2 - 180, 490, 360, 68, 12, COLORS.cyanDim, COLORS.cyan, 2.5);
+    ctx.fillStyle = COLORS.cyan;
+    ctx.font = 'bold 22px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('↻ REBOOT FACTORY', V_W / 2, 532);
+  }
+
+  // --- BEAMS, PARTICLES & RETICLE ---
+  function drawFXAndReticle() {
+    // Plasma Laser Beams
+    for (let i = gameState.beams.length - 1; i >= 0; i--) {
+      const b = gameState.beams[i];
+      b.life -= 0.055;
+      if (b.life <= 0) {
+        gameState.beams.splice(i, 1);
+        continue;
+      }
+      ctx.save();
+      ctx.globalAlpha = b.life;
+      ctx.strokeStyle = b.color;
+      ctx.lineWidth = 10 * b.life;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(b.x1, b.y1);
+      ctx.lineTo(b.x2, b.y2);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3 * b.life;
+      ctx.beginPath();
+      ctx.moveTo(b.x1, b.y1);
+      ctx.lineTo(b.x2, b.y2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Particles
+    for (let i = gameState.particles.length - 1; i >= 0; i--) {
+      const p = gameState.particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.14;
+      p.life -= p.decay;
+      if (p.life <= 0) {
+        gameState.particles.splice(i, 1);
+        continue;
+      }
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Floating Texts
+    for (let i = gameState.floatingTexts.length - 1; i >= 0; i--) {
+      const ft = gameState.floatingTexts[i];
+      ft.y += ft.vy;
+      ft.life -= 0.015;
+      if (ft.life <= 0) {
+        gameState.floatingTexts.splice(i, 1);
+        continue;
+      }
+      ctx.globalAlpha = Math.max(0, ft.life);
+      ctx.fillStyle = ft.color;
+      ctx.font = `bold ${ft.size}px "Segoe UI", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(ft.text, ft.x, ft.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // Duel Winner Banner
+    if (gameState.duelBannerTimer > 0) {
+      roundRect(V_W / 2 - 330, 286, 660, 56, 10, 'rgba(8, 15, 30, 0.94)', COLORS.gold, 2.5);
+      ctx.fillStyle = COLORS.gold;
+      ctx.font = 'bold 20px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(gameState.duelBanner, V_W / 2, 321);
+    }
+
+    // Screen Flash
+    if (gameState.flashAlpha > 0) {
+      ctx.fillStyle = gameState.flashColor;
+      ctx.globalAlpha = gameState.flashAlpha;
+      ctx.fillRect(0, 0, V_W, V_H);
+      ctx.globalAlpha = 1;
+    }
+
+    // Neon Crosshair Reticle
+    const mx = gameState.mouse.x;
+    const my = gameState.mouse.y;
+    ctx.strokeStyle = COLORS.cyan;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mx, my, 12, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(mx - 18, my);
+    ctx.lineTo(mx - 6, my);
+    ctx.moveTo(mx + 6, my);
+    ctx.lineTo(mx + 18, my);
+    ctx.moveTo(mx, my - 18);
+    ctx.lineTo(mx, my - 6);
+    ctx.moveTo(mx, my + 6);
+    ctx.lineTo(mx, my + 18);
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS.gold;
+    ctx.beginPath();
+    ctx.arc(mx, my, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // --- MAIN 60 FPS LOOP ---
+  let lastTime = performance.now();
+
+  function loop(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    const time = now / 1000;
+
+    pollGamepads();
+
+    if (gameState.shakeTimer > 0) gameState.shakeTimer = Math.max(0, gameState.shakeTimer - dt);
+    if (gameState.flashAlpha > 0) gameState.flashAlpha = Math.max(0, gameState.flashAlpha - dt * 1.1);
+
+    if (gameState.screen === 'PLAYING') {
+      // Smooth Wafer Slide-In on round start
+      if (gameState.waferSlideX < 0) {
+        gameState.waferSlideX = Math.min(0, gameState.waferSlideX + dt * 1550);
+      }
+      // Smooth Wafer Launch out on Step 3 completion
+      if (gameState.step === 3 && gameState.waferLaunchX > 0) {
+        gameState.waferLaunchX += dt * 920;
+      }
+      // 0-Shield drop slam animation
+      if (gameState.zeroShieldDropY < 0) {
+        gameState.zeroShieldDropY = Math.min(0, gameState.zeroShieldDropY + dt * 780);
+      }
+      // Wafer speed bonus gauge decay (purely rewards fast play, never punishes with death!)
+      if (gameState.step < 3 && gameState.waferTimer > 0.15) {
+        gameState.waferTimer = Math.max(0.15, gameState.waferTimer - dt / gameState.waferDuration);
+      }
+      // Overdrive countdown
+      if (gameState.overdriveTimer > 0) {
+        gameState.overdriveTimer = Math.max(0, gameState.overdriveTimer - dt);
+      }
+      if (gameState.diagnosticAlert) {
+        gameState.diagnosticAlert.timer -= dt;
+        if (gameState.diagnosticAlert.timer <= 0) gameState.diagnosticAlert = null;
+      }
+      if (gameState.duelBannerTimer > 0) {
+        gameState.duelBannerTimer -= dt;
+        if (gameState.duelBannerTimer <= 0) gameState.duelLocked = false;
+      }
+    }
+
+    ctx.save();
+    if (gameState.shakeTimer > 0) {
+      const dx = (Math.random() - 0.5) * gameState.shakeIntensity * 2;
+      const dy = (Math.random() - 0.5) * gameState.shakeIntensity * 2;
+      ctx.translate(dx, dy);
+    }
+
+    if (gameState.screen === 'TITLE') {
+      drawTitleScreen(time);
+    } else if (gameState.screen === 'PLAYING') {
+      drawFactoryBackground(time);
+      drawTopHUD(time);
+      drawBriefingStrip();
+      drawCenterStage(time);
+      drawCommandDeck();
+      drawDiagnosticAlert();
+    } else if (gameState.screen === 'GAMEOVER') {
+      drawGameOverScreen(time);
+    }
+
+    drawFXAndReticle();
+    ctx.restore();
+
+    requestAnimationFrame(loop);
+  }
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
