@@ -1,0 +1,2207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Glyph Decoder: Relic Equation Lab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #05070f;
+    overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: none; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+(() => {
+  'use strict';
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const V_W = 1280;
+  const V_H = 720;
+  const FONT = '"Segoe UI", system-ui, sans-serif';
+
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dpr = 1;
+
+  function applyTransform() {
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+    scale = Math.min(window.innerWidth / V_W, window.innerHeight / V_H);
+    offsetX = (window.innerWidth - V_W * scale) / 2;
+    offsetY = (window.innerHeight - V_H * scale) / 2;
+    applyTransform();
+  }
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+
+  const C = {
+    bg: '#070b16',
+    panel: '#10192e',
+    card: '#15233d',
+    cardHot: '#1c335c',
+    line: '#2a436e',
+    cyan: '#3df0ff',
+    magenta: '#ff3d8a',
+    gold: '#ffd15a',
+    emerald: '#2dff9a',
+    red: '#ff4d5e',
+    p1: '#ff5a6a',
+    p2: '#4cc9ff',
+    text: '#f7f9ff',
+    muted: '#9aafd0',
+    ink: '#07101e'
+  };
+
+  const GLYPHS = [
+    { id: 'triangle', name: 'Triangle', color: '#3df0ff' },
+    { id: 'smiley', name: 'Smiley', color: '#ffe14a' },
+    { id: 'sun', name: 'Sun', color: '#ffb020' },
+    { id: 'heart', name: 'Heart', color: '#ff3d8a' },
+    { id: 'diamond', name: 'Diamond', color: '#7ee7ff' },
+    { id: 'cross', name: 'Cross', color: '#2dff9a' }
+  ];
+
+  const BANDS = {
+    warmup: { label: 'WARM-UP', name: 'EQUAL GROUPS', blurb: 'Same symbol, same value. Then substitute exactly.' },
+    twin: { label: 'TIER 2', name: 'TWIN FACTORS', blurb: 'A glyph times itself, then a bigger operation.' },
+    advanced: { label: 'TIER 3', name: 'INVERSE + HUNDRED', blurb: 'Work backwards, then round to the nearest hundred.' },
+    master: { label: 'MASTER', name: 'CRYPTOGRAPHER', blurb: 'Mixed tablets. Exact, nearest ten, or nearest hundred.' }
+  };
+
+  const UI = { hud: 54, briefY: 60, briefH: 106, stageY: 174, stageH: 328, deckY: 510 };
+
+  const gameState = {
+    screen: 'TITLE',
+    phase: 'title',
+    mode: 'SOLO',
+    roundNumber: 1,
+    shields: 5,
+    maxShields: 5,
+    score: 0,
+    p1Score: 0,
+    p2Score: 0,
+    combo: 0,
+    p1Stars: 0,
+    p2Stars: 0,
+    cleared: 0,
+    step: 0,
+    problem: null,
+    history: [],
+    particles: [],
+    floaters: [],
+    mouse: { x: -200, y: -200, on: false },
+    p1Index: 0,
+    p2Index: 1,
+    titleIndex: 0,
+    overIndex: 0,
+    diagnostic: null,
+    cardFlash: null,
+    beam: 0,
+    shake: 0,
+    flash: 0,
+    flashColor: C.red,
+    showSolution: false,
+    stepStartedAt: 0,
+    inputLockUntil: 0,
+    p1Lock: 0,
+    p2Lock: 0,
+    celebrateUntil: 0,
+    lastPlayer: 1,
+    hoverCard: -1,
+    hoverLock: false,
+    hoverMute: false,
+    hoverMenu: false,
+    hit: { mute: null, menu: null, lock: null, cards: [], title: [], over: [] }
+  };
+
+  const dust = Array.from({ length: 42 }, () => ({
+    x: Math.random() * V_W,
+    y: Math.random() * V_H,
+    r: 0.6 + Math.random() * 1.5,
+    a: 0.15 + Math.random() * 0.45,
+    sp: 6 + Math.random() * 16
+  }));
+
+  const sfx = {
+    ctx: null,
+    muted: false,
+    timer: null,
+    stepIdx: 0,
+    unlocked: false,
+    unlock() {
+      if (this.unlocked) {
+        if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+        return;
+      }
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+      this.unlocked = true;
+      this.startBgm();
+    },
+    toggle() {
+      this.unlock();
+      this.muted = !this.muted;
+    },
+    tone(freq, type, dur, vol, delay, slide) {
+      if (this.muted || !this.ctx || !freq) return;
+      const t0 = this.ctx.currentTime + (delay || 0);
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, t0);
+      if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t0 + dur);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(vol, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+    },
+    tick() { this.tone(880, 'square', 0.04, 0.03); },
+    decode() {
+      [523.25, 659.25, 783.99].forEach((n, i) => this.tone(n, 'triangle', 0.12, 0.06, i * 0.05));
+    },
+    beam() { this.tone(240, 'sawtooth', 0.18, 0.03, 0, 720); },
+    relic() {
+      [523.25, 659.25, 783.99, 1046.5].forEach((n, i) => this.tone(n, 'square', 0.16, 0.05, i * 0.07));
+      this.tone(1568, 'triangle', 0.28, 0.04, 0.28);
+    },
+    error() {
+      this.tone(196, 'sawtooth', 0.16, 0.07, 0, 90);
+      this.tone(140, 'square', 0.22, 0.06, 0.08);
+    },
+    startBgm() {
+      if (this.timer) return;
+      const bass = [110, 130.81, 146.83, 164.81, 98, 110, 82.41, 73.42];
+      const lead = [440, 523.25, 0, 659.25, 587.33, 523.25, 440, 0];
+      this.timer = setInterval(() => {
+        if (this.muted || !this.ctx || gameState.screen === 'TITLE') return;
+        const i = this.stepIdx % bass.length;
+        this.tone(bass[i], 'triangle', 0.16, 0.02);
+        if (lead[i]) this.tone(lead[i], 'sine', 0.12, 0.012);
+        this.stepIdx++;
+      }, 230);
+    }
+  };
+
+  function randInt(a, b) {
+    return a + Math.floor(Math.random() * (b - a + 1));
+  }
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+  function plain(n) {
+    return String(Math.round(n));
+  }
+  function fmt(n) {
+    const v = Math.round(n);
+    const sign = v < 0 ? '-' : '';
+    return sign + String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function roundTo(n, place) {
+    const q = Math.floor(n / place);
+    const rem = n % place;
+    return (rem * 2 >= place ? q + 1 : q) * place;
+  }
+  function tensDigit(n) { return Math.floor(Math.abs(n) / 10) % 10; }
+  function onesDigit(n) { return Math.abs(n) % 10; }
+
+  function explainRound(raw, rounding) {
+    if (rounding === 'hundred') {
+      const tens = tensDigit(raw);
+      const way = tens >= 5 ? 'up' : 'down';
+      const cmp = tens >= 5 ? '≥' : '<';
+      return `In ${plain(raw)}, the tens digit is ${tens} (${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 100))}.`;
+    }
+    const ones = onesDigit(raw);
+    const way = ones >= 5 ? 'up' : 'down';
+    const cmp = ones >= 5 ? '≥' : '<';
+    return `In ${plain(raw)}, the ones digit is ${ones} (${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 10))}.`;
+  }
+
+  function forgotRoundAlert(raw, rounding) {
+    if (rounding === 'hundred') {
+      const tens = tensDigit(raw);
+      const way = tens >= 5 ? 'up' : 'down';
+      const cmp = tens >= 5 ? '≥' : '<';
+      return `Check the mission instruction! Round your final answer (${plain(raw)}) to the nearest hundred -> look at the tens digit (${tens} ${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 100))}!`;
+    }
+    const ones = onesDigit(raw);
+    const way = ones >= 5 ? 'up' : 'down';
+    const cmp = ones >= 5 ? '≥' : '<';
+    return `Check the mission instruction! Round your final answer (${plain(raw)}) to the nearest ten -> look at the ones digit (${ones} ${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 10))}!`;
+  }
+
+  function wrongPlaceAlert(raw, rounding) {
+    if (rounding === 'hundred') {
+      const tens = tensDigit(raw);
+      const way = tens >= 5 ? 'up' : 'down';
+      const cmp = tens >= 5 ? '≥' : '<';
+      return `Round to the nearest HUNDRED, not nearest ten! In ${plain(raw)}, the tens digit is ${tens} (${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 100))}!`;
+    }
+    const ones = onesDigit(raw);
+    const way = ones >= 5 ? 'up' : 'down';
+    const cmp = ones >= 5 ? '≥' : '<';
+    return `Round to the nearest TEN, not nearest hundred! In ${plain(raw)}, the ones digit is ${ones} (${cmp} 5), so it rounds ${way} to ${plain(roundTo(raw, 10))}!`;
+  }
+
+  function otherBoundary(raw, place, correct) {
+    const floor = raw - (raw % place);
+    const ceil = (raw % place === 0) ? floor : floor + place;
+    if (floor === ceil) return correct + place;
+    return correct === floor ? ceil : floor;
+  }
+
+  function uniqueOptions(correct, traps) {
+    const answer = Math.round(correct);
+    const used = new Set([answer]);
+    const picked = [];
+    for (let i = 0; i < traps.length; i++) {
+      const t = traps[i];
+      if (!t || !Number.isFinite(t.value)) continue;
+      const v = Math.round(t.value);
+      if (v < 0 || used.has(v)) continue;
+      used.add(v);
+      picked.push({ value: v, correct: false, alert: t.alert, trapId: t.trapId || 'miscalc' });
+      if (picked.length === 3) break;
+    }
+    let salt = 1;
+    while (picked.length < 3 && salt < 50) {
+      const v = answer + salt * (salt % 2 === 0 ? 10 : 17);
+      if (v > 0 && !used.has(v)) {
+        used.add(v);
+        picked.push({
+          value: v,
+          correct: false,
+          alert: `Check each operation again. ${plain(v)} does not balance this tablet. The correct number is ${plain(answer)}.`,
+          trapId: 'fallback'
+        });
+      }
+      salt++;
+    }
+    return shuffle([{ value: answer, correct: true, alert: '', trapId: 'correct' }].concat(picked));
+  }
+
+  function pickGlyphs(n) {
+    return shuffle(GLYPHS).slice(0, n);
+  }
+
+  function clueLines(d) {
+    const A = d.glyphA.name;
+    const B = d.glyphB.name;
+    const lines = [];
+    if (d.eq1.form === 'sum') {
+      const parts = [];
+      for (let i = 0; i < d.eq1.count; i++) parts.push(A);
+      lines.push('CLUE 1    ' + parts.join(' + ') + '  =  ' + fmt(d.eq1.total));
+    } else if (d.eq1.form === 'square') {
+      lines.push('CLUE 1    ' + A + ' × ' + A + '  =  ' + fmt(d.eq1.product));
+    } else {
+      lines.push('CLUE 1    ' + A + ' ÷ ' + d.eq1.divisor + '  =  ' + fmt(d.eq1.quotient));
+    }
+    if (d.eq2.form === 'mul') lines.push('CLUE 2    ' + A + ' × ' + d.eq2.factor + '  =  ' + B);
+    else if (d.eq2.form === 'div') lines.push('CLUE 2    ' + fmt(d.eq2.dividend) + ' ÷ ' + A + '  =  ' + B);
+    else if (d.eq2.form === 'div-by') lines.push('CLUE 2    ' + A + ' ÷ ' + d.eq2.divisor + '  =  ' + B);
+    else lines.push('CLUE 2    ' + fmt(d.eq2.three) + ' × (' + A + ' × ' + d.eq2.k + ')  =  ' + B);
+    if (d.eq3) {
+      const G = d.glyphC.name;
+      if (d.eq3.form === 'mul') lines.push('CLUE 3    ' + B + ' × ' + d.eq3.factor + '  =  ' + G);
+      else lines.push('CLUE 3    ' + B + ' ÷ ' + d.eq3.divisor + '  =  ' + G);
+    }
+    return lines;
+  }
+
+  function promptFor(d, step) {
+    const A = d.glyphA.name;
+    const B = d.glyphB.name;
+    if (step === 0) {
+      if (d.eq1.form === 'sum') {
+        return 'STEP 1 · Crack the ' + A + '. ' + d.eq1.count + ' identical symbols add to ' + fmt(d.eq1.total) + '. What is one ' + A + '?';
+      }
+      if (d.eq1.form === 'square') {
+        return 'STEP 1 · Crack the ' + A + '. Both symbols multiply. Which number times itself equals ' + fmt(d.eq1.product) + '?';
+      }
+      return 'STEP 1 · Crack the ' + A + '. ' + A + ' ÷ ' + d.eq1.divisor + ' = ' + fmt(d.eq1.quotient) + '. What is the ' + A + '?';
+    }
+    if (step === 1) {
+      if (d.eq2.form === 'mul') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' × ' + d.eq2.factor + '?';
+      if (d.eq2.form === 'div') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.eq2.dividend) + ' ÷ ' + fmt(d.valueA) + '?';
+      if (d.eq2.form === 'div-by') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' ÷ ' + d.eq2.divisor + '?';
+      const inner = d.valueA * d.eq2.k;
+      return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Brackets first: ' + fmt(d.valueA) + ' × ' + d.eq2.k + ' = ' + fmt(inner) + '. What is ' + fmt(d.eq2.three) + ' × ' + fmt(inner) + '?';
+    }
+    if (d.eq3) {
+      const G = d.glyphC.name;
+      const op = d.eq3.form === 'mul'
+        ? (fmt(d.valueB) + ' × ' + d.eq3.factor)
+        : (fmt(d.valueB) + ' ÷ ' + d.eq3.divisor);
+      if (d.rounding === 'exact') return 'STEP 3 · ' + B + ' = ' + fmt(d.valueB) + '. Compute ' + op + ' and lock the EXACT ' + G + '.';
+      const place = d.rounding === 'ten' ? 'ten' : 'hundred';
+      return 'STEP 3 · ' + B + ' = ' + fmt(d.valueB) + '. Compute ' + op + ', then lock the nearest ' + place + '.';
+    }
+    if (d.rounding === 'exact') return 'STEP 3 · Exact mission. Lock ' + fmt(d.valueB) + ' as the ' + B + '. Do not round.';
+    const place = d.rounding === 'ten' ? 'ten' : 'hundred';
+    return 'STEP 3 · Raw value ' + fmt(d.valueB) + '. Lock it to the nearest ' + place + '.';
+  }
+
+  function traps1(d) {
+    const name = d.glyphA.name;
+    const traps = [];
+    if (d.eq1.form === 'sum') {
+      const total = d.eq1.total;
+      const count = d.eq1.count;
+      traps.push({
+        value: Math.round(total / 2),
+        trapId: 'div-by-2',
+        alert: 'There are ' + count + ' identical ' + name + ' symbols added together. Divide ' + plain(total) + ' by ' + count + ', not by 2. One ' + name + ' is ' + plain(d.valueA) + '.'
+      });
+      const wrongCount = count === 3 ? 4 : 3;
+      traps.push({
+        value: Math.round(total / wrongCount),
+        trapId: 'wrong-count',
+        alert: 'Count the symbols on the tablet. There are ' + count + ' ' + name + ' symbols, not ' + wrongCount + '. ' + plain(total) + ' ÷ ' + count + ' = ' + plain(d.valueA) + '.'
+      });
+      traps.push({
+        value: total,
+        trapId: 'copied-total',
+        alert: plain(total) + ' is the total of all ' + count + ' symbols. Divide by ' + count + ' to find one ' + name + ': ' + plain(d.valueA) + '.'
+      });
+      traps.push({
+        value: d.valueA + 10,
+        trapId: 'off-by',
+        alert: 'Multiply back to check. ' + count + ' × ' + plain(d.valueA) + ' = ' + plain(total) + '. ' + plain(d.valueA + 10) + ' does not balance the sum.'
+      });
+    } else if (d.eq1.form === 'square') {
+      const product = d.eq1.product;
+      const root = d.valueA;
+      const half = Math.round(product / 2);
+      traps.push({
+        value: half,
+        trapId: 'half-square',
+        alert: 'Look at the × sign! Both ' + name + ' symbols must be the SAME number multiplied by itself: ' + root + ' × ' + root + ' = ' + product + ', not ' + half + ' × ' + half + '!'
+      });
+      traps.push({
+        value: product,
+        trapId: 'copied-product',
+        alert: product + ' is the product, not the glyph. Find the number that multiplies by itself to make ' + product + '. ' + root + ' × ' + root + ' = ' + product + '.'
+      });
+      const neighbor = root < 12 ? root + 1 : root - 1;
+      traps.push({
+        value: neighbor,
+        trapId: 'neighbor-square',
+        alert: neighbor + ' × ' + neighbor + ' = ' + (neighbor * neighbor) + ', but this tablet shows ' + product + '. The ' + name + ' is ' + root + ', because ' + root + ' × ' + root + ' = ' + product + '.'
+      });
+      traps.push({
+        value: root + 2,
+        trapId: 'off-square',
+        alert: 'Test the twin factor by multiplying it by itself. ' + root + ' × ' + root + ' = ' + product + '. ' + (root + 2) + ' × ' + (root + 2) + ' = ' + ((root + 2) * (root + 2)) + '.'
+      });
+    } else {
+      const q = d.eq1.quotient;
+      const div = d.eq1.divisor;
+      traps.push({
+        value: Math.max(1, Math.round(q / div)),
+        trapId: 'reverse-div',
+        alert: 'Since ' + name + ' divided by ' + div + ' equals ' + plain(q) + ', reverse it by multiplying: ' + name + ' = ' + plain(q) + ' × ' + div + ' = ' + plain(d.valueA) + '!'
+      });
+      traps.push({
+        value: q + div,
+        trapId: 'added',
+        alert: 'Adding ' + plain(q) + ' + ' + div + ' does not undo division. Multiply to reverse it: ' + plain(q) + ' × ' + div + ' = ' + plain(d.valueA) + '.'
+      });
+      traps.push({
+        value: q,
+        trapId: 'copied-quotient',
+        alert: plain(q) + ' is the result after dividing. The ' + name + ' is the starting amount: ' + plain(q) + ' × ' + div + ' = ' + plain(d.valueA) + '.'
+      });
+      traps.push({
+        value: q * (div - 1),
+        trapId: 'partial-mul',
+        alert: 'Use the full divisor. ' + plain(q) + ' × ' + div + ' = ' + plain(d.valueA) + ', not × ' + (div - 1) + '.'
+      });
+    }
+    return traps;
+  }
+
+  function traps2(d) {
+    const traps = [];
+    const B = d.glyphB.name;
+    if (d.eq2.form === 'mul') {
+      const a = d.valueA;
+      const f = d.eq2.factor;
+      const prod = d.valueB;
+      traps.push({ value: a + f, trapId: 'added', alert: 'The sign is ×, so multiply. ' + plain(a) + ' × ' + f + ' = ' + plain(prod) + ', not ' + plain(a) + ' + ' + f + '.' });
+      traps.push({ value: a * (f - 1), trapId: 'missed-group', alert: 'You missed one group of ' + plain(a) + '. ' + plain(a) + ' × ' + f + ' = ' + plain(prod) + '.' });
+      traps.push({ value: a * (f + 1), trapId: 'extra-group', alert: 'That is one group too many. ' + plain(a) + ' × ' + f + ' = ' + plain(prod) + ', not × ' + (f + 1) + '.' });
+      traps.push({ value: Math.max(1, Math.round(prod / 10)), trapId: 'place', alert: 'Check the place value of the product. ' + plain(a) + ' × ' + f + ' = ' + plain(prod) + '.' });
+    } else if (d.eq2.form === 'div') {
+      const dividend = d.eq2.dividend;
+      const divisor = d.valueA;
+      const q = d.valueB;
+      traps.push({ value: dividend, trapId: 'copied-dividend', alert: 'You copied the dividend. Divide it by the decoded glyph: ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(q) + '.' });
+      traps.push({ value: dividend - divisor, trapId: 'subtracted', alert: 'Divide, don\'t subtract. ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(q) + '.' });
+      traps.push({ value: Math.max(1, Math.round(dividend / (divisor + 1))), trapId: 'wrong-divisor', alert: 'Use the decoded glyph ' + plain(divisor) + ', not ' + plain(divisor + 1) + '. ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(q) + '.' });
+      traps.push({ value: q + divisor, trapId: 'added-back', alert: 'The ' + B + ' is the quotient ' + plain(q) + ', not the quotient plus the glyph.' });
+    } else if (d.eq2.form === 'div-by') {
+      const a = d.valueA;
+      const div = d.eq2.divisor;
+      const q = d.valueB;
+      traps.push({ value: a - div, trapId: 'subtracted', alert: 'The sign is ÷. ' + plain(a) + ' ÷ ' + div + ' = ' + plain(q) + '.' });
+      traps.push({ value: a, trapId: 'copied', alert: 'You copied the first glyph. Divide it by ' + div + ' to get ' + plain(q) + '.' });
+      traps.push({ value: q + div, trapId: 'added-divisor', alert: 'Don\'t add the divisor back on. ' + plain(a) + ' ÷ ' + div + ' = ' + plain(q) + '.' });
+      traps.push({ value: Math.max(1, Math.round(a / (div + 1))), trapId: 'wrong-divisor', alert: 'Divide by ' + div + ', not ' + (div + 1) + '. ' + plain(a) + ' ÷ ' + div + ' = ' + plain(q) + '.' });
+    } else {
+      const inner = d.valueA * d.eq2.k;
+      const three = d.eq2.three;
+      traps.push({ value: three * d.valueA, trapId: 'forgot-bracket', alert: 'Finish the brackets first. ' + plain(d.valueA) + ' × ' + d.eq2.k + ' = ' + plain(inner) + '. Then ' + plain(three) + ' × ' + plain(inner) + ' = ' + plain(d.valueB) + '.' });
+      traps.push({ value: three * d.eq2.k, trapId: 'used-k-only', alert: 'The bracket uses the decoded glyph. ' + plain(d.valueA) + ' × ' + d.eq2.k + ' = ' + plain(inner) + ', and ' + plain(three) + ' × ' + plain(inner) + ' = ' + plain(d.valueB) + '.' });
+      traps.push({ value: three * (d.valueA + d.eq2.k), trapId: 'added-in-bracket', alert: 'The bracket is multiplication, not addition. ' + plain(d.valueA) + ' × ' + d.eq2.k + ' = ' + plain(inner) + ', not ' + plain(d.valueA) + ' + ' + d.eq2.k + '.' });
+      traps.push({ value: inner, trapId: 'stopped-early', alert: plain(inner) + ' is only the multiplier. The ' + B + ' is ' + plain(three) + ' × ' + plain(inner) + ' = ' + plain(d.valueB) + '.' });
+    }
+    return traps;
+  }
+
+  function traps3(d) {
+    const raw = d.valueFinalRaw;
+    const traps = [];
+    if (d.eq3) {
+      if (d.eq3.form === 'mul') {
+        const f = d.eq3.factor;
+        traps.push({ value: d.valueB + f, trapId: 'added', alert: 'Clue 3 multiplies. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '.' });
+        traps.push({ value: d.valueB * (f - 1), trapId: 'missed-group', alert: 'You missed a group. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '.' });
+        traps.push({ value: d.valueB * (f + 1), trapId: 'extra-group', alert: 'That is one extra group. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '.' });
+      } else {
+        const div = d.eq3.divisor;
+        traps.push({ value: Math.max(0, d.valueB - div), trapId: 'subtracted', alert: 'Clue 3 divides. ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+        traps.push({ value: Math.max(1, Math.round(d.valueB / (div + 1))), trapId: 'wrong-divisor', alert: 'Divide by ' + div + '. ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+        traps.push({ value: d.valueB, trapId: 'copied', alert: plain(d.valueB) + ' is Clue 2. Clue 3 asks for ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+      }
+    }
+    if (d.rounding === 'exact') {
+      const hun = roundTo(raw, 100);
+      const ten = roundTo(raw, 10);
+      if (hun !== raw) {
+        traps.push({ value: hun, trapId: 'rounded-anyway', alert: 'This mission wants the EXACT value. ' + plain(raw) + ' rounded to the nearest hundred is ' + plain(hun) + ', but the relic code stays ' + plain(raw) + '.' });
+      }
+      if (ten !== raw && ten !== hun) {
+        traps.push({ value: ten, trapId: 'rounded-ten-anyway', alert: 'This mission wants the EXACT value, not the nearest ten. Lock ' + plain(raw) + '.' });
+      }
+      traps.push({ value: raw + 10, trapId: 'off10', alert: 'Check the last two digits. The exact relic code is ' + plain(raw) + ', not ' + plain(raw + 10) + '.' });
+      traps.push({ value: raw + 100, trapId: 'off100', alert: 'That jumped by a hundred. The exact relic code is ' + plain(raw) + '.' });
+      if (d.valueA !== raw) {
+        traps.push({ value: d.valueA, trapId: 'first-glyph', alert: plain(d.valueA) + ' is the first glyph. The final relic code is ' + plain(raw) + '.' });
+      }
+    } else {
+      const place = d.rounding === 'ten' ? 10 : 100;
+      const correct = roundTo(raw, place);
+      traps.unshift({ value: raw, trapId: 'forgot-round', alert: forgotRoundAlert(raw, d.rounding) });
+      const other = roundTo(raw, place === 100 ? 10 : 100);
+      if (other !== correct && other !== raw) {
+        traps.unshift({
+          value: other,
+          trapId: place === 100 ? 'round-ten-not-hundred' : 'round-hundred-not-ten',
+          alert: wrongPlaceAlert(raw, d.rounding)
+        });
+      }
+      traps.push({
+        value: otherBoundary(raw, place, correct),
+        trapId: 'wrong-direction',
+        alert: 'Look at the rounding digit before you jump the other way. ' + explainRound(raw, d.rounding) + ' The locked code is ' + plain(correct) + '.'
+      });
+      traps.push({
+        value: correct + place,
+        trapId: 'off-by-place',
+        alert: plain(correct + place) + ' is one step too far. ' + explainRound(raw, d.rounding)
+      });
+      const thou = roundTo(raw, 1000);
+      traps.push({
+        value: thou,
+        trapId: 'nearest-thousand',
+        alert: 'That rounds to the nearest thousand. This mission asks for the nearest ' + (place === 100 ? 'hundred' : 'ten') + '. ' + explainRound(raw, d.rounding)
+      });
+    }
+    return traps;
+  }
+
+  function finalize(d) {
+    const raw = d.eq3 ? d.valueC : d.valueB;
+    d.valueFinalRaw = raw;
+    if (d.rounding === 'ten') d.finalAnswer = roundTo(raw, 10);
+    else if (d.rounding === 'hundred') d.finalAnswer = roundTo(raw, 100);
+    else d.finalAnswer = raw;
+    d.clues = clueLines(d);
+    d.steps = [0, 1, 2].map((step) => {
+      const answer = step === 0 ? d.valueA : step === 1 ? d.valueB : d.finalAnswer;
+      const traps = step === 0 ? traps1(d) : step === 1 ? traps2(d) : traps3(d);
+      return { answer: answer, prompt: promptFor(d, step), options: uniqueOptions(answer, traps) };
+    });
+    d.signature = [
+      d.kind, d.rounding, d.valueA, d.valueB, d.valueC || 0, d.finalAnswer,
+      d.eq1.form, d.eq2.form,
+      d.eq1.total || d.eq1.product || (d.eq1.quotient + 'x' + d.eq1.divisor),
+      d.eq2.factor || 0, d.eq2.dividend || 0, d.eq2.divisor || 0, d.eq2.three || 0, d.eq2.k || 0,
+      d.eq3 ? (d.eq3.form + (d.eq3.factor || d.eq3.divisor)) : '-'
+    ].join('|');
+    return d;
+  }
+
+  function roundingFits(n, rounding) {
+    if (rounding === 'ten') return n % 10 !== 0;
+    if (rounding === 'hundred') return n % 100 !== 0;
+    return true;
+  }
+
+  function buildWarmup() {
+    const glyphs = pickGlyphs(2);
+    const count = Math.random() < 0.55 ? 3 : 4;
+    const useMul = Math.random() < 0.62;
+    let valueA = 0;
+    let eq2 = null;
+    let valueB = 0;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      valueA = count === 3 ? randInt(340, 760) : randInt(260, 640);
+      if (valueA % 100 === 0) valueA += randInt(3, 17);
+      if (useMul) {
+        const maxF = Math.min(16, Math.floor(9999 / valueA));
+        if (maxF < 11) continue;
+        const factor = randInt(11, maxF);
+        valueB = valueA * factor;
+        eq2 = { form: 'mul', factor: factor };
+        break;
+      } else {
+        const qMax = Math.min(24, Math.floor(9999 / valueA));
+        const qMin = Math.max(11, Math.ceil(1000 / valueA));
+        if (qMax < qMin) continue;
+        valueB = randInt(qMin, qMax);
+        eq2 = { form: 'div', dividend: valueA * valueB };
+        break;
+      }
+    }
+    if (!eq2) {
+      valueA = 669;
+      valueB = 669 * 12;
+      eq2 = { form: 'mul', factor: 12 };
+    }
+    return finalize({
+      band: 'warmup',
+      kind: 'sum',
+      rounding: 'exact',
+      glyphA: glyphs[0],
+      glyphB: glyphs[1],
+      glyphC: null,
+      valueA: valueA,
+      valueB: valueB,
+      valueC: null,
+      eq1: { form: 'sum', count: count, total: valueA * count },
+      eq2: eq2,
+      eq3: null
+    });
+  }
+
+  function buildIntermediate() {
+    const glyphs = pickGlyphs(2);
+    const root = randInt(4, 9);
+    const useDiv = Math.random() < 0.55;
+    let eq2 = null;
+    let valueB = 0;
+    if (useDiv) {
+      const lo = Math.ceil(1000 / root);
+      const hi = Math.floor(9999 / root);
+      valueB = randInt(lo, hi);
+      if (valueB % 10 === 0) valueB += 3;
+      if (valueB > hi) valueB = hi;
+      eq2 = { form: 'div', dividend: root * valueB };
+    } else {
+      const ks = [];
+      for (let k = 2; k <= 9; k++) {
+        const m = root * k;
+        if (m >= 12 && m <= 36) ks.push(k);
+      }
+      const k = pick(ks);
+      const multiplier = root * k;
+      const hi = Math.min(899, Math.floor(9999 / multiplier));
+      const three = randInt(120, Math.max(120, hi));
+      valueB = three * multiplier;
+      eq2 = { form: 'mul-scaled', three: three, k: k };
+    }
+    return finalize({
+      band: 'twin',
+      kind: 'square',
+      rounding: 'exact',
+      glyphA: glyphs[0],
+      glyphB: glyphs[1],
+      glyphC: null,
+      valueA: root,
+      valueB: valueB,
+      valueC: null,
+      eq1: { form: 'square', product: root * root },
+      eq2: eq2,
+      eq3: null
+    });
+  }
+
+  function tryInverse(rounding) {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const divisor = randInt(12, 24);
+      const qMin = Math.max(100, Math.ceil(1000 / divisor));
+      const qMax = Math.min(999, Math.floor(9999 / divisor));
+      if (qMax < qMin) continue;
+      const quotient = randInt(qMin, qMax);
+      const valueA = quotient * divisor;
+      const options = [];
+      for (let d = 4; d <= 18; d++) {
+        if (d === divisor) continue;
+        if (valueA % d !== 0) continue;
+        const vb = valueA / d;
+        if (vb < 80 || vb > 9999) continue;
+        if (!roundingFits(vb, rounding)) continue;
+        if (rounding === 'hundred' && vb < 400) continue;
+        if (rounding === 'ten' && vb < 80) continue;
+        options.push({ d: d, vb: vb, split: roundTo(vb, 10) !== roundTo(vb, 100) });
+      }
+      if (!options.length) continue;
+      options.sort((a, b) => (b.split - a.split) || (Math.random() - 0.5));
+      const pool = options.filter((o) => o.split);
+      const chosen = pick(pool.length ? pool : options);
+      const glyphs = pickGlyphs(2);
+      return finalize({
+        band: rounding === 'hundred' && gameState.roundNumber <= 6 ? 'advanced' : 'master',
+        kind: 'inverse',
+        rounding: rounding,
+        glyphA: glyphs[0],
+        glyphB: glyphs[1],
+        glyphC: null,
+        valueA: valueA,
+        valueB: chosen.vb,
+        valueC: null,
+        eq1: { form: 'inverse', divisor: divisor, quotient: quotient },
+        eq2: { form: 'div-by', divisor: chosen.d },
+        eq3: null
+      });
+    }
+    return null;
+  }
+
+  function trySumRound(rounding, band) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const count = Math.random() < 0.7 ? 3 : 4;
+      let valueA = count === 3 ? randInt(340, 760) : randInt(280, 620);
+      if (valueA % 10 === 0) valueA += randInt(3, 9);
+      const maxF = Math.min(18, Math.floor(9999 / valueA));
+      if (maxF < 12) continue;
+      const factor = randInt(12, maxF);
+      const valueB = valueA * factor;
+      if (!roundingFits(valueB, rounding)) continue;
+      if (rounding === 'hundred' && valueB < 400) continue;
+      if (rounding === 'ten' && valueB < 80) continue;
+      const glyphs = pickGlyphs(2);
+      return finalize({
+        band: band,
+        kind: 'sum',
+        rounding: rounding,
+        glyphA: glyphs[0],
+        glyphB: glyphs[1],
+        glyphC: null,
+        valueA: valueA,
+        valueB: valueB,
+        valueC: null,
+        eq1: { form: 'sum', count: count, total: valueA * count },
+        eq2: { form: 'mul', factor: factor },
+        eq3: null
+      });
+    }
+    return null;
+  }
+
+  function buildAdvanced() {
+    const first = Math.random() < 0.5 ? tryInverse('hundred') : trySumRound('hundred', 'advanced');
+    if (first) return first;
+    const second = trySumRound('hundred', 'advanced') || tryInverse('hundred');
+    if (second) return second;
+    return buildWarmup();
+  }
+
+  function buildSquareMaster(rounding) {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const root = randInt(4, 12);
+      const glyphs = pickGlyphs(2);
+      if (rounding === 'hundred' || Math.random() < 0.5) {
+        const lo = Math.max(Math.ceil(1000 / root), rounding === 'hundred' ? 400 : rounding === 'ten' ? 80 : 40);
+        const hi = Math.floor(9999 / root);
+        if (hi < lo) continue;
+        let valueB = randInt(lo, hi);
+        if (!roundingFits(valueB, rounding)) {
+          if (rounding === 'hundred' && valueB % 100 === 0) valueB += 13;
+          if (rounding === 'ten' && valueB % 10 === 0) valueB += 3;
+          if (valueB < lo || valueB > hi || !roundingFits(valueB, rounding)) continue;
+        }
+        return finalize({
+          band: 'master', kind: 'square', rounding: rounding,
+          glyphA: glyphs[0], glyphB: glyphs[1], glyphC: null,
+          valueA: root, valueB: valueB, valueC: null,
+          eq1: { form: 'square', product: root * root },
+          eq2: { form: 'div', dividend: root * valueB },
+          eq3: null
+        });
+      }
+      const factor = randInt(12, 36);
+      const valueB = root * factor;
+      if (valueB > 9999) continue;
+      if (!roundingFits(valueB, rounding)) continue;
+      if (rounding === 'hundred' && valueB < 400) continue;
+      if (rounding === 'ten' && valueB < 80) continue;
+      return finalize({
+        band: 'master', kind: 'square', rounding: rounding,
+        glyphA: glyphs[0], glyphB: glyphs[1], glyphC: null,
+        valueA: root, valueB: valueB, valueC: null,
+        eq1: { form: 'square', product: root * root },
+        eq2: { form: 'mul', factor: factor },
+        eq3: null
+      });
+    }
+    return null;
+  }
+
+  function buildChain(rounding) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const root = randInt(4, 9);
+      const lo = Math.max(80, Math.ceil(1000 / root));
+      const hi = Math.floor(9999 / root);
+      const valueB = randInt(lo, hi);
+      let valueC = 0;
+      let eq3 = null;
+      if (Math.random() < 0.55) {
+        const f = randInt(3, 9);
+        valueC = valueB * f;
+        if (valueC > 60000) continue;
+        eq3 = { form: 'mul', factor: f };
+      } else {
+        const divisors = [];
+        for (let m = 3; m <= 12; m++) {
+          if (valueB % m === 0 && valueB / m >= 24) divisors.push(m);
+        }
+        if (!divisors.length) continue;
+        const m = pick(divisors);
+        valueC = valueB / m;
+        eq3 = { form: 'div-by', divisor: m };
+      }
+      let useRounding = rounding;
+      if (!roundingFits(valueC, useRounding)) {
+        if (useRounding === 'ten' && valueC % 100 !== 0) useRounding = 'hundred';
+        else if (useRounding === 'hundred' && valueC % 10 !== 0) useRounding = 'ten';
+        else useRounding = 'exact';
+      }
+      if (useRounding !== 'exact' && !roundingFits(valueC, useRounding)) useRounding = 'exact';
+      if (useRounding === 'hundred' && (valueC < 400 || roundTo(valueC, 100) === 0)) continue;
+      if (useRounding === 'ten' && valueC < 80) continue;
+      const glyphs = pickGlyphs(3);
+      return finalize({
+        band: 'master',
+        kind: 'chain',
+        rounding: useRounding,
+        glyphA: glyphs[0],
+        glyphB: glyphs[1],
+        glyphC: glyphs[2],
+        valueA: root,
+        valueB: valueB,
+        valueC: valueC,
+        eq1: { form: 'square', product: root * root },
+        eq2: { form: 'div', dividend: root * valueB },
+        eq3: eq3
+      });
+    }
+    return null;
+  }
+
+  function buildMaster() {
+    const rounding = pick(['exact', 'ten', 'hundred', 'hundred', 'ten']);
+    const roll = Math.random();
+    let problem = null;
+    if (roll < 0.22) problem = buildSquareMaster(rounding);
+    else if (roll < 0.44) problem = tryInverse(rounding);
+    else if (roll < 0.66) problem = trySumRound(rounding, 'master');
+    else problem = buildChain(rounding);
+    return problem || buildSquareMaster('exact') || buildIntermediate();
+  }
+
+  function createRoundProblem(round) {
+    if (round <= 2) return buildWarmup();
+    if (round <= 4) return buildIntermediate();
+    if (round <= 6) return buildAdvanced();
+    return buildMaster();
+  }
+
+  function loadRound() {
+    let problem = null;
+    for (let i = 0; i < 18; i++) {
+      const candidate = createRoundProblem(gameState.roundNumber);
+      if (gameState.history.indexOf(candidate.signature) === -1) {
+        problem = candidate;
+        break;
+      }
+    }
+    if (!problem) problem = createRoundProblem(gameState.roundNumber);
+    gameState.history.push(problem.signature);
+    if (gameState.history.length > 6) gameState.history.shift();
+    gameState.problem = problem;
+    gameState.step = 0;
+    gameState.phase = 'play';
+    gameState.showSolution = false;
+    gameState.stepStartedAt = performance.now();
+    gameState.p1Index = 0;
+    gameState.p2Index = 1;
+    gameState.cardFlash = null;
+    gameState.diagnostic = null;
+    gameState.beam = 0;
+    gameState.particles = [];
+  }
+
+  function startGame(mode) {
+    sfx.unlock();
+    gameState.screen = 'PLAYING';
+    gameState.mode = mode;
+    gameState.roundNumber = 1;
+    gameState.shields = 5;
+    gameState.score = 0;
+    gameState.p1Score = 0;
+    gameState.p2Score = 0;
+    gameState.combo = 0;
+    gameState.p1Stars = 0;
+    gameState.p2Stars = 0;
+    gameState.cleared = 0;
+    gameState.floaters = [];
+    gameState.flash = 0;
+    gameState.shake = 0;
+    loadRound();
+  }
+
+  function goTitle() {
+    gameState.screen = 'TITLE';
+    gameState.phase = 'title';
+    gameState.diagnostic = null;
+    gameState.showSolution = false;
+  }
+
+  function openGameOver() {
+    gameState.screen = 'GAMEOVER';
+    gameState.phase = 'over';
+    gameState.showSolution = true;
+    gameState.diagnostic = null;
+  }
+
+  function activePlayer() {
+    if (gameState.mode !== 'COOP') return 0;
+    const odd = gameState.roundNumber % 2 === 1;
+    if (gameState.step === 0) return odd ? 1 : 2;
+    if (gameState.step === 1) return odd ? 2 : 1;
+    return 0;
+  }
+
+  function award(player, amount) {
+    if (gameState.mode === 'DUEL') {
+      if (player === 2) gameState.p2Score += amount;
+      else gameState.p1Score += amount;
+    } else {
+      gameState.score += amount;
+    }
+  }
+
+  function speedAmount() {
+    const elapsed = (performance.now() - gameState.stepStartedAt) / 1000;
+    if (elapsed < 5) return 80;
+    if (elapsed < 10) return 40;
+    return 0;
+  }
+
+  function burst(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 50 + Math.random() * 220;
+      gameState.particles.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.45 + Math.random() * 0.45,
+        age: 0,
+        size: 2 + Math.random() * 3.4,
+        color: color
+      });
+    }
+    if (gameState.particles.length > 220) {
+      gameState.particles.splice(0, gameState.particles.length - 220);
+    }
+  }
+
+  function floater(x, y, text, color, size) {
+    gameState.floaters.push({ x: x, y: y, text: text, color: color, size: size || 20, age: 0, life: 1.35 });
+  }
+
+  function submitChoice(index, player) {
+    if (gameState.screen !== 'PLAYING' || gameState.phase !== 'play') return;
+    const now = performance.now();
+    if (now < gameState.inputLockUntil) return;
+    if (player === 1 && now < gameState.p1Lock) return;
+    if (player === 2 && now < gameState.p2Lock) return;
+    const seat = activePlayer();
+    if (gameState.mode === 'COOP' && seat !== 0 && seat !== player) {
+      sfx.tick();
+      floater(V_W / 2, 560, 'TEAM RELAY · PLAYER ' + seat + ' TAKES STEP ' + (gameState.step + 1), seat === 1 ? C.p1 : C.p2, 18);
+      return;
+    }
+    const step = gameState.problem.steps[gameState.step];
+    if (!step || index < 0 || index >= step.options.length) return;
+    const option = step.options[index];
+    gameState.lastPlayer = player;
+    if (!option.correct) {
+      sfx.error();
+      gameState.combo = 0;
+      gameState.shake = 1;
+      gameState.flash = 0.45;
+      gameState.flashColor = C.red;
+      gameState.cardFlash = { index: index, ok: false, until: now + 420 };
+      gameState.diagnostic = { text: option.alert, until: now + 12000 };
+      if (player === 2) gameState.p2Lock = now + 550;
+      else gameState.p1Lock = now + 550;
+      if (gameState.mode !== 'DUEL') {
+        gameState.shields -= 1;
+        if (gameState.shields <= 0) {
+          gameState.shields = 0;
+          gameState.showSolution = true;
+          gameState.phase = 'collapse';
+          gameState.celebrateUntil = now + 1200;
+        }
+      }
+      return;
+    }
+
+    gameState.inputLockUntil = now + 420;
+    gameState.combo += 1;
+    gameState.diagnostic = null;
+    gameState.cardFlash = { index: index, ok: true, until: now + 380 };
+    gameState.flash = 0.28;
+    gameState.flashColor = C.emerald;
+    const speed = speedAmount();
+    const relic = gameState.relic || { x: 1160, y: 300 };
+    if (gameState.step < 2) {
+      award(player, 100 + speed);
+      floater(relic.x, relic.y, '+' + (100 + speed), C.cyan, 20);
+      sfx.decode();
+      if (gameState.step === 0) sfx.beam();
+      burst(relic.x, relic.y, C.cyan, 22);
+      gameState.step += 1;
+      gameState.stepStartedAt = performance.now();
+      gameState.beam = gameState.step === 1 ? 0.05 : gameState.beam;
+      return;
+    }
+
+    const comboExtra = 25 * Math.max(0, gameState.combo - 1);
+    const total = 350 + comboExtra + speed;
+    award(player, total);
+    sfx.relic();
+    burst(relic.x, relic.y, C.gold, 46);
+    burst(V_W / 2, 340, C.emerald, 20);
+    floater(relic.x - 20, relic.y - 10, '+350 RELIC', C.gold, 24);
+    if (comboExtra + speed > 0) floater(relic.x - 10, relic.y + 22, '+' + (comboExtra + speed) + ' BONUS', C.cyan, 16);
+    gameState.step = 3;
+    gameState.cleared += 1;
+    gameState.phase = 'celebrate';
+    gameState.celebrateUntil = now + 1680;
+    if (gameState.mode === 'DUEL') {
+      if (player === 2) gameState.p2Stars += 1;
+      else gameState.p1Stars += 1;
+    }
+  }
+
+  function pointIn(r, x, y) {
+    return !!r && x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+  }
+
+  function handleClick(x, y) {
+    sfx.unlock();
+    if (pointIn(gameState.hit.mute, x, y)) {
+      sfx.toggle();
+      sfx.tick();
+      return;
+    }
+    if (gameState.screen === 'TITLE') {
+      const cards = gameState.hit.title;
+      for (let i = 0; i < cards.length; i++) {
+        if (pointIn(cards[i], x, y)) {
+          gameState.titleIndex = i;
+          startGame(['SOLO', 'COOP', 'DUEL'][i]);
+          return;
+        }
+      }
+      return;
+    }
+    if (pointIn(gameState.hit.menu, x, y)) {
+      goTitle();
+      sfx.tick();
+      return;
+    }
+    if (gameState.screen === 'GAMEOVER') {
+      const buttons = gameState.hit.over;
+      for (let i = 0; i < buttons.length; i++) {
+        if (pointIn(buttons[i], x, y)) {
+          if (buttons[i].id === 'retry') startGame(gameState.mode);
+          else goTitle();
+          return;
+        }
+      }
+      return;
+    }
+    if (gameState.screen !== 'PLAYING' || gameState.phase !== 'play') return;
+    if (pointIn(gameState.hit.lock, x, y)) {
+      if (gameState.mode === 'DUEL') submitChoice(gameState.p1Index, 1);
+      else if (gameState.mode === 'COOP') {
+        const seat = activePlayer();
+        if (seat === 2) submitChoice(gameState.p2Index, 2);
+        else submitChoice(gameState.p1Index, 1);
+      } else submitChoice(gameState.p1Index, 1);
+      return;
+    }
+    const cards = gameState.hit.cards;
+    for (let i = 0; i < cards.length; i++) {
+      if (pointIn(cards[i], x, y)) {
+        if (gameState.mode === 'DUEL') submitChoice(i, 1);
+        else if (gameState.mode === 'COOP') {
+          const seat = activePlayer();
+          submitChoice(i, seat === 2 ? 2 : 1);
+        } else submitChoice(i, 1);
+        return;
+      }
+    }
+  }
+
+  function moveIndex(player, dir) {
+    if (gameState.screen === 'TITLE') {
+      gameState.titleIndex = (gameState.titleIndex + dir + 3) % 3;
+      sfx.tick();
+      return;
+    }
+    if (gameState.screen === 'GAMEOVER') {
+      gameState.overIndex = (gameState.overIndex + dir + 2) % 2;
+      sfx.tick();
+      return;
+    }
+    if (gameState.screen !== 'PLAYING' || gameState.phase !== 'play') return;
+    const key = player === 2 ? 'p2Index' : 'p1Index';
+    gameState[key] = (gameState[key] + dir + 4) % 4;
+    sfx.tick();
+  }
+
+  function confirmPlayer(player) {
+    sfx.unlock();
+    if (gameState.screen === 'TITLE') {
+      startGame(['SOLO', 'COOP', 'DUEL'][gameState.titleIndex]);
+      return;
+    }
+    if (gameState.screen === 'GAMEOVER') {
+      if (gameState.overIndex === 0) startGame(gameState.mode);
+      else goTitle();
+      return;
+    }
+    if (player === 2) submitChoice(gameState.p2Index, 2);
+    else submitChoice(gameState.p1Index, 1);
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    const key = e.key;
+    const solo = gameState.mode === 'SOLO' || gameState.screen !== 'PLAYING';
+    if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(key) !== -1) e.preventDefault();
+    if (key === 'm' || key === 'M') {
+      sfx.toggle();
+      return;
+    }
+    if (key === 'Escape') {
+      goTitle();
+      return;
+    }
+    if (gameState.screen === 'TITLE' || gameState.screen === 'GAMEOVER') {
+      if (key === 'ArrowLeft' || key === 'a' || key === 'A') moveIndex(1, -1);
+      else if (key === 'ArrowRight' || key === 'd' || key === 'D') moveIndex(1, 1);
+      else if (key === 'ArrowUp' || key === 'w' || key === 'W') moveIndex(1, -1);
+      else if (key === 'ArrowDown' || key === 's' || key === 'S') moveIndex(1, 1);
+      else if (key === 'Enter' || key === ' ' || key === 'f' || key === 'F') confirmPlayer(1);
+      return;
+    }
+    if (solo && gameState.mode === 'SOLO') {
+      if (key === 'ArrowLeft' || key === 'a' || key === 'A') moveIndex(1, -1);
+      else if (key === 'ArrowRight' || key === 'd' || key === 'D') moveIndex(1, 1);
+      else if (key === 'Enter' || key === ' ' || key === 'f' || key === 'F') confirmPlayer(1);
+      else if (key === '1' || key === '2' || key === '3' || key === '4') submitChoice(Number(key) - 1, 1);
+      return;
+    }
+    if (key === 'a' || key === 'A') moveIndex(1, -1);
+    else if (key === 'd' || key === 'D') moveIndex(1, 1);
+    else if (key === 'f' || key === 'F' || key === ' ') confirmPlayer(1);
+    if (key === 'ArrowLeft') moveIndex(2, -1);
+    else if (key === 'ArrowRight') moveIndex(2, 1);
+    else if (key === 'Enter') confirmPlayer(2);
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const p = screenToVirtual(e.clientX, e.clientY);
+    gameState.mouse.x = p.x;
+    gameState.mouse.y = p.y;
+    gameState.mouse.on = true;
+    if (gameState.screen === 'TITLE') {
+      const cards = gameState.hit.title;
+      for (let i = 0; i < cards.length; i++) {
+        if (pointIn(cards[i], p.x, p.y)) gameState.titleIndex = i;
+      }
+    } else if (gameState.screen === 'PLAYING' && gameState.phase === 'play') {
+      const cards = gameState.hit.cards;
+      for (let i = 0; i < cards.length; i++) {
+        if (!pointIn(cards[i], p.x, p.y)) continue;
+        if (gameState.mode === 'DUEL') gameState.p1Index = i;
+        else if (gameState.mode === 'COOP' && activePlayer() === 2) gameState.p2Index = i;
+        else gameState.p1Index = i;
+      }
+    }
+  });
+  canvas.addEventListener('mouseleave', () => { gameState.mouse.on = false; });
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const p = screenToVirtual(e.clientX, e.clientY);
+    handleClick(p.x, p.y);
+  });
+  canvas.addEventListener('touchstart', (e) => {
+    if (!e.changedTouches || !e.changedTouches[0]) return;
+    const t = e.changedTouches[0];
+    const p = screenToVirtual(t.clientX, t.clientY);
+    gameState.mouse.x = p.x;
+    gameState.mouse.y = p.y;
+    gameState.mouse.on = true;
+    handleClick(p.x, p.y);
+    e.preventDefault();
+  }, { passive: false });
+
+  const padPrev = [
+    { left: false, right: false, up: false, down: false, a: false },
+    { left: false, right: false, up: false, down: false, a: false }
+  ];
+
+  function padButton(gp, index) {
+    const b = gp.buttons[index];
+    if (!b) return false;
+    return !!(b.pressed || b.value > 0.5);
+  }
+
+  function pollGamepads() {
+    const nav = navigator.getGamepads ? navigator.getGamepads() : null;
+    if (!nav) return;
+    for (let p = 0; p < 2; p++) {
+      const gp = nav[p];
+      if (!gp || !gp.connected) continue;
+      const axisX = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+      const axisY = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+      const left = padButton(gp, 14) || axisX < -0.55;
+      const right = padButton(gp, 15) || axisX > 0.55;
+      const up = padButton(gp, 12) || axisY < -0.55;
+      const down = padButton(gp, 13) || axisY > 0.55;
+      const a = padButton(gp, 0);
+      const prev = padPrev[p];
+      if ((left && !prev.left) || (up && !prev.up)) {
+        sfx.unlock();
+        moveIndex(p + 1, -1);
+      }
+      if ((right && !prev.right) || (down && !prev.down)) {
+        sfx.unlock();
+        moveIndex(p + 1, 1);
+      }
+      if (a && !prev.a) {
+        sfx.unlock();
+        confirmPlayer(p + 1);
+      }
+      prev.left = left;
+      prev.right = right;
+      prev.up = up;
+      prev.down = down;
+      prev.a = a;
+    }
+  }
+
+  function update(dt, now) {
+    gameState.shake = Math.max(0, gameState.shake - dt * 2.4);
+    gameState.flash = Math.max(0, gameState.flash - dt * 1.4);
+    if (gameState.step >= 1) gameState.beam = Math.min(1, gameState.beam + dt * 1.35);
+    else gameState.beam = 0;
+    for (let i = gameState.particles.length - 1; i >= 0; i--) {
+      const p = gameState.particles[i];
+      p.age += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 30 * dt;
+      if (p.age >= p.life) gameState.particles.splice(i, 1);
+    }
+    for (let i = gameState.floaters.length - 1; i >= 0; i--) {
+      const f = gameState.floaters[i];
+      f.age += dt;
+      f.y -= 26 * dt;
+      if (f.age >= f.life) gameState.floaters.splice(i, 1);
+    }
+    if ((gameState.phase === 'celebrate' || gameState.phase === 'collapse') && now >= gameState.celebrateUntil) {
+      if (gameState.phase === 'collapse') {
+        openGameOver();
+      } else if (gameState.mode === 'DUEL' && (gameState.p1Stars >= 5 || gameState.p2Stars >= 5)) {
+        openGameOver();
+      } else {
+        gameState.roundNumber += 1;
+        loadRound();
+      }
+    }
+  }
+
+  function roundRect(x, y, w, h, r, fill, stroke, lw) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lw || 1.5;
+      ctx.stroke();
+    }
+  }
+
+  function drawGlyph(id, cx, cy, size, color) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(2, size * 0.075);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    const s = size;
+    if (id === 'triangle') {
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 0.48);
+      ctx.lineTo(s * 0.46, s * 0.36);
+      ctx.lineTo(-s * 0.46, s * 0.36);
+      ctx.closePath();
+      ctx.stroke();
+    } else if (id === 'smiley') {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(-s * 0.14, -s * 0.08, s * 0.045, 0, Math.PI * 2);
+      ctx.arc(s * 0.14, -s * 0.08, s * 0.045, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, s * 0.02, s * 0.16, 0.2 * Math.PI, 0.8 * Math.PI);
+      ctx.stroke();
+    } else if (id === 'sun') {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.2, 0, Math.PI * 2);
+      ctx.stroke();
+      for (let i = 0; i < 8; i++) {
+        const a = (Math.PI * 2 * i) / 8;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * s * 0.3, Math.sin(a) * s * 0.3);
+        ctx.lineTo(Math.cos(a) * s * 0.48, Math.sin(a) * s * 0.48);
+        ctx.stroke();
+      }
+    } else if (id === 'heart') {
+      ctx.beginPath();
+      ctx.moveTo(0, s * 0.36);
+      ctx.bezierCurveTo(-s * 0.52, s * 0.02, -s * 0.34, -s * 0.46, 0, -s * 0.14);
+      ctx.bezierCurveTo(s * 0.34, -s * 0.46, s * 0.52, s * 0.02, 0, s * 0.36);
+      ctx.stroke();
+    } else if (id === 'diamond') {
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 0.48);
+      ctx.lineTo(s * 0.34, 0);
+      ctx.lineTo(0, s * 0.48);
+      ctx.lineTo(-s * 0.34, 0);
+      ctx.closePath();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.42, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.2, -s * 0.2);
+      ctx.lineTo(s * 0.2, s * 0.2);
+      ctx.moveTo(s * 0.2, -s * 0.2);
+      ctx.lineTo(-s * 0.2, s * 0.2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function tokenWidth(token, size) {
+    if (token.kind === 'glyph') {
+      if (!token.show) return size + 14;
+      ctx.font = 'bold ' + Math.round(size * 0.4) + 'px ' + FONT;
+      return size + ctx.measureText(fmt(token.value)).width + 22;
+    }
+    ctx.font = (token.op ? 'bold ' : '700 ') + Math.round(size * 0.52) + 'px ' + FONT;
+    return ctx.measureText(token.text).width + 16;
+  }
+
+  function eqTokens(p, which, revealA, revealB, revealC) {
+    const glyph = (g, value, show, role) => ({ kind: 'glyph', glyph: g, value: value, show: show, role: role });
+    const text = (value, op) => ({ kind: 'text', text: value, op: !!op });
+    const num = (n) => text(fmt(n), false);
+    const A = () => glyph(p.glyphA, p.valueA, revealA, 'A');
+    const B = () => glyph(p.glyphB, p.valueB, revealB, 'B');
+    const C = () => glyph(p.glyphC, p.finalAnswer, revealC, 'C');
+    if (which === 'eq1') {
+      if (p.eq1.form === 'sum') {
+        const row = [];
+        for (let i = 0; i < p.eq1.count; i++) {
+          if (i) row.push(text('+', true));
+          row.push(A());
+        }
+        row.push(text('=', true));
+        row.push(num(p.eq1.total));
+        return row;
+      }
+      if (p.eq1.form === 'square') return [A(), text('×', true), A(), text('=', true), num(p.eq1.product)];
+      return [A(), text('÷', true), num(p.eq1.divisor), text('=', true), num(p.eq1.quotient)];
+    }
+    if (which === 'eq2') {
+      let row;
+      if (p.eq2.form === 'mul') row = [A(), text('×', true), num(p.eq2.factor), text('=', true), B()];
+      else if (p.eq2.form === 'div') row = [num(p.eq2.dividend), text('÷', true), A(), text('=', true), B()];
+      else if (p.eq2.form === 'div-by') row = [A(), text('÷', true), num(p.eq2.divisor), text('=', true), B()];
+      else row = [num(p.eq2.three), text('×', true), text('(', true), A(), text('×', true), num(p.eq2.k), text(')', true), text('=', true), B()];
+      return row;
+    }
+    if (!p.eq3) return [];
+    if (p.eq3.form === 'mul') return [B(), text('×', true), num(p.eq3.factor), text('=', true), C()];
+    return [B(), text('÷', true), num(p.eq3.divisor), text('=', true), C()];
+  }
+
+  function layoutRow(tokens, cx, cy, size) {
+    let total = 0;
+    for (let i = 0; i < tokens.length; i++) total += tokenWidth(tokens[i], size);
+    let x = cx - total / 2;
+    const placed = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const w = tokenWidth(tokens[i], size);
+      placed.push({ token: tokens[i], x: x, w: w, cy: cy });
+      x += w;
+    }
+    return placed;
+  }
+
+  function drawToken(token, x, cy, size) {
+    if (token.kind === 'glyph') {
+      const g = token.glyph;
+      if (token.show) {
+        ctx.font = 'bold ' + Math.round(size * 0.4) + 'px ' + FONT;
+        const tw = ctx.measureText(fmt(token.value)).width;
+        const w = size + tw + 8;
+        roundRect(x + 4, cy - size * 0.58, w, size * 1.16, 10, 'rgba(255, 209, 90, 0.1)', g.color, 1.6);
+        drawGlyph(g.id, x + size * 0.52, cy, size * 0.78, g.color);
+        ctx.fillStyle = C.gold;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold ' + Math.round(size * 0.4) + 'px ' + FONT;
+        ctx.fillText(fmt(token.value), x + size * 0.92, cy);
+      } else {
+        drawGlyph(g.id, x + (size + 14) / 2, cy, size * 0.86, g.color);
+      }
+      return;
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold ' + Math.round(size * 0.5) + 'px ' + FONT;
+    if (token.text === '×') ctx.fillStyle = C.cyan;
+    else if (token.text === '÷') ctx.fillStyle = C.magenta;
+    else if (token.text === '=') ctx.fillStyle = C.gold;
+    else ctx.fillStyle = C.text;
+    ctx.fillText(token.text, x + tokenWidth(token, size) / 2, cy);
+  }
+
+  function iconPoint(placed, size) {
+    const t = placed.token;
+    if (t.kind === 'glyph' && t.show) return { x: placed.x + size * 0.52, y: placed.cy };
+    if (t.kind === 'glyph') return { x: placed.x + (size + 14) / 2, y: placed.cy };
+    return { x: placed.x + placed.w / 2, y: placed.cy };
+  }
+
+  function drawBeam(x1, y1, x2, y2, t) {
+    const mx = (x1 + x2) / 2;
+    const my = Math.min(y1, y2) - 28;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(61, 240, 255, 0.85)';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = C.cyan;
+    ctx.shadowBlur = 12;
+    ctx.setLineDash([8, 7]);
+    ctx.lineDashOffset = -t * 80;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo(mx, my, x2, y2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBackground(time) {
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, V_W, V_H);
+    ctx.strokeStyle = 'rgba(61, 240, 255, 0.045)';
+    ctx.lineWidth = 1;
+    const grid = 48;
+    const scroll = (time * 18) % grid;
+    for (let x = -grid + scroll; x < V_W; x += grid) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x - 80, V_H);
+      ctx.stroke();
+    }
+    for (let i = 0; i < dust.length; i++) {
+      const s = dust[i];
+      const y = (s.y + time * s.sp) % V_H;
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = i % 3 === 0 ? C.magenta : C.cyan;
+      ctx.beginPath();
+      ctx.arc(s.x, y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawShieldIcon(x, y, on) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 9);
+    ctx.lineTo(x + 16, y - 9);
+    ctx.lineTo(x + 16, y + 1);
+    ctx.quadraticCurveTo(x + 8, y + 12, x, y + 1);
+    ctx.closePath();
+    ctx.fillStyle = on ? C.emerald : '#17243d';
+    ctx.fill();
+    ctx.strokeStyle = on ? '#d7ffe9' : '#31486f';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+
+  function drawMute(x, y) {
+    const rect = { x: x, y: y, w: 118, h: 34 };
+    gameState.hit.mute = rect;
+    const hot = pointIn(rect, gameState.mouse.x, gameState.mouse.y) && gameState.mouse.on;
+    roundRect(rect.x, rect.y, rect.w, rect.h, 8, sfx.muted ? '#2a1220' : '#12203a', sfx.muted ? C.magenta : (hot ? C.gold : C.cyan), 1.6);
+    ctx.fillStyle = sfx.muted ? C.magenta : C.cyan;
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(sfx.muted ? 'MUTED' : 'AUDIO ON', rect.x + rect.w / 2, rect.y + rect.h / 2);
+  }
+
+  function drawMenu(x, y) {
+    const rect = { x: x, y: y, w: 96, h: 34 };
+    gameState.hit.menu = rect;
+    const hot = pointIn(rect, gameState.mouse.x, gameState.mouse.y) && gameState.mouse.on;
+    roundRect(rect.x, rect.y, rect.w, rect.h, 8, '#12203a', hot ? C.gold : C.line, 1.5);
+    ctx.fillStyle = C.text;
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('MODES', rect.x + rect.w / 2, rect.y + rect.h / 2);
+  }
+
+  function modeName() {
+    if (gameState.mode === 'COOP') return '2P TEAM CO-OP';
+    if (gameState.mode === 'DUEL') return '2P RELIC DUEL';
+    return 'SOLO DECODER';
+  }
+
+  function drawHUD() {
+    roundRect(0, 0, V_W, UI.hud, 0, '#0b1324', '#1d3358', 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.cyan;
+    ctx.font = 'bold 16px ' + FONT;
+    ctx.fillText('GLYPH DECODER', 16, 18);
+    ctx.fillStyle = C.muted;
+    ctx.font = '600 12px ' + FONT;
+    const band = gameState.problem ? BANDS[gameState.problem.band].name : '';
+    ctx.fillText(modeName() + '   ·   ROUND ' + gameState.roundNumber + '   ·   ' + band, 16, 38);
+
+    ctx.fillStyle = C.muted;
+    ctx.font = 'bold 11px ' + FONT;
+    if (gameState.mode === 'DUEL') {
+      ctx.fillText('RACE TO 5 STARS', 430, 16);
+      ctx.fillStyle = C.text;
+      ctx.font = 'bold 16px ' + FONT;
+      ctx.fillText('FIRST LOCK WINS', 430, 38);
+    } else {
+      ctx.fillText(gameState.mode === 'COOP' ? 'TEAM SHIELDS' : 'SHIELDS', 430, 16);
+      for (let i = 0; i < gameState.maxShields; i++) drawShieldIcon(430 + i * 22, 40, i < gameState.shields);
+    }
+
+    if (gameState.mode === 'DUEL') {
+      ctx.font = 'bold 16px ' + FONT;
+      ctx.fillStyle = C.p1;
+      ctx.fillText('P1  ★ ' + gameState.p1Stars + '   ' + fmt(gameState.p1Score), 620, 28);
+      ctx.fillStyle = C.p2;
+      ctx.fillText('P2  ★ ' + gameState.p2Stars + '   ' + fmt(gameState.p2Score), 860, 28);
+    } else {
+      ctx.fillStyle = C.muted;
+      ctx.font = 'bold 11px ' + FONT;
+      ctx.fillText(gameState.mode === 'COOP' ? 'TEAM COMBO' : 'COMBO', 620, 16);
+      ctx.fillStyle = C.gold;
+      ctx.font = 'bold 18px ' + FONT;
+      ctx.fillText('×' + gameState.combo, 620, 38);
+      ctx.fillStyle = C.muted;
+      ctx.font = 'bold 11px ' + FONT;
+      ctx.fillText(gameState.mode === 'COOP' ? 'TEAM SCORE' : 'CRYPTOGRAPHER POINTS', 760, 16);
+      ctx.fillStyle = C.text;
+      ctx.font = 'bold 20px ' + FONT;
+      ctx.fillText(fmt(gameState.score), 760, 38);
+    }
+    drawMenu(1052, 10);
+    drawMute(1156, 10);
+  }
+
+  function wrapText(text, maxWidth, font) {
+    ctx.font = font;
+    const words = String(text).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = words[i];
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawWrapped(text, x, y, maxWidth, font, color, lineH, align) {
+    const lines = wrapText(text, maxWidth, font);
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'top';
+    const drawX = align === 'center' ? x + maxWidth / 2 : x;
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], drawX, y + i * lineH);
+    return lines.length * lineH;
+  }
+
+  function missionMeta(rounding) {
+    if (rounding === 'ten') return { title: 'NEAREST TEN', detail: 'Look at the ones digit. 5 or more rounds up.', color: C.cyan };
+    if (rounding === 'hundred') return { title: 'NEAREST HUNDRED', detail: 'Look at the tens digit. 5 or more rounds up.', color: C.gold };
+    return { title: 'EXACT VALUE', detail: 'Lock the raw glyph. Do not round.', color: C.emerald };
+  }
+
+  function drawBriefing() {
+    const p = gameState.problem;
+    const band = BANDS[p.band];
+    const mission = missionMeta(p.rounding);
+    roundRect(16, UI.briefY, V_W - 32, UI.briefH, 12, C.panel, C.line, 1.5);
+    roundRect(28, UI.briefY + 12, 230, UI.briefH - 24, 10, '#0d1830', C.cyan, 1.3);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.cyan;
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.fillText(band.label, 42, UI.briefY + 32);
+    ctx.fillStyle = C.text;
+    ctx.font = 'bold 15px ' + FONT;
+    ctx.fillText(band.name, 42, UI.briefY + 54);
+    ctx.fillStyle = C.muted;
+    ctx.font = '12px ' + FONT;
+    const blurb = (p.band === 'advanced' && p.kind === 'sum')
+      ? 'Equal groups, then round to the nearest hundred.'
+      : band.blurb;
+    const blurbLines = wrapText(blurb, 200, '12px ' + FONT);
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < blurbLines.length && i < 2; i++) ctx.fillText(blurbLines[i], 42, UI.briefY + 68 + i * 14);
+
+    const colors = [C.cyan, C.magenta, C.gold];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(268, UI.briefY + 6, 724, UI.briefH - 12);
+    ctx.clip();
+    ctx.font = '600 16px ' + FONT;
+    ctx.textBaseline = 'middle';
+    const clueTop = UI.briefY + (p.clues.length === 3 ? 28 : 38);
+    const clueGap = p.clues.length === 3 ? 26 : 32;
+    for (let i = 0; i < p.clues.length; i++) {
+      ctx.fillStyle = colors[i];
+      ctx.textAlign = 'left';
+      ctx.fillText(p.clues[i], 276, clueTop + i * clueGap);
+    }
+    ctx.restore();
+
+    roundRect(1004, UI.briefY + 14, 244, UI.briefH - 28, 10, '#12100a', mission.color, 1.6);
+    ctx.fillStyle = mission.color;
+    ctx.font = 'bold 11px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ROUNDING MISSION', 1126, UI.briefY + 34);
+    ctx.font = 'bold 16px ' + FONT;
+    ctx.fillText(mission.title, 1126, UI.briefY + 58);
+    ctx.fillStyle = C.muted;
+    ctx.font = '12px ' + FONT;
+    const detail = wrapText(mission.detail, 210, '12px ' + FONT);
+    ctx.textBaseline = 'top';
+    for (let i = 0; i < detail.length && i < 2; i++) {
+      ctx.textAlign = 'center';
+      ctx.fillText(detail[i], 1126, UI.briefY + 72 + i * 14);
+    }
+  }
+
+  function drawNumberLine(box, p, time) {
+    const mission = missionMeta(p.rounding);
+    roundRect(box.x, box.y, box.w, box.h, 10, '#0b1428', mission.color, 1.3);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 12px ' + FONT;
+    ctx.fillStyle = mission.color;
+    ctx.fillText('HOLO-NUMBER-LINE ROUNDER', box.x + 14, box.y + 16);
+    const showRaw = gameState.step >= 2 || gameState.showSolution;
+    const chainPending = !!p.eq3 && gameState.step < 3 && !gameState.showSolution;
+    if (!showRaw) {
+      ctx.fillStyle = C.muted;
+      ctx.font = '13px ' + FONT;
+      ctx.fillText('Standby — the scale wakes after both glyphs are decoded.', box.x + 280, box.y + 16);
+      ctx.strokeStyle = 'rgba(154, 175, 208, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(box.x + 24, box.y + 52);
+      ctx.lineTo(box.x + box.w - 24, box.y + 52);
+      ctx.stroke();
+      return;
+    }
+    if (chainPending) {
+      ctx.fillStyle = C.text;
+      ctx.font = '14px ' + FONT;
+      ctx.fillText('Compute Clue 3, then lock it. ' + mission.detail, box.x + 280, box.y + 16);
+      return;
+    }
+    const raw = p.valueFinalRaw;
+    ctx.fillStyle = C.text;
+    ctx.font = '13px ' + FONT;
+    ctx.fillText(mission.detail, box.x + 280, box.y + 16);
+
+    const digits = plain(raw).split('');
+    const focus = p.rounding === 'hundred' ? digits.length - 2 : p.rounding === 'ten' ? digits.length - 1 : -1;
+    let dx = box.x + 18;
+    for (let i = 0; i < digits.length; i++) {
+      const hot = i === focus;
+      roundRect(dx, box.y + 30, 22, 24, 4, hot ? 'rgba(255, 209, 90, 0.2)' : '#10192e', hot ? C.gold : C.line, 1.2);
+      ctx.fillStyle = hot ? C.gold : C.text;
+      ctx.font = 'bold 14px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(digits[i], dx + 11, box.y + 42);
+      dx += 26;
+    }
+    if (focus >= 0) {
+      ctx.textAlign = 'left';
+      ctx.fillStyle = C.gold;
+      ctx.font = '11px ' + FONT;
+      ctx.fillText(p.rounding === 'hundred' ? 'TENS DIGIT' : 'ONES DIGIT', dx + 8, box.y + 42);
+    }
+
+    if (p.rounding === 'exact') {
+      ctx.fillStyle = C.emerald;
+      ctx.font = 'bold 14px ' + FONT;
+      ctx.textAlign = 'right';
+      ctx.fillText('LOCK ' + fmt(raw), box.x + box.w - 16, box.y + 52);
+      return;
+    }
+    const place = p.rounding === 'ten' ? 10 : 100;
+    const floor = raw - (raw % place);
+    const ceil = floor + place;
+    const lo = floor - place;
+    const hi = ceil + place;
+    const x0 = box.x + 250;
+    const x1 = box.x + box.w - 24;
+    const y = box.y + 58;
+    const mapX = (v) => x0 + ((v - lo) / (hi - lo)) * (x1 - x0);
+    ctx.strokeStyle = 'rgba(247, 249, 255, 0.75)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    const ticks = [lo, floor, floor + place / 2, ceil, hi];
+    for (let i = 0; i < ticks.length; i++) {
+      const x = mapX(ticks[i]);
+      const mid = ticks[i] === floor + place / 2;
+      ctx.strokeStyle = mid ? C.magenta : C.text;
+      ctx.beginPath();
+      ctx.moveTo(x, y - (mid ? 6 : 10));
+      ctx.lineTo(x, y + (mid ? 6 : 10));
+      ctx.stroke();
+      ctx.fillStyle = mid ? C.magenta : C.muted;
+      ctx.font = '11px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(mid ? 'MID' : fmt(ticks[i]), x, y + 12);
+    }
+    const mx = mapX(raw);
+    ctx.fillStyle = C.gold;
+    ctx.beginPath();
+    ctx.arc(mx, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = 'bold 12px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(fmt(raw), mx, y - 12);
+    if (gameState.step >= 3 || gameState.showSolution) {
+      const lx = mapX(p.finalAnswer);
+      ctx.strokeStyle = C.gold;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(lx, y, 11 + Math.sin(time * 5) * 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  function drawStage(time) {
+    const p = gameState.problem;
+    const shakeX = gameState.shake > 0 ? (Math.random() - 0.5) * 8 * gameState.shake : 0;
+    const shakeY = gameState.shake > 0 ? (Math.random() - 0.5) * 5 * gameState.shake : 0;
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+    const border = gameState.step >= 3 ? C.gold : gameState.step === 2 ? C.magenta : C.cyan;
+    roundRect(16, UI.stageY, V_W - 32, UI.stageH, 14, '#0c1528', border, 2);
+    ctx.fillStyle = C.cyan;
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('HOLO-TABLET  ·  SAME SYMBOL  =  SAME VALUE', 36, UI.stageY + 20);
+    const labels = ['1 CRACK', '2 SUBSTITUTE', '3 LOCK'];
+    for (let i = 0; i < 3; i++) {
+      const on = gameState.step > i || (gameState.step === i && gameState.phase === 'play');
+      const done = gameState.step > i;
+      ctx.fillStyle = done ? C.gold : on ? C.cyan : C.muted;
+      ctx.font = 'bold 12px ' + FONT;
+      ctx.fillText(labels[i], 760 + i * 110, UI.stageY + 20);
+    }
+
+    const revealA = gameState.showSolution || gameState.step >= 1;
+    const revealB = gameState.showSolution || gameState.step >= 2;
+    const revealC = gameState.showSolution || gameState.step >= 3;
+    const rows = p.eq3 ? ['eq1', 'eq2', 'eq3'] : ['eq1', 'eq2'];
+    const size = p.eq3 ? 34 : 48;
+    const numY = UI.stageY + UI.stageH - 96;
+    const top = UI.stageY + 40;
+    const bottom = numY - 8;
+    const coreX = 1048;
+    const eqCx = 20 + (coreX - 36) / 2;
+    const anchors = { from: [], to: [] };
+    const placedRows = rows.map((which, idx) => {
+      const cy = top + ((bottom - top) / rows.length) * (idx + 0.5);
+      const tokens = eqTokens(p, which, revealA, revealB, revealC);
+      return { which: which, placed: layoutRow(tokens, eqCx, cy, size), cy: cy };
+    });
+
+    if (revealA && gameState.beam > 0) {
+      placedRows.forEach((row) => {
+        row.placed.forEach((item) => {
+          if (item.token.kind !== 'glyph' || item.token.role !== 'A') return;
+          const pt = iconPoint(item, size);
+          if (row.which === 'eq1' && anchors.from.length === 0) anchors.from.push(pt);
+          if (row.which === 'eq2') anchors.to.push(pt);
+        });
+      });
+      if (anchors.from.length && anchors.to.length) {
+        anchors.to.forEach((pt) => drawBeam(anchors.from[0].x, anchors.from[0].y, pt.x, pt.y, time));
+      }
+    }
+
+    placedRows.forEach((row) => {
+      ctx.fillStyle = 'rgba(61, 240, 255, 0.08)';
+      roundRect(36, row.cy - (p.eq3 ? 28 : 40), coreX - 56, p.eq3 ? 56 : 80, 10, 'rgba(8, 16, 32, 0.55)', null);
+      row.placed.forEach((item) => drawToken(item.token, item.x, item.cy, size));
+    });
+
+    const coreY = top + 8;
+    const coreH = bottom - top - 8;
+    roundRect(coreX, coreY, 196, coreH, 16, '#08111f', gameState.step >= 3 ? C.gold : C.line, 1.8);
+    const cx = coreX + 98;
+    const cy = coreY + coreH * 0.42;
+    gameState.relic = { x: cx, y: cy };
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.strokeStyle = gameState.step >= 3 ? C.gold : C.cyan;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = gameState.step >= 3 ? C.gold : C.cyan;
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.arc(0, 0, 46 + Math.sin(time * 3) * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, 30, time * 0.8, time * 0.8 + Math.PI * (0.4 + Math.min(gameState.step, 3) * 0.45));
+    ctx.stroke();
+    ctx.restore();
+    let coreLabel = 'RELIC CORE';
+    let coreValue = '???';
+    let coreColor = C.muted;
+    if (gameState.step >= 3 || gameState.showSolution) {
+      coreLabel = 'LOCKED CODE';
+      coreValue = fmt(p.finalAnswer);
+      coreColor = C.gold;
+    } else if (gameState.step >= 2) {
+      coreLabel = p.eq3 ? p.glyphB.name.toUpperCase() : 'RAW VALUE';
+      coreValue = fmt(p.valueB);
+      coreColor = C.magenta;
+    } else if (gameState.step >= 1) {
+      coreLabel = p.glyphA.name.toUpperCase();
+      coreValue = fmt(p.valueA);
+      coreColor = C.cyan;
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = coreColor;
+    ctx.font = 'bold 11px ' + FONT;
+    ctx.fillText(coreLabel, cx, cy + 62);
+    ctx.font = 'bold 22px ' + FONT;
+    ctx.fillStyle = C.text;
+    ctx.fillText(coreValue, cx, cy + 86);
+    ctx.restore();
+
+    drawNumberLine({ x: 32, y: UI.stageY + UI.stageH - 90, w: V_W - 64, h: 78 }, p, time);
+  }
+
+  function roleLine() {
+    if (gameState.mode === 'DUEL') return 'Head-to-head. Fastest correct lock takes the step.';
+    if (gameState.mode !== 'COOP') return 'Decode the glyph, substitute it, then lock the relic code.';
+    const seat = activePlayer();
+    if (gameState.step === 0) return 'PLAYER ' + seat + ' cracks the first glyph. Roles swap next round.';
+    if (gameState.step === 1) return 'PLAYER ' + seat + ' substitutes and computes the second glyph.';
+    return 'BOTH PLAYERS may lock Step 3. Either correct lock scores for the team.';
+  }
+
+  function drawDeck() {
+    const p = gameState.problem;
+    const stepIndex = Math.min(gameState.step, 2);
+    const step = p.steps[stepIndex];
+    const prompt = gameState.step >= 3 ? 'RELIC UNLOCKED  ·  +350 CRYPTOGRAPHER POINTS' : step.prompt;
+    ctx.textBaseline = 'top';
+    drawWrapped(prompt, 24, UI.deckY + 4, V_W - 48, 'bold 15px ' + FONT, gameState.step >= 3 ? C.gold : C.text, 16, 'left');
+
+    const infoY = UI.deckY + 38;
+    if (gameState.diagnostic && performance.now() < gameState.diagnostic.until && gameState.step < 3) {
+      roundRect(20, infoY, V_W - 40, 40, 8, '#2a1018', C.red, 1.4);
+      drawWrapped(gameState.diagnostic.text, 32, infoY + 5, V_W - 64, '13px ' + FONT, '#ffd0d6', 15, 'left');
+    } else {
+      ctx.fillStyle = C.muted;
+      ctx.font = '13px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(roleLine(), 24, infoY + 18);
+    }
+
+    const cardY = UI.deckY + 84;
+    const cardH = 82;
+    const cardW = 292;
+    const gap = 12;
+    const total = cardW * 4 + gap * 3;
+    const startX = (V_W - total) / 2;
+    gameState.hit.cards = [];
+    gameState.hoverCard = -1;
+    const options = step.options;
+    for (let i = 0; i < 4; i++) {
+      const x = startX + i * (cardW + gap);
+      const rect = { x: x, y: cardY, w: cardW, h: cardH };
+      gameState.hit.cards.push(rect);
+      const hovered = gameState.mouse.on && pointIn(rect, gameState.mouse.x, gameState.mouse.y);
+      if (hovered) gameState.hoverCard = i;
+      const flash = gameState.cardFlash && gameState.cardFlash.index === i && performance.now() < gameState.cardFlash.until ? gameState.cardFlash : null;
+      const showCorrect = gameState.showSolution && options[i].correct;
+      let fill = C.card;
+      let stroke = C.line;
+      if (hovered && gameState.phase === 'play') { fill = C.cardHot; stroke = C.cyan; }
+      if (flash && flash.ok) { fill = '#123528'; stroke = C.emerald; }
+      if (flash && !flash.ok) { fill = '#3a1420'; stroke = C.red; }
+      if (showCorrect) { fill = '#123528'; stroke = C.emerald; }
+      if (gameState.phase === 'play' && i === gameState.p1Index && (gameState.mode !== 'COOP' || activePlayer() !== 2)) {
+        stroke = C.p1;
+      }
+      roundRect(x, cardY, cardW, cardH, 12, fill, stroke, 2);
+      if (gameState.mode !== 'SOLO' && i === gameState.p2Index) {
+        ctx.strokeStyle = C.p2;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 4, cardY + 4, cardW - 8, cardH - 8);
+      }
+      ctx.fillStyle = C.muted;
+      ctx.font = 'bold 11px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(gameState.mode === 'SOLO' ? String(i + 1) : 'CARD ' + (i + 1), x + 12, cardY + 16);
+      ctx.fillStyle = C.text;
+      ctx.font = 'bold 28px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.fillText(fmt(options[i].value), x + cardW / 2, cardY + 50);
+    }
+
+    const lock = { x: (V_W - 280) / 2, y: UI.deckY + 174, w: 280, h: 32 };
+    gameState.hit.lock = lock;
+    const hot = gameState.mouse.on && pointIn(lock, gameState.mouse.x, gameState.mouse.y);
+    const label = gameState.step >= 3 ? 'RELIC OPEN' : gameState.step === 2 ? 'LOCK RELIC CODE' : gameState.step === 1 ? 'SUBSTITUTE' : 'CRACK GLYPH';
+    roundRect(lock.x, lock.y, lock.w, lock.h, 8, hot ? '#243864' : '#15284a', hot ? C.gold : C.cyan, 1.6);
+    ctx.fillStyle = C.text;
+    ctx.font = 'bold 14px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, lock.x + lock.w / 2, lock.y + lock.h / 2);
+  }
+
+  function drawReticles() {
+    if (gameState.mouse.on) {
+      const x = gameState.mouse.x;
+      const y = gameState.mouse.y;
+      ctx.strokeStyle = gameState.mode === 'DUEL' ? C.p1 : C.cyan;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(x, y, 9, 0, Math.PI * 2);
+      ctx.moveTo(x - 14, y);
+      ctx.lineTo(x - 4, y);
+      ctx.moveTo(x + 4, y);
+      ctx.lineTo(x + 14, y);
+      ctx.moveTo(x, y - 14);
+      ctx.lineTo(x, y - 4);
+      ctx.moveTo(x, y + 4);
+      ctx.lineTo(x, y + 14);
+      ctx.stroke();
+    }
+  }
+
+  function drawFloaters() {
+    for (let i = 0; i < gameState.floaters.length; i++) {
+      const f = gameState.floaters[i];
+      ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+      ctx.fillStyle = f.color;
+      ctx.font = 'bold ' + f.size + 'px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < gameState.particles.length; i++) {
+      const p = gameState.particles[i];
+      ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawTitle(time) {
+    gameState.hit.menu = null;
+    drawMute(1156, 16);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.gold;
+    ctx.font = 'bold 13px ' + FONT;
+    ctx.fillText('SINGAPORE PRIMARY 4–5   ·   PICTORIAL ALGEBRA & WHOLE NUMBERS', V_W / 2, 48);
+    ctx.fillStyle = C.cyan;
+    ctx.font = 'bold 54px ' + FONT;
+    ctx.fillText('GLYPH DECODER', V_W / 2, 100);
+    ctx.fillStyle = C.text;
+    ctx.font = '600 20px ' + FONT;
+    ctx.fillText('Relic Equation Lab', V_W / 2, 142);
+    ctx.fillStyle = C.muted;
+    ctx.font = '15px ' + FONT;
+    ctx.fillText('Same symbol, same value. Twin factors. Inverse division. Nearest ten or hundred.', V_W / 2, 172);
+
+    const modes = [
+      { title: 'SOLO MODE', lines: ['Mouse, keyboard, or one 8BitDo.', 'Click a card, or move with WASD / arrows.', 'Space, Enter, or Button A locks it.'] },
+      { title: 'TEAM CO-OP', lines: ['One team score. Shared shields.', 'P1: WASD + F / Space, or Pad 1.', 'P2: Arrows + Enter, or Pad 2.', 'Roles swap every round.'] },
+      { title: 'RELIC DUEL', lines: ['Same tablet. First correct lock wins.', 'Speed bonus for a fast answer.', 'Step 3 awards a winner star.', 'First to 5 stars takes the relic.'] }
+    ];
+    const w = 360;
+    const h = 196;
+    const gap = 24;
+    const total = modes.length * w + (modes.length - 1) * gap;
+    const x0 = (V_W - total) / 2;
+    const y = 204;
+    gameState.hit.title = [];
+    for (let i = 0; i < modes.length; i++) {
+      const x = x0 + i * (w + gap);
+      const rect = { x: x, y: y, w: w, h: h };
+      gameState.hit.title.push(rect);
+      const selected = i === gameState.titleIndex;
+      const hot = gameState.mouse.on && pointIn(rect, gameState.mouse.x, gameState.mouse.y);
+      roundRect(x, y, w, h, 14, selected || hot ? '#142848' : C.panel, selected ? C.gold : (hot ? C.cyan : C.line), selected ? 2.4 : 1.5);
+      ctx.fillStyle = selected ? C.gold : C.cyan;
+      ctx.font = 'bold 22px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.fillText(modes[i].title, x + w / 2, y + 36);
+      ctx.fillStyle = C.text;
+      ctx.font = '14px ' + FONT;
+      ctx.textAlign = 'left';
+      for (let L = 0; L < modes[i].lines.length; L++) {
+        ctx.fillText(modes[i].lines[L], x + 28, y + 78 + L * 24);
+      }
+    }
+
+    roundRect(40, 424, V_W - 80, 230, 14, '#0c1528', C.line, 1.4);
+    ctx.fillStyle = C.gold;
+    ctx.font = 'bold 14px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.fillText('HOW A ROUND WORKS', 64, 452);
+    const how = [
+      'Step 1 — Crack the first glyph. Repeated sums are equal groups. A twin product means a number times itself, not half.',
+      'Step 2 — Substitute that value into the second equation and compute the exact raw value.',
+      'Step 3 — Lock the relic. Exact missions stay exact. Rounding missions use the holo number line: tens digit for hundreds, ones digit for tens.',
+      'A wrong card is a known mistake. Read the diagnostic, lose 1 shield in solo or co-op, and try the step again.'
+    ];
+    ctx.fillStyle = C.text;
+    ctx.font = '15px ' + FONT;
+    for (let i = 0; i < how.length; i++) ctx.fillText(how[i], 64, 484 + i * 28);
+    ctx.fillStyle = C.muted;
+    ctx.font = '13px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.fillText('Enter starts the highlighted bay    ·    M mutes    ·    8BitDo: D-pad moves, Button A confirms', V_W / 2, 686);
+    drawGlyph('triangle', 180, 108, 36, C.cyan);
+    drawGlyph('sun', 1100, 108, 36, '#ffb020');
+    drawGlyph('heart', 150, 150, 28, C.magenta);
+    drawGlyph('diamond', 1130, 150, 28, C.cyan);
+    if (Math.sin(time * 2) > 0) {
+      ctx.fillStyle = C.gold;
+      ctx.font = '12px ' + FONT;
+      ctx.fillText('▲', x0 + gameState.titleIndex * (w + gap) + w / 2, y - 12);
+    }
+  }
+
+  function drawGameOver() {
+    ctx.fillStyle = 'rgba(5, 8, 16, 0.72)';
+    ctx.fillRect(0, 0, V_W, V_H);
+    roundRect(340, 150, 600, 420, 18, '#10192e', C.gold, 2);
+    const duelWin = gameState.mode === 'DUEL' && (gameState.p1Stars >= 5 || gameState.p2Stars >= 5);
+    const p2won = gameState.p2Stars > gameState.p1Stars;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = C.gold;
+    ctx.font = 'bold 28px ' + FONT;
+    ctx.fillText(duelWin ? 'RELIC CLAIMED' : 'RELIC STAYS SEALED', V_W / 2, 200);
+    ctx.fillStyle = C.text;
+    ctx.font = '18px ' + FONT;
+    if (gameState.mode === 'DUEL') {
+      ctx.fillText(duelWin ? ('Player ' + (p2won ? '2' : '1') + ' reaches 5 stars') : 'Duel ended', V_W / 2, 246);
+      ctx.fillStyle = C.p1;
+      ctx.fillText('P1  ★ ' + gameState.p1Stars + '    ' + fmt(gameState.p1Score) + ' pts', V_W / 2, 292);
+      ctx.fillStyle = C.p2;
+      ctx.fillText('P2  ★ ' + gameState.p2Stars + '    ' + fmt(gameState.p2Score) + ' pts', V_W / 2, 326);
+    } else {
+      ctx.fillText(gameState.mode === 'COOP' ? 'Team cryptographer points' : 'Cryptographer points', V_W / 2, 250);
+      ctx.fillStyle = C.gold;
+      ctx.font = 'bold 36px ' + FONT;
+      ctx.fillText(fmt(gameState.score), V_W / 2, 300);
+      ctx.fillStyle = C.muted;
+      ctx.font = '16px ' + FONT;
+      ctx.fillText('Relics unlocked: ' + gameState.cleared + '    ·    Round reached: ' + gameState.roundNumber, V_W / 2, 346);
+    }
+    if (gameState.problem) {
+      ctx.fillStyle = C.cyan;
+      ctx.font = '15px ' + FONT;
+      ctx.fillText('Last locked code: ' + fmt(gameState.problem.finalAnswer), V_W / 2, 388);
+    }
+    const buttons = [
+      { id: 'retry', label: 'PLAY AGAIN' },
+      { id: 'menu', label: 'MAIN MENU' }
+    ];
+    gameState.hit.over = [];
+    for (let i = 0; i < buttons.length; i++) {
+      const rect = { x: 430 + i * 220, y: 470, w: 190, h: 48, id: buttons[i].id };
+      gameState.hit.over.push(rect);
+      const on = gameState.overIndex === i;
+      roundRect(rect.x, rect.y, rect.w, rect.h, 10, on ? '#243864' : '#15233d', on ? C.gold : C.line, 1.8);
+      ctx.fillStyle = C.text;
+      ctx.font = 'bold 16px ' + FONT;
+      ctx.fillText(buttons[i].label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+    }
+  }
+
+  function draw(time) {
+    applyTransform();
+    gameState.hit.cards = [];
+    gameState.hit.title = [];
+    gameState.hit.over = [];
+    drawBackground(time);
+    if (gameState.screen === 'TITLE') {
+      drawTitle(time);
+      drawReticles();
+      return;
+    }
+    drawHUD();
+    if (gameState.problem) {
+      drawBriefing();
+      drawStage(time);
+      drawDeck();
+    }
+    drawFloaters();
+    if (gameState.flash > 0) {
+      ctx.fillStyle = gameState.flashColor;
+      ctx.globalAlpha = gameState.flash * 0.18;
+      ctx.fillRect(0, 0, V_W, V_H);
+      ctx.globalAlpha = 1;
+    }
+    if (gameState.screen === 'GAMEOVER') drawGameOver();
+    drawReticles();
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt, now);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#05070f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    draw(now / 1000);
+    pollGamepads();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

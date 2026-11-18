@@ -1,0 +1,2676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Alchemy Balance: Potion Symbol Foundry</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070b16;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: "Segoe UI", "Trebuchet MS", system-ui, sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    cursor: none;
+    touch-action: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript { color: #e8f7ff; padding: 24px; display: block; }
+</style>
+</head>
+<body>
+<noscript>JavaScript and HTML5 Canvas are required for Alchemy Balance.</noscript>
+<canvas id="game" aria-label="Alchemy Balance: Potion Symbol Foundry. Singapore Primary 4 and 5 pictorial algebra. Solo uses the mouse, WASD or arrows, and 8BitDo. Co-op and duel add a second pad or the arrow keys."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+(() => {
+  /* Alchemy Balance: Potion Symbol Foundry
+     Singapore Primary 4–5 · pictorial algebra and multi-step whole numbers.
+     Equal-pan scales, twin-factor crystals, inverse-division flasks, rounding beakers.
+     Solo / team co-op / duel · mouse · split keyboard · dual 8BitDo · Web Audio. */
+
+  const VW = 1280;
+  const VH = 720;
+  const COL = {
+    bg: '#070b16',
+    ink: '#eaf4ff',
+    dim: '#8aa4c0',
+    muted: '#5d7590',
+    cyan: '#39f3ff',
+    magenta: '#ff4ad8',
+    gold: '#ffd56a',
+    emerald: '#3dff9a',
+    danger: '#ff3b5c',
+    panel: 'rgba(8, 14, 28, 0.92)',
+    card: '#10192c',
+    line: '#1c3a55',
+    p1: '#ff5a6e',
+    p2: '#3aa8ff'
+  };
+  const RUNE_COLOR = {
+    triangle: '#39f3ff',
+    smiley: '#ffd56a',
+    sun: '#ffb020',
+    heart: '#ff4ad8',
+    diamond: '#3dff9a',
+    cross: '#9eb6ff'
+  };
+  const RUNES = [
+    { id: 'triangle', name: 'Triangle', glyph: '△' },
+    { id: 'smiley', name: 'Smiley', glyph: '☺' },
+    { id: 'sun', name: 'Sun', glyph: '☀' },
+    { id: 'heart', name: 'Heart', glyph: '♥' },
+    { id: 'diamond', name: 'Diamond', glyph: '◆' },
+    { id: 'cross', name: 'Cross', glyph: '✕' }
+  ];
+  const GEO = {
+    hud: { x: 12, y: 8, w: 1256, h: 52 },
+    brief: { x: 16, y: 68, w: 1248, h: 78 },
+    stage: { x: 16, y: 154, w: 1248, h: 280 },
+    status: { x: 16, y: 442, w: 1248, h: 98 },
+    deckY: 548,
+    cardH: 112
+  };
+  const UI = {
+    mute: { x: 1164, y: 14, w: 96, h: 40 },
+    cards: [],
+    lock: { x: 1032, y: 548, w: 228, h: 112 },
+    titleBtns: [],
+    overBtn: { x: 440, y: 508, w: 400, h: 64 }
+  };
+  for (let i = 0; i < 4; i++) UI.cards.push({ x: 20 + i * 253, y: 548, w: 243, h: 112 });
+  for (let i = 0; i < 3; i++) UI.titleBtns.push({ x: 76 + i * 384, y: 468, w: 360, h: 132 });
+
+  const PAD = { A: 0, B: 1, START: 9, START_ALT: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
+  const AXIS_DEAD = 0.5;
+  const HAT_STEP = 2 / 7;
+  const HAT_NAME = ['up', 'up-right', 'right', 'down-right', 'down', 'down-left', 'left', 'up-left'];
+  const hatIdle = {};
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const live = document.getElementById('live');
+  const view = { dpr: 1, scale: 1, ox: 0, oy: 0 };
+  const pointer = { x: VW / 2, y: VH / 2, inside: false };
+  const history = [];
+  const particles = [];
+  const dust = Array.from({ length: 48 }, () => ({
+    x: Math.random() * VW,
+    y: Math.random() * VH,
+    r: 0.6 + Math.random() * 1.8,
+    s: 10 + Math.random() * 22,
+    p: Math.random() * Math.PI * 2
+  }));
+  const bubbles = Array.from({ length: 16 }, () => ({
+    u: Math.random(),
+    v: Math.random(),
+    r: 2 + Math.random() * 5,
+    sp: 0.12 + Math.random() * 0.28
+  }));
+
+  const state = {
+    screen: 'title',
+    mode: 'solo',
+    titleIndex: 0,
+    round: 1,
+    score: 0,
+    combo: 0,
+    shields: 4,
+    duel: freshDuel(),
+    problem: null,
+    step: 0,
+    phase: 'input',
+    phaseT: 0,
+    alert: null,
+    note: '',
+    celebrate: '',
+    scaleSolved: false,
+    cauldronSolved: false,
+    beakerSolved: false,
+    ready: [null, null],
+    hoverCard: -1,
+    goodCard: -1,
+    badCard: -1,
+    badT: 0,
+    shake: 0,
+    time: 0,
+    stepStart: 0,
+    lastGain: 0,
+    vis: { scale: 0, cauldron: 0, beaker: 0 },
+    padNote: '8BitDo: press any button to wake · D-pad moves · A confirms'
+  };
+
+  const pads = [0, 1].map(() => ({
+    focus: 0,
+    hold: { dir: 0, t: 0, n: 0 },
+    prev: { a: false, start: false },
+    seen: false
+  }));
+  const axisRest = {};
+
+  function freshDuel() {
+    return [
+      { score: 0, shields: 4, stars: 0, combo: 0 },
+      { score: 0, shields: 4, stars: 0, combo: 0 }
+    ];
+  }
+
+  /* ---------- utils ---------- */
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+  function runeById(id) {
+    for (let i = 0; i < RUNES.length; i++) if (RUNES[i].id === id) return RUNES[i];
+    return RUNES[0];
+  }
+  function otherRune(id) {
+    return pick(RUNES.filter((r) => r.id !== id));
+  }
+  function fmt(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '—';
+    if (!Number.isInteger(n)) {
+      return n.toLocaleString('en-SG', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    }
+    return n.toLocaleString('en-SG');
+  }
+  function plain(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return '';
+    if (Number.isInteger(n)) return String(n);
+    return String(Math.round(n * 10) / 10);
+  }
+  function digitAt(n, place) { return Math.floor(Math.abs(n) / place) % 10; }
+  function roundNearest(n, place) {
+    const rem = n % place;
+    const base = n - rem;
+    if (rem * 2 >= place) return base + place;
+    return base;
+  }
+  function applyRound(n, rounding) {
+    if (rounding === 'ten') return roundNearest(n, 10);
+    if (rounding === 'hundred') return roundNearest(n, 100);
+    return n;
+  }
+  function roundingOk(raw, rounding) {
+    if (!isFinite(raw) || raw <= 0) return false;
+    const r10 = roundNearest(raw, 10);
+    const r100 = roundNearest(raw, 100);
+    if (rounding === 'exact') return true;
+    if (rounding === 'hundred') return r100 !== raw && r10 !== r100 && r10 !== raw;
+    if (rounding === 'ten') return r10 !== raw && r10 !== r100;
+    return false;
+  }
+  function trapNumber(n) {
+    if (typeof n !== 'number' || !isFinite(n)) return null;
+    if (Math.abs(n - Math.round(n)) < 1e-6) return Math.round(n);
+    const half = Math.round(n * 2) / 2;
+    if (Math.abs(n - half) < 1e-6) return half;
+    return Math.round(n);
+  }
+  function hit(r, x, y) {
+    return x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+  }
+  function announce(msg) {
+    live.textContent = msg;
+  }
+  function remember(key) {
+    history.push(key);
+    while (history.length > 6) history.shift();
+  }
+  function tierMeta(round) {
+    if (round <= 2) return { tier: 'warmup', tierLabel: 'WARM-UP · EXACT BREW', tierShort: 'WARM-UP' };
+    if (round <= 4) return { tier: 'intermediate', tierLabel: 'INTERMEDIATE · TWIN CRYSTALS', tierShort: 'TWIN' };
+    if (round <= 6) return { tier: 'advanced', tierLabel: 'ADVANCED · NEAREST HUNDRED', tierShort: 'HUNDRED' };
+    return { tier: 'master', tierLabel: 'MASTER ALCHEMIST', tierShort: 'MASTER' };
+  }
+  function missionLabel(rounding) {
+    if (rounding === 'ten') return 'NEAREST TEN';
+    if (rounding === 'hundred') return 'NEAREST HUNDRED';
+    return 'EXACT VOLUME';
+  }
+  function missionBlurb(rounding) {
+    if (rounding === 'ten') return 'Decant to the nearest 10 mL';
+    if (rounding === 'hundred') return 'Decant to the nearest 100 mL';
+    return 'Cork the exact elixir';
+  }
+
+  /* ---------- alerts ---------- */
+  function hundredForgetAlert(raw, final) {
+    const tens = digitAt(raw, 10);
+    const up = tens >= 5;
+    return 'Check the recipe beaker! Round your final volume (' + plain(raw) + ') to the nearest hundred -> look at the tens digit (' + tens + (up ? ' ≥ 5' : ' < 5') + '), so it rounds ' + (up ? 'up' : 'down') + ' to ' + plain(final) + '!';
+  }
+  function tenVsHundredAlert(raw, final) {
+    const tens = digitAt(raw, 10);
+    const up = tens >= 5;
+    return 'Decant to the nearest HUNDRED beaker, not nearest ten! In ' + plain(raw) + ', the tens digit is ' + tens + (up ? ' (≥ 5)' : ' (< 5)') + ', so it rounds ' + (up ? 'up' : 'down') + ' to ' + plain(final) + '!';
+  }
+  function tenForgetAlert(raw, final) {
+    const ones = digitAt(raw, 1);
+    const up = ones >= 5;
+    return 'Check the recipe beaker! Round your final volume (' + plain(raw) + ') to the nearest ten -> look at the ones digit (' + ones + (up ? ' ≥ 5' : ' < 5') + '), so it rounds ' + (up ? 'up' : 'down') + ' to ' + plain(final) + '!';
+  }
+  function hundredVsTenAlert(raw, final) {
+    const ones = digitAt(raw, 1);
+    const up = ones >= 5;
+    return 'Decant to the nearest TEN beaker, not nearest hundred! In ' + plain(raw) + ', the ones digit is ' + ones + (up ? ' (≥ 5)' : ' (< 5)') + ', so it rounds ' + (up ? 'up' : 'down') + ' to ' + plain(final) + '!';
+  }
+  function exactAlert(source) {
+    return 'This recipe corks the EXACT volume. Seal ' + plain(source) + ' mL — do not round it to a nearby ten or hundred.';
+  }
+  function twinHalfAlert(glyph, root, square, half) {
+    return 'Look at the × symbol between the twin crystals! Both ' + glyph + ' runes must be the SAME number multiplied by itself: ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + ', not ' + plain(half) + ' × ' + plain(half) + '!';
+  }
+  function inverseDivAlert(name, d, q, product) {
+    return 'Since ' + name + ' divided into ' + d + ' flasks gives ' + plain(q) + ' each, multiply back to find the total: ' + name + ' = ' + plain(q) + ' × ' + d + ' = ' + plain(product) + '!';
+  }
+  function otherWay(n, place, final) {
+    const rem = n % place;
+    if (rem === 0) return null;
+    const base = n - rem;
+    const other = final === base + place ? base : base + place;
+    if (other === final || other === n || other <= 0) return null;
+    return other;
+  }
+
+  /* ---------- choice builder ---------- */
+  function uniqueChoices(correct, traps) {
+    const answer = trapNumber(correct);
+    if (answer == null) return null;
+    const chosen = [];
+    const seen = new Set([String(answer)]);
+    for (let i = 0; i < traps.length; i++) {
+      const v = trapNumber(traps[i].value);
+      if (v == null || v <= 0 || seen.has(String(v))) continue;
+      seen.add(String(v));
+      chosen.push({ value: v, kind: traps[i].kind, alert: traps[i].alert });
+      if (chosen.length === 3) break;
+    }
+    let bump = 1;
+    while (chosen.length < 3 && bump < 50) {
+      const v = trapNumber(answer + (bump % 2 === 0 ? -1 : 1) * 10 * bump);
+      bump++;
+      if (v == null || v <= 0 || seen.has(String(v))) continue;
+      seen.add(String(v));
+      chosen.push({
+        value: v,
+        kind: 'offset',
+        alert: 'Recalculate the foundry reading. The value that satisfies this step is ' + plain(answer) + '.'
+      });
+    }
+    if (chosen.length < 3) return null;
+    return shuffle([{ value: answer, kind: 'correct', alert: null }].concat(chosen));
+  }
+
+  function makeStep(station, unit, answer, prompt, traps, required) {
+    const choices = uniqueChoices(answer, traps);
+    if (!choices) return null;
+    if (required) {
+      for (let i = 0; i < required.length; i++) {
+        let found = false;
+        for (let c = 0; c < choices.length; c++) if (choices[c].kind === required[i]) found = true;
+        if (!found) return null;
+      }
+    }
+    return { station: station, unit: unit, answer: trapNumber(answer), prompt: prompt, choices: choices };
+  }
+
+  /* ---------- step factories ---------- */
+  function panStep1(sym, count, total, weight) {
+    const traps = [
+      {
+        value: total / 2,
+        kind: 'half-pan',
+        alert: 'Count every identical orb on the pan. There are ' + count + ', not 2. Split the mass equally: ' + plain(total) + ' ÷ ' + count + ' = ' + plain(weight) + ' g.'
+      },
+      {
+        value: total / (count === 3 ? 4 : 3),
+        kind: 'wrong-count',
+        alert: 'Look again at the pan. There are ' + count + ' identical ' + sym.name + ' runes, so divide by ' + count + ': ' + plain(total) + ' ÷ ' + count + ' = ' + plain(weight) + ' g.'
+      },
+      {
+        value: total,
+        kind: 'no-divide',
+        alert: plain(total) + ' g is the whole pan. One ' + sym.name + ' is the equal share: ' + plain(total) + ' ÷ ' + count + ' = ' + plain(weight) + ' g.'
+      },
+      {
+        value: weight + count,
+        kind: 'add-count',
+        alert: 'Do not add the number of orbs onto the mass. Divide: ' + plain(total) + ' ÷ ' + count + ' = ' + plain(weight) + ' g.'
+      }
+    ];
+    const prompt = 'The laser scale balances ' + count + ' identical ' + sym.name + ' orbs with ' + fmt(total) + ' g. What is one ' + sym.name + ', in grams?';
+    return makeStep('scale', 'g', weight, prompt, traps, []);
+  }
+
+  function twinStep1(sym, root, square) {
+    const half = square / 2;
+    const traps = [
+      { value: half, kind: 'halve-twin', alert: twinHalfAlert(sym.glyph, root, square, half) },
+      {
+        value: square,
+        kind: 'copy-square',
+        alert: plain(square) + ' is the product of the twin crystals, not the value of one. Find the number that multiplies by itself: ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
+      },
+      {
+        value: root + 1,
+        kind: 'near-root',
+        alert: 'Test the pair: ' + (root + 1) + ' × ' + (root + 1) + ' = ' + ((root + 1) * (root + 1)) + ', which is not ' + plain(square) + '. The matching pair is ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
+      },
+      {
+        value: root * 2,
+        kind: 'double-root',
+        alert: 'Do not double the crystal. The × sign means both runes are the same factor: ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
+      },
+      {
+        value: Math.max(1, root - 1),
+        kind: 'low-root',
+        alert: (root - 1) + ' × ' + (root - 1) + ' = ' + ((root - 1) * (root - 1)) + ', not ' + plain(square) + '. Pair the crystals as ' + plain(root) + ' × ' + plain(root) + '.'
+      }
+    ];
+    const prompt = 'Twin crystals: ' + sym.glyph + ' × ' + sym.glyph + ' = ' + plain(square) + '. What is one ' + sym.name + '?';
+    return makeStep('scale', '', root, prompt, traps, ['halve-twin']);
+  }
+
+  function inverseStep1(sym, d, q, sun) {
+    const traps = [
+      { value: Math.round(q / d), kind: 'inverse-div', alert: inverseDivAlert(sym.name, d, q, sun) },
+      {
+        value: q,
+        kind: 'flask-only',
+        alert: plain(q) + ' is the amount in EACH flask, not the whole ' + sym.name + '. Multiply the flasks back together: ' + plain(q) + ' × ' + d + ' = ' + plain(sun) + '.'
+      },
+      {
+        value: q * (d - 1),
+        kind: 'missing-flask',
+        alert: 'You left out a flask. There are ' + d + ' equal groups of ' + plain(q) + ': ' + plain(q) + ' × ' + d + ' = ' + plain(sun) + '.'
+      },
+      {
+        value: q + d,
+        kind: 'add-not-mul',
+        alert: 'Adding ' + plain(q) + ' + ' + d + ' does not rebuild the rune. Use the inverse of division: ' + plain(q) + ' × ' + d + ' = ' + plain(sun) + '.'
+      }
+    ];
+    const prompt = sym.name + ' is split into ' + d + ' equal flasks of ' + fmt(q) + '. What is the whole ' + sym.name + '?';
+    return makeStep('scale', '', sun, prompt, traps, ['inverse-div']);
+  }
+
+  function mulStep2(a, b, product, resultName, knownName) {
+    const tens = Math.floor(b / 10) * 10;
+    const ones = b % 10;
+    const traps = [];
+    if (tens > 0) {
+      traps.push({
+        value: a * tens,
+        kind: 'partial-tens',
+        alert: plain(b) + ' = ' + plain(tens) + ' + ' + plain(ones) + '. You only did ' + plain(a) + ' × ' + plain(tens) + ' = ' + plain(a * tens) + '. Add the ones: ' + plain(a) + ' × ' + plain(ones) + ' = ' + plain(a * ones) + ', so ' + plain(a * tens) + ' + ' + plain(a * ones) + ' = ' + plain(product) + '.'
+      });
+    }
+    if (ones > 0 && ones !== b) {
+      traps.push({
+        value: a * ones,
+        kind: 'partial-ones',
+        alert: 'You only multiplied the ones digit. ' + plain(a) + ' × ' + plain(b) + ' = ' + plain(product) + ', not ' + plain(a) + ' × ' + plain(ones) + '.'
+      });
+    }
+    traps.push({
+      value: a * (b - 1),
+      kind: 'off-factor',
+      alert: 'Check the multiplier. It is ' + plain(b) + ', not ' + plain(b - 1) + '. ' + plain(a) + ' × ' + plain(b) + ' = ' + plain(product) + '.'
+    });
+    traps.push({
+      value: a + b,
+      kind: 'added',
+      alert: 'The cauldron uses ×, not +. ' + plain(a) + ' × ' + plain(b) + ' = ' + plain(product) + '.'
+    });
+    const prompt = knownName + ' is ' + fmt(a) + '. Brew ' + resultName + ' = ' + knownName + ' × ' + plain(b) + '. What is ' + resultName + ', in mL?';
+    return makeStep('cauldron', 'mL', product, prompt, traps, []);
+  }
+
+  function divStep2(dividend, divisor, quotient, resultName, knownName) {
+    const traps = [];
+    if (divisor !== 2 && dividend % 2 === 0) {
+      traps.push({
+        value: dividend / 2,
+        kind: 'halve-dividend',
+        alert: 'Do not halve ' + plain(dividend) + '. Divide by the decoded rune ' + plain(divisor) + ': ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(quotient) + '.'
+      });
+    }
+    traps.push({
+      value: Math.round(dividend / (divisor + 1)),
+      kind: 'wrong-divisor',
+      alert: 'Use the decoded value as the divisor. ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(quotient) + '.'
+    });
+    traps.push({
+      value: dividend - divisor,
+      kind: 'subtract',
+      alert: 'The cauldron shows division, not subtraction. ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(quotient) + '.'
+    });
+    traps.push({
+      value: quotient + divisor,
+      kind: 'add-back',
+      alert: 'Do not add the divisor back on. ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(quotient) + '.'
+    });
+    traps.push({
+      value: dividend,
+      kind: 'copied-dividend',
+      alert: plain(dividend) + ' is the amount being shared. The brew is ' + plain(dividend) + ' ÷ ' + plain(divisor) + ' = ' + plain(quotient) + '.'
+    });
+    const prompt = knownName + ' is ' + fmt(divisor) + '. Brew ' + resultName + ' = ' + fmt(dividend) + ' ÷ ' + knownName + '. What is ' + resultName + ', in mL?';
+    return makeStep('cauldron', 'mL', quotient, prompt, traps, []);
+  }
+
+  function nestedStep2(three, root, m, knownName, resultName) {
+    const two = root * m;
+    const product = three * two;
+    const traps = [
+      {
+        value: three * root,
+        kind: 'forgot-inner',
+        alert: 'Substitute first: ' + knownName + ' × ' + m + ' = ' + plain(two) + '. Then ' + plain(three) + ' × ' + plain(two) + ' = ' + plain(product) + '. You multiplied by ' + knownName + ' only.'
+      },
+      {
+        value: three * m,
+        kind: 'forgot-crystal',
+        alert: 'The bracket is ' + knownName + ' × ' + m + ', not ' + m + ' alone. ' + knownName + ' is ' + plain(root) + ', so the bracket is ' + plain(two) + '. ' + plain(three) + ' × ' + plain(two) + ' = ' + plain(product) + '.'
+      },
+      {
+        value: two,
+        kind: 'stopped-inner',
+        alert: plain(two) + ' is only the bracket ' + plain(root) + ' × ' + m + '. Keep going: ' + plain(three) + ' × ' + plain(two) + ' = ' + plain(product) + '.'
+      },
+      {
+        value: three * (two + 1),
+        kind: 'off-bracket',
+        alert: 'The bracket equals ' + plain(two) + ', not ' + plain(two + 1) + '. ' + plain(three) + ' × ' + plain(two) + ' = ' + plain(product) + '.'
+      }
+    ];
+    const prompt = knownName + ' is ' + plain(root) + '. Substitute, then brew ' + resultName + ' = ' + fmt(three) + ' × (' + knownName + ' × ' + m + '). What is ' + resultName + '?';
+    return makeStep('cauldron', 'mL', product, prompt, traps, []);
+  }
+
+  function inverseMulStep2(sun, k, raw, knownName, resultName) {
+    const traps = [
+      {
+        value: Math.round(sun / Math.max(1, k - 1)),
+        kind: 'wrong-flask',
+        alert: 'Use the cauldron divisor ' + k + '. ' + plain(sun) + ' ÷ ' + k + ' = ' + plain(raw) + '.'
+      },
+      {
+        value: sun - k,
+        kind: 'subtract',
+        alert: 'The second cauldron divides. ' + plain(sun) + ' ÷ ' + k + ' = ' + plain(raw) + ', not ' + plain(sun) + ' − ' + k + '.'
+      },
+      {
+        value: sun,
+        kind: 'copied-sun',
+        alert: plain(sun) + ' is the first rune. Pour it into ' + k + ' equal shares: ' + plain(sun) + ' ÷ ' + k + ' = ' + plain(raw) + '.'
+      },
+      {
+        value: raw + k,
+        kind: 'add-back',
+        alert: 'Do not add the divisor back. ' + plain(sun) + ' ÷ ' + k + ' = ' + plain(raw) + '.'
+      }
+    ];
+    const prompt = knownName + ' is ' + fmt(sun) + '. Brew ' + resultName + ' = ' + knownName + ' ÷ ' + k + '. What is ' + resultName + ', in mL?';
+    return makeStep('cauldron', 'mL', raw, prompt, traps, []);
+  }
+
+  function sealStep3(source, rounding, context) {
+    const final = applyRound(source, rounding);
+    const traps = [];
+    const required = [];
+    if (rounding === 'hundred') {
+      traps.push({ value: source, kind: 'forget-round', alert: hundredForgetAlert(source, final) });
+      traps.push({ value: roundNearest(source, 10), kind: 'ten-not-hundred', alert: tenVsHundredAlert(source, final) });
+      required.push('forget-round', 'ten-not-hundred');
+    } else if (rounding === 'ten') {
+      traps.push({ value: source, kind: 'forget-round', alert: tenForgetAlert(source, final) });
+      traps.push({ value: roundNearest(source, 100), kind: 'hundred-not-ten', alert: hundredVsTenAlert(source, final) });
+      required.push('forget-round', 'hundred-not-ten');
+    } else {
+      traps.push({ value: roundNearest(source, 10), kind: 'rounded-anyway', alert: exactAlert(source) });
+      traps.push({ value: roundNearest(source, 100), kind: 'rounded-anyway', alert: exactAlert(source) });
+    }
+    const place = rounding === 'ten' ? 10 : 100;
+    if (rounding !== 'exact') {
+      const wrong = otherWay(source, place, final);
+      if (wrong != null) {
+        const digitName = place === 100 ? 'tens' : 'ones';
+        traps.push({
+          value: wrong,
+          kind: 'wrong-way',
+          alert: 'Check the ' + digitName + ' digit before you decant. ' + plain(source) + ' rounds to ' + plain(final) + ', not ' + plain(wrong) + '.'
+        });
+      }
+    }
+    if (context.chain) {
+      const opWord = context.chain.op === 'mul' ? '×' : '÷';
+      traps.push({
+        value: context.sym2Value,
+        kind: 'stopped-early',
+        alert: 'You stopped at ' + context.sym2Name + ' = ' + plain(context.sym2Value) + '. The final flask is ' + context.chain.name + ' = ' + context.sym2Name + ' ' + opWord + ' ' + context.chain.factor + (rounding === 'exact' ? '.' : ', then rounded to ' + plain(final) + '.')
+      });
+      const off = context.chain.op === 'mul'
+        ? context.sym2Value * Math.max(2, context.chain.factor - 1)
+        : Math.round(context.sym2Value / Math.max(2, context.chain.factor - 1));
+      traps.push({
+        value: off,
+        kind: 'chain-slip',
+        alert: 'Use the factor ' + context.chain.factor + '. ' + context.chain.name + ' = ' + context.sym2Name + ' ' + opWord + ' ' + context.chain.factor + '.'
+      });
+    }
+    traps.push({ value: source + 10, kind: 'nudge', alert: rounding === 'exact' ? exactAlert(source) : 'Stay with the rounding rule. The sealed volume is ' + plain(final) + ' mL, not ' + plain(source + 10) + '.' });
+    traps.push({ value: source - 10, kind: 'nudge', alert: rounding === 'exact' ? exactAlert(source) : 'Stay with the rounding rule. The sealed volume is ' + plain(final) + ' mL.' });
+    if (context.sym1Value && context.sym1Value !== final) {
+      traps.push({
+        value: context.sym1Value,
+        kind: 'first-rune',
+        alert: plain(context.sym1Value) + ' is the first rune, not the sealed elixir. The beaker reading for this recipe is ' + plain(final) + ' mL.'
+      });
+    }
+    let prompt;
+    if (context.chain) {
+      const opWord = context.chain.op === 'mul' ? '×' : '÷';
+      const verb = rounding === 'exact'
+        ? 'Cork the EXACT volume.'
+        : (rounding === 'ten' ? 'Then decant to the nearest ten.' : 'Then decant to the nearest hundred.');
+      prompt = context.chain.name + ' = ' + context.sym2Name + ' ' + opWord + ' ' + context.chain.factor + '. ' + verb;
+    } else if (rounding === 'exact') {
+      prompt = 'The cauldron holds ' + fmt(source) + ' mL. Cork the EXACT volume — do not round.';
+    } else if (rounding === 'ten') {
+      prompt = 'The cauldron holds ' + fmt(source) + ' mL. Decant to the nearest ten.';
+    } else {
+      prompt = 'The cauldron holds ' + fmt(source) + ' mL. Decant to the nearest hundred.';
+    }
+    return makeStep('beaker', 'mL', final, prompt, traps, required);
+  }
+
+  /* ---------- problem assembly ---------- */
+  function repeatJoin(glyph, count) {
+    const bits = [];
+    for (let i = 0; i < count; i++) bits.push(glyph);
+    return bits.join(' + ');
+  }
+
+  function validProblem(p) {
+    if (!p || !p.steps || p.steps.length !== 3) return false;
+    for (let i = 0; i < 3; i++) {
+      const s = p.steps[i];
+      if (!s || !s.choices || s.choices.length !== 4) return false;
+      const seen = new Set();
+      let ok = false;
+      for (let c = 0; c < s.choices.length; c++) {
+        seen.add(String(s.choices[c].value));
+        if (s.choices[c].kind === 'correct' && s.choices[c].value === s.answer) ok = true;
+      }
+      if (seen.size !== 4 || !ok) return false;
+    }
+    if (p.clue1Type === 'twin' && !p.steps[0].choices.some((c) => c.kind === 'halve-twin')) return false;
+    if (p.clue1Type === 'inverse' && !p.steps[0].choices.some((c) => c.kind === 'inverse-div')) return false;
+    if (p.rounding === 'hundred') {
+      if (!p.steps[2].choices.some((c) => c.kind === 'forget-round')) return false;
+      if (!p.steps[2].choices.some((c) => c.kind === 'ten-not-hundred')) return false;
+    }
+    if (p.rounding === 'ten') {
+      if (!p.steps[2].choices.some((c) => c.kind === 'forget-round')) return false;
+      if (!p.steps[2].choices.some((c) => c.kind === 'hundred-not-ten')) return false;
+    }
+    return true;
+  }
+
+  function packageProblem(f) {
+    if (!f.step1 || !f.step2 || !f.step3) return null;
+    const problem = {
+      tier: f.tier,
+      tierLabel: f.tierLabel,
+      tierShort: f.tierShort,
+      clue1Type: f.clue1Type,
+      rounding: f.rounding,
+      sym1: f.sym1,
+      sym2: f.sym2,
+      sym3: f.sym3 || null,
+      sym1Value: f.sym1Value,
+      sym2Value: f.sym2Value,
+      clue1Lines: f.clue1Lines,
+      clue2Lines: f.clue2Lines,
+      mission: f.mission,
+      panCount: f.panCount || 0,
+      panTotal: f.panTotal || 0,
+      square: f.square || 0,
+      flaskD: f.flaskD || 0,
+      flaskEach: f.flaskEach || 0,
+      rawVolume: f.rawVolume,
+      finalVolume: f.finalVolume,
+      sealSource: f.sealSource,
+      key: f.key,
+      steps: [f.step1, f.step2, f.step3],
+      math: f.math
+    };
+    if (!validProblem(problem)) return null;
+    return problem;
+  }
+
+  function sealContext(sym1Value, sym2Name, sym2Value, chain) {
+    return { sym1Value: sym1Value, sym2Name: sym2Name, sym2Value: sym2Value, chain: chain || null };
+  }
+
+  function assemblePanMul(meta, spec, chain) {
+    const sym1 = spec.sym1 || (Math.random() < 0.55 ? runeById('smiley') : pick(RUNES));
+    const sym2 = spec.sym2 || otherRune(sym1.id);
+    const rounding = chain ? chain.rounding : spec.rounding;
+    const sealSource = chain ? chain.before : spec.raw;
+    const finalVolume = applyRound(sealSource, rounding);
+    const step1 = panStep1(sym1, spec.count, spec.total, spec.weight);
+    const step2 = mulStep2(spec.weight, spec.mult, spec.raw, sym2.name, sym1.name);
+    const step3 = sealStep3(sealSource, rounding, sealContext(spec.weight, sym2.name, spec.raw, chain));
+    const clue2 = [sym1.glyph + ' × ' + spec.mult + ' = ' + sym2.glyph];
+    if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
+    return packageProblem({
+      tier: meta.tier,
+      tierLabel: meta.tierLabel,
+      tierShort: meta.tierShort,
+      clue1Type: 'pan',
+      rounding: rounding,
+      sym1: sym1,
+      sym2: sym2,
+      sym3: chain ? { id: chain.id, name: chain.name, glyph: chain.glyph } : null,
+      sym1Value: spec.weight,
+      sym2Value: spec.raw,
+      clue1Lines: [repeatJoin(sym1.glyph, spec.count) + ' = ' + fmt(spec.total) + ' g'],
+      clue2Lines: clue2,
+      mission: missionLabel(rounding),
+      panCount: spec.count,
+      panTotal: spec.total,
+      rawVolume: spec.raw,
+      finalVolume: finalVolume,
+      sealSource: sealSource,
+      key: ['pan-mul', spec.count, spec.total, spec.weight, spec.mult, spec.raw, rounding, finalVolume, chain ? chain.op + chain.factor : ''].join('|'),
+      step1: step1,
+      step2: step2,
+      step3: step3,
+      math: { clue: chain ? 'chain-pan-mul' : 'pan-mul', count: spec.count, total: spec.total, weight: spec.weight, mult: spec.mult, raw: spec.raw, sealSource: sealSource, final: finalVolume }
+    });
+  }
+
+  function assemblePanDiv(meta, spec) {
+    const sym1 = Math.random() < 0.5 ? runeById('smiley') : pick(RUNES);
+    const sym2 = otherRune(sym1.id);
+    const step1 = panStep1(sym1, spec.count, spec.total, spec.weight);
+    const step2 = divStep2(spec.dividend, spec.weight, spec.q, sym2.name, sym1.name);
+    const step3 = sealStep3(spec.q, 'exact', sealContext(spec.weight, sym2.name, spec.q, null));
+    return packageProblem({
+      tier: meta.tier,
+      tierLabel: meta.tierLabel,
+      tierShort: meta.tierShort,
+      clue1Type: 'pan',
+      rounding: 'exact',
+      sym1: sym1,
+      sym2: sym2,
+      sym1Value: spec.weight,
+      sym2Value: spec.q,
+      clue1Lines: [repeatJoin(sym1.glyph, spec.count) + ' = ' + fmt(spec.total) + ' g'],
+      clue2Lines: [fmt(spec.dividend) + ' ÷ ' + sym1.glyph + ' = ' + sym2.glyph],
+      mission: missionLabel('exact'),
+      panCount: spec.count,
+      panTotal: spec.total,
+      rawVolume: spec.q,
+      finalVolume: spec.q,
+      sealSource: spec.q,
+      key: ['pan-div', spec.count, spec.total, spec.weight, spec.dividend, spec.q].join('|'),
+      step1: step1,
+      step2: step2,
+      step3: step3,
+      math: { clue: 'pan-div', count: spec.count, total: spec.total, weight: spec.weight, dividend: spec.dividend, q: spec.q, raw: spec.q, sealSource: spec.q, final: spec.q }
+    });
+  }
+
+  function assembleTwinDiv(meta, spec, chain) {
+    const sym1 = Math.random() < 0.72 ? runeById('triangle') : pick(RUNES);
+    const sym2 = spec.sym2 || otherRune(sym1.id);
+    const rounding = chain ? chain.rounding : spec.rounding;
+    const sealSource = chain ? chain.before : spec.raw;
+    const finalVolume = applyRound(sealSource, rounding);
+    const step1 = twinStep1(sym1, spec.root, spec.square);
+    const step2 = divStep2(spec.dividend, spec.root, spec.raw, sym2.name, sym1.name);
+    const step3 = sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    const clue2 = [fmt(spec.dividend) + ' ÷ ' + sym1.glyph + ' = ' + sym2.glyph];
+    if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
+    return packageProblem({
+      tier: meta.tier,
+      tierLabel: meta.tierLabel,
+      tierShort: meta.tierShort,
+      clue1Type: 'twin',
+      rounding: rounding,
+      sym1: sym1,
+      sym2: sym2,
+      sym3: chain ? { id: chain.id, name: chain.name, glyph: chain.glyph } : null,
+      sym1Value: spec.root,
+      sym2Value: spec.raw,
+      clue1Lines: [sym1.glyph + ' × ' + sym1.glyph + ' = ' + plain(spec.square)],
+      clue2Lines: clue2,
+      mission: missionLabel(rounding),
+      square: spec.square,
+      rawVolume: spec.raw,
+      finalVolume: finalVolume,
+      sealSource: sealSource,
+      key: ['twin-div', spec.root, spec.square, spec.dividend, spec.raw, rounding, finalVolume, chain ? chain.op + chain.factor : ''].join('|'),
+      step1: step1,
+      step2: step2,
+      step3: step3,
+      math: { clue: chain ? 'chain-twin-div' : 'twin-div', root: spec.root, square: spec.square, dividend: spec.dividend, raw: spec.raw, sealSource: sealSource, final: finalVolume }
+    });
+  }
+
+  function assembleTwinMul(meta, spec, chain) {
+    const sym1 = Math.random() < 0.72 ? runeById('triangle') : pick(RUNES);
+    const sym2 = otherRune(sym1.id);
+    const rounding = chain ? chain.rounding : spec.rounding;
+    const sealSource = chain ? chain.before : spec.raw;
+    const finalVolume = applyRound(sealSource, rounding);
+    const step1 = twinStep1(sym1, spec.root, spec.square);
+    const step2 = nestedStep2(spec.three, spec.root, spec.m, sym1.name, sym2.name);
+    const step3 = sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    const clue2 = [fmt(spec.three) + ' × (' + sym1.glyph + ' × ' + spec.m + ') = ' + sym2.glyph];
+    if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
+    return packageProblem({
+      tier: meta.tier,
+      tierLabel: meta.tierLabel,
+      tierShort: meta.tierShort,
+      clue1Type: 'twin',
+      rounding: rounding,
+      sym1: sym1,
+      sym2: sym2,
+      sym3: chain ? { id: chain.id, name: chain.name, glyph: chain.glyph } : null,
+      sym1Value: spec.root,
+      sym2Value: spec.raw,
+      clue1Lines: [sym1.glyph + ' × ' + sym1.glyph + ' = ' + plain(spec.square)],
+      clue2Lines: clue2,
+      mission: missionLabel(rounding),
+      square: spec.square,
+      rawVolume: spec.raw,
+      finalVolume: finalVolume,
+      sealSource: sealSource,
+      key: ['twin-mul', spec.root, spec.square, spec.three, spec.m, spec.raw, rounding, finalVolume, chain ? chain.op + chain.factor : ''].join('|'),
+      step1: step1,
+      step2: step2,
+      step3: step3,
+      math: { clue: chain ? 'chain-twin-mul' : 'twin-mul', root: spec.root, square: spec.square, three: spec.three, m: spec.m, raw: spec.raw, sealSource: sealSource, final: finalVolume }
+    });
+  }
+
+  function assembleInverse(meta, spec, chain) {
+    const sym1 = Math.random() < 0.6 ? runeById('sun') : pick(RUNES);
+    const sym2 = otherRune(sym1.id);
+    const rounding = chain ? chain.rounding : spec.rounding;
+    const sealSource = chain ? chain.before : spec.raw;
+    const finalVolume = applyRound(sealSource, rounding);
+    const step1 = inverseStep1(sym1, spec.d, spec.q, spec.sun);
+    const step2 = inverseMulStep2(spec.sun, spec.k, spec.raw, sym1.name, sym2.name);
+    const step3 = sealStep3(sealSource, rounding, sealContext(spec.sun, sym2.name, spec.raw, chain));
+    const clue2 = [sym1.glyph + ' ÷ ' + spec.k + ' = ' + sym2.glyph];
+    if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
+    return packageProblem({
+      tier: meta.tier,
+      tierLabel: meta.tierLabel,
+      tierShort: meta.tierShort,
+      clue1Type: 'inverse',
+      rounding: rounding,
+      sym1: sym1,
+      sym2: sym2,
+      sym3: chain ? { id: chain.id, name: chain.name, glyph: chain.glyph } : null,
+      sym1Value: spec.sun,
+      sym2Value: spec.raw,
+      clue1Lines: [sym1.glyph + ' ÷ ' + spec.d + ' = ' + fmt(spec.q)],
+      clue2Lines: clue2,
+      mission: missionLabel(rounding),
+      flaskD: spec.d,
+      flaskEach: spec.q,
+      rawVolume: spec.raw,
+      finalVolume: finalVolume,
+      sealSource: sealSource,
+      key: ['inverse', spec.d, spec.q, spec.sun, spec.k, spec.raw, rounding, finalVolume, chain ? chain.op + chain.factor : ''].join('|'),
+      step1: step1,
+      step2: step2,
+      step3: step3,
+      math: { clue: chain ? 'chain-inverse' : 'inverse', d: spec.d, q: spec.q, sun: spec.sun, k: spec.k, raw: spec.raw, sealSource: sealSource, final: finalVolume }
+    });
+  }
+
+  /* ---------- numeric pickers ---------- */
+  function pickPanMul(rounding, warmup) {
+    for (let i = 0; i < 70; i++) {
+      const count = Math.random() < 0.58 ? 3 : 4;
+      const mult = irand(11, 16);
+      const cap = warmup ? 9999 : 99999;
+      const weightMax = Math.min(warmup ? 980 : 2200, Math.floor(cap / mult));
+      const weightMin = count === 3 ? 334 : 250;
+      if (weightMax < weightMin) continue;
+      const weight = irand(weightMin, weightMax);
+      const total = weight * count;
+      if (total < 1000 || total > 9999) continue;
+      const raw = weight * mult;
+      if (raw < 800 || raw > cap) continue;
+      if (warmup && raw > 9999) continue;
+      if (!roundingOk(raw, rounding)) continue;
+      return { count: count, weight: weight, total: total, mult: mult, raw: raw, rounding: rounding };
+    }
+    return null;
+  }
+
+  function pickPanDiv() {
+    for (let i = 0; i < 50; i++) {
+      const count = Math.random() < 0.58 ? 3 : 4;
+      const q = irand(12, 28);
+      const weightMin = count === 3 ? 334 : 250;
+      const weightMax = Math.min(900, Math.floor(99999 / q));
+      if (weightMax < weightMin) continue;
+      const weight = irand(weightMin, weightMax);
+      const total = weight * count;
+      if (total < 1000 || total > 9999) continue;
+      const dividend = weight * q;
+      if (dividend < 1000 || dividend > 99999) continue;
+      return { count: count, weight: weight, total: total, q: q, dividend: dividend };
+    }
+    return null;
+  }
+
+  function pickTwinDiv(rounding) {
+    const roots = shuffle([4, 5, 6, 7, 8, 9]);
+    for (let r = 0; r < roots.length; r++) {
+      const root = roots[r];
+      const square = root * root;
+      const minQ = Math.max(120, Math.ceil(1000 / root));
+      const maxQ = Math.floor(9999 / root);
+      if (maxQ < minQ) continue;
+      for (let i = 0; i < 24; i++) {
+        const q = irand(minQ, maxQ);
+        const dividend = root * q;
+        if (dividend < 1000 || dividend > 9999) continue;
+        if (!roundingOk(q, rounding)) continue;
+        return { root: root, square: square, dividend: dividend, raw: q, rounding: rounding };
+      }
+    }
+    return null;
+  }
+
+  function pickTwinMul(rounding) {
+    const roots = shuffle([4, 5, 6, 7, 8, 9]);
+    for (let r = 0; r < roots.length; r++) {
+      const root = roots[r];
+      const square = root * root;
+      for (let i = 0; i < 24; i++) {
+        const mMax = Math.max(2, Math.floor(36 / root));
+        const m = irand(2, Math.max(2, mMax));
+        const two = root * m;
+        if (two < 12 || two > 42) continue;
+        const three = irand(125, 860);
+        const raw = three * two;
+        if (raw < 1000 || raw > 40000) continue;
+        if (!roundingOk(raw, rounding)) continue;
+        return { root: root, square: square, three: three, m: m, raw: raw, rounding: rounding };
+      }
+    }
+    return null;
+  }
+
+  function pickInverse(rounding) {
+    const divisors = [12, 14, 15, 16, 18, 20, 24];
+    for (let i = 0; i < 90; i++) {
+      const d = divisors[irand(0, divisors.length - 1)];
+      const maxQ = Math.floor(9999 / d);
+      const minQ = Math.max(180, Math.ceil(2800 / d));
+      if (maxQ < minQ) continue;
+      const q = irand(minQ, maxQ);
+      const sun = d * q;
+      if (sun < 2500 || sun > 9999) continue;
+      const divTrap = Math.round(q / d);
+      if (divTrap === sun || divTrap === q || divTrap <= 0) continue;
+      const ks = shuffle([4, 5, 6, 7, 8, 9, 10, 12].filter((k) => k !== d && sun % k === 0));
+      for (let k = 0; k < ks.length; k++) {
+        const raw = sun / ks[k];
+        if (raw < 80 || raw > 20000) continue;
+        if (raw === sun || raw === q || raw === divTrap) continue;
+        if (!roundingOk(raw, rounding)) continue;
+        return { d: d, q: q, sun: sun, k: ks[k], raw: raw, rounding: rounding };
+      }
+    }
+    return null;
+  }
+
+  function attachChain(sym2Value, rounding) {
+    const sym3 = pick(RUNES);
+    const factor = irand(3, 9);
+    let op = 'mul';
+    let before = sym2Value * factor;
+    if (before > 99999) return null;
+    if (Math.random() < 0.45 && factor >= 3 && sym2Value % factor === 0) {
+      const divided = sym2Value / factor;
+      if (divided >= 30) {
+        op = 'div';
+        before = divided;
+      }
+    }
+    if (before === sym2Value) return null;
+    if (!roundingOk(before, rounding)) return null;
+    if (applyRound(before, rounding) === sym2Value) return null;
+    return {
+      id: sym3.id,
+      name: sym3.name,
+      glyph: sym3.glyph,
+      op: op,
+      factor: factor,
+      before: before,
+      rounding: rounding
+    };
+  }
+
+  function buildWarmup(meta) {
+    if (Math.random() < 0.66) {
+      const spec = pickPanMul('exact', true);
+      if (spec) return assemblePanMul(meta, spec, null);
+    }
+    const div = pickPanDiv();
+    if (div) return assemblePanDiv(meta, div);
+    const spec = pickPanMul('exact', true);
+    if (spec) return assemblePanMul(meta, spec, null);
+    return null;
+  }
+
+  function buildIntermediate(meta) {
+    if (Math.random() < 0.55) {
+      const spec = pickTwinDiv('exact');
+      if (spec) return assembleTwinDiv(meta, spec, null);
+    }
+    const mul = pickTwinMul('exact');
+    if (mul) return assembleTwinMul(meta, mul, null);
+    const spec = pickTwinDiv('exact');
+    if (spec) return assembleTwinDiv(meta, spec, null);
+    return null;
+  }
+
+  function buildAdvanced(meta, round) {
+    const wantInverse = round % 2 === 1;
+    if (wantInverse) {
+      const spec = pickInverse('hundred');
+      if (spec) return assembleInverse(meta, spec, null);
+      const pan = pickPanMul('hundred', false);
+      if (pan) return assemblePanMul(meta, pan, null);
+    } else {
+      const pan = pickPanMul('hundred', false);
+      if (pan) return assemblePanMul(meta, pan, null);
+      const spec = pickInverse('hundred');
+      if (spec) return assembleInverse(meta, spec, null);
+    }
+    return null;
+  }
+
+  function buildStyled(meta, style, rounding) {
+    if (style === 'twin') {
+      if (Math.random() < 0.5) {
+        const spec = pickTwinDiv(rounding);
+        if (spec) return assembleTwinDiv(meta, spec, null);
+      }
+      const mul = pickTwinMul(rounding);
+      if (mul) return assembleTwinMul(meta, mul, null);
+      const spec = pickTwinDiv(rounding);
+      if (spec) return assembleTwinDiv(meta, spec, null);
+      return null;
+    }
+    if (style === 'inverse') {
+      const spec = pickInverse(rounding);
+      if (spec) return assembleInverse(meta, spec, null);
+      return null;
+    }
+    if (style === 'pan') {
+      const spec = pickPanMul(rounding, false);
+      if (spec) return assemblePanMul(meta, spec, null);
+      return null;
+    }
+    const baseRoll = Math.random();
+    let base = null;
+    let sym2 = 0;
+    if (baseRoll < 0.4) {
+      const spec = pickTwinDiv('exact');
+      if (!spec) return null;
+      const chain = attachChain(spec.raw, rounding);
+      if (!chain) return null;
+      return assembleTwinDiv(meta, spec, chain);
+    }
+    if (baseRoll < 0.7) {
+      const spec = pickInverse('exact');
+      if (!spec) return null;
+      const chain = attachChain(spec.raw, rounding);
+      if (!chain) return null;
+      return assembleInverse(meta, spec, chain);
+    }
+    base = pickPanMul('exact', false);
+    if (!base) return null;
+    sym2 = base.raw;
+    const chain = attachChain(sym2, rounding);
+    if (!chain) return null;
+    return assemblePanMul(meta, base, chain);
+  }
+
+  function buildMaster(meta, round, attempt) {
+    const styles = ['twin', 'inverse', 'pan', 'chain'];
+    let style = styles[(round - 7) % 4];
+    if (attempt > 28) style = styles[attempt % 4];
+    const beakers = ['exact', 'ten', 'hundred'];
+    const rounding = attempt > 18 ? beakers[attempt % 3] : pick(beakers);
+    return buildStyled(meta, style, rounding);
+  }
+
+  function forceSimple(meta) {
+    for (let w = 420; w <= 760; w += 7) {
+      const total = w * 3;
+      if (total < 1000 || total > 9999) continue;
+      const raw = w * 12;
+      const built = assemblePanMul(meta, {
+        count: 3,
+        weight: w,
+        total: total,
+        mult: 12,
+        raw: raw,
+        rounding: 'exact',
+        sym1: runeById('smiley'),
+        sym2: runeById('heart')
+      }, null);
+      if (built) return built;
+    }
+    return null;
+  }
+
+  function generateProblem(round) {
+    const meta = tierMeta(round);
+    for (let attempt = 0; attempt < 70; attempt++) {
+      let built = null;
+      if (meta.tier === 'warmup') built = buildWarmup(meta);
+      else if (meta.tier === 'intermediate') built = buildIntermediate(meta);
+      else if (meta.tier === 'advanced') built = buildAdvanced(meta, round);
+      else built = buildMaster(meta, round, attempt);
+      if (!built) continue;
+      if (history.indexOf(built.key) !== -1 && attempt < 56) continue;
+      return built;
+    }
+    return forceSimple(meta);
+  }
+
+  /* ---------- audio ---------- */
+  const audio = (() => {
+    let actx = null;
+    let master = null;
+    let muted = false;
+    let running = false;
+    let nextTime = 0;
+    let stepIdx = 0;
+    const LEAD = [440, 523, 659, 587, 523, 440, 392, 440, 523, 659, 392, 349];
+    const BASS = [110, 110, 165, 131, 110, 98, 110, 87];
+    function unlock() {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!actx) {
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = muted ? 0 : 0.42;
+        master.connect(actx.destination);
+      }
+      if (actx.state === 'suspended') actx.resume();
+      running = true;
+    }
+    function setMuted(flag) {
+      muted = flag;
+      if (master) master.gain.value = muted ? 0 : 0.42;
+      if (!muted) nextTime = 0;
+    }
+    function toggle() {
+      unlock();
+      setMuted(!muted);
+      return muted;
+    }
+    function isMuted() { return muted; }
+    function schedule(freq, dur, type, vol, when, slide) {
+      if (!actx || muted) return;
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.type = type || 'square';
+      o.frequency.setValueAtTime(Math.max(40, freq), when);
+      if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), when + dur);
+      g.gain.setValueAtTime(0.0001, when);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), when + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      o.connect(g);
+      g.connect(master);
+      o.start(when);
+      o.stop(when + dur + 0.02);
+    }
+    function noise(dur, vol, when) {
+      if (!actx || muted) return;
+      const n = Math.max(1, Math.floor(actx.sampleRate * dur));
+      const buf = actx.createBuffer(1, n, actx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      const src = actx.createBufferSource();
+      const g = actx.createGain();
+      const f = actx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.value = 740;
+      src.buffer = buf;
+      g.gain.value = vol;
+      src.connect(f);
+      f.connect(g);
+      g.connect(master);
+      src.start(when || actx.currentTime);
+    }
+    function pump() {
+      if (!actx || muted || !running) return;
+      const now = actx.currentTime;
+      if (!nextTime || nextTime < now - 0.05) nextTime = now + 0.05;
+      const beat = 0.3;
+      while (nextTime < now + 0.28) {
+        const i = stepIdx % LEAD.length;
+        schedule(LEAD[i], 0.16, 'square', 0.03, nextTime, LEAD[i] * 0.99);
+        if (i % 2 === 0) schedule(BASS[(i / 2) % BASS.length], 0.28, 'triangle', 0.045, nextTime);
+        stepIdx++;
+        nextTime += beat;
+      }
+    }
+    function tick() {
+      if (!actx) return;
+      schedule(740, 0.04, 'square', 0.04, actx.currentTime);
+    }
+    function buzz() {
+      if (!actx) return;
+      const t = actx.currentTime;
+      schedule(180, 0.18, 'sawtooth', 0.06, t, 70);
+      schedule(140, 0.22, 'square', 0.04, t + 0.02, 60);
+    }
+    function success(step) {
+      if (!actx) return;
+      const t = actx.currentTime;
+      if (step === 0) {
+        schedule(523, 0.12, 'square', 0.06, t);
+        schedule(659, 0.12, 'square', 0.06, t + 0.08);
+        schedule(784, 0.18, 'square', 0.06, t + 0.16);
+      } else if (step === 1) {
+        noise(0.18, 0.05, t);
+        schedule(320, 0.2, 'sine', 0.06, t, 540);
+        schedule(480, 0.16, 'triangle', 0.05, t + 0.08, 720);
+      } else {
+        schedule(880, 0.1, 'square', 0.05, t);
+        schedule(1174, 0.12, 'square', 0.05, t + 0.07);
+        schedule(1568, 0.2, 'triangle', 0.06, t + 0.14);
+        noise(0.12, 0.04, t + 0.05);
+      }
+    }
+    return { unlock: unlock, toggle: toggle, isMuted: isMuted, pump: pump, tick: tick, buzz: buzz, success: success };
+  })();
+
+  /* ---------- flow ---------- */
+  function describePlay() {
+    const p = state.problem;
+    if (!p) return '';
+    const s = p.steps[state.step];
+    const opts = s.choices.map((c) => fmt(c.value) + (s.unit ? ' ' + s.unit : '')).join(', ');
+    return 'Round ' + state.round + ', ' + p.tierLabel + '. Clue 1: ' + p.clue1Lines.join(' ') + '. Clue 2: ' + p.clue2Lines.join(' ') + '. Mission: ' + p.mission + '. ' + s.prompt + ' Choices: ' + opts + '.';
+  }
+
+  function loadRound() {
+    const problem = generateProblem(state.round);
+    if (!problem) {
+      state.screen = 'over';
+      state.celebrate = 'The foundry could not brew a new recipe.';
+      return;
+    }
+    state.problem = problem;
+    state.step = 0;
+    state.phase = 'input';
+    state.phaseT = 0;
+    state.scaleSolved = false;
+    state.cauldronSolved = false;
+    state.beakerSolved = false;
+    state.alert = null;
+    state.note = '';
+    state.celebrate = '';
+    state.ready = [null, null];
+    state.goodCard = -1;
+    state.badCard = -1;
+    state.stepStart = performance.now();
+    state.vis.scale = 0;
+    state.vis.cauldron = 0;
+    state.vis.beaker = 0;
+    pads[0].focus = 0;
+    pads[1].focus = 0;
+    remember(problem.key);
+    announce(describePlay());
+  }
+
+  function beginGame(mode) {
+    audio.unlock();
+    state.screen = 'play';
+    state.mode = mode;
+    state.round = 1;
+    state.score = 0;
+    state.combo = 0;
+    state.shields = 4;
+    state.duel = freshDuel();
+    state.alert = null;
+    state.note = '';
+    loadRound();
+    swallowPads();
+  }
+
+  function swallowPads() {
+    pads[0].prev.a = true;
+    pads[0].prev.start = true;
+    pads[1].prev.a = true;
+    pads[1].prev.start = true;
+  }
+
+  function stepOwner() {
+    if (state.mode !== 'coop') return 'any';
+    if (state.step === 2) return 'both';
+    const p1First = state.round % 2 === 1;
+    if (state.step === 0) return p1First ? 0 : 1;
+    return p1First ? 1 : 0;
+  }
+
+  function canControl(pi) {
+    if (state.screen !== 'play' || state.phase !== 'input') return false;
+    if (state.mode === 'solo') return pi === 0;
+    if (state.mode === 'duel') return state.duel[pi].shields > 0;
+    const owner = stepOwner();
+    if (owner === 'both') return true;
+    return owner === pi;
+  }
+
+  function roleLine() {
+    if (state.mode !== 'coop') {
+      if (state.step === 0) return 'CRACK THE FIRST RUNE';
+      if (state.step === 1) return 'BREW THE SECOND CAULDRON';
+      return state.problem && state.problem.rounding === 'exact' ? 'CORK THE EXACT ELIXIR' : 'DECANT INTO THE BEAKER';
+    }
+    const owner = stepOwner();
+    if (owner === 'both') return 'BOTH ALCHEMISTS — AGREE, THEN SEAL';
+    const who = owner === 0 ? 'P1' : 'P2';
+    if (state.step === 0) return who + ' — CRACK THE FIRST RUNE';
+    return who + ' — BREW THE CAULDRON';
+  }
+
+  function burst(x, y, color, n) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 80 + Math.random() * 340;
+      particles.push({
+        x: x,
+        y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 40,
+        life: 1,
+        decay: 0.7 + Math.random() * 0.8,
+        color: color,
+        r: 2 + Math.random() * 3.2
+      });
+    }
+    while (particles.length > 220) particles.shift();
+  }
+
+  function stationCenter(index) {
+    const box = stationBox(index);
+    return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+  }
+
+  function award(pi, stepIndex) {
+    const base = [100, 150, 350][stepIndex];
+    let combo;
+    if (state.mode === 'duel') {
+      state.duel[pi].combo += 1;
+      combo = state.duel[pi].combo;
+    } else {
+      state.combo += 1;
+      combo = state.combo;
+    }
+    const comboBonus = (combo - 1) * 20;
+    let speed = 0;
+    if (state.mode === 'duel') {
+      const elapsed = (performance.now() - state.stepStart) / 1000;
+      speed = Math.max(0, Math.round(160 - elapsed * 28));
+    }
+    const gain = base + comboBonus + speed;
+    if (state.mode === 'duel') {
+      state.duel[pi].score += gain;
+      if (stepIndex === 2) state.duel[pi].stars += 1;
+    } else {
+      state.score += gain;
+    }
+    state.lastGain = gain;
+    return { gain: gain, base: base, speed: speed, combo: combo };
+  }
+
+  function shieldsOf(pi) {
+    if (state.mode === 'duel') return state.duel[pi].shields;
+    return state.shields;
+  }
+
+  function penalize(pi) {
+    if (state.mode === 'duel') {
+      state.duel[pi].combo = 0;
+      state.duel[pi].shields -= 1;
+      if (state.duel[pi].shields <= 0) {
+        state.phase = 'down';
+        state.phaseT = 1.45;
+        state.celebrate = (pi === 0 ? 'P1' : 'P2') + ' SHIELDS SHATTERED';
+      }
+    } else {
+      state.combo = 0;
+      state.shields -= 1;
+      if (state.shields <= 0) {
+        state.phase = 'down';
+        state.phaseT = 1.45;
+        state.celebrate = state.mode === 'coop' ? 'TEAM SHIELDS SHATTERED' : 'SHIELDS SHATTERED';
+      }
+    }
+  }
+
+  function successLine(info) {
+    const p = state.problem;
+    if (state.step === 0) return 'RUNE CRACKED · ' + p.sym1.glyph + ' = ' + fmt(p.sym1Value) + ' · +' + info.gain;
+    if (state.step === 1) return 'CAULDRON BREWED · ' + p.sym2.glyph + ' = ' + fmt(p.sym2Value) + ' mL · +' + info.gain;
+    if (info.gain !== info.base) return 'ELIXIR SEALED · +' + info.base + ' ALCHEMIST POINTS · BANKED +' + info.gain;
+    return 'ELIXIR SEALED · +350 ALCHEMIST POINTS';
+  }
+
+  function resolveAnswer(pi, cardIndex) {
+    if (state.screen !== 'play' || state.phase !== 'input') return;
+    const step = state.problem.steps[state.step];
+    const card = step.choices[cardIndex];
+    if (!card) return;
+    if (card.kind === 'correct') {
+      const info = award(pi, state.step);
+      if (state.step === 0) state.scaleSolved = true;
+      if (state.step === 1) state.cauldronSolved = true;
+      if (state.step === 2) state.beakerSolved = true;
+      state.alert = null;
+      state.note = '';
+      state.goodCard = cardIndex;
+      state.badCard = -1;
+      state.phase = 'celebrate';
+      state.phaseT = state.step === 2 ? 1.2 : 0.82;
+      state.celebrate = successLine(info);
+      state.ready = [null, null];
+      audio.success(state.step);
+      const spot = stationCenter(state.step);
+      const colors = [COL.emerald, COL.magenta, COL.gold];
+      burst(spot.x, spot.y, colors[state.step], state.step === 2 ? 46 : 28);
+      announce(state.celebrate + '. ' + (state.step < 2 ? state.problem.steps[state.step + 1].prompt : 'Round complete.'));
+    } else {
+      penalize(pi);
+      state.alert = card.alert;
+      state.note = '';
+      state.shake = 8;
+      state.badCard = cardIndex;
+      state.badT = 0.55;
+      state.goodCard = -1;
+      state.ready = [null, null];
+      audio.buzz();
+      announce('Diagnostic alert. ' + card.alert);
+    }
+  }
+
+  function armReady(pi, cardIndex) {
+    if (state.phase !== 'input' || state.step !== 2) return;
+    state.ready[pi] = cardIndex;
+    pads[pi].focus = cardIndex;
+    const other = 1 - pi;
+    if (state.ready[other] == null) {
+      state.note = (pi === 0 ? 'P1' : 'P2') + ' is ready. Partner, lock the same volume.';
+      audio.tick();
+      announce(state.note);
+      return;
+    }
+    const a = state.problem.steps[2].choices[state.ready[0]];
+    const b = state.problem.steps[2].choices[state.ready[1]];
+    const second = cardIndex;
+    state.ready = [null, null];
+    if (!a || !b || a.value !== b.value) {
+      state.note = 'Agree on one elixir volume, then both lock in together.';
+      audio.buzz();
+      announce(state.note);
+      return;
+    }
+    resolveAnswer(pi, second);
+  }
+
+  function trySubmit(pi, cardIndex) {
+    if (state.screen !== 'play' || state.phase !== 'input') return;
+    if (!canControl(pi)) {
+      if (state.mode === 'coop') {
+        const owner = stepOwner();
+        state.note = owner === 'both'
+          ? 'Both alchemists seal this beaker together.'
+          : ((owner === 0 ? 'P1' : 'P2') + ' operates this station.');
+        audio.tick();
+      }
+      return;
+    }
+    if (state.mode === 'coop' && state.step === 2) {
+      armReady(pi, cardIndex);
+      return;
+    }
+    resolveAnswer(pi, cardIndex);
+  }
+
+  function advance() {
+    if (state.phase === 'down') {
+      state.screen = 'over';
+      state.phase = 'input';
+      announce(overSummary());
+      swallowPads();
+      return;
+    }
+    if (state.step < 2) {
+      state.step += 1;
+      state.phase = 'input';
+      state.stepStart = performance.now();
+      state.ready = [null, null];
+      state.goodCard = -1;
+      state.badCard = -1;
+      state.note = '';
+      pads[0].focus = 0;
+      pads[1].focus = 0;
+      announce(describePlay());
+    } else {
+      state.round += 1;
+      loadRound();
+    }
+  }
+
+  function overSummary() {
+    if (state.mode === 'coop') return 'Team shields shattered. Final team score ' + fmt(state.score) + '. Round ' + state.round + '.';
+    if (state.mode === 'duel') return winnerLine() + '. P1 ' + state.duel[0].stars + ' stars, P2 ' + state.duel[1].stars + ' stars.';
+    return 'Shields shattered. Final score ' + fmt(state.score) + '. Round ' + state.round + '.';
+  }
+
+  function winnerLine() {
+    const a = state.duel[0];
+    const b = state.duel[1];
+    if (a.stars !== b.stars) return a.stars > b.stars ? 'P1 TAKES THE FOUNDRY' : 'P2 TAKES THE FOUNDRY';
+    if (a.score !== b.score) return a.score > b.score ? 'P1 WINS ON SCORE' : 'P2 WINS ON SCORE';
+    return 'DUEL DRAWN';
+  }
+
+  function goTitle() {
+    state.screen = 'title';
+    state.phase = 'input';
+    state.alert = null;
+    announce('Alchemy Balance title. Choose solo, team co-op, or duel.');
+    swallowPads();
+  }
+
+  /* ---------- input ---------- */
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, window.innerWidth) * dpr;
+    canvas.height = Math.max(1, window.innerHeight) * dpr;
+    view.dpr = dpr;
+    view.scale = Math.min(window.innerWidth / VW, window.innerHeight / VH);
+    view.ox = (window.innerWidth - VW * view.scale) / 2;
+    view.oy = (window.innerHeight - VH * view.scale) / 2;
+  }
+
+  function toVirtual(clientX, clientY) {
+    return {
+      x: (clientX - view.ox) / view.scale,
+      y: (clientY - view.oy) / view.scale
+    };
+  }
+
+  function cardAt(x, y) {
+    for (let i = 0; i < UI.cards.length; i++) if (hit(UI.cards[i], x, y)) return i;
+    return -1;
+  }
+
+  function onCardClick(index) {
+    if (state.mode === 'solo' || state.mode === 'duel') {
+      pads[0].focus = index;
+      trySubmit(0, index);
+      return;
+    }
+    const owner = stepOwner();
+    if (owner === 'both') {
+      if (state.ready[0] == null) armReady(0, index);
+      else armReady(1, index);
+      return;
+    }
+    pads[owner].focus = index;
+    trySubmit(owner, index);
+  }
+
+  function onLockClick() {
+    if (state.mode === 'solo' || state.mode === 'duel') {
+      trySubmit(0, pads[0].focus);
+      return;
+    }
+    const owner = stepOwner();
+    if (owner === 'both') {
+      if (state.ready[0] == null) armReady(0, pads[0].focus);
+      else armReady(1, pads[1].focus);
+      return;
+    }
+    trySubmit(owner, pads[owner].focus);
+  }
+
+  function onPointerDown() {
+    const x = pointer.x;
+    const y = pointer.y;
+    if (hit(UI.mute, x, y)) {
+      audio.toggle();
+      return;
+    }
+    if (state.screen === 'title') {
+      for (let i = 0; i < UI.titleBtns.length; i++) {
+        if (hit(UI.titleBtns[i], x, y)) {
+          state.titleIndex = i;
+          beginGame(i === 0 ? 'solo' : (i === 1 ? 'coop' : 'duel'));
+          return;
+        }
+      }
+      return;
+    }
+    if (state.screen === 'over') {
+      if (hit(UI.overBtn, x, y)) goTitle();
+      return;
+    }
+    if (state.phase !== 'input') return;
+    const card = cardAt(x, y);
+    if (card >= 0) onCardClick(card);
+    else if (hit(UI.lock, x, y)) onLockClick();
+  }
+
+  function onPointerMove() {
+    if (state.screen !== 'play') {
+      state.hoverCard = -1;
+      return;
+    }
+    const h = cardAt(pointer.x, pointer.y);
+    if (h === state.hoverCard) return;
+    state.hoverCard = h;
+    if (h < 0 || state.phase !== 'input') return;
+    if (state.mode === 'solo' || state.mode === 'duel') {
+      if (pads[0].focus !== h) {
+        pads[0].focus = h;
+        audio.tick();
+      }
+    } else {
+      const owner = stepOwner();
+      const pi = owner === 'both' ? 0 : owner;
+      if (pads[pi].focus !== h) {
+        pads[pi].focus = h;
+        audio.tick();
+      }
+    }
+  }
+
+  function moveFocus(pi, dir) {
+    if (state.screen === 'title') {
+      state.titleIndex = (state.titleIndex + dir + 3) % 3;
+      audio.tick();
+      return;
+    }
+    if (state.screen !== 'play' || state.phase !== 'input') return;
+    pads[pi].focus = (pads[pi].focus + dir + 4) % 4;
+    audio.tick();
+  }
+
+  function confirmKey(pi) {
+    if (state.screen === 'title') {
+      beginGame(state.titleIndex === 0 ? 'solo' : (state.titleIndex === 1 ? 'coop' : 'duel'));
+      return;
+    }
+    if (state.screen === 'over') {
+      goTitle();
+      return;
+    }
+    trySubmit(pi, pads[pi].focus);
+  }
+
+  window.addEventListener('keydown', (e) => {
+    audio.unlock();
+    const code = e.code;
+    if (['Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].indexOf(code) >= 0) e.preventDefault();
+    if (code === 'KeyM' && !e.repeat) {
+      audio.toggle();
+      return;
+    }
+    if (code === 'Escape' && !e.repeat) {
+      if (state.screen !== 'title') goTitle();
+      return;
+    }
+    if (e.repeat && (code === 'Space' || code === 'Enter' || code === 'KeyF')) return;
+    if (state.screen === 'title') {
+      if (code === 'ArrowLeft' || code === 'KeyA') moveFocus(0, -1);
+      else if (code === 'ArrowRight' || code === 'KeyD') moveFocus(0, 1);
+      else if (code === 'Space' || code === 'Enter' || code === 'KeyF') confirmKey(0);
+      return;
+    }
+    if (state.screen === 'over') {
+      if (code === 'Space' || code === 'Enter' || code === 'KeyF') confirmKey(0);
+      return;
+    }
+    if (state.mode === 'solo') {
+      if (code === 'KeyA' || code === 'ArrowLeft' || code === 'KeyW' || code === 'ArrowUp') moveFocus(0, -1);
+      else if (code === 'KeyD' || code === 'ArrowRight' || code === 'KeyS' || code === 'ArrowDown') moveFocus(0, 1);
+      else if (code === 'Space' || code === 'Enter' || code === 'KeyF') confirmKey(0);
+      return;
+    }
+    if (code === 'KeyA' || code === 'KeyW') moveFocus(0, -1);
+    else if (code === 'KeyD' || code === 'KeyS') moveFocus(0, 1);
+    else if (code === 'KeyF' || code === 'Space') confirmKey(0);
+    if (code === 'ArrowLeft' || code === 'ArrowUp') moveFocus(1, -1);
+    else if (code === 'ArrowRight' || code === 'ArrowDown') moveFocus(1, 1);
+    else if (code === 'Enter') confirmKey(1);
+  });
+
+  canvas.addEventListener('pointerdown', (e) => {
+    audio.unlock();
+    const p = toVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    onPointerDown();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const p = toVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    onPointerMove();
+  });
+  canvas.addEventListener('pointerleave', () => {
+    pointer.inside = false;
+    state.hoverCard = -1;
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('resize', resize);
+
+  function padPressed(gp, i) {
+    const b = gp.buttons && gp.buttons[i];
+    if (b == null) return false;
+    if (typeof b === 'number') return b > 0.5;
+    return !!(b.pressed || b.value > 0.5);
+  }
+  function hatName(hat, index) {
+    if (hat == null || !isFinite(hat)) return '';
+    if (hat > 1.05 || hat < -1.05) {
+      hatIdle[index] = hat;
+      return '';
+    }
+    const n = Math.round((hat + 1) / HAT_STEP);
+    const snapped = -1 + n * HAT_STEP;
+    const onStop = n >= 0 && n <= 7 && Math.abs(hat - snapped) < 0.08;
+    if (!onStop) {
+      hatIdle[index] = hat;
+      return '';
+    }
+    if (hatIdle[index] == null) {
+      hatIdle[index] = hat;
+      return '';
+    }
+    if (Math.abs(hat - hatIdle[index]) <= 0.12) return '';
+    return HAT_NAME[n];
+  }
+  function stickAxis(gp, axisIndex) {
+    const axes = gp.axes || [];
+    const v = axes[axisIndex] != null ? axes[axisIndex] : 0;
+    const key = gp.index + ':' + axisIndex;
+    if (axisRest[key] == null) axisRest[key] = Math.abs(v) > 0.9 ? v : 0;
+    if (Math.abs(axisRest[key]) > 0.9 && Math.abs(v - axisRest[key]) < 0.12) return 0;
+    return v;
+  }
+  function padDirs(gp) {
+    if (!gp) return { left: false, right: false, up: false, down: false, a: false, start: false };
+    const axes = gp.axes || [];
+    const axX = stickAxis(gp, 0);
+    const axY = stickAxis(gp, 1);
+    const hat = axes.length > 9 ? hatName(axes[9], gp.index) : '';
+    const standard = gp.mapping === 'standard';
+    const start = standard
+      ? (padPressed(gp, PAD.START) || padPressed(gp, 8))
+      : (padPressed(gp, PAD.START_ALT) || padPressed(gp, 10));
+    return {
+      left: padPressed(gp, PAD.LEFT) || axX < -AXIS_DEAD || hat === 'left' || hat === 'up-left' || hat === 'down-left',
+      right: padPressed(gp, PAD.RIGHT) || axX > AXIS_DEAD || hat === 'right' || hat === 'up-right' || hat === 'down-right',
+      up: padPressed(gp, PAD.UP) || axY < -AXIS_DEAD || hat === 'up' || hat === 'up-left' || hat === 'up-right',
+      down: padPressed(gp, PAD.DOWN) || axY > AXIS_DEAD || hat === 'down' || hat === 'down-left' || hat === 'down-right',
+      a: padPressed(gp, PAD.A) || padPressed(gp, PAD.B),
+      start: start
+    };
+  }
+  function menuStep(d) {
+    const h = (d.right ? 1 : 0) - (d.left ? 1 : 0);
+    if (h) return h;
+    return (d.down ? 1 : 0) - (d.up ? 1 : 0);
+  }
+  function takeStep(hold, dir, dt) {
+    if (!dir) {
+      hold.dir = 0;
+      hold.t = 0;
+      hold.n = 0;
+      return 0;
+    }
+    if (dir !== hold.dir) {
+      hold.dir = dir;
+      hold.t = 0;
+      hold.n = 0;
+      return dir;
+    }
+    hold.t += dt;
+    const wait = hold.n ? 0.14 : 0.32;
+    if (hold.t >= wait) {
+      hold.t = 0;
+      hold.n += 1;
+      return dir;
+    }
+    return 0;
+  }
+  function listPads() {
+    try {
+      return navigator.getGamepads ? navigator.getGamepads() : [];
+    } catch (err) {
+      return [];
+    }
+  }
+  function pollGamepads(dt) {
+    const list = listPads();
+    const liveIdx = [];
+    for (let i = 0; i < list.length; i++) if (list[i]) liveIdx.push(i);
+    const count = state.mode === 'solo' || state.screen !== 'play' ? 1 : 2;
+    for (let i = 0; i < count; i++) {
+      if (liveIdx[i] == null) continue;
+      const d = padDirs(list[liveIdx[i]]);
+      if (!pads[i].seen) {
+        pads[i].prev = { a: d.a, start: d.start };
+        pads[i].seen = true;
+        continue;
+      }
+      const prev = pads[i].prev;
+      if (state.screen === 'title' && i === 0) {
+        const step = takeStep(pads[0].hold, menuStep(d), dt);
+        if (step) moveFocus(0, step);
+        if ((d.a && !prev.a) || (d.start && !prev.start)) {
+          beginGame(state.titleIndex === 0 ? 'solo' : (state.titleIndex === 1 ? 'coop' : 'duel'));
+          pads[0].prev = { a: true, start: true };
+          return;
+        }
+      } else if (state.screen === 'over' && i === 0) {
+        if ((d.a && !prev.a) || (d.start && !prev.start)) {
+          goTitle();
+          pads[0].prev = { a: true, start: true };
+          return;
+        }
+      } else if (state.screen === 'play') {
+        const step = takeStep(pads[i].hold, menuStep(d), dt);
+        if (step) moveFocus(i, step);
+        if (d.a && !prev.a) confirmKey(i);
+      }
+      pads[i].prev = { a: d.a, start: d.start };
+    }
+  }
+
+  window.addEventListener('gamepadconnected', (e) => {
+    audio.unlock();
+    state.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' linked · D-pad moves · A confirms';
+    announce(state.padNote);
+  });
+  window.addEventListener('gamepaddisconnected', (e) => {
+    state.padNote = '8BitDo ' + (e.gamepad.index + 1) + ' disconnected';
+  });
+
+  /* ---------- update ---------- */
+  function damp(cur, target, dt) {
+    return cur + (target - cur) * Math.min(1, dt * 5);
+  }
+  function update(dt) {
+    state.time += dt;
+    if (state.screen === 'play') {
+      state.vis.scale = damp(state.vis.scale, state.scaleSolved ? 1 : 0, dt);
+      state.vis.cauldron = damp(state.vis.cauldron, state.cauldronSolved ? 1 : 0, dt);
+      state.vis.beaker = damp(state.vis.beaker, state.beakerSolved ? 1 : 0, dt);
+      if (state.shake > 0) state.shake *= Math.pow(0.04, dt);
+      if (state.badT > 0) state.badT -= dt;
+      if (state.phase === 'celebrate' || state.phase === 'down') {
+        state.phaseT -= dt;
+        if (state.phaseT <= 0) advance();
+      }
+    }
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 420 * dt;
+      p.life -= dt * p.decay;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    for (let i = 0; i < dust.length; i++) {
+      dust[i].y -= dust[i].s * dt;
+      dust[i].x += Math.sin(state.time * 0.6 + dust[i].p) * 8 * dt;
+      if (dust[i].y < -4) {
+        dust[i].y = VH + 4;
+        dust[i].x = Math.random() * VW;
+      }
+    }
+    for (let i = 0; i < bubbles.length; i++) {
+      bubbles[i].v -= bubbles[i].sp * dt;
+      if (bubbles[i].v < 0) {
+        bubbles[i].v = 1;
+        bubbles[i].u = Math.random();
+      }
+    }
+    audio.pump();
+    pollGamepads(dt);
+  }
+
+  /* ---------- draw helpers ---------- */
+  function roundRect(x, y, w, h, r, fill, stroke, sw) {
+    const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = sw || 2;
+      ctx.stroke();
+    }
+  }
+  function wrapText(text, maxWidth, font) {
+    ctx.font = font;
+    const words = String(text).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = words[i];
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+  function stationBox(i) {
+    const s = GEO.stage;
+    const pad = 12;
+    const top = s.y + 36;
+    const h = s.h - 48;
+    const w = (s.w - pad * 4) / 3;
+    return { x: s.x + pad + i * (w + pad), y: top, w: w, h: h };
+  }
+  function drawRune(id, x, y, s, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(2, s * 0.12);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    if (id === 'triangle') {
+      ctx.beginPath();
+      ctx.moveTo(0, -s);
+      ctx.lineTo(s * 0.92, s * 0.78);
+      ctx.lineTo(-s * 0.92, s * 0.78);
+      ctx.closePath();
+      ctx.stroke();
+    } else if (id === 'smiley') {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.86, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(-s * 0.28, -s * 0.16, s * 0.1, 0, Math.PI * 2);
+      ctx.arc(s * 0.28, -s * 0.16, s * 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, s * 0.12, s * 0.4, 0.2, Math.PI - 0.2);
+      ctx.stroke();
+    } else if (id === 'sun') {
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.42, 0, Math.PI * 2);
+      ctx.stroke();
+      for (let i = 0; i < 8; i++) {
+        const a = (Math.PI * 2 * i) / 8;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * s * 0.58, Math.sin(a) * s * 0.58);
+        ctx.lineTo(Math.cos(a) * s * 0.95, Math.sin(a) * s * 0.95);
+        ctx.stroke();
+      }
+    } else if (id === 'heart') {
+      ctx.beginPath();
+      ctx.moveTo(0, s * 0.72);
+      ctx.bezierCurveTo(-s * 1.05, s * 0.05, -s * 0.55, -s * 0.85, 0, -s * 0.28);
+      ctx.bezierCurveTo(s * 0.55, -s * 0.85, s * 1.05, s * 0.05, 0, s * 0.72);
+      ctx.closePath();
+      ctx.stroke();
+    } else if (id === 'diamond') {
+      ctx.beginPath();
+      ctx.moveTo(0, -s);
+      ctx.lineTo(s * 0.72, 0);
+      ctx.lineTo(0, s);
+      ctx.lineTo(-s * 0.72, 0);
+      ctx.closePath();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.78, 0);
+      ctx.lineTo(s * 0.78, 0);
+      ctx.moveTo(0, -s * 0.78);
+      ctx.lineTo(0, s * 0.78);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, 0, s * 0.28, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawLab() {
+    const g = ctx.createLinearGradient(0, 0, 0, VH);
+    g.addColorStop(0, '#10182c');
+    g.addColorStop(0.55, '#0a1020');
+    g.addColorStop(1, '#070b16');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.strokeStyle = 'rgba(57, 243, 255, 0.05)';
+    ctx.lineWidth = 1;
+    for (let x = 40; x < VW; x += 40) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, VH);
+      ctx.stroke();
+    }
+    for (let y = 40; y < VH; y += 40) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(VW, y);
+      ctx.stroke();
+    }
+    for (let i = 0; i < dust.length; i++) {
+      const d = dust[i];
+      ctx.globalAlpha = 0.35 + 0.35 * Math.sin(state.time * 2 + d.p);
+      ctx.fillStyle = i % 3 === 0 ? COL.magenta : (i % 3 === 1 ? COL.cyan : COL.gold);
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(57, 243, 255, 0.05)';
+    ctx.beginPath();
+    ctx.ellipse(640, 690, 520, 36, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawMute(x, y) {
+    const r = { x: x, y: y, w: UI.mute.w, h: UI.mute.h };
+    const on = !audio.isMuted();
+    roundRect(r.x, r.y, r.w, r.h, 10, on ? '#102033' : '#2a1220', on ? COL.cyan : COL.magenta, 1.5);
+    ctx.fillStyle = on ? COL.cyan : COL.magenta;
+    ctx.font = '700 13px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(on ? 'AUDIO ON' : 'MUTED', r.x + r.w / 2, r.y + r.h / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function pill(x, y, text, accent) {
+    ctx.font = '700 14px "Segoe UI", system-ui, sans-serif';
+    const w = Math.ceil(ctx.measureText(text).width) + 22;
+    if (x + w > UI.mute.x - 8) return x;
+    roundRect(x, y, w, 32, 16, '#0d1728', accent, 1.5);
+    ctx.fillStyle = accent;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + w / 2, y + 16);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    return x + w + 8;
+  }
+
+  function drawHUD() {
+    roundRect(GEO.hud.x, GEO.hud.y, GEO.hud.w, GEO.hud.h, 14, 'rgba(8,14,28,0.88)', COL.line, 1.5);
+    let x = 24;
+    const y = 18;
+    x = pill(x, y, 'ALCHEMY', COL.cyan);
+    const modeName = state.mode === 'coop' ? 'TEAM CO-OP' : (state.mode === 'duel' ? 'DUEL' : 'SOLO');
+    x = pill(x, y, modeName, state.mode === 'duel' ? COL.magenta : (state.mode === 'coop' ? COL.emerald : COL.cyan));
+    if (state.problem) x = pill(x, y, 'R' + state.round + ' ' + state.problem.tierShort, COL.gold);
+    if (state.mode === 'duel') {
+      x = pill(x, y, 'P1 ★' + state.duel[0].stars + '  ' + fmt(state.duel[0].score) + '  SH ' + state.duel[0].shields, COL.p1);
+      x = pill(x, y, 'P2 ★' + state.duel[1].stars + '  ' + fmt(state.duel[1].score) + '  SH ' + state.duel[1].shields, COL.p2);
+    } else if (state.mode === 'coop') {
+      x = pill(x, y, 'TEAM SHIELDS ' + state.shields, COL.emerald);
+      x = pill(x, y, 'COMBO ' + state.combo, COL.gold);
+      pill(x, y, 'TEAM SCORE ' + fmt(state.score), COL.cyan);
+    } else {
+      x = pill(x, y, 'SHIELDS ' + state.shields, COL.emerald);
+      x = pill(x, y, 'COMBO ' + state.combo, COL.gold);
+      pill(x, y, 'SCORE ' + fmt(state.score), COL.cyan);
+    }
+    drawMute(UI.mute.x, UI.mute.y);
+  }
+
+  function drawBriefing() {
+    const p = state.problem;
+    const b = GEO.brief;
+    roundRect(b.x, b.y, b.w, b.h, 14, 'rgba(8,14,28,0.9)', COL.line, 1.5);
+    const boxes = [
+      { x: b.x + 10, w: 520, k: 'CLUE 1 · FIRST RUNE', lines: p.clue1Lines, accent: COL.cyan },
+      { x: b.x + 540, w: 470, k: 'CLUE 2 · CAULDRON', lines: p.clue2Lines, accent: COL.magenta },
+      { x: b.x + 1020, w: 216, k: 'BEAKER MISSION', lines: [p.mission, missionBlurb(p.rounding)], accent: p.rounding === 'hundred' ? COL.gold : (p.rounding === 'ten' ? COL.emerald : COL.cyan) }
+    ];
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i];
+      ctx.fillStyle = box.accent;
+      ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(box.k, box.x, b.y + 22);
+      ctx.fillStyle = COL.ink;
+      ctx.font = '700 18px "Segoe UI", system-ui, sans-serif';
+      let size = 18;
+      const longest = box.lines[0] || '';
+      while (size > 13 && ctx.measureText(longest).width > box.w - 8) {
+        size -= 1;
+        ctx.font = '700 ' + size + 'px "Segoe UI", system-ui, sans-serif';
+      }
+      ctx.fillText(box.lines[0] || '', box.x, b.y + 48);
+      if (box.lines[1]) {
+        ctx.fillStyle = COL.dim;
+        ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+        ctx.fillText(box.lines[1], box.x, b.y + 68);
+      }
+    }
+  }
+
+  function drawPansContent(problem, leftX, leftY, rightX, rightY, solved) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (problem.clue1Type === 'pan') {
+      const n = problem.panCount;
+      const span = Math.min(120, 28 * n);
+      for (let i = 0; i < n; i++) {
+        const x = leftX - span / 2 + (span / Math.max(1, n - 1)) * i;
+        const px = n === 1 ? leftX : x;
+        drawRune(problem.sym1.id, px, leftY - 8, 15, RUNE_COLOR[problem.sym1.id]);
+        if (solved > 0.45) {
+          ctx.fillStyle = COL.gold;
+          ctx.font = '700 10px "Segoe UI", system-ui, sans-serif';
+          ctx.fillText(plain(problem.sym1Value), px, leftY + 16);
+        }
+      }
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(fmt(problem.panTotal) + ' g', rightX, rightY - 2);
+    } else if (problem.clue1Type === 'twin') {
+      drawRune(problem.sym1.id, leftX - 28, leftY - 6, 18, RUNE_COLOR[problem.sym1.id]);
+      drawRune(problem.sym1.id, leftX + 28, leftY - 6, 18, RUNE_COLOR[problem.sym1.id]);
+      ctx.fillStyle = COL.magenta;
+      ctx.font = '700 18px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('×', leftX, leftY - 6);
+      if (solved > 0.45) {
+        ctx.fillStyle = COL.gold;
+        ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+        ctx.fillText(plain(problem.sym1Value), leftX - 28, leftY + 20);
+        ctx.fillText(plain(problem.sym1Value), leftX + 28, leftY + 20);
+      }
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(plain(problem.square), rightX, rightY - 2);
+    } else {
+      drawRune(problem.sym1.id, leftX, leftY - 8, 22, RUNE_COLOR[problem.sym1.id]);
+      if (solved > 0.45) {
+        ctx.fillStyle = COL.gold;
+        ctx.font = '700 13px "Segoe UI", system-ui, sans-serif';
+        ctx.fillText(plain(problem.sym1Value), leftX, leftY + 24);
+      }
+      ctx.fillStyle = COL.ink;
+      ctx.font = '700 15px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('÷ ' + problem.flaskD + ' flasks', rightX, rightY - 12);
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 16px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(fmt(problem.flaskEach) + ' each', rightX, rightY + 10);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function drawScale(box, solvedAmt) {
+    const cx = box.x + box.w * 0.5;
+    const beamY = box.y + 62;
+    const wobble = (1 - solvedAmt) * Math.sin(state.time * 1.7) * 0.12;
+    const angle = wobble;
+    ctx.strokeStyle = '#16324a';
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, beamY + 8);
+    ctx.lineTo(cx, box.y + box.h - 28);
+    ctx.stroke();
+    ctx.fillStyle = '#16324a';
+    ctx.beginPath();
+    ctx.moveTo(cx - 46, box.y + box.h - 22);
+    ctx.lineTo(cx + 46, box.y + box.h - 22);
+    ctx.lineTo(cx + 32, box.y + box.h - 12);
+    ctx.lineTo(cx - 32, box.y + box.h - 12);
+    ctx.closePath();
+    ctx.fill();
+    const reach = Math.min(150, box.w * 0.36);
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const lx = cx + (-reach) * cos;
+    const ly = beamY + (-reach) * sin;
+    const rx = cx + reach * cos;
+    const ry = beamY + reach * sin;
+    ctx.strokeStyle = solvedAmt > 0.65 ? COL.emerald : COL.cyan;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(lx, ly);
+    ctx.lineTo(rx, ry);
+    ctx.stroke();
+    ctx.fillStyle = solvedAmt > 0.65 ? COL.emerald : COL.gold;
+    ctx.beginPath();
+    ctx.arc(cx, beamY, 7, 0, Math.PI * 2);
+    ctx.fill();
+    function hanger(hx, hy) {
+      ctx.strokeStyle = COL.dim;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(hx, hy);
+      ctx.lineTo(hx, hy + 26);
+      ctx.stroke();
+      roundRect(hx - 58, hy + 26, 116, 36, 8, 'rgba(10,20,36,0.9)', solvedAmt > 0.65 ? COL.emerald : COL.line, 1.5);
+    }
+    hanger(lx, ly);
+    hanger(rx, ry);
+    drawPansContent(state.problem, lx, ly + 44, rx, ry + 44, solvedAmt);
+    ctx.fillStyle = solvedAmt > 0.65 ? COL.emerald : COL.dim;
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(solvedAmt > 0.65 ? 'LEVEL · RUNE STAMPED' : (state.problem.clue1Type === 'twin' ? 'TWIN FACTOR PRESS' : (state.problem.clue1Type === 'inverse' ? 'INVERSE FLASKS' : 'EQUAL-PAN SCALE')), cx, box.y + box.h - 2);
+    ctx.textAlign = 'left';
+  }
+
+  function drawCauldron(box, solvedAmt) {
+    const cx = box.x + box.w * 0.5;
+    const top = box.y + 58;
+    const bowlH = 120;
+    ctx.fillStyle = '#1a120c';
+    ctx.fillRect(cx - 70, top + bowlH - 6, 16, 28);
+    ctx.fillRect(cx + 54, top + bowlH - 6, 16, 28);
+    ctx.beginPath();
+    ctx.moveTo(cx - 96, top + 10);
+    ctx.bezierCurveTo(cx - 120, top + bowlH, cx + 120, top + bowlH, cx + 96, top + 10);
+    ctx.closePath();
+    ctx.fillStyle = '#121820';
+    ctx.fill();
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx - 90, top + 24);
+    ctx.bezierCurveTo(cx - 108, top + bowlH - 8, cx + 108, top + bowlH - 8, cx + 90, top + 24);
+    ctx.closePath();
+    ctx.clip();
+    const fillTop = top + bowlH - 18 - (70 + solvedAmt * 20);
+    const lg = ctx.createLinearGradient(cx, fillTop, cx, top + bowlH);
+    lg.addColorStop(0, solvedAmt > 0.5 ? '#ffd56a' : '#39f3ff');
+    lg.addColorStop(1, solvedAmt > 0.5 ? '#ff4ad8' : '#1a6cff');
+    ctx.fillStyle = lg;
+    ctx.fillRect(cx - 120, fillTop + Math.sin(state.time * 3) * 3, 240, bowlH);
+    for (let i = 0; i < bubbles.length; i++) {
+      const b = bubbles[i];
+      const bx = cx - 70 + b.u * 140;
+      const by = fillTop + 10 + b.v * (top + bowlH - fillTop - 16);
+      ctx.globalAlpha = 0.35 + 0.4 * (1 - b.v);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(bx, by, b.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(cx - 96, top + 10);
+    ctx.bezierCurveTo(cx - 120, top + bowlH, cx + 120, top + bowlH, cx + 96, top + 10);
+    ctx.strokeStyle = solvedAmt > 0.5 ? COL.gold : COL.magenta;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(cx, top + 10, 96, 14, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = solvedAmt > 0.5 ? COL.gold : COL.cyan;
+    ctx.stroke();
+    if (state.problem && state.step >= 1 && solvedAmt < 0.85) {
+      drawRune(state.problem.sym1.id, cx, top + 2, 13, RUNE_COLOR[state.problem.sym1.id]);
+    }
+    ctx.textAlign = 'center';
+    ctx.fillStyle = solvedAmt > 0.55 ? COL.gold : COL.ink;
+    ctx.font = '700 18px "Segoe UI", system-ui, sans-serif';
+    if (solvedAmt > 0.55) ctx.fillText(fmt(state.problem.sym2Value) + ' mL', cx, top + 78);
+    else ctx.fillText(state.step >= 1 ? 'POUR THE RUNE' : 'WAITING', cx, top + 78);
+    ctx.fillStyle = solvedAmt > 0.55 ? COL.gold : COL.dim;
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(solvedAmt > 0.55 ? 'BREW LOCKED' : 'PLASMA CAULDRON', cx, box.y + box.h - 2);
+    ctx.textAlign = 'left';
+  }
+
+  function drawBeaker(box, solvedAmt) {
+    const p = state.problem;
+    const cx = box.x + box.w * 0.52;
+    const top = box.y + 36;
+    const bottom = box.y + box.h - 28;
+    ctx.beginPath();
+    ctx.moveTo(cx - 42, top);
+    ctx.lineTo(cx - 58, bottom);
+    ctx.lineTo(cx + 58, bottom);
+    ctx.lineTo(cx + 42, top);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(180, 230, 255, 0.05)';
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    const level = bottom - (bottom - top - 16) * (0.12 + solvedAmt * 0.72);
+    ctx.fillStyle = solvedAmt > 0.6 ? 'rgba(255, 213, 106, 0.85)' : 'rgba(57, 243, 255, 0.28)';
+    ctx.fillRect(cx - 70, level, 140, bottom - level + 4);
+    ctx.restore();
+    ctx.beginPath();
+    ctx.moveTo(cx - 42, top);
+    ctx.lineTo(cx - 58, bottom);
+    ctx.lineTo(cx + 58, bottom);
+    ctx.lineTo(cx + 42, top);
+    ctx.strokeStyle = solvedAmt > 0.6 ? COL.gold : COL.cyan;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.strokeStyle = COL.dim;
+    ctx.lineWidth = 1.5;
+    for (let i = 1; i <= 8; i++) {
+      const y = bottom - ((bottom - top - 8) * i) / 9;
+      const major = i % 2 === 0;
+      ctx.beginPath();
+      ctx.moveTo(cx + 36, y);
+      ctx.lineTo(cx + (major ? 52 : 46), y);
+      ctx.stroke();
+    }
+    ctx.textAlign = 'center';
+    if (solvedAmt > 0.6) {
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(fmt(p.finalVolume) + ' mL', cx, (top + bottom) / 2);
+      for (let i = 0; i < 5; i++) {
+        const a = state.time * 2 + i;
+        drawRune('diamond', cx - 40 + i * 20, top - 8 + Math.sin(a) * 3, 6, COL.gold);
+      }
+    } else if (state.step === 2 && state.cauldronSolved) {
+      ctx.strokeStyle = COL.gold;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(box.x - 30, top + 40);
+      ctx.lineTo(cx - 48, top + 50);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = solvedAmt > 0.6 ? COL.gold : COL.dim;
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(solvedAmt > 0.6 ? 'ELIXIR SEALED' : 'GRADUATED BEAKER', cx, box.y + box.h - 2);
+    ctx.textAlign = 'left';
+  }
+
+  function drawStage() {
+    const s = GEO.stage;
+    const shakeX = state.shake > 0.4 ? (Math.random() - 0.5) * state.shake : 0;
+    const shakeY = state.shake > 0.4 ? (Math.random() - 0.5) * state.shake : 0;
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+    roundRect(s.x, s.y, s.w, s.h, 16, 'rgba(6,10,20,0.9)', COL.line, 1.5);
+    const names = ['LASER BALANCE', 'PLASMA CAULDRON', 'GRADUATED BEAKER'];
+    const marks = ['done', 'done', 'done'];
+    marks[0] = state.scaleSolved ? 'done' : (state.step === 0 ? 'active' : 'idle');
+    marks[1] = state.cauldronSolved ? 'done' : (state.step === 1 ? 'active' : 'idle');
+    marks[2] = state.beakerSolved ? 'done' : (state.step === 2 ? 'active' : 'idle');
+    for (let i = 0; i < 3; i++) {
+      const box = stationBox(i);
+      const accent = marks[i] === 'done' ? COL.emerald : (marks[i] === 'active' ? (i === 1 ? COL.magenta : COL.cyan) : COL.line);
+      roundRect(box.x, box.y, box.w, box.h, 12, 'rgba(8,16,30,0.65)', accent, marks[i] === 'idle' ? 1 : 2);
+      ctx.globalAlpha = marks[i] === 'idle' ? 0.72 : 1;
+      ctx.fillStyle = accent;
+      ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(names[i], box.x + box.w / 2, box.y + 16);
+      ctx.textAlign = 'left';
+      if (i === 0) drawScale(box, state.vis.scale);
+      else if (i === 1) drawCauldron(box, state.vis.cauldron);
+      else drawBeaker(box, state.vis.beaker);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawStatus() {
+    const s = GEO.status;
+    const alertOn = !!state.alert && state.phase !== 'celebrate';
+    roundRect(s.x, s.y, s.w, s.h, 12, alertOn ? 'rgba(42, 10, 18, 0.96)' : 'rgba(8,14,28,0.92)', alertOn ? COL.danger : COL.line, 1.5);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    if (state.phase === 'celebrate') {
+      ctx.fillStyle = COL.emerald;
+      ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(state.celebrate, s.x + 18, s.y + 42);
+      ctx.fillStyle = COL.dim;
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(roleLine(), s.x + 18, s.y + 70);
+      return;
+    }
+    if (alertOn) {
+      ctx.fillStyle = COL.danger;
+      ctx.font = '700 13px "Segoe UI", system-ui, sans-serif';
+      const title = state.phase === 'down' ? 'DIAGNOSTIC ALERT  ·  SHIELDS DOWN' : 'DIAGNOSTIC ALERT  ·  SHIELD −1';
+      ctx.fillText(title, s.x + 16, s.y + 20);
+      const lines = wrapText(state.alert, s.w - 36, '600 15px "Segoe UI", system-ui, sans-serif');
+      ctx.fillStyle = COL.ink;
+      ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
+      const show = lines.slice(0, 4);
+      for (let i = 0; i < show.length; i++) ctx.fillText(show[i], s.x + 16, s.y + 42 + i * 16);
+      return;
+    }
+    if (state.phase === 'down') {
+      ctx.fillStyle = COL.danger;
+      ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(state.celebrate || 'SHIELDS SHATTERED', s.x + 18, s.y + 42);
+      ctx.fillStyle = COL.dim;
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('Foundry locks in a moment.', s.x + 18, s.y + 70);
+      return;
+    }
+    ctx.fillStyle = COL.gold;
+    ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(roleLine(), s.x + 16, s.y + 20);
+    let promptTop = s.y + 44;
+    if (state.note) {
+      ctx.fillStyle = COL.cyan;
+      ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+      const noteLines = wrapText(state.note, s.w - 36, '600 13px "Segoe UI", system-ui, sans-serif');
+      ctx.fillText(noteLines[0] || '', s.x + 16, s.y + 40);
+      promptTop = s.y + 62;
+    }
+    const lines = wrapText(state.problem.steps[state.step].prompt, s.w - 36, '600 16px "Segoe UI", system-ui, sans-serif');
+    ctx.fillStyle = COL.ink;
+    ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+    const maxLines = state.note ? 2 : 3;
+    for (let i = 0; i < Math.min(maxLines, lines.length); i++) ctx.fillText(lines[i], s.x + 16, promptTop + i * 18);
+  }
+
+  function drawCards() {
+    const step = state.problem.steps[state.step];
+    for (let i = 0; i < 4; i++) {
+      const r = UI.cards[i];
+      const card = step.choices[i];
+      let border = COL.line;
+      let width = 1.5;
+      let fill = COL.card;
+      const p1Here = pads[0].focus === i;
+      const p2Here = state.mode !== 'solo' && pads[1].focus === i;
+      const bad = state.badCard === i && (state.badT > 0 || (!!state.alert && state.phase === 'input'));
+      const good = state.goodCard === i && state.phase === 'celebrate';
+      if (good) {
+        border = COL.emerald;
+        width = 3;
+        fill = '#10261c';
+      } else if (bad) {
+        border = COL.danger;
+        width = 3;
+        fill = '#2a1018';
+      } else if (p1Here && p2Here) {
+        border = COL.gold;
+        width = 3;
+      } else if (p1Here) {
+        border = state.mode === 'solo' ? COL.cyan : COL.p1;
+        width = 3;
+      } else if (p2Here) {
+        border = COL.p2;
+        width = 2.5;
+      }
+      roundRect(r.x, r.y, r.w, r.h, 12, fill, border, width);
+      ctx.fillStyle = COL.muted;
+      ctx.font = '700 12px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(String(i + 1), r.x + 12, r.y + 20);
+      if (state.mode === 'coop' && state.step === 2) {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = COL.p1;
+        if (state.ready[0] === i) ctx.fillText('P1 READY', r.x + r.w - 10, r.y + 20);
+        ctx.fillStyle = COL.p2;
+        if (state.ready[1] === i) ctx.fillText('P2 READY', r.x + r.w - 10, r.y + 36);
+      }
+      const label = fmt(card.value);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = COL.ink;
+      let size = 36;
+      ctx.font = '700 ' + size + 'px "Segoe UI", system-ui, sans-serif';
+      while (size > 20 && ctx.measureText(label).width > r.w - 24) {
+        size -= 2;
+        ctx.font = '700 ' + size + 'px "Segoe UI", system-ui, sans-serif';
+      }
+      ctx.fillText(label, r.x + r.w / 2, r.y + 68);
+      ctx.fillStyle = COL.dim;
+      ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(step.unit || 'value', r.x + r.w / 2, r.y + 92);
+    }
+    const lock = UI.lock;
+    const pulse = 0.5 + 0.5 * Math.sin(state.time * 4);
+    const labels = ['LEVEL SCALE', 'BREW CAULDRON', state.problem.rounding === 'exact' ? 'CORK ELIXIR' : 'DECANT BEAKER'];
+    roundRect(lock.x, lock.y, lock.w, lock.h, 12, '#1a1608', COL.gold, 2 + pulse);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.gold;
+    ctx.font = '700 18px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(labels[state.step], lock.x + lock.w / 2, lock.y + 48);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('LOCK IN', lock.x + lock.w / 2, lock.y + 74);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COL.muted;
+    ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+    let help = 'Mouse or WASD / arrows · Space locks · M mutes · ' + state.padNote;
+    if (state.mode === 'coop') help = 'P1 WASD + F/Space · P2 arrows + Enter · dual 8BitDo A · step 3 needs both · ' + state.padNote;
+    else if (state.mode === 'duel') help = 'P1 WASD + F/Space · P2 arrows + Enter · first correct lock takes the star · ' + state.padNote;
+    ctx.fillText(help, 20, 692);
+  }
+
+  function drawReticle(x, y, color) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.moveTo(x - 16, y);
+    ctx.lineTo(x - 5, y);
+    ctx.moveTo(x + 5, y);
+    ctx.lineTo(x + 16, y);
+    ctx.moveTo(x, y - 16);
+    ctx.lineTo(x, y - 5);
+    ctx.moveTo(x, y + 5);
+    ctx.lineTo(x, y + 16);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawReticles() {
+    if (pointer.inside) drawReticle(pointer.x, pointer.y, state.mode === 'duel' || state.mode === 'coop' ? COL.p1 : COL.cyan);
+    if (state.screen === 'play' && state.mode !== 'solo') {
+      const card = UI.cards[pads[1].focus];
+      if (card) drawReticle(card.x + card.w - 18, card.y + 18, COL.p2);
+    }
+  }
+
+  function drawTitle() {
+    drawLab();
+    drawMute(UI.mute.x, UI.mute.y);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.gold;
+    ctx.font = '700 14px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('SINGAPORE PRIMARY 4–5  ·  PICTORIAL ALGEBRA & MULTI-STEP WHOLE NUMBERS', VW / 2, 118);
+    ctx.fillStyle = COL.cyan;
+    ctx.font = '700 54px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('ALCHEMY BALANCE', VW / 2, 180);
+    ctx.fillStyle = COL.magenta;
+    ctx.font = '700 26px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('POTION SYMBOL FOUNDRY', VW / 2, 218);
+    roundRect(170, 248, 940, 180, 16, 'rgba(8,14,28,0.9)', COL.line, 1.5);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+    const lines = [
+      'Level the laser scale: identical runes share one mass. Twin crystals multiply, they do not halve.',
+      'Reverse a flask split by multiplying back, then pour that rune into the plasma cauldron.',
+      'Decant the brew: nearest ten, nearest hundred, or the exact volume — read the beaker mission.',
+      'Three steps each round. A wrong card costs a shield and opens a diagnostic alert.'
+    ];
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], VW / 2, 286 + i * 32);
+    const modes = [
+      { t: 'SOLO ALCHEMIST', a: 'Mouse, WASD or arrows, Space', b: '8BitDo pad 0 · D-pad + A', c: COL.cyan },
+      { t: 'TEAM CO-OP', a: 'Shared team score and shields', b: 'P1 then P2, both seal step 3', c: COL.emerald },
+      { t: 'COMPETITIVE DUEL', a: 'Same recipe, fastest lock-in', b: 'Step 3 awards a winner star', c: COL.magenta }
+    ];
+    for (let i = 0; i < 3; i++) {
+      const r = UI.titleBtns[i];
+      const on = state.titleIndex === i;
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? '#14243f' : COL.card, on ? modes[i].c : COL.line, on ? 3 : 1.5);
+      ctx.fillStyle = modes[i].c;
+      ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(modes[i].t, r.x + r.w / 2, r.y + 42);
+      ctx.fillStyle = COL.ink;
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(modes[i].a, r.x + r.w / 2, r.y + 74);
+      ctx.fillStyle = COL.dim;
+      ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(modes[i].b, r.x + r.w / 2, r.y + 98);
+    }
+    ctx.fillStyle = COL.muted;
+    ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('LEFT / RIGHT to choose  ·  ENTER, SPACE, or A to begin  ·  M mutes  ·  ' + state.padNote, VW / 2, 650);
+    ctx.textAlign = 'left';
+  }
+
+  function drawOver() {
+    drawLab();
+    drawHUD();
+    roundRect(300, 150, 680, 450, 18, 'rgba(8,14,28,0.94)', COL.danger, 2.5);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COL.danger;
+    ctx.font = '700 36px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('FOUNDRY SHIELDS DOWN', VW / 2, 220);
+    ctx.fillStyle = COL.ink;
+    ctx.font = '600 18px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('Reached round ' + state.round + ' · ' + (state.problem ? state.problem.tierLabel : ''), VW / 2, 268);
+    if (state.mode === 'coop') {
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 32px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('FINAL TEAM SCORE  ' + fmt(state.score), VW / 2, 340);
+      ctx.fillStyle = COL.dim;
+      ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('One shared score. No individual stars.', VW / 2, 380);
+    } else if (state.mode === 'duel') {
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 28px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText(winnerLine(), VW / 2, 330);
+      ctx.fillStyle = COL.p1;
+      ctx.font = '700 24px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('P1  ★ ' + state.duel[0].stars + '    ' + fmt(state.duel[0].score), VW / 2, 380);
+      ctx.fillStyle = COL.p2;
+      ctx.fillText('P2  ★ ' + state.duel[1].stars + '    ' + fmt(state.duel[1].score), VW / 2, 416);
+    } else {
+      ctx.fillStyle = COL.gold;
+      ctx.font = '700 32px "Segoe UI", system-ui, sans-serif';
+      ctx.fillText('FINAL SCORE  ' + fmt(state.score), VW / 2, 350);
+    }
+    const b = UI.overBtn;
+    roundRect(b.x, b.y, b.w, b.h, 12, '#102033', COL.cyan, 2);
+    ctx.fillStyle = COL.cyan;
+    ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText('RETURN TO THE FOUNDRY', VW / 2, b.y + 38);
+    ctx.textAlign = 'left';
+  }
+
+  function drawPlay() {
+    drawLab();
+    if (!state.problem) return;
+    drawHUD();
+    drawBriefing();
+    drawStage();
+    drawStatus();
+    drawCards();
+  }
+
+  function frame(ts) {
+    if (!frame.last) frame.last = ts;
+    const dt = clamp((ts - frame.last) / 1000, 0, 0.05);
+    frame.last = ts;
+    update(dt);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(view.dpr * view.scale, 0, 0, view.dpr * view.scale, view.dpr * view.ox, view.dpr * view.oy);
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    if (state.screen === 'title') drawTitle();
+    else if (state.screen === 'over') drawOver();
+    else drawPlay();
+    drawReticles();
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  announce('Alchemy Balance: Potion Symbol Foundry. Choose a mode to begin.');
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
