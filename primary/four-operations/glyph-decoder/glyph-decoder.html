@@ -85,8 +85,8 @@
   const BANDS = {
     warmup: { label: 'WARM-UP', name: 'EQUAL GROUPS', blurb: 'Same symbol, same value. Then substitute exactly.' },
     twin: { label: 'TIER 2', name: 'TWIN FACTORS', blurb: 'A glyph times itself, then a bigger operation.' },
-    advanced: { label: 'TIER 3', name: 'INVERSE + HUNDRED', blurb: 'Work backwards, then round to the nearest hundred.' },
-    master: { label: 'MASTER', name: 'CRYPTOGRAPHER', blurb: 'Mixed tablets. Exact, nearest ten, or nearest hundred.' }
+    advanced: { label: 'TIER 3', name: 'INVERSE + TEN', blurb: 'Work backwards, then round to the nearest ten.' },
+    master: { label: 'MASTER', name: 'CRYPTOGRAPHER', blurb: 'Mixed tablets. Exact value, or round to the nearest ten.' }
   };
 
   const UI = { hud: 54, briefY: 60, briefH: 106, stageY: 174, stageH: 328, deckY: 510 };
@@ -208,6 +208,8 @@
     }
   };
 
+  const MAX_N = 99;
+
   function randInt(a, b) {
     return a + Math.floor(Math.random() * (b - a + 1));
   }
@@ -294,15 +296,18 @@
       const t = traps[i];
       if (!t || !Number.isFinite(t.value)) continue;
       const v = Math.round(t.value);
-      if (v < 0 || used.has(v)) continue;
+      if (v < 1 || v > MAX_N || used.has(v)) continue;
       used.add(v);
       picked.push({ value: v, correct: false, alert: t.alert, trapId: t.trapId || 'miscalc' });
       if (picked.length === 3) break;
     }
     let salt = 1;
-    while (picked.length < 3 && salt < 50) {
-      const v = answer + salt * (salt % 2 === 0 ? 10 : 17);
-      if (v > 0 && !used.has(v)) {
+    while (picked.length < 3 && salt < 160) {
+      const delta = salt * (salt % 2 === 0 ? 10 : 7);
+      const candidates = [answer + delta, answer - delta];
+      for (let c = 0; c < candidates.length && picked.length < 3; c++) {
+        const v = candidates[c];
+        if (v < 1 || v > MAX_N || used.has(v)) continue;
         used.add(v);
         picked.push({
           value: v,
@@ -358,11 +363,16 @@
       return 'STEP 1 · Crack the ' + A + '. ' + A + ' ÷ ' + d.eq1.divisor + ' = ' + fmt(d.eq1.quotient) + '. What is the ' + A + '?';
     }
     if (step === 1) {
-      if (d.eq2.form === 'mul') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' × ' + d.eq2.factor + '?';
-      if (d.eq2.form === 'div') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.eq2.dividend) + ' ÷ ' + fmt(d.valueA) + '?';
-      if (d.eq2.form === 'div-by') return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' ÷ ' + d.eq2.divisor + '?';
-      const inner = d.valueA * d.eq2.k;
-      return 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Brackets first: ' + fmt(d.valueA) + ' × ' + d.eq2.k + ' = ' + fmt(inner) + '. What is ' + fmt(d.eq2.three) + ' × ' + fmt(inner) + '?';
+      let line;
+      if (d.eq2.form === 'mul') line = 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' × ' + d.eq2.factor + '?';
+      else if (d.eq2.form === 'div') line = 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.eq2.dividend) + ' ÷ ' + fmt(d.valueA) + '?';
+      else if (d.eq2.form === 'div-by') line = 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Substitute it. What is ' + fmt(d.valueA) + ' ÷ ' + d.eq2.divisor + '?';
+      else {
+        const inner = d.valueA * d.eq2.k;
+        line = 'STEP 2 · ' + A + ' = ' + fmt(d.valueA) + '. Brackets first: ' + fmt(d.valueA) + ' × ' + d.eq2.k + ' = ' + fmt(inner) + '. What is ' + fmt(d.eq2.three) + ' × ' + fmt(inner) + '?';
+      }
+      if (d.rounding === 'exact' && !d.eq3) line += ' That exact answer locks the relic.';
+      return line;
     }
     if (d.eq3) {
       const G = d.glyphC.name;
@@ -370,12 +380,11 @@
         ? (fmt(d.valueB) + ' × ' + d.eq3.factor)
         : (fmt(d.valueB) + ' ÷ ' + d.eq3.divisor);
       if (d.rounding === 'exact') return 'STEP 3 · ' + B + ' = ' + fmt(d.valueB) + '. Compute ' + op + ' and lock the EXACT ' + G + '.';
-      const place = d.rounding === 'ten' ? 'ten' : 'hundred';
-      return 'STEP 3 · ' + B + ' = ' + fmt(d.valueB) + '. Compute ' + op + ', then lock the nearest ' + place + '.';
+      return 'STEP 3 · ' + B + ' = ' + fmt(d.valueB) + '. What is ' + op + '? Enter the EXACT value. Rounding is the next lock.';
     }
     if (d.rounding === 'exact') return 'STEP 3 · Exact mission. Lock ' + fmt(d.valueB) + ' as the ' + B + '. Do not round.';
     const place = d.rounding === 'ten' ? 'ten' : 'hundred';
-    return 'STEP 3 · Raw value ' + fmt(d.valueB) + '. Lock it to the nearest ' + place + '.';
+    return 'STEP 3 · Exact value ' + fmt(d.valueB) + '. Lock it to the nearest ' + place + '.';
   }
 
   function traps1(d) {
@@ -419,16 +428,18 @@
         trapId: 'copied-product',
         alert: product + ' is the product, not the glyph. Find the number that multiplies by itself to make ' + product + '. ' + root + ' × ' + root + ' = ' + product + '.'
       });
-      const neighbor = root < 12 ? root + 1 : root - 1;
+      const neighbor = ((root + 1) * (root + 1) <= MAX_N) ? root + 1 : root - 1;
       traps.push({
         value: neighbor,
         trapId: 'neighbor-square',
         alert: neighbor + ' × ' + neighbor + ' = ' + (neighbor * neighbor) + ', but this tablet shows ' + product + '. The ' + name + ' is ' + root + ', because ' + root + ' × ' + root + ' = ' + product + '.'
       });
+      let off = ((root + 2) * (root + 2) <= MAX_N) ? root + 2 : root - 2;
+      if (off === neighbor || off === root || off < 2) off = root > 3 ? root - 1 : root + 1;
       traps.push({
-        value: root + 2,
+        value: off,
         trapId: 'off-square',
-        alert: 'Test the twin factor by multiplying it by itself. ' + root + ' × ' + root + ' = ' + product + '. ' + (root + 2) + ' × ' + (root + 2) + ' = ' + ((root + 2) * (root + 2)) + '.'
+        alert: 'Test the twin factor by multiplying it by itself. ' + root + ' × ' + root + ' = ' + product + '. ' + off + ' × ' + off + ' = ' + (off * off) + '.'
       });
     } else {
       const q = d.eq1.quotient;
@@ -548,13 +559,45 @@
         alert: plain(correct + place) + ' is one step too far. ' + explainRound(raw, d.rounding)
       });
       const thou = roundTo(raw, 1000);
-      traps.push({
-        value: thou,
-        trapId: 'nearest-thousand',
-        alert: 'That rounds to the nearest thousand. This mission asks for the nearest ' + (place === 100 ? 'hundred' : 'ten') + '. ' + explainRound(raw, d.rounding)
+      if (thou >= 1 && thou <= MAX_N) {
+        traps.push({
+          value: thou,
+          trapId: 'nearest-thousand',
+          alert: 'That rounds to the nearest thousand. This mission asks for the nearest ' + (place === 100 ? 'hundred' : 'ten') + '. ' + explainRound(raw, d.rounding)
+        });
+      }
+    }
+    return traps;
+  }
+
+  function trapsChainExact(d) {
+    const raw = d.valueC;
+    const traps = [];
+    if (d.eq3.form === 'mul') {
+      const f = d.eq3.factor;
+      traps.push({ value: d.valueB + f, trapId: 'added', alert: 'Clue 3 multiplies. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '. Rounding waits for the next lock.' });
+      traps.push({ value: d.valueB * (f - 1), trapId: 'missed-group', alert: 'You missed a group. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '.' });
+      traps.push({ value: d.valueB * (f + 1), trapId: 'extra-group', alert: 'That is one extra group. ' + plain(d.valueB) + ' × ' + f + ' = ' + plain(raw) + '.' });
+    } else {
+      const div = d.eq3.divisor;
+      traps.push({ value: Math.max(0, d.valueB - div), trapId: 'subtracted', alert: 'Clue 3 divides. ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+      traps.push({ value: Math.max(1, Math.round(d.valueB / (div + 1))), trapId: 'wrong-divisor', alert: 'Divide by ' + div + '. ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+      traps.push({ value: d.valueB, trapId: 'copied', alert: plain(d.valueB) + ' is Clue 2. Clue 3 asks for ' + plain(d.valueB) + ' ÷ ' + div + ' = ' + plain(raw) + '.' });
+    }
+    const place = d.rounding === 'ten' ? 10 : 100;
+    const rounded = roundTo(raw, place);
+    if (rounded !== raw) {
+      traps.unshift({
+        value: rounded,
+        trapId: 'rounded-too-soon',
+        alert: 'Not yet. ' + plain(raw) + ' is the exact value. The next lock rounds it to the nearest ' + (place === 10 ? 'ten' : 'hundred') + '.'
       });
     }
     return traps;
+  }
+
+  function makeStep(answer, prompt, traps) {
+    return { answer: answer, prompt: prompt, options: uniqueOptions(answer, traps) };
   }
 
   function finalize(d) {
@@ -564,11 +607,25 @@
     else if (d.rounding === 'hundred') d.finalAnswer = roundTo(raw, 100);
     else d.finalAnswer = raw;
     d.clues = clueLines(d);
-    d.steps = [0, 1, 2].map((step) => {
-      const answer = step === 0 ? d.valueA : step === 1 ? d.valueB : d.finalAnswer;
-      const traps = step === 0 ? traps1(d) : step === 1 ? traps2(d) : traps3(d);
-      return { answer: answer, prompt: promptFor(d, step), options: uniqueOptions(answer, traps) };
-    });
+    d.steps = [
+      makeStep(d.valueA, promptFor(d, 0), traps1(d)),
+      makeStep(d.valueB, promptFor(d, 1), traps2(d))
+    ];
+    if (d.rounding !== 'exact') {
+      const place = d.rounding === 'ten' ? 'ten' : 'hundred';
+      if (d.eq3) {
+        d.steps.push(makeStep(d.valueC, promptFor(d, 2), trapsChainExact(d)));
+        d.steps.push(makeStep(
+          d.finalAnswer,
+          'STEP 4 · Exact value ' + fmt(raw) + '. Lock it to the nearest ' + place + '.',
+          traps3(d)
+        ));
+      } else {
+        d.steps.push(makeStep(d.finalAnswer, promptFor(d, 2), traps3(d)));
+      }
+    } else if (d.eq3) {
+      d.steps.push(makeStep(d.finalAnswer, promptFor(d, 2), traps3(d)));
+    }
     d.signature = [
       d.kind, d.rounding, d.valueA, d.valueB, d.valueC || 0, d.finalAnswer,
       d.eq1.form, d.eq2.form,
@@ -580,8 +637,10 @@
   }
 
   function roundingFits(n, rounding) {
-    if (rounding === 'ten') return n % 10 !== 0;
-    if (rounding === 'hundred') return n % 100 !== 0;
+    if (!Number.isFinite(n) || n < 1 || n > MAX_N) return false;
+    // Nearest ten stays inside two digits, including the number-line ticks around it.
+    if (rounding === 'ten') return n >= 21 && n <= 74 && n % 10 !== 0;
+    if (rounding === 'hundred') return false;
     return true;
   }
 
@@ -589,32 +648,34 @@
     const glyphs = pickGlyphs(2);
     const count = Math.random() < 0.55 ? 3 : 4;
     const useMul = Math.random() < 0.62;
-    let valueA = 0;
-    let eq2 = null;
-    let valueB = 0;
+    let valueA = 12;
+    let valueB = 48;
+    let eq2 = { form: 'mul', factor: 4 };
+    const aMin = count === 3 ? 6 : 4;
+    const aMax = count === 3 ? 20 : 15;
     for (let attempt = 0; attempt < 40; attempt++) {
-      valueA = count === 3 ? randInt(340, 760) : randInt(260, 640);
-      if (valueA % 100 === 0) valueA += randInt(3, 17);
+      let a = randInt(aMin, aMax);
+      if (a % 10 === 0) a += randInt(1, 3);
+      if (a * count > MAX_N) continue;
       if (useMul) {
-        const maxF = Math.min(16, Math.floor(9999 / valueA));
-        if (maxF < 11) continue;
-        const factor = randInt(11, maxF);
-        valueB = valueA * factor;
+        const maxF = Math.min(9, Math.floor(MAX_N / a));
+        if (maxF < 2) continue;
+        const factor = randInt(2, maxF);
+        const b = a * factor;
+        if (b > MAX_N) continue;
+        valueA = a;
+        valueB = b;
         eq2 = { form: 'mul', factor: factor };
         break;
-      } else {
-        const qMax = Math.min(24, Math.floor(9999 / valueA));
-        const qMin = Math.max(11, Math.ceil(1000 / valueA));
-        if (qMax < qMin) continue;
-        valueB = randInt(qMin, qMax);
-        eq2 = { form: 'div', dividend: valueA * valueB };
-        break;
       }
-    }
-    if (!eq2) {
-      valueA = 669;
-      valueB = 669 * 12;
-      eq2 = { form: 'mul', factor: 12 };
+      const qMax = Math.min(9, Math.floor(MAX_N / a));
+      if (qMax < 2) continue;
+      const b = randInt(2, qMax);
+      if (a * b > MAX_N) continue;
+      valueA = a;
+      valueB = b;
+      eq2 = { form: 'div', dividend: a * b };
+      break;
     }
     return finalize({
       band: 'warmup',
@@ -639,24 +700,32 @@
     let eq2 = null;
     let valueB = 0;
     if (useDiv) {
-      const lo = Math.ceil(1000 / root);
-      const hi = Math.floor(9999 / root);
+      const hi = Math.floor(MAX_N / root);
+      const lo = Math.min(4, hi);
       valueB = randInt(lo, hi);
-      if (valueB % 10 === 0) valueB += 3;
-      if (valueB > hi) valueB = hi;
       eq2 = { form: 'div', dividend: root * valueB };
     } else {
       const ks = [];
-      for (let k = 2; k <= 9; k++) {
+      for (let k = 2; k <= 4; k++) {
         const m = root * k;
-        if (m >= 12 && m <= 36) ks.push(k);
+        if (m >= 8 && m <= 30 && Math.floor(MAX_N / m) >= 2) ks.push(k);
       }
-      const k = pick(ks);
+      const k = ks.length ? pick(ks) : 2;
       const multiplier = root * k;
-      const hi = Math.min(899, Math.floor(9999 / multiplier));
-      const three = randInt(120, Math.max(120, hi));
-      valueB = three * multiplier;
-      eq2 = { form: 'mul-scaled', three: three, k: k };
+      const hi = Math.floor(MAX_N / multiplier);
+      if (hi >= 2) {
+        const three = randInt(2, Math.min(9, hi));
+        valueB = three * multiplier;
+        eq2 = { form: 'mul-scaled', three: three, k: k };
+      } else {
+        const factor = Math.max(2, Math.min(9, Math.floor(MAX_N / root)));
+        valueB = root * factor;
+        eq2 = { form: 'mul', factor: factor };
+      }
+    }
+    if (valueB > MAX_N || (eq2.form === 'div' && eq2.dividend > MAX_N)) {
+      valueB = root * 2;
+      eq2 = { form: 'mul', factor: 2 };
     }
     return finalize({
       band: 'twin',
@@ -675,33 +744,31 @@
   }
 
   function tryInverse(rounding) {
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const divisor = randInt(12, 24);
-      const qMin = Math.max(100, Math.ceil(1000 / divisor));
-      const qMax = Math.min(999, Math.floor(9999 / divisor));
+    const want = rounding === 'hundred' ? 'ten' : rounding;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const divisor = randInt(2, 9);
+      const qMax = Math.floor(MAX_N / divisor);
+      const qMin = 4;
       if (qMax < qMin) continue;
       const quotient = randInt(qMin, qMax);
       const valueA = quotient * divisor;
+      if (valueA > MAX_N) continue;
       const options = [];
-      for (let d = 4; d <= 18; d++) {
+      for (let d = 2; d <= 9; d++) {
         if (d === divisor) continue;
         if (valueA % d !== 0) continue;
         const vb = valueA / d;
-        if (vb < 80 || vb > 9999) continue;
-        if (!roundingFits(vb, rounding)) continue;
-        if (rounding === 'hundred' && vb < 400) continue;
-        if (rounding === 'ten' && vb < 80) continue;
-        options.push({ d: d, vb: vb, split: roundTo(vb, 10) !== roundTo(vb, 100) });
+        if (vb < 4 || vb > MAX_N) continue;
+        if (!roundingFits(vb, want)) continue;
+        options.push({ d: d, vb: vb });
       }
       if (!options.length) continue;
-      options.sort((a, b) => (b.split - a.split) || (Math.random() - 0.5));
-      const pool = options.filter((o) => o.split);
-      const chosen = pick(pool.length ? pool : options);
+      const chosen = pick(options);
       const glyphs = pickGlyphs(2);
       return finalize({
-        band: rounding === 'hundred' && gameState.roundNumber <= 6 ? 'advanced' : 'master',
+        band: want === 'ten' && gameState.roundNumber <= 6 ? 'advanced' : 'master',
         kind: 'inverse',
-        rounding: rounding,
+        rounding: want,
         glyphA: glyphs[0],
         glyphB: glyphs[1],
         glyphC: null,
@@ -717,22 +784,25 @@
   }
 
   function trySumRound(rounding, band) {
-    for (let attempt = 0; attempt < 40; attempt++) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
+    for (let attempt = 0; attempt < 50; attempt++) {
       const count = Math.random() < 0.7 ? 3 : 4;
-      let valueA = count === 3 ? randInt(340, 760) : randInt(280, 620);
-      if (valueA % 10 === 0) valueA += randInt(3, 9);
-      const maxF = Math.min(18, Math.floor(9999 / valueA));
-      if (maxF < 12) continue;
-      const factor = randInt(12, maxF);
+      const aMin = count === 3 ? 6 : 4;
+      const aMax = count === 3 ? 18 : 12;
+      let valueA = randInt(aMin, aMax);
+      if (valueA % 10 === 0) valueA += 1;
+      if (valueA * count > MAX_N) continue;
+      const maxF = Math.min(9, Math.floor(MAX_N / valueA));
+      if (maxF < 2) continue;
+      const factor = randInt(2, maxF);
       const valueB = valueA * factor;
-      if (!roundingFits(valueB, rounding)) continue;
-      if (rounding === 'hundred' && valueB < 400) continue;
-      if (rounding === 'ten' && valueB < 80) continue;
+      if (valueB > MAX_N || valueA * count > MAX_N) continue;
+      if (!roundingFits(valueB, want)) continue;
       const glyphs = pickGlyphs(2);
       return finalize({
         band: band,
         kind: 'sum',
-        rounding: rounding,
+        rounding: want,
         glyphA: glyphs[0],
         glyphB: glyphs[1],
         glyphC: null,
@@ -747,30 +817,46 @@
     return null;
   }
 
+  function fixedTenSum(band) {
+    const glyphs = pickGlyphs(2);
+    return finalize({
+      band: band,
+      kind: 'sum',
+      rounding: 'ten',
+      glyphA: glyphs[0],
+      glyphB: glyphs[1],
+      glyphC: null,
+      valueA: 13,
+      valueB: 52,
+      valueC: null,
+      eq1: { form: 'sum', count: 3, total: 39 },
+      eq2: { form: 'mul', factor: 4 },
+      eq3: null
+    });
+  }
+
   function buildAdvanced() {
-    const first = Math.random() < 0.5 ? tryInverse('hundred') : trySumRound('hundred', 'advanced');
+    const first = Math.random() < 0.5 ? tryInverse('ten') : trySumRound('ten', 'advanced');
     if (first) return first;
-    const second = trySumRound('hundred', 'advanced') || tryInverse('hundred');
+    const second = trySumRound('ten', 'advanced') || tryInverse('ten');
     if (second) return second;
-    return buildWarmup();
+    return fixedTenSum('advanced');
   }
 
   function buildSquareMaster(rounding) {
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const root = randInt(4, 12);
+    const want = rounding === 'hundred' ? 'ten' : rounding;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const root = randInt(4, 9);
       const glyphs = pickGlyphs(2);
-      if (rounding === 'hundred' || Math.random() < 0.5) {
-        const lo = Math.max(Math.ceil(1000 / root), rounding === 'hundred' ? 400 : rounding === 'ten' ? 80 : 40);
-        const hi = Math.floor(9999 / root);
+      const useDiv = want !== 'ten' && Math.random() < 0.5;
+      if (useDiv) {
+        const hi = Math.floor(MAX_N / root);
+        const lo = 3;
         if (hi < lo) continue;
-        let valueB = randInt(lo, hi);
-        if (!roundingFits(valueB, rounding)) {
-          if (rounding === 'hundred' && valueB % 100 === 0) valueB += 13;
-          if (rounding === 'ten' && valueB % 10 === 0) valueB += 3;
-          if (valueB < lo || valueB > hi || !roundingFits(valueB, rounding)) continue;
-        }
+        const valueB = randInt(lo, hi);
+        if (root * valueB > MAX_N || !roundingFits(valueB, want)) continue;
         return finalize({
-          band: 'master', kind: 'square', rounding: rounding,
+          band: 'master', kind: 'square', rounding: want,
           glyphA: glyphs[0], glyphB: glyphs[1], glyphC: null,
           valueA: root, valueB: valueB, valueC: null,
           eq1: { form: 'square', product: root * root },
@@ -778,14 +864,13 @@
           eq3: null
         });
       }
-      const factor = randInt(12, 36);
+      const maxFactor = Math.min(9, Math.floor(MAX_N / root));
+      if (maxFactor < 2) continue;
+      const factor = randInt(2, maxFactor);
       const valueB = root * factor;
-      if (valueB > 9999) continue;
-      if (!roundingFits(valueB, rounding)) continue;
-      if (rounding === 'hundred' && valueB < 400) continue;
-      if (rounding === 'ten' && valueB < 80) continue;
+      if (valueB > MAX_N || !roundingFits(valueB, want)) continue;
       return finalize({
-        band: 'master', kind: 'square', rounding: rounding,
+        band: 'master', kind: 'square', rounding: want,
         glyphA: glyphs[0], glyphB: glyphs[1], glyphC: null,
         valueA: root, valueB: valueB, valueC: null,
         eq1: { form: 'square', product: root * root },
@@ -797,42 +882,38 @@
   }
 
   function buildChain(rounding) {
-    for (let attempt = 0; attempt < 40; attempt++) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
+    for (let attempt = 0; attempt < 60; attempt++) {
       const root = randInt(4, 9);
-      const lo = Math.max(80, Math.ceil(1000 / root));
-      const hi = Math.floor(9999 / root);
+      const hi = Math.floor(MAX_N / root);
+      const lo = 4;
+      if (hi < lo) continue;
       const valueB = randInt(lo, hi);
+      if (root * valueB > MAX_N) continue;
       let valueC = 0;
       let eq3 = null;
-      if (Math.random() < 0.55) {
-        const f = randInt(3, 9);
+      if (Math.random() < 0.6) {
+        const fMax = Math.min(9, Math.floor(MAX_N / valueB));
+        if (fMax < 2) continue;
+        const f = randInt(2, fMax);
         valueC = valueB * f;
-        if (valueC > 60000) continue;
         eq3 = { form: 'mul', factor: f };
       } else {
         const divisors = [];
-        for (let m = 3; m <= 12; m++) {
-          if (valueB % m === 0 && valueB / m >= 24) divisors.push(m);
+        for (let m = 2; m <= 9; m++) {
+          if (valueB % m === 0 && valueB / m >= 2) divisors.push(m);
         }
         if (!divisors.length) continue;
         const m = pick(divisors);
         valueC = valueB / m;
         eq3 = { form: 'div-by', divisor: m };
       }
-      let useRounding = rounding;
-      if (!roundingFits(valueC, useRounding)) {
-        if (useRounding === 'ten' && valueC % 100 !== 0) useRounding = 'hundred';
-        else if (useRounding === 'hundred' && valueC % 10 !== 0) useRounding = 'ten';
-        else useRounding = 'exact';
-      }
-      if (useRounding !== 'exact' && !roundingFits(valueC, useRounding)) useRounding = 'exact';
-      if (useRounding === 'hundred' && (valueC < 400 || roundTo(valueC, 100) === 0)) continue;
-      if (useRounding === 'ten' && valueC < 80) continue;
+      if (valueC > MAX_N || !roundingFits(valueC, want)) continue;
       const glyphs = pickGlyphs(3);
       return finalize({
         band: 'master',
         kind: 'chain',
-        rounding: useRounding,
+        rounding: want,
         glyphA: glyphs[0],
         glyphB: glyphs[1],
         glyphC: glyphs[2],
@@ -848,14 +929,14 @@
   }
 
   function buildMaster() {
-    const rounding = pick(['exact', 'ten', 'hundred', 'hundred', 'ten']);
+    const rounding = pick(['exact', 'ten', 'ten', 'exact']);
     const roll = Math.random();
     let problem = null;
     if (roll < 0.22) problem = buildSquareMaster(rounding);
     else if (roll < 0.44) problem = tryInverse(rounding);
     else if (roll < 0.66) problem = trySumRound(rounding, 'master');
     else problem = buildChain(rounding);
-    return problem || buildSquareMaster('exact') || buildIntermediate();
+    return problem || buildSquareMaster('exact') || buildIntermediate() || fixedTenSum('master');
   }
 
   function createRoundProblem(round) {
@@ -921,6 +1002,17 @@
     gameState.phase = 'over';
     gameState.showSolution = true;
     gameState.diagnostic = null;
+  }
+
+  function stepCount() {
+    const steps = gameState.problem && gameState.problem.steps;
+    return steps ? steps.length : 3;
+  }
+  function roundWon() {
+    return !!gameState.problem && gameState.step >= stepCount();
+  }
+  function answerRevealed() {
+    return gameState.showSolution || roundWon();
   }
 
   function activePlayer() {
@@ -1016,7 +1108,7 @@
     gameState.flashColor = C.emerald;
     const speed = speedAmount();
     const relic = gameState.relic || { x: 1160, y: 300 };
-    if (gameState.step < 2) {
+    if (gameState.step < stepCount() - 1) {
       award(player, 100 + speed);
       floater(relic.x, relic.y, '+' + (100 + speed), C.cyan, 20);
       sfx.decode();
@@ -1036,7 +1128,7 @@
     burst(V_W / 2, 340, C.emerald, 20);
     floater(relic.x - 20, relic.y - 10, '+350 RELIC', C.gold, 24);
     if (comboExtra + speed > 0) floater(relic.x - 10, relic.y + 22, '+' + (comboExtra + speed) + ' BONUS', C.cyan, 16);
-    gameState.step = 3;
+    gameState.step = stepCount();
     gameState.cleared += 1;
     gameState.phase = 'celebrate';
     gameState.celebrateUntil = now + 1680;
@@ -1390,7 +1482,7 @@
     const num = (n) => text(fmt(n), false);
     const A = () => glyph(p.glyphA, p.valueA, revealA, 'A');
     const B = () => glyph(p.glyphB, p.valueB, revealB, 'B');
-    const C = () => glyph(p.glyphC, p.finalAnswer, revealC, 'C');
+    const C = () => glyph(p.glyphC, p.valueC, revealC, 'C');
     if (which === 'eq1') {
       if (p.eq1.form === 'sum') {
         const row = [];
@@ -1628,16 +1720,28 @@
     return lines.length * lineH;
   }
 
-  function missionMeta(rounding) {
-    if (rounding === 'ten') return { title: 'NEAREST TEN', detail: 'Look at the ones digit. 5 or more rounds up.', color: C.cyan };
-    if (rounding === 'hundred') return { title: 'NEAREST HUNDRED', detail: 'Look at the tens digit. 5 or more rounds up.', color: C.gold };
+  function missionMeta(rounding, atLock) {
+    if (rounding === 'ten') {
+      return {
+        title: 'NEAREST TEN',
+        detail: atLock ? 'Look at the ones digit. 5 or more rounds up.' : 'Glyphs stay exact. Round on the final lock.',
+        color: C.cyan
+      };
+    }
+    if (rounding === 'hundred') {
+      return {
+        title: 'NEAREST HUNDRED',
+        detail: atLock ? 'Look at the tens digit. 5 or more rounds up.' : 'Glyphs stay exact. Round on the final lock.',
+        color: C.gold
+      };
+    }
     return { title: 'EXACT VALUE', detail: 'Lock the raw glyph. Do not round.', color: C.emerald };
   }
 
   function drawBriefing() {
     const p = gameState.problem;
     const band = BANDS[p.band];
-    const mission = missionMeta(p.rounding);
+    const mission = missionMeta(p.rounding, gameState.step >= stepCount() - 1);
     roundRect(16, UI.briefY, V_W - 32, UI.briefH, 12, C.panel, C.line, 1.5);
     roundRect(28, UI.briefY + 12, 230, UI.briefH - 24, 10, '#0d1830', C.cyan, 1.3);
     ctx.textAlign = 'left';
@@ -1651,7 +1755,7 @@
     ctx.fillStyle = C.muted;
     ctx.font = '12px ' + FONT;
     const blurb = (p.band === 'advanced' && p.kind === 'sum')
-      ? 'Equal groups, then round to the nearest hundred.'
+      ? 'Equal groups, then round to the nearest ten.'
       : band.blurb;
     const blurbLines = wrapText(blurb, 200, '12px ' + FONT);
     ctx.textBaseline = 'top';
@@ -1673,26 +1777,29 @@
     }
     ctx.restore();
 
-    roundRect(1004, UI.briefY + 14, 244, UI.briefH - 28, 10, '#12100a', mission.color, 1.6);
+    const missionX = 1004;
+    const missionY = UI.briefY + 12;
+    const missionW = 244;
+    const missionH = UI.briefH - 24;
+    roundRect(missionX, missionY, missionW, missionH, 10, '#12100a', mission.color, 1.6);
+    const missionCX = missionX + missionW / 2;
     ctx.fillStyle = mission.color;
     ctx.font = 'bold 11px ' + FONT;
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('ROUNDING MISSION', 1126, UI.briefY + 34);
+    ctx.textBaseline = 'top';
+    ctx.fillText('ROUNDING MISSION', missionCX, missionY + 8);
     ctx.font = 'bold 16px ' + FONT;
-    ctx.fillText(mission.title, 1126, UI.briefY + 58);
+    ctx.fillText(mission.title, missionCX, missionY + 24);
     ctx.fillStyle = C.muted;
     ctx.font = '12px ' + FONT;
-    const detail = wrapText(mission.detail, 210, '12px ' + FONT);
-    ctx.textBaseline = 'top';
+    const detail = wrapText(mission.detail, missionW - 28, '12px ' + FONT);
     for (let i = 0; i < detail.length && i < 2; i++) {
-      ctx.textAlign = 'center';
-      ctx.fillText(detail[i], 1126, UI.briefY + 72 + i * 14);
+      ctx.fillText(detail[i], missionCX, missionY + 46 + i * 14);
     }
   }
 
   function drawNumberLine(box, p, time) {
-    const mission = missionMeta(p.rounding);
+    const mission = missionMeta(p.rounding, gameState.step >= stepCount() - 1);
     roundRect(box.x, box.y, box.w, box.h, 10, '#0b1428', mission.color, 1.3);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -1716,7 +1823,10 @@
     if (chainPending) {
       ctx.fillStyle = C.text;
       ctx.font = '14px ' + FONT;
-      ctx.fillText('Compute Clue 3, then lock it. ' + mission.detail, box.x + 280, box.y + 16);
+      const pending = p.rounding === 'exact'
+        ? 'Compute the exact Clue 3 value, then lock it.'
+        : 'Compute the exact Clue 3 value. Round it on the next lock.';
+      ctx.fillText(pending, box.x + 280, box.y + 16);
       return;
     }
     const raw = p.valueFinalRaw;
@@ -1790,7 +1900,7 @@
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(fmt(raw), mx, y - 12);
-    if (gameState.step >= 3 || gameState.showSolution) {
+    if (answerRevealed()) {
       const lx = mapX(p.finalAnswer);
       ctx.strokeStyle = C.gold;
       ctx.lineWidth = 2;
@@ -1806,20 +1916,26 @@
     const shakeY = gameState.shake > 0 ? (Math.random() - 0.5) * 5 * gameState.shake : 0;
     ctx.save();
     ctx.translate(shakeX, shakeY);
-    const border = gameState.step >= 3 ? C.gold : gameState.step === 2 ? C.magenta : C.cyan;
+    const border = roundWon() || gameState.showSolution ? C.gold : gameState.step === stepCount() - 1 ? C.magenta : C.cyan;
     roundRect(16, UI.stageY, V_W - 32, UI.stageH, 14, '#0c1528', border, 2);
     ctx.fillStyle = C.cyan;
     ctx.font = 'bold 13px ' + FONT;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText('HOLO-TABLET  ·  SAME SYMBOL  =  SAME VALUE', 36, UI.stageY + 20);
-    const labels = ['1 CRACK', '2 SUBSTITUTE', '3 LOCK'];
-    for (let i = 0; i < 3; i++) {
+    const labels = p.steps.length > 3
+      ? ['1 CRACK', '2 SUBSTITUTE', '3 EXACT', '4 LOCK']
+      : p.rounding === 'exact' && !p.eq3
+        ? ['1 CRACK', '2 SUBSTITUTE']
+        : ['1 CRACK', '2 SUBSTITUTE', '3 LOCK'];
+    const labelGap = labels.length > 3 ? 108 : 110;
+    const labelX = 980 - (labels.length - 1) * labelGap;
+    for (let i = 0; i < labels.length; i++) {
       const on = gameState.step > i || (gameState.step === i && gameState.phase === 'play');
       const done = gameState.step > i;
       ctx.fillStyle = done ? C.gold : on ? C.cyan : C.muted;
       ctx.font = 'bold 12px ' + FONT;
-      ctx.fillText(labels[i], 760 + i * 110, UI.stageY + 20);
+      ctx.fillText(labels[i], labelX + i * labelGap, UI.stageY + 20);
     }
 
     const revealA = gameState.showSolution || gameState.step >= 1;
@@ -1861,15 +1977,15 @@
 
     const coreY = top + 8;
     const coreH = bottom - top - 8;
-    roundRect(coreX, coreY, 196, coreH, 16, '#08111f', gameState.step >= 3 ? C.gold : C.line, 1.8);
+    roundRect(coreX, coreY, 196, coreH, 16, '#08111f', answerRevealed() ? C.gold : C.line, 1.8);
     const cx = coreX + 98;
     const cy = coreY + coreH * 0.42;
     gameState.relic = { x: cx, y: cy };
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.strokeStyle = gameState.step >= 3 ? C.gold : C.cyan;
+    ctx.strokeStyle = answerRevealed() ? C.gold : C.cyan;
     ctx.lineWidth = 2;
-    ctx.shadowColor = gameState.step >= 3 ? C.gold : C.cyan;
+    ctx.shadowColor = answerRevealed() ? C.gold : C.cyan;
     ctx.shadowBlur = 16;
     ctx.beginPath();
     ctx.arc(0, 0, 46 + Math.sin(time * 3) * 2, 0, Math.PI * 2);
@@ -1881,9 +1997,13 @@
     let coreLabel = 'RELIC CORE';
     let coreValue = '???';
     let coreColor = C.muted;
-    if (gameState.step >= 3 || gameState.showSolution) {
+    if (answerRevealed()) {
       coreLabel = 'LOCKED CODE';
       coreValue = fmt(p.finalAnswer);
+      coreColor = C.gold;
+    } else if (p.eq3 && gameState.step >= 3) {
+      coreLabel = 'EXACT VALUE';
+      coreValue = fmt(p.valueC);
       coreColor = C.gold;
     } else if (gameState.step >= 2) {
       coreLabel = p.eq3 ? p.glyphB.name.toUpperCase() : 'RAW VALUE';
@@ -1909,7 +2029,10 @@
 
   function roleLine() {
     if (gameState.mode === 'DUEL') return 'Head-to-head. Fastest correct lock takes the step.';
-    if (gameState.mode !== 'COOP') return 'Decode the glyph, substitute it, then lock the relic code.';
+    if (gameState.mode !== 'COOP') {
+      if (gameState.problem && gameState.problem.rounding !== 'exact') return 'Decode each glyph exactly. Round only on the final lock.';
+      return 'Decode the glyph and substitute it. That exact answer locks the relic.';
+    }
     const seat = activePlayer();
     if (gameState.step === 0) return 'PLAYER ' + seat + ' cracks the first glyph. Roles swap next round.';
     if (gameState.step === 1) return 'PLAYER ' + seat + ' substitutes and computes the second glyph.';
@@ -1918,14 +2041,14 @@
 
   function drawDeck() {
     const p = gameState.problem;
-    const stepIndex = Math.min(gameState.step, 2);
+    const stepIndex = Math.min(gameState.step, p.steps.length - 1);
     const step = p.steps[stepIndex];
-    const prompt = gameState.step >= 3 ? 'RELIC UNLOCKED  ·  +350 CRYPTOGRAPHER POINTS' : step.prompt;
+    const prompt = roundWon() ? 'RELIC UNLOCKED  ·  +350 CRYPTOGRAPHER POINTS' : step.prompt;
     ctx.textBaseline = 'top';
-    drawWrapped(prompt, 24, UI.deckY + 4, V_W - 48, 'bold 15px ' + FONT, gameState.step >= 3 ? C.gold : C.text, 16, 'left');
+    drawWrapped(prompt, 24, UI.deckY + 4, V_W - 48, 'bold 15px ' + FONT, roundWon() ? C.gold : C.text, 16, 'left');
 
     const infoY = UI.deckY + 38;
-    if (gameState.diagnostic && performance.now() < gameState.diagnostic.until && gameState.step < 3) {
+    if (gameState.diagnostic && performance.now() < gameState.diagnostic.until && !roundWon()) {
       roundRect(20, infoY, V_W - 40, 40, 8, '#2a1018', C.red, 1.4);
       drawWrapped(gameState.diagnostic.text, 32, infoY + 5, V_W - 64, '13px ' + FONT, '#ffd0d6', 15, 'left');
     } else {
@@ -1982,7 +2105,14 @@
     const lock = { x: (V_W - 280) / 2, y: UI.deckY + 174, w: 280, h: 32 };
     gameState.hit.lock = lock;
     const hot = gameState.mouse.on && pointIn(lock, gameState.mouse.x, gameState.mouse.y);
-    const label = gameState.step >= 3 ? 'RELIC OPEN' : gameState.step === 2 ? 'LOCK RELIC CODE' : gameState.step === 1 ? 'SUBSTITUTE' : 'CRACK GLYPH';
+    const lastStep = gameState.step === stepCount() - 1;
+    let label = 'CRACK GLYPH';
+    if (roundWon()) label = 'RELIC OPEN';
+    else if (lastStep && p.rounding !== 'exact') label = 'LOCK RELIC CODE';
+    else if (lastStep && p.eq3) label = 'LOCK RELIC CODE';
+    else if (gameState.step === 0) label = 'CRACK GLYPH';
+    else if (gameState.step === 1) label = 'SUBSTITUTE';
+    else label = 'EXACT VALUE';
     roundRect(lock.x, lock.y, lock.w, lock.h, 8, hot ? '#243864' : '#15284a', hot ? C.gold : C.cyan, 1.6);
     ctx.fillStyle = C.text;
     ctx.font = 'bold 14px ' + FONT;
@@ -2047,12 +2177,12 @@
     ctx.fillText('Relic Equation Lab', V_W / 2, 142);
     ctx.fillStyle = C.muted;
     ctx.font = '15px ' + FONT;
-    ctx.fillText('Same symbol, same value. Twin factors. Inverse division. Nearest ten or hundred.', V_W / 2, 172);
+    ctx.fillText('Same symbol, same value. Twin factors. Inverse division. Nearest ten.', V_W / 2, 172);
 
     const modes = [
       { title: 'SOLO MODE', lines: ['Mouse, keyboard, or one 8BitDo.', 'Click a card, or move with WASD / arrows.', 'Space, Enter, or Button A locks it.'] },
       { title: 'TEAM CO-OP', lines: ['One team score. Shared shields.', 'P1: WASD + F / Space, or Pad 1.', 'P2: Arrows + Enter, or Pad 2.', 'Roles swap every round.'] },
-      { title: 'RELIC DUEL', lines: ['Same tablet. First correct lock wins.', 'Speed bonus for a fast answer.', 'Step 3 awards a winner star.', 'First to 5 stars takes the relic.'] }
+      { title: 'RELIC DUEL', lines: ['Same tablet. First correct lock wins.', 'Speed bonus for a fast answer.', 'The finishing answer awards a star.', 'First to 5 stars takes the relic.'] }
     ];
     const w = 360;
     const h = 196;
@@ -2087,8 +2217,8 @@
     ctx.fillText('HOW A ROUND WORKS', 64, 452);
     const how = [
       'Step 1 — Crack the first glyph. Repeated sums are equal groups. A twin product means a number times itself, not half.',
-      'Step 2 — Substitute that value into the second equation and compute the exact raw value.',
-      'Step 3 — Lock the relic. Exact missions stay exact. Rounding missions use the holo number line: tens digit for hundreds, ones digit for tens.',
+      'Step 2 — Substitute that value. On an exact mission, this answer locks the relic.',
+      'A rounding mission adds one last lock: round that exact value to the nearest ten.',
       'A wrong card is a known mistake. Read the diagnostic, lose 1 shield in solo or co-op, and try the step again.'
     ];
     ctx.fillStyle = C.text;

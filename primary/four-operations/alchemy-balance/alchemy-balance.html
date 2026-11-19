@@ -177,6 +177,8 @@
   /* ---------- utils ---------- */
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function lerp(a, b, t) { return a + (b - a) * t; }
+  const MAX_N = 99;
+
   function irand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
   function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
   function shuffle(arr) {
@@ -219,12 +221,14 @@
     return n;
   }
   function roundingOk(raw, rounding) {
-    if (!isFinite(raw) || raw <= 0) return false;
-    const r10 = roundNearest(raw, 10);
-    const r100 = roundNearest(raw, 100);
+    if (!isFinite(raw) || raw < 1 || raw > MAX_N) return false;
     if (rounding === 'exact') return true;
-    if (rounding === 'hundred') return r100 !== raw && r10 !== r100 && r10 !== raw;
-    if (rounding === 'ten') return r10 !== raw && r10 !== r100;
+    if (rounding === 'hundred') return false;
+    if (rounding === 'ten') {
+      if (raw < 21 || raw > 74 || raw % 10 === 0) return false;
+      const r10 = roundNearest(raw, 10);
+      return r10 !== raw && r10 >= 10 && r10 <= 90;
+    }
     return false;
   }
   function trapNumber(n) {
@@ -247,7 +251,7 @@
   function tierMeta(round) {
     if (round <= 2) return { tier: 'warmup', tierLabel: 'WARM-UP · EXACT BREW', tierShort: 'WARM-UP' };
     if (round <= 4) return { tier: 'intermediate', tierLabel: 'INTERMEDIATE · TWIN CRYSTALS', tierShort: 'TWIN' };
-    if (round <= 6) return { tier: 'advanced', tierLabel: 'ADVANCED · NEAREST HUNDRED', tierShort: 'HUNDRED' };
+    if (round <= 6) return { tier: 'advanced', tierLabel: 'ADVANCED · NEAREST TEN', tierShort: 'TEN' };
     return { tier: 'master', tierLabel: 'MASTER ALCHEMIST', tierShort: 'MASTER' };
   }
   function missionLabel(rounding) {
@@ -283,7 +287,7 @@
     return 'Decant to the nearest TEN beaker, not nearest hundred! In ' + plain(raw) + ', the ones digit is ' + ones + (up ? ' (≥ 5)' : ' (< 5)') + ', so it rounds ' + (up ? 'up' : 'down') + ' to ' + plain(final) + '!';
   }
   function exactAlert(source) {
-    return 'This recipe corks the EXACT volume. Seal ' + plain(source) + ' mL — do not round it to a nearby ten or hundred.';
+    return 'This recipe corks the EXACT volume. Seal ' + plain(source) + ' mL — do not round it to the nearest ten.';
   }
   function twinHalfAlert(glyph, root, square, half) {
     return 'Look at the × symbol between the twin crystals! Both ' + glyph + ' runes must be the SAME number multiplied by itself: ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + ', not ' + plain(half) + ' × ' + plain(half) + '!';
@@ -303,21 +307,21 @@
   /* ---------- choice builder ---------- */
   function uniqueChoices(correct, traps) {
     const answer = trapNumber(correct);
-    if (answer == null) return null;
+    if (answer == null || answer <= 0 || answer > MAX_N) return null;
     const chosen = [];
     const seen = new Set([String(answer)]);
     for (let i = 0; i < traps.length; i++) {
       const v = trapNumber(traps[i].value);
-      if (v == null || v <= 0 || seen.has(String(v))) continue;
+      if (v == null || v <= 0 || v > MAX_N || seen.has(String(v))) continue;
       seen.add(String(v));
       chosen.push({ value: v, kind: traps[i].kind, alert: traps[i].alert });
       if (chosen.length === 3) break;
     }
     let bump = 1;
-    while (chosen.length < 3 && bump < 50) {
+    while (chosen.length < 3 && bump < 120) {
       const v = trapNumber(answer + (bump % 2 === 0 ? -1 : 1) * 10 * bump);
       bump++;
-      if (v == null || v <= 0 || seen.has(String(v))) continue;
+      if (v == null || v <= 0 || v > MAX_N || seen.has(String(v))) continue;
       seen.add(String(v));
       chosen.push({
         value: v,
@@ -372,6 +376,7 @@
 
   function twinStep1(sym, root, square) {
     const half = square / 2;
+    const near = ((root + 1) * (root + 1) <= MAX_N) ? root + 1 : root - 2;
     const traps = [
       { value: half, kind: 'halve-twin', alert: twinHalfAlert(sym.glyph, root, square, half) },
       {
@@ -380,9 +385,9 @@
         alert: plain(square) + ' is the product of the twin crystals, not the value of one. Find the number that multiplies by itself: ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
       },
       {
-        value: root + 1,
+        value: near,
         kind: 'near-root',
-        alert: 'Test the pair: ' + (root + 1) + ' × ' + (root + 1) + ' = ' + ((root + 1) * (root + 1)) + ', which is not ' + plain(square) + '. The matching pair is ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
+        alert: 'Test the pair: ' + near + ' × ' + near + ' = ' + (near * near) + ', which is not ' + plain(square) + '. The matching pair is ' + plain(root) + ' × ' + plain(root) + ' = ' + plain(square) + '.'
       },
       {
         value: root * 2,
@@ -553,8 +558,7 @@
       required.push('forget-round', 'ten-not-hundred');
     } else if (rounding === 'ten') {
       traps.push({ value: source, kind: 'forget-round', alert: tenForgetAlert(source, final) });
-      traps.push({ value: roundNearest(source, 100), kind: 'hundred-not-ten', alert: hundredVsTenAlert(source, final) });
-      required.push('forget-round', 'hundred-not-ten');
+      required.push('forget-round', 'wrong-way');
     } else {
       traps.push({ value: roundNearest(source, 10), kind: 'rounded-anyway', alert: exactAlert(source) });
       traps.push({ value: roundNearest(source, 100), kind: 'rounded-anyway', alert: exactAlert(source) });
@@ -621,8 +625,9 @@
   }
 
   function validProblem(p) {
-    if (!p || !p.steps || p.steps.length !== 3) return false;
-    for (let i = 0; i < 3; i++) {
+    const expect = (p && p.rounding === 'exact' && !p.sym3) ? 2 : 3;
+    if (!p || !p.steps || p.steps.length !== expect) return false;
+    for (let i = 0; i < p.steps.length; i++) {
       const s = p.steps[i];
       if (!s || !s.choices || s.choices.length !== 4) return false;
       const seen = new Set();
@@ -635,19 +640,20 @@
     }
     if (p.clue1Type === 'twin' && !p.steps[0].choices.some((c) => c.kind === 'halve-twin')) return false;
     if (p.clue1Type === 'inverse' && !p.steps[0].choices.some((c) => c.kind === 'inverse-div')) return false;
+    const seal = p.steps[p.steps.length - 1];
     if (p.rounding === 'hundred') {
-      if (!p.steps[2].choices.some((c) => c.kind === 'forget-round')) return false;
-      if (!p.steps[2].choices.some((c) => c.kind === 'ten-not-hundred')) return false;
+      if (!seal.choices.some((c) => c.kind === 'forget-round')) return false;
+      if (!seal.choices.some((c) => c.kind === 'ten-not-hundred')) return false;
     }
     if (p.rounding === 'ten') {
-      if (!p.steps[2].choices.some((c) => c.kind === 'forget-round')) return false;
-      if (!p.steps[2].choices.some((c) => c.kind === 'hundred-not-ten')) return false;
+      if (!seal.choices.some((c) => c.kind === 'forget-round')) return false;
+      if (!seal.choices.some((c) => c.kind === 'wrong-way')) return false;
     }
     return true;
   }
 
   function packageProblem(f) {
-    if (!f.step1 || !f.step2 || !f.step3) return null;
+    if (!f.step1 || !f.step2) return null;
     const problem = {
       tier: f.tier,
       tierLabel: f.tierLabel,
@@ -671,7 +677,7 @@
       finalVolume: f.finalVolume,
       sealSource: f.sealSource,
       key: f.key,
-      steps: [f.step1, f.step2, f.step3],
+      steps: f.step3 ? [f.step1, f.step2, f.step3] : [f.step1, f.step2],
       math: f.math
     };
     if (!validProblem(problem)) return null;
@@ -690,7 +696,8 @@
     const finalVolume = applyRound(sealSource, rounding);
     const step1 = panStep1(sym1, spec.count, spec.total, spec.weight);
     const step2 = mulStep2(spec.weight, spec.mult, spec.raw, sym2.name, sym1.name);
-    const step3 = sealStep3(sealSource, rounding, sealContext(spec.weight, sym2.name, spec.raw, chain));
+    const step3 = (rounding === 'exact' && !chain) ? null : sealStep3(sealSource, rounding, sealContext(spec.weight, sym2.name, spec.raw, chain));
+    if (!step3) step2.prompt += ' That exact volume corks the elixir.';
     const clue2 = [sym1.glyph + ' × ' + spec.mult + ' = ' + sym2.glyph];
     if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
     return packageProblem({
@@ -725,7 +732,8 @@
     const sym2 = otherRune(sym1.id);
     const step1 = panStep1(sym1, spec.count, spec.total, spec.weight);
     const step2 = divStep2(spec.dividend, spec.weight, spec.q, sym2.name, sym1.name);
-    const step3 = sealStep3(spec.q, 'exact', sealContext(spec.weight, sym2.name, spec.q, null));
+    step2.prompt += ' That exact volume corks the elixir.';
+    const step3 = null;
     return packageProblem({
       tier: meta.tier,
       tierLabel: meta.tierLabel,
@@ -760,7 +768,8 @@
     const finalVolume = applyRound(sealSource, rounding);
     const step1 = twinStep1(sym1, spec.root, spec.square);
     const step2 = divStep2(spec.dividend, spec.root, spec.raw, sym2.name, sym1.name);
-    const step3 = sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    const step3 = (rounding === 'exact' && !chain) ? null : sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    if (!step3) step2.prompt += ' That exact volume corks the elixir.';
     const clue2 = [fmt(spec.dividend) + ' ÷ ' + sym1.glyph + ' = ' + sym2.glyph];
     if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
     return packageProblem({
@@ -797,7 +806,8 @@
     const finalVolume = applyRound(sealSource, rounding);
     const step1 = twinStep1(sym1, spec.root, spec.square);
     const step2 = nestedStep2(spec.three, spec.root, spec.m, sym1.name, sym2.name);
-    const step3 = sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    const step3 = (rounding === 'exact' && !chain) ? null : sealStep3(sealSource, rounding, sealContext(spec.root, sym2.name, spec.raw, chain));
+    if (!step3) step2.prompt += ' That exact volume corks the elixir.';
     const clue2 = [fmt(spec.three) + ' × (' + sym1.glyph + ' × ' + spec.m + ') = ' + sym2.glyph];
     if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
     return packageProblem({
@@ -834,7 +844,8 @@
     const finalVolume = applyRound(sealSource, rounding);
     const step1 = inverseStep1(sym1, spec.d, spec.q, spec.sun);
     const step2 = inverseMulStep2(spec.sun, spec.k, spec.raw, sym1.name, sym2.name);
-    const step3 = sealStep3(sealSource, rounding, sealContext(spec.sun, sym2.name, spec.raw, chain));
+    const step3 = (rounding === 'exact' && !chain) ? null : sealStep3(sealSource, rounding, sealContext(spec.sun, sym2.name, spec.raw, chain));
+    if (!step3) step2.prompt += ' That exact volume corks the elixir.';
     const clue2 = [sym1.glyph + ' ÷ ' + spec.k + ' = ' + sym2.glyph];
     if (chain) clue2.push('Then ' + sym2.glyph + ' ' + (chain.op === 'mul' ? '×' : '÷') + ' ' + chain.factor + ' = ' + chain.glyph);
     return packageProblem({
@@ -866,121 +877,131 @@
 
   /* ---------- numeric pickers ---------- */
   function pickPanMul(rounding, warmup) {
-    for (let i = 0; i < 70; i++) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
+    for (let i = 0; i < 80; i++) {
       const count = Math.random() < 0.58 ? 3 : 4;
-      const mult = irand(11, 16);
-      const cap = warmup ? 9999 : 99999;
-      const weightMax = Math.min(warmup ? 980 : 2200, Math.floor(cap / mult));
-      const weightMin = count === 3 ? 334 : 250;
+      const mult = irand(2, 9);
+      const weightMin = count === 3 ? 6 : 4;
+      const weightMax = Math.min(count === 3 ? 18 : 12, Math.floor(MAX_N / count), Math.floor(MAX_N / mult));
       if (weightMax < weightMin) continue;
-      const weight = irand(weightMin, weightMax);
+      let weight = irand(weightMin, weightMax);
+      if (weight % 10 === 0) weight += 1;
+      if (weight * count > MAX_N || weight * mult > MAX_N) continue;
       const total = weight * count;
-      if (total < 1000 || total > 9999) continue;
       const raw = weight * mult;
-      if (raw < 800 || raw > cap) continue;
-      if (warmup && raw > 9999) continue;
-      if (!roundingOk(raw, rounding)) continue;
-      return { count: count, weight: weight, total: total, mult: mult, raw: raw, rounding: rounding };
+      if (!roundingOk(raw, want)) continue;
+      return { count: count, weight: weight, total: total, mult: mult, raw: raw, rounding: want };
     }
     return null;
   }
 
   function pickPanDiv() {
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 60; i++) {
       const count = Math.random() < 0.58 ? 3 : 4;
-      const q = irand(12, 28);
-      const weightMin = count === 3 ? 334 : 250;
-      const weightMax = Math.min(900, Math.floor(99999 / q));
+      const q = irand(2, 9);
+      const weightMin = count === 3 ? 6 : 4;
+      const weightMax = Math.min(count === 3 ? 18 : 12, Math.floor(MAX_N / count), Math.floor(MAX_N / q));
       if (weightMax < weightMin) continue;
-      const weight = irand(weightMin, weightMax);
+      let weight = irand(weightMin, weightMax);
+      if (weight % 10 === 0) weight += 1;
       const total = weight * count;
-      if (total < 1000 || total > 9999) continue;
       const dividend = weight * q;
-      if (dividend < 1000 || dividend > 99999) continue;
+      if (total > MAX_N || dividend > MAX_N || weight > MAX_N) continue;
       return { count: count, weight: weight, total: total, q: q, dividend: dividend };
     }
     return null;
   }
 
   function pickTwinDiv(rounding) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
     const roots = shuffle([4, 5, 6, 7, 8, 9]);
     for (let r = 0; r < roots.length; r++) {
       const root = roots[r];
       const square = root * root;
-      const minQ = Math.max(120, Math.ceil(1000 / root));
-      const maxQ = Math.floor(9999 / root);
+      const maxQ = Math.floor(MAX_N / root);
+      const minQ = want === 'ten' ? 21 : 3;
       if (maxQ < minQ) continue;
       for (let i = 0; i < 24; i++) {
         const q = irand(minQ, maxQ);
         const dividend = root * q;
-        if (dividend < 1000 || dividend > 9999) continue;
-        if (!roundingOk(q, rounding)) continue;
-        return { root: root, square: square, dividend: dividend, raw: q, rounding: rounding };
+        if (dividend > MAX_N) continue;
+        if (!roundingOk(q, want)) continue;
+        return { root: root, square: square, dividend: dividend, raw: q, rounding: want };
       }
     }
     return null;
   }
 
   function pickTwinMul(rounding) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
     const roots = shuffle([4, 5, 6, 7, 8, 9]);
     for (let r = 0; r < roots.length; r++) {
       const root = roots[r];
       const square = root * root;
-      for (let i = 0; i < 24; i++) {
-        const mMax = Math.max(2, Math.floor(36 / root));
-        const m = irand(2, Math.max(2, mMax));
+      for (let i = 0; i < 30; i++) {
+        const m = irand(2, 4);
         const two = root * m;
-        if (two < 12 || two > 42) continue;
-        const three = irand(125, 860);
+        if (two > MAX_N) continue;
+        const threeMax = Math.min(9, Math.floor(MAX_N / two));
+        if (threeMax < 2) continue;
+        const three = irand(2, threeMax);
         const raw = three * two;
-        if (raw < 1000 || raw > 40000) continue;
-        if (!roundingOk(raw, rounding)) continue;
-        return { root: root, square: square, three: three, m: m, raw: raw, rounding: rounding };
+        if (raw > MAX_N) continue;
+        if (!roundingOk(raw, want)) continue;
+        return { root: root, square: square, three: three, m: m, raw: raw, rounding: want };
       }
     }
     return null;
   }
 
   function pickInverse(rounding) {
-    const divisors = [12, 14, 15, 16, 18, 20, 24];
+    const want = rounding === 'hundred' ? 'ten' : rounding;
     for (let i = 0; i < 90; i++) {
-      const d = divisors[irand(0, divisors.length - 1)];
-      const maxQ = Math.floor(9999 / d);
-      const minQ = Math.max(180, Math.ceil(2800 / d));
+      const d = irand(2, 9);
+      const maxQ = Math.floor(MAX_N / d);
+      const minQ = 3;
       if (maxQ < minQ) continue;
       const q = irand(minQ, maxQ);
       const sun = d * q;
-      if (sun < 2500 || sun > 9999) continue;
+      if (sun > MAX_N || sun < 12) continue;
       const divTrap = Math.round(q / d);
-      if (divTrap === sun || divTrap === q || divTrap <= 0) continue;
-      const ks = shuffle([4, 5, 6, 7, 8, 9, 10, 12].filter((k) => k !== d && sun % k === 0));
+      if (divTrap === sun || divTrap === q || divTrap <= 0 || divTrap > MAX_N) continue;
+      const ks = shuffle([2, 3, 4, 5, 6, 7, 8, 9].filter((k) => k !== d && sun % k === 0));
       for (let k = 0; k < ks.length; k++) {
         const raw = sun / ks[k];
-        if (raw < 80 || raw > 20000) continue;
+        if (raw < 2 || raw > MAX_N) continue;
         if (raw === sun || raw === q || raw === divTrap) continue;
-        if (!roundingOk(raw, rounding)) continue;
-        return { d: d, q: q, sun: sun, k: ks[k], raw: raw, rounding: rounding };
+        if (!roundingOk(raw, want)) continue;
+        return { d: d, q: q, sun: sun, k: ks[k], raw: raw, rounding: want };
       }
     }
     return null;
   }
 
   function attachChain(sym2Value, rounding) {
+    const want = rounding === 'hundred' ? 'ten' : rounding;
     const sym3 = pick(RUNES);
-    const factor = irand(3, 9);
+    const factorHi = Math.min(9, Math.floor(MAX_N / Math.max(1, sym2Value)));
     let op = 'mul';
-    let before = sym2Value * factor;
-    if (before > 99999) return null;
-    if (Math.random() < 0.45 && factor >= 3 && sym2Value % factor === 0) {
-      const divided = sym2Value / factor;
-      if (divided >= 30) {
-        op = 'div';
-        before = divided;
-      }
+    let factor = 0;
+    let before = 0;
+    const divisors = [];
+    for (let m = 2; m <= 9; m++) {
+      if (sym2Value % m === 0 && sym2Value / m >= 2) divisors.push(m);
     }
-    if (before === sym2Value) return null;
-    if (!roundingOk(before, rounding)) return null;
-    if (applyRound(before, rounding) === sym2Value) return null;
+    if (factorHi >= 2 && (Math.random() < 0.55 || !divisors.length)) {
+      if (factorHi < 2) return null;
+      factor = irand(2, factorHi);
+      before = sym2Value * factor;
+      op = 'mul';
+    } else if (divisors.length) {
+      factor = pick(divisors);
+      before = sym2Value / factor;
+      op = 'div';
+    } else return null;
+    if (before < 1 || before > MAX_N || before === sym2Value) return null;
+    if (!roundingOk(before, want)) return null;
+    if (applyRound(before, want) === sym2Value) return null;
     return {
       id: sym3.id,
       name: sym3.name,
@@ -988,7 +1009,7 @@
       op: op,
       factor: factor,
       before: before,
-      rounding: rounding
+      rounding: want
     };
   }
 
@@ -1019,14 +1040,14 @@
   function buildAdvanced(meta, round) {
     const wantInverse = round % 2 === 1;
     if (wantInverse) {
-      const spec = pickInverse('hundred');
+      const spec = pickInverse('ten');
       if (spec) return assembleInverse(meta, spec, null);
-      const pan = pickPanMul('hundred', false);
+      const pan = pickPanMul('ten', false);
       if (pan) return assemblePanMul(meta, pan, null);
     } else {
-      const pan = pickPanMul('hundred', false);
+      const pan = pickPanMul('ten', false);
       if (pan) return assemblePanMul(meta, pan, null);
-      const spec = pickInverse('hundred');
+      const spec = pickInverse('ten');
       if (spec) return assembleInverse(meta, spec, null);
     }
     return null;
@@ -1083,29 +1104,19 @@
     const styles = ['twin', 'inverse', 'pan', 'chain'];
     let style = styles[(round - 7) % 4];
     if (attempt > 28) style = styles[attempt % 4];
-    const beakers = ['exact', 'ten', 'hundred'];
+    const beakers = ['exact', 'ten', 'ten'];
     const rounding = attempt > 18 ? beakers[attempt % 3] : pick(beakers);
     return buildStyled(meta, style, rounding);
   }
 
   function forceSimple(meta) {
-    for (let w = 420; w <= 760; w += 7) {
-      const total = w * 3;
-      if (total < 1000 || total > 9999) continue;
-      const raw = w * 12;
-      const built = assemblePanMul(meta, {
-        count: 3,
-        weight: w,
-        total: total,
-        mult: 12,
-        raw: raw,
-        rounding: 'exact',
-        sym1: runeById('smiley'),
-        sym2: runeById('heart')
-      }, null);
-      if (built) return built;
-    }
-    return null;
+    const rounding = meta.tier === 'advanced' ? 'ten' : 'exact';
+    const spec = rounding === 'ten'
+      ? { count: 3, weight: 13, total: 39, mult: 4, raw: 52, rounding: 'ten' }
+      : { count: 3, weight: 12, total: 36, mult: 4, raw: 48, rounding: 'exact' };
+    spec.sym1 = runeById('smiley');
+    spec.sym2 = runeById('heart');
+    return assemblePanMul(meta, spec, null);
   }
 
   function generateProblem(round) {
@@ -1294,6 +1305,13 @@
     pads[1].prev.start = true;
   }
 
+  function stepCount() {
+    return state.problem && state.problem.steps ? state.problem.steps.length : 3;
+  }
+  function isFinalStep() {
+    return state.step === stepCount() - 1;
+  }
+
   function stepOwner() {
     if (state.mode !== 'coop') return 'any';
     if (state.step === 2) return 'both';
@@ -1314,7 +1332,8 @@
   function roleLine() {
     if (state.mode !== 'coop') {
       if (state.step === 0) return 'CRACK THE FIRST RUNE';
-      if (state.step === 1) return 'BREW THE SECOND CAULDRON';
+      if (!isFinalStep()) return 'BREW THE SECOND CAULDRON';
+      if (state.step === 1) return 'BREW AND CORK THE EXACT ELIXIR';
       return state.problem && state.problem.rounding === 'exact' ? 'CORK THE EXACT ELIXIR' : 'DECANT INTO THE BEAKER';
     }
     const owner = stepOwner();
@@ -1348,7 +1367,8 @@
   }
 
   function award(pi, stepIndex) {
-    const base = [100, 150, 350][stepIndex];
+    const last = stepIndex === state.problem.steps.length - 1;
+    const base = last ? 350 : (stepIndex === 0 ? 100 : 150);
     let combo;
     if (state.mode === 'duel') {
       state.duel[pi].combo += 1;
@@ -1366,7 +1386,7 @@
     const gain = base + comboBonus + speed;
     if (state.mode === 'duel') {
       state.duel[pi].score += gain;
-      if (stepIndex === 2) state.duel[pi].stars += 1;
+      if (last) state.duel[pi].stars += 1;
     } else {
       state.score += gain;
     }
@@ -1401,10 +1421,12 @@
 
   function successLine(info) {
     const p = state.problem;
+    if (isFinalStep()) {
+      if (info.gain !== info.base) return 'ELIXIR SEALED · +' + info.base + ' ALCHEMIST POINTS · BANKED +' + info.gain;
+      return 'ELIXIR SEALED · +' + info.base + ' ALCHEMIST POINTS';
+    }
     if (state.step === 0) return 'RUNE CRACKED · ' + p.sym1.glyph + ' = ' + fmt(p.sym1Value) + ' · +' + info.gain;
-    if (state.step === 1) return 'CAULDRON BREWED · ' + p.sym2.glyph + ' = ' + fmt(p.sym2Value) + ' mL · +' + info.gain;
-    if (info.gain !== info.base) return 'ELIXIR SEALED · +' + info.base + ' ALCHEMIST POINTS · BANKED +' + info.gain;
-    return 'ELIXIR SEALED · +350 ALCHEMIST POINTS';
+    return 'CAULDRON BREWED · ' + p.sym2.glyph + ' = ' + fmt(p.sym2Value) + ' mL · +' + info.gain;
   }
 
   function resolveAnswer(pi, cardIndex) {
@@ -1416,20 +1438,20 @@
       const info = award(pi, state.step);
       if (state.step === 0) state.scaleSolved = true;
       if (state.step === 1) state.cauldronSolved = true;
-      if (state.step === 2) state.beakerSolved = true;
+      if (isFinalStep()) state.beakerSolved = true;
       state.alert = null;
       state.note = '';
       state.goodCard = cardIndex;
       state.badCard = -1;
       state.phase = 'celebrate';
-      state.phaseT = state.step === 2 ? 1.2 : 0.82;
+      state.phaseT = isFinalStep() ? 1.2 : 0.82;
       state.celebrate = successLine(info);
       state.ready = [null, null];
       audio.success(state.step);
-      const spot = stationCenter(state.step);
+      const spot = stationCenter(Math.min(state.step, 2));
       const colors = [COL.emerald, COL.magenta, COL.gold];
-      burst(spot.x, spot.y, colors[state.step], state.step === 2 ? 46 : 28);
-      announce(state.celebrate + '. ' + (state.step < 2 ? state.problem.steps[state.step + 1].prompt : 'Round complete.'));
+      burst(spot.x, spot.y, colors[Math.min(state.step, 2)], isFinalStep() ? 46 : 28);
+      announce(state.celebrate + '. ' + (isFinalStep() ? 'Round complete.' : state.problem.steps[state.step + 1].prompt));
     } else {
       penalize(pi);
       state.alert = card.alert;
@@ -1495,7 +1517,7 @@
       swallowPads();
       return;
     }
-    if (state.step < 2) {
+    if (state.step < stepCount() - 1) {
       state.step += 1;
       state.phase = 'input';
       state.stepStart = performance.now();
@@ -2521,7 +2543,7 @@
     ctx.fillStyle = COL.muted;
     ctx.font = '600 13px "Segoe UI", system-ui, sans-serif';
     let help = 'Mouse or WASD / arrows · Space locks · M mutes · ' + state.padNote;
-    if (state.mode === 'coop') help = 'P1 WASD + F/Space · P2 arrows + Enter · dual 8BitDo A · step 3 needs both · ' + state.padNote;
+    if (state.mode === 'coop') help = 'P1 WASD + F/Space · P2 arrows + Enter · dual 8BitDo A · rounding beaker needs both · ' + state.padNote;
     else if (state.mode === 'duel') help = 'P1 WASD + F/Space · P2 arrows + Enter · first correct lock takes the star · ' + state.padNote;
     ctx.fillText(help, 20, 692);
   }
@@ -2571,14 +2593,14 @@
     const lines = [
       'Level the laser scale: identical runes share one mass. Twin crystals multiply, they do not halve.',
       'Reverse a flask split by multiplying back, then pour that rune into the plasma cauldron.',
-      'Decant the brew: nearest ten, nearest hundred, or the exact volume — read the beaker mission.',
-      'Three steps each round. A wrong card costs a shield and opens a diagnostic alert.'
+      'An exact brew corks when the cauldron answer is correct. Round only if the mission says nearest ten.',
+      'A wrong card costs a shield and opens a diagnostic alert.'
     ];
     for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], VW / 2, 286 + i * 32);
     const modes = [
       { t: 'SOLO ALCHEMIST', a: 'Mouse, WASD or arrows, Space', b: '8BitDo pad 0 · D-pad + A', c: COL.cyan },
-      { t: 'TEAM CO-OP', a: 'Shared team score and shields', b: 'P1 then P2, both seal step 3', c: COL.emerald },
-      { t: 'COMPETITIVE DUEL', a: 'Same recipe, fastest lock-in', b: 'Step 3 awards a winner star', c: COL.magenta }
+      { t: 'TEAM CO-OP', a: 'Shared team score and shields', b: 'P1 then P2. Both decant a rounding beaker', c: COL.emerald },
+      { t: 'COMPETITIVE DUEL', a: 'Same recipe, fastest lock-in', b: 'The finishing answer awards a star', c: COL.magenta }
     ];
     for (let i = 0; i < 3; i++) {
       const r = UI.titleBtns[i];
