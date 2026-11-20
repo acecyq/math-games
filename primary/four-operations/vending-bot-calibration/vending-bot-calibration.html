@@ -1,0 +1,2461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#0e1726" />
+<title>Vending-Bot Calibration: Smart Guess &amp; Check</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230e1726'/%3E%3Crect x='16' y='10' width='32' height='40' rx='6' fill='%23182a44' stroke='%233ee0ff' stroke-width='2'/%3E%3Ccircle cx='26' cy='24' r='3' fill='%233ee0ff'/%3E%3Ccircle cx='38' cy='24' r='3' fill='%23ffd76a'/%3E%3Crect x='22' y='34' width='20' height='8' rx='2' fill='%23ffb020'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #0e1726;
+    --ink: #eef6ff;
+    --dim: #9eb4ce;
+    --line: rgba(140, 190, 230, 0.28);
+    --panel: rgba(8, 16, 32, 0.9);
+    --cyan: #3ee0ff;
+    --amber: #ffb020;
+    --gold: #ffd76a;
+    --emerald: #3dff9a;
+    --magenta: #ff4fa3;
+    --blue: #7ecbff;
+    --p1: #ff4d5e;
+    --p2: #3aa0ff;
+    --p3: #2ee59d;
+    --shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background-color: var(--bg);
+    background-image:
+      radial-gradient(900px 420px at 50% -10%, rgba(62, 224, 255, 0.14), transparent 60%),
+      radial-gradient(700px 380px at 100% 110%, rgba(255, 79, 163, 0.08), transparent 50%),
+      linear-gradient(rgba(62, 224, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(62, 224, 255, 0.045) 1px, transparent 1px);
+    background-size: auto, auto, 28px 28px, 28px 28px;
+    color: var(--ink);
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  button, input { font-family: inherit; }
+  button { cursor: pointer; }
+  [hidden] { display: none !important; }
+  :focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
+  .screen { display: none; height: 100%; min-height: 0; }
+  .screen.active { display: flex; }
+  #title.active, #results.active { display: block; overflow: auto; }
+
+  .wrap { width: min(1080px, calc(100% - 28px)); margin: 0 auto; padding: 28px 0 40px; }
+  .title-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .kicker {
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    font-size: 12px;
+    font-weight: 800;
+  }
+  h1 {
+    margin: 8px 0 0;
+    font-size: clamp(32px, 6vw, 60px);
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+  }
+  h1 span { color: var(--gold); }
+  .sub { margin: 10px 0 0; color: var(--dim); font-size: clamp(15px, 2vw, 18px); max-width: 760px; }
+  .panel {
+    margin-top: 18px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  .label {
+    margin: 0 0 8px;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--amber);
+    font-weight: 800;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .opt, .go, .ghost, .test, .step, .submit, .card {
+    border: 1px solid var(--line);
+    background: #122238;
+    color: var(--ink);
+    border-radius: 12px;
+  }
+  .opt { flex: 1 1 150px; text-align: left; padding: 12px 14px; min-height: 64px; }
+  .opt b { display: block; font-size: 16px; }
+  .opt small { display: block; color: var(--dim); margin-top: 3px; line-height: 1.35; }
+  .opt[aria-pressed="true"] {
+    border-color: var(--cyan);
+    box-shadow: inset 0 0 0 1px var(--cyan);
+    background: #16344f;
+  }
+  .blurb { margin: 12px 0 0; color: var(--gold); min-height: 1.4em; }
+  .help { color: var(--dim); font-size: 14px; line-height: 1.45; margin: 8px 0 0; }
+  .method {
+    margin-top: 10px;
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .go, .test {
+    width: 100%;
+    background: linear-gradient(180deg, #ffe7a6, #ffb020);
+    color: #1c1404;
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: 0.04em;
+    border: 0;
+    min-height: 52px;
+  }
+  .go { margin-top: 16px; }
+  .ghost { background: transparent; min-height: 40px; padding: 8px 12px; color: var(--ink); }
+  .ghost[aria-pressed="true"] { border-color: var(--magenta); color: var(--magenta); }
+
+  #play.active {
+    flex-direction: column;
+    overflow: hidden;
+    background:
+      radial-gradient(800px 280px at 50% 0%, rgba(62, 224, 255, 0.08), transparent 55%),
+      linear-gradient(180deg, rgba(14, 23, 38, 0.2), rgba(14, 23, 38, 0.55));
+  }
+  #hud, #brief, #cards, #alert, #deck { flex: 0 0 auto; }
+  #hud {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    min-height: 46px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(6, 12, 24, 0.94);
+  }
+  #hud-score { display: inline-flex; flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; align-items: center; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #122238;
+    font-size: 13px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.grade { background: var(--gold); color: #1c1404; border-color: transparent; }
+  .chip.p1 { background: #7d2433; border-color: var(--p1); }
+  .chip.p2 { background: #184e86; border-color: var(--p2); }
+  .chip.p3 { background: #0e6b4a; border-color: var(--p3); color: #f3fff8; }
+  .chip.team { background: #123528; border-color: var(--emerald); color: var(--emerald); }
+  .spacer { flex: 1 1 8px; }
+  #brief {
+    padding: 8px 14px 6px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(9, 18, 34, 0.94);
+    max-height: 22vh;
+    overflow: auto;
+  }
+  #brief-top {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding-bottom: 6px;
+    background: rgba(9, 18, 34, 0.96);
+    z-index: 1;
+  }
+  #ask { margin: 0; font-size: clamp(16px, 2vw, 20px); font-weight: 800; }
+  #ask strong { color: var(--gold); }
+  #story { margin: 6px 0 0; color: var(--dim); line-height: 1.45; font-size: 15px; }
+  #cards {
+    margin: 6px 12px 0;
+    max-height: 22vh;
+    overflow: auto;
+  }
+  .cards, .submit-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .submit-row { grid-template-columns: 1fr 1fr; }
+  .card, .submit {
+    text-align: left;
+    padding: 8px 10px;
+    min-height: 64px;
+  }
+  .card b, .submit b { display: block; color: var(--gold); font-size: 18px; }
+  .card span, .submit span { display: block; color: var(--dim); margin-top: 4px; font-size: 12px; line-height: 1.35; }
+  .card.hot, .submit.hot { box-shadow: inset 0 0 0 2px var(--cyan); }
+  .card.hot-0, .submit.hot-0 { box-shadow: inset 0 0 0 2px var(--p1); }
+  .card.hot-1, .submit.hot-1 { box-shadow: inset 0 0 0 2px var(--p2); }
+  .card.hot-2, .submit.hot-2 { box-shadow: inset 0 0 0 2px var(--p3); }
+  .card:hover, .submit:hover, .step:hover, .opt:hover { border-color: var(--cyan); }
+  #alert { margin: 0 12px; max-height: 18vh; overflow: auto; }
+  #alert:empty { display: none; }
+  .banner {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #122238;
+    line-height: 1.4;
+  }
+  .banner b { display: block; }
+  .banner.bad { border-color: var(--magenta); background: rgba(255, 79, 163, 0.12); }
+  .banner.good { border-color: var(--emerald); background: rgba(61, 255, 154, 0.12); }
+  .banner.info { border-color: var(--cyan); background: rgba(62, 224, 255, 0.1); }
+  #stage { flex: 1 1 auto; min-height: 0; display: flex; padding: 8px 12px; overflow: hidden; }
+  #solo-layout { flex: 1; min-width: 0; display: flex; gap: 10px; min-height: 0; overflow: hidden; }
+  #visor-wrap {
+    position: relative;
+    flex: 0 1 280px;
+    width: 280px;
+    max-width: 38%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  canvas.js-visor {
+    display: block;
+    width: 100%;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    border-radius: 18px;
+    background: #0c1524;
+    border: 1px solid var(--line);
+  }
+  #bot-say {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .log {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 18px;
+    border: 1px solid var(--line);
+    background: rgba(8, 16, 32, 0.88);
+  }
+  .counts {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1.15fr);
+    gap: 6px;
+    align-items: center;
+  }
+  .count {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 78px;
+    padding: 8px 6px;
+    border-radius: 14px;
+    background: #122238;
+    border: 1px solid var(--line);
+    text-align: center;
+  }
+  .count em {
+    font-style: normal;
+    color: var(--dim);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .count b {
+    margin-top: 2px;
+    font-size: clamp(32px, 4vw, 46px);
+    line-height: 0.95;
+    font-variant-numeric: tabular-nums;
+  }
+  .count small {
+    display: block;
+    margin-top: 2px;
+    color: var(--emerald);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .count.a b { color: var(--amber); }
+  .count.b b { color: var(--cyan); }
+  .count.fixed { border-color: rgba(61, 255, 154, 0.55); background: #10261c; }
+  .count.fixed b { color: var(--emerald); }
+  .count-op {
+    color: var(--dim);
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .lane .count { min-height: 62px; padding: 6px 4px; }
+  .lane .count b { font-size: clamp(22px, 5vw, 30px); }
+  .lane .count em, .lane .count small { font-size: 10px; }
+  .lane .count-op { font-size: 18px; }
+  .formula {
+    margin: 8px 0;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--cyan);
+    font-size: clamp(16px, 2vw, 22px);
+    font-weight: 700;
+  }
+  .hint {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--cyan);
+    background: rgba(62, 224, 255, 0.08);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .gtable {
+    display: grid;
+    grid-template-columns: minmax(64px, 0.8fr) minmax(64px, 0.8fr) minmax(88px, 1fr) minmax(130px, 1.5fr);
+    gap: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .gh, .cell {
+    padding: 7px 8px;
+    border-radius: 8px;
+    background: #101c30;
+  }
+  .gh {
+    color: var(--amber);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 800;
+  }
+  .cell b { display: block; font-size: 14px; }
+  .cell small { display: block; color: var(--dim); margin-top: 2px; }
+  .cell.low { background: #16324a; }
+  .cell.high { background: #3a2a12; }
+  .cell.exact { background: #123528; }
+  .cell.now { box-shadow: inset 0 0 0 1px var(--cyan); }
+  .empty { grid-column: 1 / -1; color: var(--dim); padding: 8px 2px; }
+  #vs-board { flex: 1; min-width: 0; display: flex; gap: 10px; min-height: 0; }
+  .lane {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 16px;
+    border: 2px solid var(--line);
+    background: rgba(8, 16, 32, 0.9);
+  }
+  .lane[data-player="0"] { border-color: var(--p1); }
+  .lane[data-player="1"] { border-color: var(--p2); }
+  .lane[data-player="2"] { border-color: var(--p3); }
+  .lane-head { display: flex; gap: 8px; align-items: center; }
+  .lane canvas.js-visor { width: 120px; height: 92px; flex: none; min-height: 0; }
+  .lane h2 { margin: 0; font-size: 15px; }
+  .lane .phase { color: var(--dim); font-size: 12px; font-weight: 800; letter-spacing: 0.06em; }
+  .lane .cards { grid-template-columns: 1fr 1fr; }
+  .lane .banner { margin-top: 0; }
+  #deck {
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--line);
+    background: rgba(6, 12, 24, 0.96);
+    max-height: 32vh;
+    overflow: auto;
+  }
+  #deck.turn-0 { box-shadow: inset 0 3px 0 var(--p1); }
+  #deck.turn-1 { box-shadow: inset 0 3px 0 var(--p2); }
+  #deck.turn-2 { box-shadow: inset 0 3px 0 var(--p3); }
+  .steppers {
+    display: grid;
+    grid-template-columns: auto auto minmax(80px, 1fr) auto auto;
+    gap: 6px;
+    align-items: center;
+  }
+  .step {
+    min-width: 52px;
+    min-height: 48px;
+    font-weight: 800;
+    font-size: 18px;
+  }
+  input[type="range"] { width: 100%; accent-color: #ffb020; }
+  .test { margin-top: 8px; }
+  .test.glow { animation: pulse 1.4s ease-in-out infinite; }
+  #coach, #legend, .coach {
+    margin: 6px 0 0;
+    color: var(--dim);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  #legend { color: var(--ink); }
+  .scorecard {
+    margin-top: 10px;
+    padding: 12px;
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: #122238;
+  }
+  .scorecard.win { border-color: var(--gold); }
+  .scorecard b { display: block; font-size: 28px; color: var(--gold); margin: 4px 0; }
+  .recap { margin-top: 8px; color: var(--dim); line-height: 1.45; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 176, 32, 0.45); }
+    50% { box-shadow: 0 0 0 8px rgba(255, 176, 32, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .test.glow { animation: none; }
+  }
+  @media (max-width: 640px) {
+    #solo-layout, #vs-board { flex-direction: column; overflow: auto; }
+    #visor-wrap { width: 100%; max-width: none; flex: 0 0 120px; }
+    #cards.cards, .cards { grid-template-columns: 1fr 1fr; }
+    .lane { flex: none; }
+  }
+  @media (max-height: 760px) {
+    #brief { max-height: 18vh; }
+    .card, .submit { min-height: 56px; }
+    h1 { font-size: 36px; }
+  }
+  @media (max-height: 640px) {
+    #brief { max-height: 108px; }
+    #legend { max-height: 2.5em; overflow: hidden; }
+    .test { min-height: 44px; margin-top: 6px; }
+  }
+</style>
+</head>
+<body>
+  <main id="title" class="screen active">
+    <div class="wrap">
+      <div class="title-bar">
+        <div class="kicker">Primary 3–6 · Guess and check</div>
+        <button type="button" class="ghost" id="mute-title" data-act="mute" aria-pressed="false">SOUND ON</button>
+      </div>
+      <h1>Vending-Bot <span>Calibration</span></h1>
+      <p class="sub">Smart Guess &amp; Check. Unlock the starting total by working backwards, then tune the hopper with a halfway guess and a 4-column check table.</p>
+      <section class="panel">
+        <p class="label">Players</p>
+        <div class="row" id="player-group">
+          <button type="button" class="opt" data-act="players" data-value="1" aria-pressed="true"><b>1 Player</b><small>Solo calibrator</small></button>
+          <button type="button" class="opt" data-act="players" data-value="2" aria-pressed="false"><b>2 Players</b><small>Co-op or duel</small></button>
+          <button type="button" class="opt" data-act="players" data-value="3" aria-pressed="false"><b>3 Players</b><small>Full lab crew</small></button>
+        </div>
+      </section>
+      <section class="panel">
+        <p class="label">Difficulty</p>
+        <div class="row" id="tier-group">
+          <button type="button" class="opt" data-act="tier" data-value="easy" aria-pressed="false"><b>Easy</b><small>Junior Technician · direct coins, wheels, and legs · P3–P4</small></button>
+          <button type="button" class="opt" data-act="tier" data-value="medium" aria-pressed="true"><b>Medium</b><small>Systems Engineer · working backwards, then coins · P4–P5</small></button>
+          <button type="button" class="opt" data-act="tier" data-value="hard" aria-pressed="false"><b>Hard</b><small>Chief Calibrator · mixed purchases, either coin · P5</small></button>
+          <button type="button" class="opt" data-act="tier" data-value="extreme" aria-pressed="false"><b>Extreme</b><small>Master AI Tuner · penalty scores · P5–P6</small></button>
+        </div>
+        <p class="blurb" id="blurb"></p>
+      </section>
+      <section class="panel">
+        <p class="label">Mode</p>
+        <div class="row" id="mode-group">
+          <button type="button" class="opt" data-act="mode" data-value="solo" aria-pressed="true"><b>Solo</b><small>One hopper, one score</small></button>
+          <button type="button" class="opt" data-act="mode" data-value="coop" aria-pressed="false"><b>Team Co-op</b><small>One bot, one team score</small></button>
+          <button type="button" class="opt" data-act="mode" data-value="vs" aria-pressed="false"><b>Calibration Duel</b><small>Side-by-side hoppers, first exact match wins</small></button>
+        </div>
+        <p class="help" id="help"></p>
+        <p class="method">Table columns: count of item A, count of item B (total − A), computed value, then TOO LOW / TOO HIGH / EXACT MATCH. Start halfway. Each swap of the cheaper item for the dearer item changes the total by a fixed gap.</p>
+        <button type="button" class="go" data-act="start">START CALIBRATION</button>
+      </section>
+    </div>
+  </main>
+
+  <section id="play" class="screen" aria-hidden="true">
+    <header id="hud">
+      <span class="chip" id="hud-mode">SOLO</span>
+      <span class="chip grade" id="hud-tier">MEDIUM</span>
+      <span class="chip" id="hud-round">CAL 1/5</span>
+      <span class="spacer"></span>
+      <span id="hud-score"></span>
+      <button type="button" class="ghost" id="mute-hud" data-act="mute" aria-pressed="false">SOUND ON</button>
+      <button type="button" class="ghost" data-act="exit">EXIT</button>
+    </header>
+    <section id="brief">
+      <div id="brief-top">
+        <span class="chip" id="phase-pill">PART (b)</span>
+        <span class="chip" id="target-badge">TARGET</span>
+        <span class="chip" id="who">SOLO</span>
+      </div>
+      <p id="ask"></p>
+      <p id="story"></p>
+    </section>
+    <div id="cards" class="cards"></div>
+    <div id="alert" role="status" aria-live="polite"></div>
+    <div id="stage">
+      <div id="solo-layout">
+        <div id="visor-wrap">
+          <canvas id="visor" class="js-visor" data-lane="0" width="300" height="320" aria-hidden="true"></canvas>
+          <p id="bot-say"></p>
+        </div>
+        <div class="log" id="log-wrap">
+          <div class="counts" id="counts"></div>
+          <p class="formula" id="formula"></p>
+          <p class="hint" id="hint" hidden></p>
+          <div class="gtable" id="gtable"></div>
+        </div>
+      </div>
+      <div id="vs-board" hidden></div>
+    </div>
+    <footer id="deck">
+      <div id="deck-tools">
+        <div class="steppers">
+          <button type="button" class="step" id="step-m5" data-act="step" data-delta="-5" data-player="0">−5</button>
+          <button type="button" class="step" id="step-m1" data-act="step" data-delta="-1" data-player="0">−1</button>
+          <input id="hopper" class="hopper" type="range" min="0" max="20" value="10" data-player="0" aria-label="Higher-value item count" />
+          <button type="button" class="step" id="step-p1" data-act="step" data-delta="1" data-player="0">+1</button>
+          <button type="button" class="step" id="step-p5" data-act="step" data-delta="5" data-player="0">+5</button>
+        </div>
+        <button type="button" class="test" id="go-test" data-act="confirm" data-player="0">TEST HOPPER</button>
+        <p id="coach"></p>
+      </div>
+      <div id="submit-row" class="submit-row" hidden></div>
+      <p id="legend"></p>
+    </footer>
+  </section>
+
+  <main id="results" class="screen" aria-hidden="true">
+    <div class="wrap">
+      <div class="kicker" id="res-kicker">Lab report</div>
+      <h1 id="res-title">Calibrated</h1>
+      <p class="sub" id="res-sub"></p>
+      <div id="res-box"></div>
+      <div class="recap" id="res-recap"></div>
+      <p class="help" id="res-hint"></p>
+      <div class="row" style="margin-top:16px">
+        <button type="button" class="go" data-act="again" style="flex:1">CALIBRATE AGAIN</button>
+        <button type="button" class="ghost" data-act="exit">TITLE</button>
+      </div>
+    </div>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+
+  var ROUNDS = 5;
+  var BASE = { easy: 100, medium: 160, hard: 220, extreme: 280 };
+  var NAMES = ["Susie", "Amir", "Mei Ling", "Raj", "Aisha", "Ethan", "Priya", "Noah", "Hui Min", "Daniel", "Sofia", "Arjun", "Chloe", "Wei Jie", "Hannah", "Lucas", "Siti", "Kai", "Emma", "Farhan", "Nurul", "Jonah", "Isabelle", "Harun", "Caleb", "Yasmin"];
+  var PAIRS = {
+    d1_50: { hi: 100, lo: 50, aName: "one-dollar coins", aOne: "one-dollar coin", aShort: "$1", bName: "fifty-cent coins", bOne: "fifty-cent coin", bShort: "50¢" },
+    d50_10: { hi: 50, lo: 10, aName: "fifty-cent coins", aOne: "fifty-cent coin", aShort: "50¢", bName: "ten-cent coins", bOne: "ten-cent coin", bShort: "10¢" },
+    d1_20: { hi: 100, lo: 20, aName: "one-dollar coins", aOne: "one-dollar coin", aShort: "$1", bName: "twenty-cent coins", bOne: "twenty-cent coin", bShort: "20¢" },
+    d2_50: { hi: 200, lo: 50, aName: "two-dollar coins", aOne: "two-dollar coin", aShort: "$2", bName: "fifty-cent coins", bOne: "fifty-cent coin", bShort: "50¢" },
+    d2_20: { hi: 200, lo: 20, aName: "two-dollar coins", aOne: "two-dollar coin", aShort: "$2", bName: "twenty-cent coins", bOne: "twenty-cent coin", bShort: "20¢" },
+    d1_10: { hi: 100, lo: 10, aName: "one-dollar coins", aOne: "one-dollar coin", aShort: "$1", bName: "ten-cent coins", bOne: "ten-cent coin", bShort: "10¢" }
+  };
+  var SINGLE = [
+    { name: "books", prices: [200, 300, 400, 500] },
+    { name: "comics", prices: [200, 250, 300] },
+    { name: "files", prices: [150, 200, 250] },
+    { name: "storybooks", prices: [400, 500, 600] },
+    { name: "sticker packs", prices: [100, 150, 200] },
+    { name: "math kits", prices: [300, 450, 500] },
+    { name: "notebooks", prices: [200, 250, 320] }
+  ];
+  var CATALOG = [
+    { name: "pens", prices: [150, 200, 250] },
+    { name: "notebooks", prices: [280, 320, 360, 400] },
+    { name: "files", prices: [180, 220, 260] },
+    { name: "highlighters", prices: [140, 160, 210] },
+    { name: "rulers", prices: [90, 130, 170] },
+    { name: "glue sticks", prices: [110, 150, 190] },
+    { name: "erasers", prices: [80, 120, 160] },
+    { name: "markers", prices: [180, 210, 240] },
+    { name: "folders", prices: [220, 280, 340] },
+    { name: "workbooks", prices: [350, 420, 480] }
+  ];
+  var TIER_BLURB = {
+    easy: "Junior Technician. The total number and the total value are given. Coins, wheels, or legs.",
+    medium: "Systems Engineer. Add the money spent back to the money left, then guess-and-check the coins.",
+    hard: "Chief Calibrator. Mixed purchases, bigger batches, and the question may ask for either coin.",
+    extreme: "Master AI Tuner. Correct answers add marks. Wrong answers deduct marks. The final score is given."
+  };
+  var PLAYER_LABEL = ["P1 CRIMSON", "P2 AZURE", "P3 EMERALD"];
+  var PLAYER_TECH = ["Crimson Tech", "Azure Tech", "Emerald Tech"];
+
+  var state = {
+    screen: "title",
+    players: 1,
+    mode: "solo",
+    tier: "medium",
+    muted: false,
+    score: 0,
+    stars: [0, 0, 0],
+    speed: [0, 0, 0],
+    effStars: 0,
+    streak: 0,
+    bestStreak: 0,
+    round: 0,
+    history: [],
+    lastName: "",
+    problem: null,
+    lanes: [],
+    coopTurn: 0,
+    banner: null,
+    locked: false,
+    run: 0,
+    recap: [],
+    lastHint: ""
+  };
+
+  var reduceMotion = false;
+  var audioCtx = null;
+  var master = null;
+  var musicGain = null;
+  var sfxGain = null;
+  var musicOn = false;
+  var musicClock = 0;
+  var lastStepSound = 0;
+  var alertStamp = "";
+  var padMem = [memPad(), memPad(), memPad()];
+  var LEAD = [74, 79, 83, 79, 76, 74, 71, 74, 78, 74, 71, 67];
+  var BASS = [50, 57, 55, 52];
+
+  function memPad() {
+    return { a: false, left: false, right: false, up: false, down: false, leftT: 0, rightT: 0, upT: 0, downT: 0 };
+  }
+  function $(id) { return document.getElementById(id); }
+  function rand(n) { return Math.floor(Math.random() * n); }
+  function pick(list) { return list[rand(list.length)]; }
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+  function shuffle(list) {
+    var a = list.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = rand(i + 1);
+      var t = a[i];
+      a[i] = a[j];
+      a[j] = t;
+    }
+    return a;
+  }
+  function money(cents) {
+    var neg = cents < 0;
+    var v = Math.abs(Math.round(cents));
+    var d = Math.floor(v / 100);
+    var c = v % 100;
+    return (neg ? "−" : "") + "$" + d + "." + (c < 10 ? "0" : "") + c;
+  }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function pickName(avoid) {
+    var name = pick(NAMES);
+    if (name === avoid) name = pick(NAMES);
+    return name;
+  }
+  function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+
+  function formatValue(v, p) {
+    var n = Math.round(v);
+    if (p.unit === "money") return money(n);
+    var word = p.unitLabel || p.unit;
+    var abs = Math.abs(n);
+    if (abs === 1 && word.charAt(word.length - 1) === "s") word = word.slice(0, -1);
+    if (n < 0) return "−" + abs + " " + word;
+    return abs + " " + word;
+  }
+  function formatSigned(v, p) {
+    if (v > 0) return "+" + formatValue(v, p);
+    if (v < 0) return "−" + formatValue(-v, p);
+    return formatValue(0, p);
+  }
+  function formatUnit(v, p) {
+    if (p.unit === "money") return money(v);
+    if (v < 0) return "(−" + Math.abs(v) + ")";
+    if (p.unit === "marks") return "(+" + v + ")";
+    return String(v);
+  }
+  function directionCopy(p) {
+    if (p.unit === "marks") {
+      return {
+        low: "Your score is TOO LOW! Replace a " + p.bShort + " with a " + p.aShort + " by INCREASING the " + p.aShort + " slider!",
+        high: "Your score is TOO HIGH! Replace a " + p.aShort + " with a " + p.bShort + " by DECREASING the " + p.aShort + " slider!"
+      };
+    }
+    if (p.unit === "wheels" || p.unit === "legs") {
+      return {
+        low: "Your " + p.unit + " total is TOO LOW! " + cap(p.aName) + " have more " + p.unit + ". INCREASE the " + p.aShort + " slider!",
+        high: "Your " + p.unit + " total is TOO HIGH! " + cap(p.aName) + " have more " + p.unit + ". DECREASE the " + p.aShort + " slider!"
+      };
+    }
+    return {
+      low: "Your total is TOO LOW! Replace cheaper " + p.bShort + " coins with higher-value " + p.aShort + " coins by INCREASING the " + p.aShort + " coin slider!",
+      high: "Your total is TOO HIGH! Replace " + p.aShort + " coins with lower-value " + p.bShort + " coins by DECREASING the " + p.aShort + " coin slider!"
+    };
+  }
+  function halfwayStart(n, solutionA) {
+    var g = Math.round(n / 2);
+    if (Math.abs(g - solutionA) < 2) g += solutionA >= g ? -4 : 4;
+    if (g < 1) g = 1;
+    if (g > n - 1) g = n - 1;
+    if (g === solutionA) g = solutionA < n - 1 ? solutionA + 2 : solutionA - 2;
+    return g;
+  }
+  function seal(spec) {
+    var solutionB = spec.n - spec.solutionA;
+    if (spec.solutionA < 1 || solutionB < 1) return null;
+    var target = spec.solutionA * spec.hi + solutionB * spec.lo;
+    var delta = spec.hi - spec.lo;
+    if (delta <= 0 || !isFinite(target)) return null;
+    var startA = halfwayStart(spec.n, spec.solutionA);
+    if (startA === spec.solutionA || Math.abs(startA - spec.solutionA) < 2) return null;
+    if (spec.partA) {
+      if (spec.partA.spent + spec.partA.left !== target) return null;
+      if (spec.partA.spent <= 0 || spec.partA.left <= 0) return null;
+      var seen = {};
+      var good = 0;
+      for (var i = 0; i < spec.partA.cards.length; i++) {
+        var card = spec.partA.cards[i];
+        if (seen[card.cents]) return null;
+        seen[card.cents] = true;
+        if (card.correct) {
+          good += 1;
+          if (card.cents !== target) return null;
+        }
+      }
+      if (good !== 1 || spec.partA.cards.length !== 4) return null;
+    }
+    var dirs = directionCopy(spec);
+    spec.solutionB = solutionB;
+    spec.target = target;
+    spec.delta = delta;
+    spec.startA = startA;
+    spec.hintLow = dirs.low;
+    spec.hintHigh = dirs.high;
+    spec.valueHead = spec.unit === "money" ? "Total value" : spec.unit === "marks" ? "Score" : spec.unit === "wheels" ? "Wheels" : "Legs";
+    spec.signature = [spec.tier, spec.unit, spec.hi, spec.lo, spec.n, spec.solutionA, spec.askFor, spec.partA ? spec.partA.spent : 0, spec.partA ? spec.partA.left : 0].join("|");
+    return spec;
+  }
+  function chooseCount(n, hi, lo, minGap, maxGap, fraction) {
+    var maxTarget = (n - 2) * hi + 2 * lo;
+    var minTarget = Math.floor(maxTarget * fraction);
+    var bag = countsBetween(n, hi, lo, minGap, maxGap, minTarget);
+    if (!bag.length) bag = countsBetween(n, hi, lo, 2, Math.max(maxGap, n), 0);
+    if (!bag.length) return null;
+    return bag[rand(bag.length)];
+  }
+  function countsBetween(n, hi, lo, minGap, maxGap, minTarget) {
+    var mid = Math.round(n / 2);
+    var bag = [];
+    for (var a = 2; a <= n - 2; a++) {
+      var dist = Math.abs(a - mid);
+      if (dist < minGap || dist > maxGap) continue;
+      var target = a * hi + (n - a) * lo;
+      if (target < minTarget) continue;
+      bag.push(a);
+    }
+    return bag;
+  }
+  function applyPair(spec, pair) {
+    spec.hi = pair.hi;
+    spec.lo = pair.lo;
+    spec.aName = pair.aName;
+    spec.aOne = pair.aOne;
+    spec.aShort = pair.aShort;
+    spec.bName = pair.bName;
+    spec.bOne = pair.bOne;
+    spec.bShort = pair.bShort;
+    spec.askedName = spec.askFor === "a" ? pair.aName : pair.bName;
+    return spec;
+  }
+  function makePurchase(target, mixed) {
+    var i, item, price, q, spent, left, a, b, p1, p2, q1, q2;
+    for (i = 0; i < 40; i++) {
+      if (mixed) {
+        a = pick(CATALOG);
+        b = pick(CATALOG);
+        if (a.name === b.name) continue;
+        p1 = pick(a.prices);
+        p2 = pick(b.prices);
+        q1 = 2 + rand(4);
+        q2 = 2 + rand(3);
+        spent = q1 * p1 + q2 * p2;
+        left = target - spent;
+        if (spent >= 400 && left >= 200 && left !== spent && spent < target * 0.75) {
+          return { mixed: true, q1: q1, p1: p1, n1: a.name, q2: q2, p2: p2, n2: b.name, spent: spent, left: left };
+        }
+      } else {
+        item = pick(SINGLE);
+        price = pick(item.prices);
+        q = 2 + rand(5);
+        spent = q * price;
+        left = target - spent;
+        if (spent >= 300 && left >= 150 && left !== spent && spent < target * 0.8) {
+          return { mixed: false, q1: q, p1: price, n1: item.name, spent: spent, left: left };
+        }
+      }
+    }
+    return null;
+  }
+  function makePartA(name, n, target, purchase) {
+    var spent = purchase.spent;
+    var left = purchase.left;
+    var expr = purchase.mixed
+      ? purchase.q1 + " × " + money(purchase.p1) + " + " + purchase.q2 + " × " + money(purchase.p2)
+      : purchase.q1 + " × " + money(purchase.p1);
+    var bought = purchase.mixed
+      ? purchase.q1 + " " + purchase.n1 + " and " + purchase.q2 + " " + purchase.n2
+      : purchase.q1 + " " + purchase.n1;
+    var wrong = left + purchase.p1;
+    if (wrong === target || wrong === spent || wrong === left) wrong = target + purchase.p1;
+    if (wrong === target || wrong === spent || wrong === left) wrong = spent + left + 50;
+    var cards = shuffle([
+      {
+        title: money(target),
+        detail: money(spent) + " spent + " + money(left) + " left",
+        cents: target,
+        correct: true,
+        alert: ""
+      },
+      {
+        title: money(left),
+        detail: "Only the money left",
+        cents: left,
+        correct: false,
+        alert: name + " had " + n + " coins AT FIRST before buying the " + bought + "! Add the spent money (" + expr + " = " + money(spent) + ") back to the " + money(left) + " left to get " + money(target) + "!"
+      },
+      {
+        title: money(spent),
+        detail: "Only the money spent",
+        cents: spent,
+        correct: false,
+        alert: "The money left is still part of the starting amount. Add " + money(left) + " to the " + money(spent) + " spent to get " + money(target) + "."
+      },
+      {
+        title: money(wrong),
+        detail: "A mixed-up total",
+        cents: wrong,
+        correct: false,
+        alert: "Check the multiplication. " + expr + " = " + money(spent) + ". Then add the " + money(left) + " left to get " + money(target) + "."
+      }
+    ]);
+    var seen = {};
+    for (var i = 0; i < cards.length; i++) {
+      if (seen[cards[i].cents]) return null;
+      seen[cards[i].cents] = true;
+    }
+    return { spent: spent, left: left, cards: cards };
+  }
+  function coinPhrase(n, bName, aName) {
+    return n + " " + bName.replace(/ coins$/, "") + " and " + aName;
+  }
+  function coinStory(spec, place) {
+    spec.story = spec.name + " had " + coinPhrase(spec.n, spec.bName, spec.aName) + " in a " + place + ". Each coin is either a " + spec.bOne + " or a " + spec.aOne + ". The coins are worth " + money(spec.target) + " altogether.";
+    spec.askA = null;
+    spec.askB = "How many " + spec.askedName + " are in the " + place + "?";
+  }
+  function tryEasy(avoid) {
+    var kind = rand(4);
+    var spec = {
+      tier: "easy",
+      name: pickName(avoid),
+      askFor: rand(10) < 4 ? "b" : "a",
+      partA: null
+    };
+    var n = 12 + rand(13);
+    if (kind === 0) {
+      spec.unit = "wheels";
+      spec.unitLabel = "wheels";
+      applyPair(spec, { hi: 4, lo: 2, aName: "cars", aOne: "car", aShort: "cars", bName: "motorcycles", bOne: "motorcycle", bShort: "bikes" });
+      spec.n = n;
+      spec.solutionA = chooseCount(n, 4, 2, 2, 6, 0.35);
+      if (spec.solutionA == null) return null;
+      var sealedW = seal(spec);
+      if (!sealedW) return null;
+      sealedW.story = sealedW.name + " counted " + sealedW.n + " vehicles in the school carpark. Each vehicle is either a car with 4 wheels or a motorcycle with 2 wheels. There are " + formatValue(sealedW.target, sealedW) + " altogether.";
+      sealedW.askA = null;
+      sealedW.askB = "How many " + sealedW.askedName + " are in the carpark?";
+      return sealedW;
+    }
+    if (kind === 1) {
+      spec.unit = "legs";
+      spec.unitLabel = "legs";
+      applyPair(spec, { hi: 4, lo: 2, aName: "rabbits", aOne: "rabbit", aShort: "rabbits", bName: "chickens", bOne: "chicken", bShort: "chickens" });
+      spec.n = n;
+      spec.solutionA = chooseCount(n, 4, 2, 2, 6, 0.35);
+      if (spec.solutionA == null) return null;
+      var sealedL = seal(spec);
+      if (!sealedL) return null;
+      sealedL.story = "A pet stall has " + sealedL.n + " animals. Each animal is either a rabbit with 4 legs or a chicken with 2 legs. The animals have " + formatValue(sealedL.target, sealedL) + " altogether.";
+      sealedL.askA = null;
+      sealedL.askB = "How many " + sealedL.askedName + " are at the stall?";
+      return sealedL;
+    }
+    var pair = rand(2) === 0 ? PAIRS.d1_50 : PAIRS.d50_10;
+    spec.unit = "money";
+    spec.unitLabel = "money";
+    applyPair(spec, pair);
+    spec.n = n;
+    spec.solutionA = chooseCount(n, pair.hi, pair.lo, 2, 6, 0.4);
+    if (spec.solutionA == null) return null;
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    coinStory(sealed, pick(["coin pouch", "piggy bank", "class cash box", "vending float"]));
+    return sealed;
+  }
+  function tryMoney(tier, avoid, mixed, nMin, nSpan, minGap, maxGap) {
+    var keys = tier === "medium" ? ["d1_20", "d1_50", "d2_50"] : ["d1_20", "d2_50", "d2_20", "d1_10", "d1_50"];
+    var pair = PAIRS[pick(keys)];
+    var n = nMin + rand(nSpan);
+    var solutionA = chooseCount(n, pair.hi, pair.lo, minGap, maxGap, 0.5);
+    if (solutionA == null) return null;
+    var target = solutionA * pair.hi + (n - solutionA) * pair.lo;
+    var purchase = makePurchase(target, mixed);
+    if (!purchase && mixed) purchase = makePurchase(target, false);
+    if (!purchase) return null;
+    var name = pickName(avoid);
+    var askFor = rand(2) === 0 ? "a" : "b";
+    var spec = {
+      tier: tier,
+      unit: "money",
+      unitLabel: "money",
+      name: name,
+      n: n,
+      solutionA: solutionA,
+      askFor: askFor,
+      partA: null
+    };
+    applyPair(spec, pair);
+    spec.partA = makePartA(name, n, target, purchase);
+    if (!spec.partA) return null;
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    var buy = purchase.mixed
+      ? purchase.q1 + " " + purchase.n1 + " at " + money(purchase.p1) + " each and " + purchase.q2 + " " + purchase.n2 + " at " + money(purchase.p2) + " each"
+      : purchase.q1 + " " + purchase.n1 + " at " + money(purchase.p1) + " each";
+    sealed.story = sealed.name + " had " + coinPhrase(sealed.n, sealed.bName, sealed.aName) + ". Each coin is either a " + sealed.bOne + " or a " + sealed.aOne + ". " + sealed.name + " bought " + buy + " and had " + money(purchase.left) + " left.";
+    sealed.askA = "(a) How much money did " + sealed.name + " have at first?";
+    sealed.askB = "(b) How many " + sealed.askedName + " did " + sealed.name + " have at first?";
+    return sealed;
+  }
+  function tryMedium(avoid) { return tryMoney("medium", avoid, false, 32, 15, 3, 9); }
+  function tryHard(avoid) { return tryMoney("hard", avoid, true, 40, 26, 4, 12); }
+  function tryExtreme(avoid) {
+    var scenes = [
+      { hi: 3, pen: 1, aName: "correct answers", aOne: "correct answer", aShort: "correct", bName: "wrong answers", bOne: "wrong answer", bShort: "wrong", unitLabel: "marks", scene: "quiz" },
+      { hi: 4, pen: 1, aName: "correct answers", aOne: "correct answer", aShort: "correct", bName: "wrong answers", bOne: "wrong answer", bShort: "wrong", unitLabel: "marks", scene: "quiz" },
+      { hi: 5, pen: 2, aName: "hits", aOne: "hit", aShort: "hit", bName: "misses", bOne: "miss", bShort: "miss", unitLabel: "points", scene: "arcade" },
+      { hi: 4, pen: 2, aName: "hits", aOne: "hit", aShort: "hit", bName: "misses", bOne: "miss", bShort: "miss", unitLabel: "points", scene: "arcade" },
+      { hi: 2, pen: 1, aName: "correct answers", aOne: "correct answer", aShort: "correct", bName: "wrong answers", bOne: "wrong answer", bShort: "wrong", unitLabel: "marks", scene: "quiz" },
+      { hi: 5, pen: 1, aName: "correct scans", aOne: "correct scan", aShort: "correct scan", bName: "mis-scans", bOne: "mis-scan", bShort: "mis-scan", unitLabel: "points", scene: "scans" },
+      { hi: 3, pen: 2, aName: "correct scans", aOne: "correct scan", aShort: "correct scan", bName: "mis-scans", bOne: "mis-scan", bShort: "mis-scan", unitLabel: "points", scene: "scans" }
+    ];
+    var scene = pick(scenes);
+    var n = 20 + rand(21);
+    var lo = -scene.pen;
+    var mid = Math.round(n / 2);
+    var bag = [];
+    for (var a = 2; a <= n - 2; a++) {
+      var dist = Math.abs(a - mid);
+      if (dist < 3 || dist > 9) continue;
+      var score = a * scene.hi + (n - a) * lo;
+      if (score < Math.max(12, Math.round(n * 0.35))) continue;
+      bag.push(a);
+    }
+    if (!bag.length) return null;
+    var solutionA = bag[rand(bag.length)];
+    var name = pickName(avoid);
+    var askFor = rand(2) === 0 ? "a" : "b";
+    var spec = {
+      tier: "extreme",
+      unit: "marks",
+      unitLabel: scene.unitLabel,
+      name: name,
+      n: n,
+      hi: scene.hi,
+      lo: lo,
+      aName: scene.aName,
+      aOne: scene.aOne,
+      aShort: scene.aShort,
+      bName: scene.bName,
+      bOne: scene.bOne,
+      bShort: scene.bShort,
+      solutionA: solutionA,
+      askFor: askFor,
+      askedName: askFor === "a" ? scene.aName : scene.bName,
+      partA: null
+    };
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    var penWord = scene.pen === 1 ? "1 " + scene.unitLabel.slice(0, -1) : scene.pen + " " + scene.unitLabel;
+    if (scene.scene === "quiz") {
+      sealed.story = sealed.name + " answered every one of " + sealed.n + " quiz questions. Each correct answer scores " + scene.hi + " marks. Each wrong answer deducts " + penWord + ". Correct answers and wrong answers add up to " + sealed.n + ". The final score is " + formatValue(sealed.target, sealed) + ".";
+    } else if (scene.scene === "arcade") {
+      sealed.story = sealed.name + " played " + sealed.n + " arcade targets. Every target was either a hit or a miss. Each hit scores " + scene.hi + " points. Each miss deducts " + penWord + ". The final score is " + formatValue(sealed.target, sealed) + ".";
+    } else {
+      sealed.story = "The vending-bot logged " + sealed.n + " scans for " + sealed.name + ". Every scan was either correct or a mis-scan. Each correct scan scores " + scene.hi + " points. Each mis-scan deducts " + penWord + ". The final score is " + formatValue(sealed.target, sealed) + ".";
+    }
+    sealed.askA = null;
+    sealed.askB = "How many " + sealed.askedName + " did " + sealed.name + " get?";
+    return sealed;
+  }
+  function emergency(tier, history, avoid) {
+    var built = null;
+    if (tier === "easy") built = emergencyEasy(avoid);
+    else if (tier === "extreme") built = emergencyExtreme(avoid);
+    else built = emergencyCoins(tier, avoid, tier === "hard");
+    if (built && history.indexOf(built.signature) === -1) return built;
+    if (tier === "easy") return emergencyEasy(avoid);
+    if (tier === "extreme") return emergencyExtreme(avoid);
+    return emergencyCoins(tier === "hard" ? "medium" : "hard", avoid, false);
+  }
+  function emergencyEasy(avoid) {
+    var spec = {
+      tier: "easy", unit: "money", unitLabel: "money", name: pickName(avoid), n: 20,
+      solutionA: 12, askFor: "a", partA: null
+    };
+    applyPair(spec, PAIRS.d1_50);
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    coinStory(sealed, "coin pouch");
+    return sealed;
+  }
+  function emergencyExtreme(avoid) {
+    var spec = {
+      tier: "extreme", unit: "marks", unitLabel: "marks", name: pickName(avoid), n: 30,
+      hi: 3, lo: -1, aName: "correct answers", aOne: "correct answer", aShort: "correct", bName: "wrong answers", bOne: "wrong answer", bShort: "wrong",
+      solutionA: 24, askFor: "a", askedName: "correct answers", partA: null
+    };
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    sealed.story = sealed.name + " answered every one of 30 quiz questions. Each correct answer scores 3 marks. Each wrong answer deducts 1 mark. Correct answers and wrong answers add up to 30. The final score is 66 marks.";
+    sealed.askA = null;
+    sealed.askB = "How many correct answers did " + sealed.name + " get?";
+    return sealed;
+  }
+  function emergencyCoins(tier, avoid, mixed) {
+    var name = pickName(avoid);
+    var purchase = mixed
+      ? { mixed: true, q1: 3, p1: 250, n1: "pens", q2: 2, p2: 320, n2: "notebooks", spent: 1390, left: 1690 }
+      : { mixed: false, q1: 4, p1: 400, n1: "books", spent: 1600, left: 1480 };
+    var n = 42;
+    var solutionA = 28;
+    var target = 3080;
+    if (mixed) {
+      n = 50;
+      solutionA = 32;
+      target = 32 * 200 + 18 * 50;
+      purchase.left = target - purchase.spent;
+    }
+    var spec = {
+      tier: tier, unit: "money", unitLabel: "money", name: name, n: n, solutionA: solutionA,
+      askFor: mixed ? "b" : "a", partA: null
+    };
+    applyPair(spec, mixed ? PAIRS.d2_50 : PAIRS.d1_20);
+    spec.partA = makePartA(name, n, target, purchase);
+    var sealed = seal(spec);
+    if (!sealed) return null;
+    var buy = mixed
+      ? "3 pens at $2.50 each and 2 notebooks at $3.20 each"
+      : "4 books at $4.00 each";
+    sealed.story = sealed.name + " had " + coinPhrase(sealed.n, sealed.bName, sealed.aName) + ". Each coin is either a " + sealed.bOne + " or a " + sealed.aOne + ". " + sealed.name + " bought " + buy + " and had " + money(sealed.partA.left) + " left.";
+    sealed.askA = "(a) How much money did " + sealed.name + " have at first?";
+    sealed.askB = "(b) How many " + sealed.askedName + " did " + sealed.name + " have at first?";
+    return sealed;
+  }
+  function generate(tier, history, avoid) {
+    history = history || [];
+    var tries = ["easy", "medium", "hard", "extreme"];
+    if (tries.indexOf(tier) === -1) tier = "easy";
+    var maker = tier === "easy" ? tryEasy : tier === "medium" ? tryMedium : tier === "hard" ? tryHard : tryExtreme;
+    var i, p;
+    for (i = 0; i < 30; i++) {
+      p = maker(avoid);
+      if (p && history.indexOf(p.signature) === -1) return p;
+    }
+    for (i = 0; i < 30; i++) {
+      p = maker(avoid);
+      if (p) return p;
+    }
+    return emergency(tier, history, avoid);
+  }
+
+  function ensureAudio() {
+    if (audioCtx) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = new AC();
+    master = audioCtx.createGain();
+    master.gain.value = state.muted ? 0 : 0.9;
+    master.connect(audioCtx.destination);
+    musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0.06;
+    musicGain.connect(master);
+    sfxGain = audioCtx.createGain();
+    sfxGain.gain.value = 0.2;
+    sfxGain.connect(master);
+  }
+  function tone(freq, dur, type, gain, when) {
+    if (!audioCtx || state.muted) return;
+    var t = audioCtx.currentTime + (when || 0);
+    var osc = audioCtx.createOscillator();
+    var g = audioCtx.createGain();
+    osc.type = type || "square";
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain || 0.05), t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.03, dur));
+    osc.connect(g);
+    g.connect(sfxGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.03);
+  }
+  function musicTone(freq, dur, type, gain) {
+    if (!audioCtx || state.muted) return;
+    var t = audioCtx.currentTime;
+    var osc = audioCtx.createOscillator();
+    var g = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g);
+    g.connect(musicGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+  function startMusic() {
+    if (musicOn || !audioCtx) return;
+    musicOn = true;
+    var tick = function () {
+      if (!musicOn) return;
+      setTimeout(tick, 220);
+      if (!audioCtx || state.muted || audioCtx.state !== "running") return;
+      musicTone(midi(LEAD[musicClock % LEAD.length]), 0.18, "triangle", 0.9);
+      if (musicClock % 2 === 0) musicTone(midi(BASS[(musicClock / 2) % BASS.length]), 0.32, "sine", 0.7);
+      musicClock += 1;
+    };
+    tick();
+  }
+  function unlock() {
+    ensureAudio();
+    if (!audioCtx) return;
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    startMusic();
+  }
+  function setMuted(flag) {
+    state.muted = flag;
+    if (master && audioCtx) master.gain.setTargetAtTime(flag ? 0 : 0.9, audioCtx.currentTime, 0.02);
+    var label = flag ? "SOUND OFF" : "SOUND ON";
+    $("mute-title").textContent = label;
+    $("mute-hud").textContent = label;
+    $("mute-title").setAttribute("aria-pressed", flag ? "true" : "false");
+    $("mute-hud").setAttribute("aria-pressed", flag ? "true" : "false");
+  }
+  var sfx = {
+    step: function () {
+      var now = performance.now();
+      if (now - lastStepSound < 45) return;
+      lastStepSound = now;
+      tone(760, 0.035, "square", 0.035);
+    },
+    clink: function () {
+      tone(988, 0.06, "triangle", 0.08);
+      tone(1480, 0.08, "triangle", 0.05, 0.05);
+    },
+    low: function () {
+      tone(320, 0.12, "sine", 0.08);
+      tone(210, 0.16, "sine", 0.06, 0.08);
+    },
+    high: function () {
+      tone(540, 0.1, "square", 0.045);
+      tone(720, 0.12, "square", 0.035, 0.07);
+    },
+    exact: function () {
+      [523, 659, 784, 1046].forEach(function (f, i) { tone(f, 0.16, "triangle", 0.09, i * 0.08); });
+    },
+    fanfare: function () {
+      [523, 659, 784, 1046, 1318].forEach(function (f, i) { tone(f, 0.22, "triangle", 0.11, i * 0.1); });
+    },
+    buzz: function () { tone(98, 0.18, "square", 0.05); },
+    boot: function () {
+      tone(392, 0.08, "triangle", 0.06);
+      tone(523, 0.1, "triangle", 0.05, 0.07);
+    }
+  };
+
+  function showScreen(id) {
+    state.screen = id;
+    ["title", "play", "results"].forEach(function (name) {
+      var node = $(name);
+      var on = name === id;
+      node.classList.toggle("active", on);
+      node.setAttribute("aria-hidden", on ? "false" : "true");
+    });
+  }
+  function later(ms, fn) {
+    var token = state.run;
+    setTimeout(function () {
+      if (token !== state.run || state.screen !== "play") return;
+      fn();
+    }, ms);
+  }
+  function activePlayer() {
+    if (state.mode !== "coop") return 0;
+    return state.coopTurn % state.players;
+  }
+  function laneFor(player) {
+    if (state.mode === "vs") return state.lanes[player] || null;
+    return state.lanes[0] || null;
+  }
+  function makeLane(player) {
+    return {
+      player: player,
+      phase: "tune",
+      itemA: 0,
+      cardIndex: 0,
+      submitFocus: 0,
+      tests: [],
+      lastStatus: null,
+      lastTestA: null,
+      dirLock: false,
+      message: null,
+      solved: false,
+      partTries: 0,
+      lastAction: 0,
+      sparks: []
+    };
+  }
+  function setPlayers(n) {
+    state.players = n;
+    if (n === 1) state.mode = "solo";
+    else if (state.mode === "solo") state.mode = "coop";
+    updateTitle();
+  }
+  function setMode(mode) {
+    state.mode = mode;
+    if (mode === "solo") state.players = 1;
+    else if (state.players < 2) state.players = 2;
+    updateTitle();
+  }
+  function updateTitle() {
+    document.querySelectorAll("#player-group .opt").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", Number(btn.dataset.value) === state.players ? "true" : "false");
+    });
+    document.querySelectorAll("#tier-group .opt").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", btn.dataset.value === state.tier ? "true" : "false");
+    });
+    document.querySelectorAll("#mode-group .opt").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", btn.dataset.value === state.mode ? "true" : "false");
+    });
+    $("blurb").textContent = TIER_BLURB[state.tier];
+    if (state.mode === "solo") {
+      $("help").textContent = "Solo: mouse, A/D or arrows step by 1, W/S or up/down step by 5, Space or Enter tests the hopper. Gamepad 0 uses the D-pad and Button A. Five calibrations.";
+    } else if (state.mode === "coop") {
+      $("help").textContent = "Team Co-op uses one hopper and one TEAM score. Individual scores stay hidden. Turns rotate: " + crewText() + ". P1 Crimson is WASD + F/Space or Gamepad 0. P2 Azure is IJKL + Enter or Gamepad 1. P3 Emerald is the arrow keys + Right Shift or Numpad 0, or Gamepad 2. Mouse plays the active turn.";
+    } else {
+      $("help").textContent = "Calibration Duel: each player has a hopper on the same problem. First exact submit wins the round star and a speed bonus for 3 tests or fewer. " + crewText() + ".";
+    }
+  }
+  function crewText() {
+    if (state.players === 2) return "P1 Crimson and P2 Azure";
+    return "P1 Crimson, P2 Azure, and P3 Emerald";
+  }
+  function legendText() {
+    if (state.mode === "solo") return "P1 · mouse · A/D or ←/→ step 1 · W/S or ↑/↓ step 5 · Space/Enter tests · Gamepad 0 D-pad + Button A";
+    if (state.players === 2) return "P1 Crimson · WASD + F/Space · Gamepad 0.    P2 Azure · IJKL + Enter · Gamepad 1.    Mouse uses the active turn in co-op, or the lane you click in a duel.";
+    return "P1 Crimson · WASD + F/Space · Gamepad 0.    P2 Azure · IJKL + Enter · Gamepad 1.    P3 Emerald · Arrow keys + Right Shift / Numpad 0 · Gamepad 2.";
+  }
+
+  function beginRound() {
+    var problem = null;
+    try { problem = generate(state.tier, state.history, state.lastName); }
+    catch (err) { problem = null; }
+    if (!problem) problem = emergency(state.tier, state.history, state.lastName);
+    state.problem = problem;
+    state.lastName = problem.name;
+    state.history.push(problem.signature);
+    if (state.history.length > 8) state.history.shift();
+    state.locked = false;
+    state.banner = null;
+    state.coopTurn = state.round % state.players;
+    var count = state.mode === "vs" ? state.players : 1;
+    state.lanes = [];
+    for (var i = 0; i < count; i++) {
+      var lane = makeLane(i);
+      lane.phase = problem.partA ? "parta" : "tune";
+      lane.itemA = problem.startA;
+      state.lanes.push(lane);
+    }
+    mountVs();
+    renderAll();
+    sfx.boot();
+  }
+  function startGame() {
+    unlock();
+    state.run += 1;
+    state.score = 0;
+    state.stars = [0, 0, 0];
+    state.speed = [0, 0, 0];
+    state.effStars = 0;
+    state.streak = 0;
+    state.bestStreak = 0;
+    state.round = 0;
+    state.recap = [];
+    state.lastHint = "";
+    state.banner = null;
+    showScreen("play");
+    beginRound();
+  }
+  function exitLab() {
+    state.run += 1;
+    state.locked = true;
+    state.banner = null;
+    showScreen("title");
+    updateTitle();
+  }
+  function nextRound() {
+    state.round += 1;
+    if (state.round >= ROUNDS) finishRun();
+    else beginRound();
+  }
+  function finishRun() {
+    state.locked = true;
+    showScreen("results");
+    var tierName = state.tier.toUpperCase();
+    $("res-kicker").textContent = tierName + " · " + (state.mode === "vs" ? "Calibration duel" : state.mode === "coop" ? "Team co-op" : "Solo lab");
+    var box = $("res-box");
+    box.replaceChildren();
+    if (state.mode === "vs") {
+      var rows = [];
+      for (var i = 0; i < state.players; i++) rows.push({ i: i, stars: state.stars[i], speed: state.speed[i] });
+      rows.sort(function (a, b) { return b.stars - a.stars || b.speed - a.speed; });
+      var top = rows[0];
+      var tied = rows.filter(function (r) { return r.stars === top.stars && r.speed === top.speed; });
+      $("res-title").textContent = "Duel complete";
+      $("res-sub").textContent = tied.length > 1 ? "Shared star count. The lab is even." : PLAYER_LABEL[top.i] + " is the fastest calibrator.";
+      rows.forEach(function (r) {
+        var card = document.createElement("div");
+        var win = tied.some(function (t) { return t.i === r.i; });
+        card.className = "scorecard" + (win ? " win" : "");
+        var title = document.createElement("div");
+        title.textContent = PLAYER_LABEL[r.i] + " · " + PLAYER_TECH[r.i] + (win ? " · FASTEST" : "");
+        var stars = document.createElement("b");
+        stars.textContent = r.stars + " ★";
+        var meta = document.createElement("div");
+        meta.textContent = r.speed + " speed bonus" + (r.speed === 1 ? "" : "es");
+        card.append(title, stars, meta);
+        box.appendChild(card);
+      });
+    } else if (state.mode === "coop") {
+      $("res-title").textContent = "Team calibrated";
+      $("res-sub").textContent = "One team score for the whole lab. Individual scores stay off the board.";
+      var team = document.createElement("div");
+      team.className = "scorecard win";
+      var tTitle = document.createElement("div");
+      tTitle.textContent = "TEAM SCORE";
+      var tValue = document.createElement("b");
+      tValue.textContent = String(state.score);
+      var tMeta = document.createElement("div");
+      tMeta.textContent = state.effStars + " team efficiency stars · best streak " + state.bestStreak;
+      team.append(tTitle, tValue, tMeta);
+      box.appendChild(team);
+    } else {
+      $("res-title").textContent = "Lab calibrated";
+      $("res-sub").textContent = "Five hoppers checked with the guess-and-check table.";
+      var solo = document.createElement("div");
+      solo.className = "scorecard win";
+      var sTitle = document.createElement("div");
+      sTitle.textContent = "SCORE";
+      var sValue = document.createElement("b");
+      sValue.textContent = String(state.score);
+      var sMeta = document.createElement("div");
+      sMeta.textContent = state.effStars + " efficiency stars · best streak " + state.bestStreak;
+      solo.append(sTitle, sValue, sMeta);
+      box.appendChild(solo);
+    }
+    var recap = $("res-recap");
+    recap.replaceChildren();
+    state.recap.forEach(function (line, index) {
+      var p = document.createElement("div");
+      p.textContent = (index + 1) + ". " + line;
+      recap.appendChild(p);
+    });
+    $("res-hint").textContent = state.lastHint ? "Last swap hint: " + state.lastHint : "";
+  }
+
+  function canAct(player) {
+    if (state.screen !== "play" || state.locked) return false;
+    if (state.mode === "vs" && (player < 0 || player >= state.players)) return false;
+    if (state.mode === "coop" && player !== activePlayer()) {
+      flashTurn(player);
+      return false;
+    }
+    var lane = laneFor(player);
+    if (!lane || lane.solved) return false;
+    return true;
+  }
+  function flashTurn(player) {
+    var now = performance.now();
+    if (now < state.turnFlashUntil) return;
+    state.turnFlashUntil = now + 900;
+    var lane = state.lanes[0];
+    if (!lane) return;
+    lane.message = {
+      kind: "info",
+      title: PLAYER_LABEL[activePlayer()] + " has the console",
+      body: PLAYER_LABEL[player] + " — wait for your turn.",
+      at: now
+    };
+    renderAll();
+  }
+  function nudge(player, delta) {
+    if (!canAct(player)) return;
+    var lane = laneFor(player);
+    var p = state.problem;
+    if (lane.phase === "parta" && p.partA) {
+      var dir = delta > 0 ? 1 : -1;
+      var steps = Math.abs(delta) >= 5 ? 2 : 1;
+      var n = p.partA.cards.length;
+      lane.cardIndex = (lane.cardIndex + dir * steps + n * 4) % n;
+      sfx.step();
+      renderAll();
+      return;
+    }
+    if (lane.phase === "submit" && Math.abs(delta) < 5) {
+      lane.submitFocus = lane.submitFocus === 0 ? 1 : 0;
+      sfx.step();
+      renderAll();
+      return;
+    }
+    commitItemA(lane, lane.itemA + delta);
+  }
+  function commitItemA(lane, raw) {
+    var p = state.problem;
+    var next = clamp(Math.round(raw), 0, p.n);
+    if (lane.phase === "submit" && next !== lane.itemA) {
+      lane.phase = "tune";
+      lane.message = { kind: "info", title: "Hopper moved", body: "The exact row was for the previous count. Test again.", at: performance.now() };
+    }
+    if (next === lane.itemA) {
+      renderAll();
+      return;
+    }
+    if (lane.phase === "tune" && lane.lastTestA != null && lane.lastStatus && lane.lastStatus !== "exact") {
+      var wrong = (lane.lastStatus === "low" && next < lane.lastTestA) || (lane.lastStatus === "high" && next > lane.lastTestA);
+      if (wrong) {
+        if (!lane.dirLock) {
+          lane.dirLock = true;
+          lane.message = {
+            kind: "bad",
+            title: "Check the gap direction",
+            body: lane.lastStatus === "low" ? p.hintLow : p.hintHigh,
+            at: performance.now()
+          };
+          sfx.buzz();
+        }
+      } else {
+        lane.dirLock = false;
+      }
+    }
+    lane.itemA = next;
+    sfx.step();
+    renderAll();
+  }
+  function ready(lane) {
+    var now = performance.now();
+    if (now - lane.lastAction < 180) return false;
+    lane.lastAction = now;
+    return true;
+  }
+  function confirm(player) {
+    if (!canAct(player)) return;
+    var lane = laneFor(player);
+    if (lane.phase === "parta") lockTarget(lane, player, lane.cardIndex);
+    else if (lane.phase === "submit") submitCount(lane, player, lane.submitFocus);
+    else testHopper(lane, player);
+  }
+  function lockTarget(lane, player, index) {
+    if (!state.problem.partA || lane.phase !== "parta") return;
+    if (!ready(lane)) return;
+    var card = state.problem.partA.cards[index];
+    if (!card) return;
+    lane.cardIndex = index;
+    lane.partTries += 1;
+    var who = state.mode === "coop" ? PLAYER_LABEL[player] + " · " : "";
+    if (!card.correct) {
+      sfx.buzz();
+      lane.message = { kind: "bad", title: who + "Working backwards", body: card.alert, at: performance.now() };
+      burst(lane, "bad");
+      if (state.mode === "coop") state.coopTurn = (state.coopTurn + 1) % state.players;
+      renderAll();
+      return;
+    }
+    lane.phase = "tune";
+    lane.itemA = state.problem.startA;
+    var bonus = "";
+    if (lane.partTries === 1 && state.mode !== "vs") {
+      state.score += 40;
+      bonus = " First-try bonus +40.";
+    }
+    sfx.clink();
+    sfx.boot();
+    lane.message = {
+      kind: "good",
+      title: who + "Target locked · " + formatValue(state.problem.target, state.problem),
+      body: "Spent plus left is the money at first." + bonus + " The hopper starts at the halfway count.",
+      at: performance.now()
+    };
+    if (state.mode === "coop") state.coopTurn = (state.coopTurn + 1) % state.players;
+    renderAll();
+  }
+  function testHopper(lane, player) {
+    if (lane.phase !== "tune") return;
+    if (!ready(lane)) return;
+    var p = state.problem;
+    var a = lane.itemA;
+    var b = p.n - a;
+    var value = a * p.hi + b * p.lo;
+    var gap = p.target - value;
+    var status = gap === 0 ? "exact" : gap > 0 ? "low" : "high";
+    lane.tests.push({ a: a, b: b, value: value, gap: gap, status: status });
+    lane.lastStatus = status;
+    lane.lastTestA = a;
+    lane.dirLock = false;
+    sfx.clink();
+    if (status === "exact") {
+      lane.phase = "submit";
+      lane.submitFocus = 0;
+      sfx.exact();
+      burst(lane, "win");
+      lane.message = {
+        kind: "good",
+        title: "EXACT MATCH!",
+        body: "The value matches " + formatValue(p.target, p) + ". Read the question and submit the count it asks for.",
+        at: performance.now()
+      };
+    } else {
+      if (status === "low") sfx.low();
+      else sfx.high();
+      lane.message = {
+        kind: "bad",
+        title: status === "low" ? "TOO LOW" : "TOO HIGH",
+        body: statusText(gap, p) + ". " + adviceText(gap, p) + ".",
+        at: performance.now()
+      };
+      if (state.mode === "coop") state.coopTurn = (state.coopTurn + 1) % state.players;
+    }
+    renderAll();
+  }
+  function submitCount(lane, player, which) {
+    if (lane.phase !== "submit") return;
+    if (!ready(lane)) return;
+    var p = state.problem;
+    var want = p.askFor === "a" ? 0 : 1;
+    var a = lane.itemA;
+    var b = p.n - a;
+    if (which !== want) {
+      sfx.buzz();
+      lane.message = {
+        kind: "bad",
+        title: "Check which count the question wants",
+        body: "Check the question carefully! Your hopper shows " + a + " " + p.aName + " and " + b + " " + p.bName + " — make sure you submit the one asked for!",
+        at: performance.now()
+      };
+      if (state.mode === "coop") state.coopTurn = (state.coopTurn + 1) % state.players;
+      renderAll();
+      return;
+    }
+    lane.solved = true;
+    lane.phase = "done";
+    var tests = lane.tests.length;
+    var efficient = tests <= 3;
+    var answer = (want === 0 ? a : b) + " " + p.askedName;
+    state.recap.push(p.askB + " → " + answer + " · value " + formatValue(p.target, p));
+    if (state.mode === "vs") {
+      state.stars[player] += 1;
+      if (efficient) state.speed[player] += 1;
+      state.banner = {
+        kind: "good",
+        title: PLAYER_LABEL[player] + " calibrates first!",
+        body: (efficient ? "Round star + speed bonus. " : "Round star. ") + tests + (tests === 1 ? " test." : " tests.") + " " + answer + "."
+      };
+      if (efficient) sfx.fanfare();
+      else sfx.boot();
+    } else {
+      var basePts = BASE[state.tier];
+      var bonusPts = efficient ? 200 : 0;
+      if (efficient) {
+        state.effStars += 1;
+        state.streak += 1;
+        if (state.streak > state.bestStreak) state.bestStreak = state.streak;
+        sfx.fanfare();
+      } else {
+        state.streak = 0;
+        sfx.boot();
+      }
+      state.score += basePts + bonusPts;
+      var team = state.mode === "coop" ? "TEAM " : "";
+      state.banner = {
+        kind: "good",
+        title: efficient ? "EXACT MATCH! " + team + "+" + basePts + " · Efficiency Master +200" : "EXACT MATCH! " + team + "+" + basePts,
+        body: answer + " · " + tests + (tests === 1 ? " test." : " tests.") + (efficient ? " The +200 is for solving in 3 tests or fewer." : "")
+      };
+    }
+    burst(lane, "win");
+    state.locked = true;
+    renderAll();
+    later(1700, nextRound);
+  }
+  function statusText(gap, p) {
+    if (gap === 0) return "EXACT MATCH!";
+    if (gap > 0) return "TOO LOW by " + formatValue(gap, p);
+    return "TOO HIGH by " + formatValue(-gap, p);
+  }
+  function adviceText(gap, p) {
+    if (gap === 0) return "Hopper balanced";
+    if (gap > 0) return "Increase " + p.aShort;
+    return "Decrease " + p.aShort;
+  }
+  function hintFor(lane) {
+    if (!lane || !state.problem) return "";
+    if (lane.phase === "parta" || lane.phase === "submit" || lane.phase === "done") return "";
+    if (lane.tests.length <= 4) return "";
+    var row = lane.tests[lane.tests.length - 1];
+    if (!row || row.gap === 0) return "";
+    var p = state.problem;
+    var steps = row.gap / p.delta;
+    var absSteps = Math.abs(Math.round(steps));
+    var dear = p.aOne || p.aShort;
+    var cheap = p.bOne || p.bShort;
+    var move = steps > 0 ? "Increase the " + p.aShort + " hopper by " + absSteps + "." : "Decrease the " + p.aShort + " hopper by " + absSteps + ".";
+    return "Bot hint: swapping 1 " + cheap + " for 1 " + dear + " changes the total by " + formatSigned(p.delta, p) + ". You are " + (row.gap > 0 ? "TOO LOW" : "TOO HIGH") + " by " + formatValue(Math.abs(row.gap), p) + ". " + formatValue(Math.abs(row.gap), p) + " ÷ " + formatValue(p.delta, p) + " = " + absSteps + ". " + move;
+  }
+  function coachText(lane) {
+    var p = state.problem;
+    var who = state.mode === "coop" ? PLAYER_LABEL[activePlayer()] + " · " : "";
+    if (lane.phase === "parta") return who + "Part (a): highlight Spent + Left, then lock the target. −1 and +1 move the highlight.";
+    if (lane.phase === "submit") return who + "Exact value. −1/+1 chooses which count to submit. Move the slider, or use ↑/↓, if you need another test.";
+    if (lane.phase === "done") return "Calibrated.";
+    var n = lane.tests.length;
+    if (n === 0) return who + "Smart start is halfway (" + p.startA + " " + p.aShort + "). Test that guess first.";
+    if (n < 3) return who + "Tests " + n + ". Efficiency Master (+200) stays open if the exact match is within 3 tests.";
+    if (n === 3) return who + "Tests 3. The efficiency bonus needed an exact match by this test. Keep going.";
+    if (n === 4) return who + "Tests 4. One more test and the bot shares the swap size.";
+    return who + "Tests " + n + ". Use the swap hint, then jump.";
+  }
+  function sayText(lane) {
+    if (!lane || !state.problem) return "Ready to calibrate.";
+    if (lane.phase === "parta") return "Unlock the target total before the hopper will test.";
+    if (lane.phase === "done" || lane.solved) return "CALIBRATED!";
+    if (lane.phase === "submit") return "Value matched. Submit the count the question asks for.";
+    if (lane.lastStatus === "low") return "TOO LOW. Add more " + state.problem.aShort + ".";
+    if (lane.lastStatus === "high") return "TOO HIGH. Use fewer " + state.problem.aShort + ".";
+    return "Halfway is loaded. Test the hopper.";
+  }
+  function burst(lane, kind) {
+    if (reduceMotion) return;
+    for (var i = 0; i < 16; i++) {
+      lane.sparks.push({
+        x: 0.5 + (Math.random() - 0.5) * 0.25,
+        y: 0.46,
+        vx: (Math.random() - 0.5) * 0.012,
+        vy: -Math.random() * 0.014 - 0.002,
+        life: 1,
+        color: kind === "win" ? (Math.random() < 0.5 ? "#ffd76a" : "#3dff9a") : "#ff4fa3"
+      });
+    }
+  }
+
+  function mountVs() {
+    var board = $("vs-board");
+    board.replaceChildren();
+    if (state.mode !== "vs") {
+      board.hidden = true;
+      $("solo-layout").hidden = false;
+      $("deck-tools").hidden = false;
+      return;
+    }
+    board.hidden = false;
+    $("solo-layout").hidden = true;
+    $("deck-tools").hidden = true;
+    $("submit-row").hidden = true;
+    state.lanes.forEach(function (lane) {
+      board.appendChild(buildLane(lane));
+    });
+  }
+  function buildLane(lane) {
+    var root = document.createElement("section");
+    root.className = "lane";
+    root.dataset.player = String(lane.player);
+    var head = document.createElement("div");
+    head.className = "lane-head";
+    var canvas = document.createElement("canvas");
+    canvas.className = "js-visor";
+    canvas.dataset.lane = String(lane.player);
+    canvas.width = 120;
+    canvas.height = 92;
+    canvas.setAttribute("aria-hidden", "true");
+    var titles = document.createElement("div");
+    var h = document.createElement("h2");
+    h.textContent = PLAYER_LABEL[lane.player] + " · " + PLAYER_TECH[lane.player];
+    var phase = document.createElement("div");
+    phase.className = "phase";
+    titles.append(h, phase);
+    head.append(canvas, titles);
+    var note = document.createElement("div");
+    note.className = "lane-alert";
+    var cards = document.createElement("div");
+    cards.className = "cards";
+    var counts = document.createElement("div");
+    counts.className = "counts";
+    var formula = document.createElement("p");
+    formula.className = "formula";
+    var hint = document.createElement("p");
+    hint.className = "hint";
+    hint.hidden = true;
+    var table = document.createElement("div");
+    table.className = "gtable";
+    var submit = document.createElement("div");
+    submit.className = "submit-row";
+    var steps = document.createElement("div");
+    steps.className = "steppers";
+    [-5, -1].forEach(function (d) { steps.appendChild(stepButton(d, lane.player)); });
+    var slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "hopper";
+    slider.dataset.player = String(lane.player);
+    steps.appendChild(slider);
+    [1, 5].forEach(function (d) { steps.appendChild(stepButton(d, lane.player)); });
+    var go = document.createElement("button");
+    go.type = "button";
+    go.className = "test";
+    go.dataset.act = "confirm";
+    go.dataset.player = String(lane.player);
+    var coach = document.createElement("p");
+    coach.className = "coach";
+    root.append(head, note, cards, counts, formula, hint, table, submit, steps, go, coach);
+    lane.els = { phase: phase, note: note, cards: cards, counts: counts, formula: formula, hint: hint, table: table, submit: submit, slider: slider, go: go, coach: coach };
+    return root;
+  }
+  function stepButton(delta, player) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "step";
+    btn.dataset.act = "step";
+    btn.dataset.delta = String(delta);
+    btn.dataset.player = String(player);
+    btn.textContent = delta > 0 ? "+" + delta : "−" + Math.abs(delta);
+    return btn;
+  }
+
+  function renderAll() {
+    if (!state.problem) return;
+    renderHud();
+    renderBrief();
+    renderAlert();
+    if (state.mode === "vs") state.lanes.forEach(renderLane);
+    else renderSolo();
+    $("legend").textContent = legendText();
+    var deck = $("deck");
+    deck.classList.remove("turn-0", "turn-1", "turn-2");
+    if (state.mode === "coop") deck.classList.add("turn-" + activePlayer());
+  }
+  function renderHud() {
+    var modeNames = { solo: "SOLO", coop: "TEAM CO-OP", vs: "DUEL" };
+    $("hud-mode").textContent = modeNames[state.mode];
+    $("hud-tier").textContent = state.tier.toUpperCase();
+    $("hud-round").textContent = "CAL " + (state.round + 1) + "/" + ROUNDS;
+    var host = $("hud-score");
+    host.replaceChildren();
+    if (state.mode === "vs") {
+      for (var i = 0; i < state.players; i++) {
+        var chip = document.createElement("span");
+        chip.className = "chip p" + (i + 1);
+        chip.textContent = "P" + (i + 1) + " ★ " + state.stars[i];
+        if (state.speed[i] > 0) chip.textContent += "  ⚡" + state.speed[i];
+        host.appendChild(chip);
+      }
+    } else if (state.mode === "coop") {
+      var team = document.createElement("span");
+      team.className = "chip team";
+      team.textContent = "TEAM " + state.score;
+      var eff = document.createElement("span");
+      eff.className = "chip team";
+      eff.textContent = "TEAM EFF ★ " + state.effStars;
+      var streak = document.createElement("span");
+      streak.className = "chip";
+      streak.textContent = "STREAK " + state.streak;
+      host.append(team, eff, streak);
+    } else {
+      var score = document.createElement("span");
+      score.className = "chip";
+      score.textContent = "SCORE " + state.score;
+      var effS = document.createElement("span");
+      effS.className = "chip";
+      effS.textContent = "EFFICIENCY ★ " + state.effStars;
+      var streakS = document.createElement("span");
+      streakS.className = "chip";
+      streakS.textContent = "STREAK " + state.streak;
+      host.append(score, effS, streakS);
+    }
+  }
+  function renderBrief() {
+    var p = state.problem;
+    var lane = state.lanes[0];
+    var phase = !lane ? "tune" : lane.phase;
+    if (state.mode === "vs") {
+      $("phase-pill").textContent = p.partA ? "PART (a) THEN (b)" : "PART (b) HOPPER";
+      $("target-badge").textContent = p.partA ? "TARGET · LOCK IN YOUR LANE" : "TARGET · " + formatValue(p.target, p);
+      $("who").textContent = "FIRST EXACT SUBMIT WINS";
+      $("who").style.color = "#ffd76a";
+    } else {
+      $("phase-pill").textContent = phase === "parta" ? "PART (a) TARGET" : phase === "submit" ? "SUBMIT THE COUNT" : phase === "done" ? "CALIBRATED" : "PART (b) HOPPER";
+      $("target-badge").textContent = phase === "parta" ? "TARGET · NOT LOCKED" : "TARGET · " + formatValue(p.target, p);
+      if (state.mode === "coop") {
+        var who = activePlayer();
+        $("who").textContent = PLAYER_LABEL[who] + " TURN";
+        $("who").style.color = ["#ff4d5e", "#3aa0ff", "#2ee59d"][who];
+      } else {
+        $("who").textContent = "SOLO";
+        $("who").style.color = "#9eb4ce";
+      }
+    }
+    var askText = p.askB;
+    if (state.mode !== "vs" && p.askA && phase === "parta") askText = p.askA;
+    if (state.mode === "vs" && p.askA) askText = p.askA + "   " + p.askB;
+    paintAsk($("ask"), askText, phase === "parta" && state.mode !== "vs" ? "" : p.askedName);
+    $("story").textContent = p.story;
+    var cards = $("cards");
+    if (state.mode === "vs" || !p.partA || !lane || lane.phase !== "parta") {
+      cards.replaceChildren();
+      cards.hidden = true;
+    } else {
+      cards.hidden = false;
+      syncCards(cards, lane);
+    }
+  }
+  function paintAsk(node, text, focus) {
+    node.replaceChildren();
+    if (focus && text.indexOf(focus) !== -1) {
+      var i = text.indexOf(focus);
+      node.appendChild(document.createTextNode(text.slice(0, i)));
+      var strong = document.createElement("strong");
+      strong.textContent = focus;
+      node.appendChild(strong);
+      node.appendChild(document.createTextNode(text.slice(i + focus.length)));
+    } else node.textContent = text;
+  }
+  function syncCards(host, lane) {
+    var cards = state.problem.partA.cards;
+    var hot = state.mode === "solo" ? "" : " hot-" + (state.mode === "coop" ? activePlayer() : lane.player);
+    host.replaceChildren();
+    cards.forEach(function (card, i) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "card" + (i === lane.cardIndex ? " hot" + hot : "");
+      btn.dataset.act = "card";
+      btn.dataset.card = String(i);
+      btn.dataset.player = String(lane.player);
+      var title = document.createElement("b");
+      title.textContent = card.title;
+      var detail = document.createElement("span");
+      detail.textContent = card.detail;
+      btn.append(title, detail);
+      host.appendChild(btn);
+    });
+  }
+  function syncSubmit(host, lane) {
+    if (lane.phase !== "submit") {
+      host.replaceChildren();
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    var p = state.problem;
+    var hot = state.mode === "solo" ? "" : " hot-" + (state.mode === "coop" ? activePlayer() : lane.player);
+    host.replaceChildren();
+    [0, 1].forEach(function (which) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "submit" + (lane.submitFocus === which ? " hot" + hot : "");
+      btn.dataset.act = "submit";
+      btn.dataset.which = String(which);
+      btn.dataset.player = String(lane.player);
+      var count = which === 0 ? lane.itemA : p.n - lane.itemA;
+      var name = which === 0 ? p.aName : p.bName;
+      var title = document.createElement("b");
+      title.textContent = "Submit " + count;
+      var detail = document.createElement("span");
+      detail.textContent = name;
+      btn.append(title, detail);
+      host.appendChild(btn);
+    });
+  }
+  function renderAlert() {
+    var msg = state.banner || (state.mode !== "vs" && state.lanes[0] ? state.lanes[0].message : null);
+    var stamp = msg ? msg.kind + "|" + msg.title + "|" + msg.body : "";
+    if (stamp === alertStamp) return;
+    alertStamp = stamp;
+    var host = $("alert");
+    host.replaceChildren();
+    if (!msg) return;
+    host.appendChild(bannerNode(msg));
+  }
+  function bannerNode(msg) {
+    var node = document.createElement("div");
+    node.className = "banner " + (msg.kind || "info");
+    var title = document.createElement("b");
+    title.textContent = msg.title || "";
+    var body = document.createElement("div");
+    body.textContent = msg.body || "";
+    node.append(title, body);
+    return node;
+  }
+  function totalNoun(p) {
+    if (p.unit === "money") return "coins";
+    if (p.unit === "wheels") return "vehicles";
+    if (p.unit === "legs") return "animals";
+    return "answers";
+  }
+  function countChip(label, value, kind, note) {
+    var chip = document.createElement("div");
+    chip.className = "count " + kind;
+    var em = document.createElement("em");
+    em.textContent = label;
+    var num = document.createElement("b");
+    num.textContent = String(value);
+    chip.append(em, num);
+    if (note) {
+      var small = document.createElement("small");
+      small.textContent = note;
+      chip.appendChild(small);
+    }
+    return chip;
+  }
+  function countOp(symbol) {
+    var node = document.createElement("span");
+    node.className = "count-op";
+    node.textContent = symbol;
+    return node;
+  }
+  function fillCounts(host, lane) {
+    var p = state.problem;
+    host.replaceChildren();
+    host.appendChild(countChip(p.aShort, lane.itemA, "a"));
+    host.appendChild(countOp("+"));
+    host.appendChild(countChip(p.bShort, p.n - lane.itemA, "b"));
+    host.appendChild(countOp("="));
+    host.appendChild(countChip(totalNoun(p), p.n, "fixed", "stays fixed"));
+  }
+  function fillTable(host, lane) {
+    var p = state.problem;
+    host.replaceChildren();
+    [p.aShort, p.bShort, p.valueHead, "Gap status"].forEach(function (label) {
+      var head = document.createElement("div");
+      head.className = "gh";
+      head.textContent = label;
+      host.appendChild(head);
+    });
+    if (!lane.tests.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = lane.phase === "parta"
+        ? "Hopper locked until the starting total is calibrated."
+        : "No tests yet. Start at the halfway count, then press TEST HOPPER.";
+      host.appendChild(empty);
+      return;
+    }
+    lane.tests.forEach(function (row, index) {
+      addCell(host, String(row.a), row.status, index === lane.tests.length - 1);
+      addCell(host, String(row.b), row.status, index === lane.tests.length - 1);
+      addCell(host, formatValue(row.value, p), row.status, index === lane.tests.length - 1);
+      var st = document.createElement("div");
+      st.className = "cell " + row.status + (index === lane.tests.length - 1 ? " now" : "");
+      var strong = document.createElement("b");
+      strong.textContent = statusText(row.gap, p);
+      var small = document.createElement("small");
+      small.textContent = adviceText(row.gap, p);
+      st.append(strong, small);
+      host.appendChild(st);
+    });
+    if (host.dataset.rows !== String(lane.tests.length)) {
+      host.dataset.rows = String(lane.tests.length);
+      var scroller = host.closest(".log") || host.closest(".lane");
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    }
+  }
+  function addCell(host, text, status, now) {
+    var cell = document.createElement("div");
+    cell.className = "cell " + status + (now ? " now" : "");
+    cell.textContent = text;
+    host.appendChild(cell);
+  }
+  function applyHint(node, lane) {
+    var hint = hintFor(lane);
+    if (hint) state.lastHint = hint;
+    node.hidden = !hint;
+    node.textContent = hint;
+  }
+  function wireSlider(slider, lane) {
+    var p = state.problem;
+    slider.min = "0";
+    slider.max = String(p.n);
+    slider.disabled = state.locked || lane.phase === "parta" || lane.phase === "done";
+    if (Number(slider.value) !== lane.itemA) slider.value = String(lane.itemA);
+    slider.setAttribute("aria-valuemin", "0");
+    slider.setAttribute("aria-valuemax", String(p.n));
+    slider.setAttribute("aria-valuenow", String(lane.itemA));
+    slider.setAttribute("aria-valuetext", lane.itemA + " " + p.aName);
+    slider.setAttribute("aria-label", p.aName);
+  }
+  function buttonLabel(lane) {
+    if (lane.phase === "parta") return "LOCK TARGET";
+    if (lane.phase === "submit") return "SUBMIT HIGHLIGHTED";
+    if (lane.phase === "done") return "CALIBRATED";
+    return "TEST HOPPER";
+  }
+  function renderSolo() {
+    var lane = state.lanes[0];
+    var p = state.problem;
+    $("bot-say").textContent = sayText(lane);
+    fillCounts($("counts"), lane);
+    $("formula").textContent = formulaText(lane.itemA);
+    applyHint($("hint"), lane);
+    fillTable($("gtable"), lane);
+    syncSubmit($("submit-row"), lane);
+    var slider = $("hopper");
+    wireSlider(slider, lane);
+    var go = $("go-test");
+    go.textContent = buttonLabel(lane);
+    go.disabled = state.locked || lane.phase === "done";
+    go.classList.toggle("glow", lane.phase === "tune" && lane.tests.length === 0 && !reduceMotion);
+    $("coach").textContent = coachText(lane);
+    $("step-m5").setAttribute("aria-label", "Decrease " + p.aShort + " by 5");
+    $("step-m1").setAttribute("aria-label", "Decrease " + p.aShort + " by 1");
+    $("step-p1").setAttribute("aria-label", "Increase " + p.aShort + " by 1");
+    $("step-p5").setAttribute("aria-label", "Increase " + p.aShort + " by 5");
+    ["step-m5", "step-m1", "step-p1", "step-p5"].forEach(function (id) {
+      $(id).disabled = state.locked || lane.phase === "done";
+    });
+  }
+  function renderLane(lane) {
+    var els = lane.els;
+    if (!els) return;
+    var labels = { parta: "PART (a) TARGET", tune: "PART (b) HOPPER", submit: "SUBMIT THE COUNT", done: "CALIBRATED" };
+    els.phase.textContent = (labels[lane.phase] || "HOPPER") + (lane.phase === "parta" ? "" : " · " + formatValue(state.problem.target, state.problem));
+    els.note.replaceChildren();
+    if (lane.message && !state.banner) els.note.appendChild(bannerNode(lane.message));
+    if (state.problem.partA && lane.phase === "parta") {
+      els.cards.hidden = false;
+      syncCards(els.cards, lane);
+    } else {
+      els.cards.hidden = true;
+      els.cards.replaceChildren();
+    }
+    fillCounts(els.counts, lane);
+    els.formula.textContent = formulaText(lane.itemA);
+    applyHint(els.hint, lane);
+    fillTable(els.table, lane);
+    syncSubmit(els.submit, lane);
+    wireSlider(els.slider, lane);
+    els.go.textContent = buttonLabel(lane);
+    els.go.disabled = state.locked || lane.phase === "done";
+    els.go.classList.toggle("glow", lane.phase === "tune" && lane.tests.length === 0 && !reduceMotion);
+    els.coach.textContent = coachText(lane);
+  }
+  function formulaText(a) {
+    var p = state.problem;
+    var b = p.n - a;
+    return a + " × " + formatUnit(p.hi, p) + "   +   " + b + " × " + formatUnit(p.lo, p) + "   =   ?";
+  }
+
+  function clickPlayer(node) {
+    if (state.mode === "coop") return activePlayer();
+    if (state.mode === "solo") return 0;
+    var host = node.closest("[data-player]");
+    return host ? Number(host.dataset.player) : 0;
+  }
+  function onClick(e) {
+    var btn = e.target.closest("button");
+    if (!btn || !btn.dataset.act) return;
+    if (btn.dataset.act !== "mute") unlock();
+    var act = btn.dataset.act;
+    if (act === "players") { setPlayers(Number(btn.dataset.value)); return; }
+    if (act === "mode") { setMode(btn.dataset.value); return; }
+    if (act === "tier") { state.tier = btn.dataset.value; updateTitle(); return; }
+    if (act === "start") { startGame(); return; }
+    if (act === "mute") {
+      unlock();
+      setMuted(!state.muted);
+      return;
+    }
+    if (act === "exit") { exitLab(); return; }
+    if (act === "again") { startGame(); return; }
+    if (state.screen !== "play") return;
+    var player = clickPlayer(btn);
+    if (act === "step") { nudge(player, Number(btn.dataset.delta)); return; }
+    if (act === "confirm") { confirm(player); return; }
+    if (act === "card") {
+      if (!canAct(player)) return;
+      lockTarget(laneFor(player), player, Number(btn.dataset.card));
+      return;
+    }
+    if (act === "submit") {
+      if (!canAct(player)) return;
+      submitCount(laneFor(player), player, Number(btn.dataset.which));
+    }
+  }
+  function onInput(e) {
+    if (!e.target.classList || !e.target.classList.contains("hopper")) return;
+    if (state.screen !== "play" || !state.problem) return;
+    var player = state.mode === "coop" ? activePlayer() : state.mode === "solo" ? 0 : Number(e.target.dataset.player);
+    var lane = laneFor(player);
+    if (!lane) return;
+    if (!canAct(player) || lane.phase === "parta" || lane.phase === "done") {
+      e.target.value = String(lane.itemA);
+      return;
+    }
+    commitItemA(lane, Number(e.target.value));
+  }
+  function decodeKey(e) {
+    var solo = {
+      KeyW: ["step", 5], KeyA: ["step", -1], KeyS: ["step", -5], KeyD: ["step", 1],
+      ArrowUp: ["step", 5], ArrowLeft: ["step", -1], ArrowDown: ["step", -5], ArrowRight: ["step", 1],
+      KeyF: ["ok"], Space: ["ok"], Enter: ["ok"], NumpadEnter: ["ok"]
+    };
+    var multi = {
+      KeyW: [0, "step", 5], KeyA: [0, "step", -1], KeyS: [0, "step", -5], KeyD: [0, "step", 1],
+      KeyF: [0, "ok"], Space: [0, "ok"],
+      KeyI: [1, "step", 5], KeyJ: [1, "step", -1], KeyK: [1, "step", -5], KeyL: [1, "step", 1],
+      Enter: [1, "ok"], NumpadEnter: [1, "ok"],
+      ArrowUp: [2, "step", 5], ArrowLeft: [2, "step", -1], ArrowDown: [2, "step", -5], ArrowRight: [2, "step", 1],
+      ShiftRight: [2, "ok"], Numpad0: [2, "ok"]
+    };
+    if (state.mode === "solo") {
+      var hit = solo[e.code];
+      if (!hit) return null;
+      return { player: 0, type: hit[0], delta: hit[1] || 0 };
+    }
+    var row = multi[e.code];
+    if (!row || row[0] >= state.players) return null;
+    return { player: row[0], type: row[1], delta: row[2] || 0 };
+  }
+  function onKey(e) {
+    if (state.screen !== "play") return;
+    var act = decodeKey(e);
+    if (!act) return;
+    if (act.type === "ok" && e.repeat) return;
+    e.preventDefault();
+    unlock();
+    if (act.type === "ok") confirm(act.player);
+    else nudge(act.player, act.delta);
+  }
+  function pollPads(now) {
+    if (state.screen !== "play") return;
+    var pads = null;
+    try { pads = navigator.getGamepads ? navigator.getGamepads() : null; }
+    catch (err) { return; }
+    if (!pads) return;
+    for (var i = 0; i < state.players; i++) {
+      var gp = pads[i];
+      if (!gp || !gp.buttons) continue;
+      var left = !!(gp.buttons[14] && gp.buttons[14].pressed) || (gp.axes && gp.axes[0] < -0.55);
+      var right = !!(gp.buttons[15] && gp.buttons[15].pressed) || (gp.axes && gp.axes[0] > 0.55);
+      var up = !!(gp.buttons[12] && gp.buttons[12].pressed) || (gp.axes && gp.axes.length > 1 && gp.axes[1] < -0.55);
+      var down = !!(gp.buttons[13] && gp.buttons[13].pressed) || (gp.axes && gp.axes.length > 1 && gp.axes[1] > 0.55);
+      if (left && right) { left = false; right = false; }
+      if (up && down) { up = false; down = false; }
+      edgeRepeat(i, "left", left, now, function () { nudge(i, -1); });
+      edgeRepeat(i, "right", right, now, function () { nudge(i, 1); });
+      edgeRepeat(i, "up", up, now, function () { nudge(i, 5); });
+      edgeRepeat(i, "down", down, now, function () { nudge(i, -5); });
+      var a = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      if (a && !padMem[i].a) {
+        unlock();
+        confirm(i);
+      }
+      padMem[i].a = a;
+    }
+  }
+  function edgeRepeat(i, key, down, now, fn) {
+    var mem = padMem[i];
+    if (!down) {
+      mem[key] = false;
+      mem[key + "T"] = 0;
+      return;
+    }
+    if (!mem[key]) {
+      mem[key] = true;
+      mem[key + "T"] = now + 340;
+      fn();
+      return;
+    }
+    if (now >= mem[key + "T"]) {
+      mem[key + "T"] = now + 140;
+      fn();
+    }
+  }
+
+  function frame(now) {
+    pollPads(now);
+    var canvases = document.querySelectorAll("canvas.js-visor");
+    for (var i = 0; i < canvases.length; i++) drawVisor(canvases[i], now);
+    requestAnimationFrame(frame);
+  }
+  function fitCanvas(canvas) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = canvas.clientWidth;
+    var h = canvas.clientHeight;
+    if (w < 2 || h < 2) return null;
+    var pw = Math.round(w * dpr);
+    var ph = Math.round(h * dpr);
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw;
+      canvas.height = ph;
+    }
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx: ctx, w: w, h: h };
+  }
+  function roundRect(ctx, x, y, w, h, r) {
+    if (w < 2 || h < 2) return;
+    var radius = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
+  }
+  function drawStar(ctx, x, y, r, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    for (var i = 0; i < 5; i++) {
+      var a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+      var b = a + Math.PI / 5;
+      ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      ctx.lineTo(x + Math.cos(b) * r * 0.42, y + Math.sin(b) * r * 0.42);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  function moodOf(lane) {
+    if (!lane || !state.problem) return "idle";
+    if (lane.solved || lane.phase === "done") return "win";
+    if (lane.phase === "submit") return "exact";
+    if (lane.lastStatus === "low") return "low";
+    if (lane.lastStatus === "high") return "high";
+    return "idle";
+  }
+  function ledText(lane) {
+    if (!state.problem || !lane) return "READY";
+    if (lane.phase === "parta") return "TARGET ??";
+    if (lane.solved || lane.phase === "done") return "CALIBRATED";
+    if (lane.phase === "submit") return "EXACT";
+    return formatValue(state.problem.target, state.problem);
+  }
+  function drawVisor(canvas, now) {
+    var fit = fitCanvas(canvas);
+    if (!fit) return;
+    var ctx = fit.ctx;
+    var w = fit.w;
+    var h = fit.h;
+    var lane = state.lanes[Number(canvas.dataset.lane)] || null;
+    var mood = moodOf(lane);
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#0c1524";
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "rgba(62, 224, 255, 0.08)";
+    ctx.lineWidth = 1;
+    for (var x = 0; x < w; x += 22) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+    for (var y = 0; y < h; y += 22) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+    }
+    var shake = lane && lane.message && lane.message.kind === "bad" && now - lane.message.at < 420 && !reduceMotion;
+    var ox = shake ? Math.sin(now / 28) * 3 : 0;
+    var bob = reduceMotion ? 0 : Math.sin(now / 420) * 3;
+    if (h < 140) {
+      drawFace(ctx, w / 2 + ox, h * 0.42 + bob, Math.min(w, h) * 0.22, mood, now);
+      ctx.fillStyle = mood === "win" ? "#ffd76a" : "#b8fff2";
+      ctx.font = "700 11px 'Avenir Next', 'Trebuchet MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(ledText(lane), w / 2, h - 12);
+      drawSparks(ctx, lane, w, h);
+      return;
+    }
+    var hopperW = Math.max(54, Math.min(84, w * 0.2));
+    drawHopper(ctx, 16, 24, hopperW, h - 48, lane, "a");
+    drawHopper(ctx, w - hopperW - 16, 24, hopperW, h - 48, lane, "b");
+    var bw = Math.min(168, w - hopperW * 2 - 48);
+    var bh = Math.min(h - 36, 230);
+    var bx = (w - bw) / 2 + ox;
+    var by = (h - bh) / 2 + bob;
+    roundRect(ctx, bx, by, bw, bh, 22);
+    ctx.fillStyle = "#18283f";
+    ctx.fill();
+    ctx.strokeStyle = "#3ee0ff";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.fillStyle = "#ff4fa3";
+    ctx.fillRect(bx + bw / 2 - 4, by - 16, 8, 16);
+    ctx.beginPath();
+    ctx.arc(bx + bw / 2, by - 20, 7, 0, Math.PI * 2);
+    ctx.fillStyle = mood === "high" ? "#ffb020" : mood === "low" ? "#7ecbff" : "#ffd76a";
+    ctx.fill();
+    roundRect(ctx, bx + 16, by + 18, bw - 32, bh * 0.42, 12);
+    ctx.fillStyle = "#071018";
+    ctx.fill();
+    drawFace(ctx, bx + bw / 2, by + 18 + bh * 0.2, Math.min(28, bw * 0.12), mood, now);
+    roundRect(ctx, bx + 18, by + bh * 0.62, bw - 36, 36, 8);
+    ctx.fillStyle = "#102033";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255, 215, 106, 0.8)";
+    ctx.stroke();
+    ctx.fillStyle = mood === "win" || mood === "exact" ? "#ffd76a" : "#9fffe8";
+    ctx.font = "800 " + Math.max(13, Math.floor(bw / 9)) + "px 'Avenir Next', 'Trebuchet MS', sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(ledText(lane), bx + bw / 2, by + bh * 0.62 + 18);
+    ctx.textBaseline = "alphabetic";
+    drawSparks(ctx, lane, w, h);
+  }
+  function drawHopper(ctx, x, y, w, h, lane, side) {
+    roundRect(ctx, x, y, w, h, 14);
+    ctx.fillStyle = "#101c30";
+    ctx.fill();
+    ctx.strokeStyle = side === "a" ? "#ffb020" : "#3ee0ff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    var p = state.problem;
+    var count = 0;
+    var total = 1;
+    if (p && lane) {
+      total = Math.max(1, p.n);
+      count = side === "a" ? lane.itemA : p.n - lane.itemA;
+    }
+    var innerH = (h - 28) * (count / total);
+    if (innerH > 2) {
+      roundRect(ctx, x + 8, y + h - 16 - innerH, w - 16, innerH, 8);
+      ctx.fillStyle = side === "a" ? "rgba(255, 176, 32, 0.85)" : "rgba(62, 224, 255, 0.8)";
+      ctx.fill();
+    }
+    ctx.fillStyle = "#eef6ff";
+    ctx.font = "700 12px 'Avenir Next', 'Trebuchet MS', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(side === "a" ? (p ? p.aShort : "A") : (p ? p.bShort : "B"), x + w / 2, y + 16);
+  }
+  function drawFace(ctx, cx, cy, r, mood, now) {
+    var blink = !reduceMotion && mood === "idle" && Math.sin(now / 280) > 0.96;
+    var eyeY = blink ? 2 : r;
+    if (mood === "low") {
+      triEye(ctx, cx - r * 1.3, cy + 4, r, 1, "#7ecbff");
+      triEye(ctx, cx + r * 1.3, cy + 4, r, 1, "#7ecbff");
+      mouth(ctx, cx, cy + r * 1.8, r, true);
+    } else if (mood === "high") {
+      triEye(ctx, cx - r * 1.3, cy - 2, r, -1, "#ffb020");
+      triEye(ctx, cx + r * 1.3, cy - 2, r, -1, "#ffb020");
+      mouth(ctx, cx, cy + r * 1.6, r, true);
+    } else if (mood === "win") {
+      drawStar(ctx, cx - r * 1.3, cy, r, "#ffd76a");
+      drawStar(ctx, cx + r * 1.3, cy, r, "#ffd76a");
+      mouth(ctx, cx, cy + r * 1.7, r, false);
+    } else if (mood === "exact") {
+      dotEye(ctx, cx - r * 1.2, cy, r * 0.7, "#ffd76a");
+      dotEye(ctx, cx + r * 1.2, cy, r * 0.7, "#ffd76a");
+      mouth(ctx, cx, cy + r * 1.5, r, false);
+    } else {
+      dotEye(ctx, cx - r * 1.2, cy, blink ? 2 : r * 0.62, "#3ee0ff");
+      dotEye(ctx, cx + r * 1.2, cy, blink ? 2 : r * 0.62, "#3ee0ff");
+      mouth(ctx, cx, cy + r * (blink ? 1.2 : 1.45), r * 0.8, false);
+    }
+  }
+  function dotEye(ctx, x, y, ry, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(x, y, Math.max(2, ry), Math.max(2, ry), 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  function triEye(ctx, x, y, r, dir, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (dir > 0) {
+      ctx.moveTo(x, y + r);
+      ctx.lineTo(x - r * 0.8, y - r * 0.5);
+      ctx.lineTo(x + r * 0.8, y - r * 0.5);
+    } else {
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x - r * 0.8, y + r * 0.5);
+      ctx.lineTo(x + r * 0.8, y + r * 0.5);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  function mouth(ctx, x, y, r, sad) {
+    ctx.strokeStyle = sad ? "#7ecbff" : "#ffd76a";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x, sad ? y + r * 0.2 : y - r * 0.2, r * 0.7, sad ? Math.PI * 1.15 : Math.PI * 0.15, sad ? Math.PI * 1.85 : Math.PI * 0.85, false);
+    ctx.stroke();
+  }
+  function drawSparks(ctx, lane, w, h) {
+    if (!lane || !lane.sparks) return;
+    var next = [];
+    for (var i = 0; i < lane.sparks.length; i++) {
+      var s = lane.sparks[i];
+      s.life -= 0.02;
+      s.x += s.vx;
+      s.y += s.vy;
+      s.vy += 0.00045;
+      if (s.life <= 0) continue;
+      next.push(s);
+      ctx.globalAlpha = Math.max(0, s.life);
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(s.x * w, s.y * h, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    lane.sparks = next;
+  }
+
+  function boot() {
+    reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.body.addEventListener("click", onClick);
+    document.body.addEventListener("input", onInput);
+    document.addEventListener("keydown", onKey);
+    updateTitle();
+    requestAnimationFrame(frame);
+  }
+  document.addEventListener("DOMContentLoaded", boot);
+})();
+</script>
+</body>
+</html>
