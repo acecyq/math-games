@@ -1,0 +1,2818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="description" content="Sky-Feast Tray Catcher: catch the exact fraction, ratio, or percentage of a food forecast. Singapore Primary 4–6. Solo, team co-op, and feast duel." />
+<title>Sky-Feast Tray Catcher — Fraction, Ratio &amp; Percentage Rush</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #8ad4f6;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: pointer;
+    outline: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript {
+    color: #3a271c;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" tabindex="0" aria-label="Sky-Feast Tray Catcher, a fraction, ratio, and percentage catching game"></canvas>
+<div id="sr" class="sr" aria-live="polite"></div>
+<noscript>This feast needs JavaScript to open the sky kitchen.</noscript>
+<script>
+'use strict';
+
+/* Sky-Feast Tray Catcher
+   Primary 4–6: equivalent fractions, ratios, and percentages,
+   target counts from a forecast, and unlike-denominator change
+   by catching more food or shaking extras off the tray.
+*/
+
+var VW = 1280;
+var VH = 720;
+var HUD_H = 56;
+var STRIP_Y = 56;
+var STRIP_H = 136;
+var STAGE_Y = 192;
+var ACTION_Y = 608;
+var ACTION_H = 112;
+var STAGE_H = ACTION_Y - STAGE_Y;
+var ROUNDS = 8;
+var FONT = '"Trebuchet MS", "Segoe UI", sans-serif';
+
+var INK = '#3A271C';
+var CREAM = '#FFF8EE';
+var CREAM_DEEP = '#FFE7C2';
+var CORAL = '#E85D4C';
+var CORAL_DARK = '#C4412F';
+var TEAL = '#1F6F8A';
+var GOLD = '#F2C14B';
+var LEAF = '#2EAE6A';
+var SKY_TOP = '#79D0F8';
+var SKY_BOT = '#FFE3A3';
+var CHOCOLATE = '#3A271C';
+
+var FOODS = [
+  { id: 'taco', name: 'Tacos', one: 'taco', plural: 'tacos' },
+  { id: 'burger', name: 'Burgers', one: 'burger', plural: 'burgers' },
+  { id: 'fries', name: 'Fries', one: 'fry carton', plural: 'fries' }
+];
+
+var TOTALS = [12, 15, 16, 18, 20, 24, 25, 30];
+
+var EASY_SPECS = [
+  { num: 1, den: 2, w: 3 },
+  { num: 1, den: 4, w: 3 },
+  { num: 3, den: 4, w: 2 },
+  { num: 2, den: 5, w: 2 },
+  { num: 1, den: 5, w: 2 }
+];
+
+var MED_PCTS = [10, 15, 30, 35, 40, 45, 55, 60, 65, 70, 80, 85];
+
+var DIFFS = [
+  { id: 'easy', name: 'EASY', title: 'Food-Truck Rookie', years: 'P4', blurb: 'Empty tray. Friendly fractions, 50%, 25%, 75%, 20%, and simple ratios such as 1 : 1.' },
+  { id: 'medium', name: 'MEDIUM', title: 'Street-Chef Pro', years: 'P5', blurb: 'Empty tray. Simplify fractions such as 6/8, convert a 3 : 2 ratio, and find a percentage of the forecast.' },
+  { id: 'hard', name: 'HARD', title: 'Master Caterer', years: 'P5–P6', blurb: 'The tray starts preloaded. Add or shake off to reach a new fraction with a different denominator.' },
+  { id: 'extreme', name: 'EXTREME', title: 'Sky-Feast Grandmaster', years: 'P6', blurb: 'Fast storms, burnt decoys to dodge, tight preloaded orders, and mixed fraction, ratio, and percentage rounds.' }
+];
+
+var MODES = [
+  { id: 'solo', name: 'SOLO', blurb: 'One chef. Mouse, keyboard, or a gamepad.' },
+  { id: 'coop', name: 'TEAM CO-OP', blurb: 'Two or three chefs fill one shared tray. One team score and shared hearts.' },
+  { id: 'duel', name: 'FEAST DUEL', blurb: 'Two or three chefs race. The first exact serve wins the star. A wrong serve stuns that chef.' }
+];
+
+var LOOKS = [
+  { skin: '#F6C7A2', coat: '#E23B3B', coatDark: '#B4232E', apron: '#FFF6EA', name: 'Crimson Chef', short: 'P1' },
+  { skin: '#E0AA78', coat: '#2F7FE0', coatDark: '#1C4E99', apron: '#F4F8FF', name: 'Azure Chef', short: 'P2' },
+  { skin: '#C68642', coat: '#1FA36A', coatDark: '#0E6B43', apron: '#F3FFF7', name: 'Emerald Chef', short: 'P3' }
+];
+
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+var sr = document.getElementById('sr');
+var view = { scale: 1, ox: 0, oy: 0 };
+var hotspots = [];
+var down = {};
+var framePress = {};
+var clickQueue = [];
+var pointer = { x: VW * 0.5, y: VH * 0.5, inside: false, seen: false };
+var padNow = [null, null, null];
+var padPrev = [null, null, null];
+
+var audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  sfx: null,
+  next: 0,
+  step: 0,
+  noise: null
+};
+
+var decor = { clouds: [], titleBits: [], titleT: 0.2 };
+
+var game = {
+  screen: 'title',
+  players: 1,
+  difficulty: 'easy',
+  mode: 'solo',
+  rep: 'fraction',
+  muted: false,
+  score: 0,
+  hearts: 3,
+  stars: [0, 0, 0],
+  points: [0, 0, 0],
+  round: 0,
+  combo: 0,
+  bestCombo: 0,
+  history: [],
+  foodIx: 0,
+  modeSpin: 0,
+  order: null,
+  phase: 'banner',
+  phaseT: 0,
+  pendingEnd: '',
+  endReason: '',
+  tip: null,
+  note: null,
+  toast: null,
+  items: [],
+  flies: [],
+  particles: [],
+  chefs: [],
+  spawnT: 0.4,
+  burst: 3,
+  sinceRotten: 2,
+  roundTime: 0,
+  wentOver: false,
+  caughtGood: 0,
+  caughtRotten: 0,
+  serves: 0,
+  exacts: 0,
+  repCd: 0,
+  clock: 0,
+  winner: -1,
+  lastAward: null,
+  stepT: 0
+};
+
+function gcd(a, b) {
+  a = Math.abs(a);
+  b = Math.abs(b);
+  while (b) {
+    var t = a % b;
+    a = b;
+    b = t;
+  }
+  return a || 1;
+}
+
+function lcm(a, b) {
+  if (!a || !b) return 0;
+  return Math.abs((a / gcd(a, b)) * b);
+}
+
+function simplify(n, d) {
+  var g = gcd(n, d);
+  return [n / g, d / g];
+}
+
+function formatPercent(count, total) {
+  if (count <= 0 || total <= 0) return '0%';
+  if ((count * 100) % total === 0) return (count * 100 / total) + '%';
+  var g = gcd(count, total);
+  var n = count / g;
+  var d = total / g;
+  var whole = Math.floor((n * 100) / d);
+  var rem = (n * 100) % d;
+  var gg = gcd(rem, d);
+  rem /= gg;
+  d /= gg;
+  if (whole <= 0) return rem + '/' + d + '%';
+  return whole + ' ' + rem + '/' + d + '%';
+}
+
+function pick(arr) {
+  return arr[(Math.random() * arr.length) | 0];
+}
+
+function weighted(list) {
+  var sum = 0;
+  var i;
+  for (i = 0; i < list.length; i++) sum += list[i].w;
+  var r = Math.random() * sum;
+  for (i = 0; i < list.length; i++) {
+    r -= list[i].w;
+    if (r <= 0) return list[i];
+  }
+  return list[list.length - 1];
+}
+
+function clamp(v, a, b) {
+  return v < a ? a : v > b ? b : v;
+}
+
+function comma(n) {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function diffInfo(id) {
+  var i;
+  for (i = 0; i < DIFFS.length; i++) if (DIFFS[i].id === id) return DIFFS[i];
+  return DIFFS[0];
+}
+
+function modeInfo(id) {
+  var i;
+  for (i = 0; i < MODES.length; i++) if (MODES[i].id === id) return MODES[i];
+  return MODES[0];
+}
+
+function finalize(spec) {
+  var pp = simplify(spec.target, spec.total - spec.target);
+  var pt = simplify(spec.target, spec.total);
+  var startPart = [0, 1];
+  var startWhole = [0, 1];
+  var low = simplify(spec.showNum, spec.showDen);
+  if (spec.start > 0) {
+    startPart = simplify(spec.start, spec.total - spec.start);
+    startWhole = simplify(spec.start, spec.total);
+  }
+  return {
+    food: spec.food,
+    total: spec.total,
+    target: spec.target,
+    start: spec.start,
+    showNum: spec.showNum,
+    showDen: spec.showDen,
+    showStartNum: spec.showStartNum,
+    showStartDen: spec.showStartDen,
+    lowNum: low[0],
+    lowDen: low[1],
+    partA: pp[0] * spec.partMul,
+    partB: pp[1] * spec.partMul,
+    wholeA: pt[0] * spec.wholeMul,
+    wholeB: pt[1] * spec.wholeMul,
+    startPartA: startPart[0],
+    startPartB: startPart[1],
+    startWholeA: startWhole[0],
+    startWholeB: startWhole[1],
+    pct: formatPercent(spec.target, spec.total),
+    startPct: spec.start > 0 ? formatPercent(spec.start, spec.total) : '0%',
+    spotlight: spec.spotlight,
+    ratioStyle: spec.ratioStyle,
+    signature: spec.food.id + '|' + spec.total + '|' + spec.start + '|' + spec.target
+  };
+}
+
+function auditOrder(order, diff) {
+  var issues = [];
+  if (!order) return ['missing'];
+  if (order.showNum * order.total !== order.target * order.showDen) issues.push('fraction');
+  if (order.partA * order.total !== order.target * (order.partA + order.partB)) issues.push('part-ratio');
+  if (order.wholeA * order.total !== order.target * order.wholeB) issues.push('whole-ratio');
+  if (order.target < 2 || order.target > order.total - 2) issues.push('target-range');
+  if (order.start < 0 || order.start >= order.total) issues.push('start-range');
+  if (diff === 'easy' || diff === 'medium') {
+    if (order.start !== 0) issues.push('should-be-empty');
+  } else {
+    if (order.start <= 0 || order.start === order.target) issues.push('preload');
+    if (order.showStartNum * order.total !== order.start * order.showStartDen) issues.push('start-fraction');
+    if (order.showStartDen === order.lowDen && order.showStartNum === order.lowNum) issues.push('same-fraction');
+  }
+  if ((order.target * 100) % order.total === 0) {
+    if (order.pct !== (order.target * 100 / order.total) + '%') issues.push('percent');
+  }
+  if (order.pct.indexOf('%') < 0) issues.push('percent-sign');
+  return issues;
+}
+
+function tryEasy(food) {
+  var spec = weighted(EASY_SPECS);
+  var totals = TOTALS.filter(function (t) { return t % spec.den === 0; });
+  if (!totals.length) return null;
+  var total = pick(totals);
+  var target = spec.num * (total / spec.den);
+  if (target < 2 || target > total - 2) return null;
+  var spotlight = pick(['fraction', 'ratio', 'percentage']);
+  var pct = target * 100 / total;
+  if (spotlight === 'percentage' && [20, 25, 50, 75].indexOf(pct) < 0) spotlight = 'fraction';
+  return finalize({
+    food: food,
+    total: total,
+    target: target,
+    start: 0,
+    showNum: spec.num,
+    showDen: spec.den,
+    showStartNum: 0,
+    showStartDen: 1,
+    spotlight: spotlight,
+    ratioStyle: Math.random() < 0.72 ? 'part' : 'whole',
+    partMul: 1,
+    wholeMul: 1
+  });
+}
+
+function tryMediumFraction(food) {
+  var den = pick([2, 4, 5, 6, 8, 10]);
+  var totals = TOTALS.filter(function (t) { return t % den === 0; });
+  if (!totals.length) return null;
+  var total = pick(totals);
+  var nums = [];
+  var n;
+  for (n = 1; n < den; n++) if (gcd(n, den) === 1) nums.push(n);
+  if (!nums.length) return null;
+  var num = pick(nums);
+  var target = num * (total / den);
+  if (target < 2 || target > total - 2) return null;
+  var ups = [];
+  var k;
+  for (k = 2; k <= 5; k++) if (den * k <= 24) ups.push(k);
+  if (!ups.length) return null;
+  k = pick(ups);
+  var showNum = num * k;
+  var showDen = den * k;
+  if (showNum === target || showDen === target) return null;
+  return finalize({
+    food: food,
+    total: total,
+    target: target,
+    start: 0,
+    showNum: showNum,
+    showDen: showDen,
+    showStartNum: 0,
+    showStartDen: 1,
+    spotlight: 'fraction',
+    ratioStyle: 'part',
+    partMul: 1,
+    wholeMul: 1
+  });
+}
+
+function tryMediumPercent(food) {
+  var pct = pick(MED_PCTS);
+  var totals = TOTALS.filter(function (t) { return (t * pct) % 100 === 0; });
+  if (!totals.length) return null;
+  var total = pick(totals);
+  var target = total * pct / 100;
+  if (target < 2 || target > total - 2) return null;
+  var low = simplify(target, total);
+  return finalize({
+    food: food,
+    total: total,
+    target: target,
+    start: 0,
+    showNum: low[0],
+    showDen: low[1],
+    showStartNum: 0,
+    showStartDen: 1,
+    spotlight: 'percentage',
+    ratioStyle: 'part',
+    partMul: 1,
+    wholeMul: 1
+  });
+}
+
+function tryMediumRatio(food) {
+  var a = 2 + ((Math.random() * 4) | 0);
+  var b = 2 + ((Math.random() * 4) | 0);
+  if (gcd(a, b) !== 1) return null;
+  var parts = a + b;
+  var totals = TOTALS.filter(function (t) { return t % parts === 0; });
+  if (!totals.length) return null;
+  var total = pick(totals);
+  var target = a * (total / parts);
+  if (target < 2 || target > total - 2) return null;
+  var partMul = 1;
+  if (a <= 5 && b <= 5 && Math.random() < 0.55) partMul = 2;
+  if (a * partMul === target || b * partMul === target || (a + b) * partMul === target) partMul = 1;
+  var low = simplify(target, total);
+  return finalize({
+    food: food,
+    total: total,
+    target: target,
+    start: 0,
+    showNum: low[0],
+    showDen: low[1],
+    showStartNum: 0,
+    showStartDen: 1,
+    spotlight: 'ratio',
+    ratioStyle: Math.random() < 0.68 ? 'part' : 'whole',
+    partMul: partMul,
+    wholeMul: 1
+  });
+}
+
+function fractionChoices(total) {
+  var byCount = new Map();
+  var den;
+  var num;
+  for (den = 2; den <= 12; den++) {
+    if (total % den !== 0) continue;
+    var unit = total / den;
+    for (num = 1; num < den; num++) {
+      if (gcd(num, den) !== 1) continue;
+      var count = num * unit;
+      if (count < 2 || count > total - 2) continue;
+      if (!byCount.has(count)) byCount.set(count, { count: count, num: num, den: den });
+    }
+  }
+  return Array.from(byCount.values());
+}
+
+function tryHard(food, extreme) {
+  var total = pick(TOTALS);
+  var options = fractionChoices(total);
+  if (options.length < 2) return null;
+  var s = pick(options);
+  var t = pick(options);
+  if (s.count === t.count || s.den === t.den) return null;
+  var diff = Math.abs(s.count - t.count);
+  if (extreme) {
+    if (diff < 2 || diff > 8) return null;
+  } else if (diff < 3 || diff > 10) return null;
+  var showNum = t.num;
+  var showDen = t.den;
+  if (extreme && Math.random() < 0.4) {
+    var k;
+    for (k = 2; k <= 3; k++) {
+      if (t.den * k <= 20) {
+        if (t.num * k !== t.count && t.den * k !== t.count) {
+          showNum = t.num * k;
+          showDen = t.den * k;
+        }
+        break;
+      }
+    }
+  }
+  return finalize({
+    food: food,
+    total: total,
+    target: t.count,
+    start: s.count,
+    showNum: showNum,
+    showDen: showDen,
+    showStartNum: s.num,
+    showStartDen: s.den,
+    spotlight: pick(['fraction', 'ratio', 'percentage']),
+    ratioStyle: Math.random() < 0.55 ? 'part' : 'whole',
+    partMul: 1,
+    wholeMul: 1
+  });
+}
+
+function tryOrder(diff, food) {
+  if (diff === 'easy') return tryEasy(food);
+  if (diff === 'medium') {
+    var r = Math.random();
+    if (r < 0.34) return tryMediumFraction(food);
+    if (r < 0.67) return tryMediumRatio(food);
+    return tryMediumPercent(food);
+  }
+  return tryHard(food, diff === 'extreme');
+}
+
+function fallbackOrder(food, diff) {
+  if (diff === 'extreme') {
+    return finalize({
+      food: food, total: 12, target: 9, start: 6,
+      showNum: 3, showDen: 4, showStartNum: 1, showStartDen: 2,
+      spotlight: 'fraction', ratioStyle: 'part', partMul: 1, wholeMul: 1
+    });
+  }
+  if (diff === 'hard') {
+    return finalize({
+      food: food, total: 12, target: 9, start: 4,
+      showNum: 3, showDen: 4, showStartNum: 1, showStartDen: 3,
+      spotlight: 'fraction', ratioStyle: 'part', partMul: 1, wholeMul: 1
+    });
+  }
+  return finalize({
+    food: food, total: 12, target: 6, start: 0,
+    showNum: 1, showDen: 2, showStartNum: 0, showStartDen: 1,
+    spotlight: 'fraction', ratioStyle: 'part', partMul: 1, wholeMul: 1
+  });
+}
+
+function generateOrder(diff, food, history) {
+  var attempt;
+  for (attempt = 0; attempt < 120; attempt++) {
+    var order = tryOrder(diff, food);
+    if (!order) continue;
+    if (history.indexOf(order.signature) !== -1) continue;
+    if (auditOrder(order, diff).length) continue;
+    return order;
+  }
+  return fallbackOrder(food, diff);
+}
+
+function workedLines(order) {
+  var lines = [];
+  var N = order.total;
+  var name = order.food.plural;
+  if (order.showNum !== order.lowNum || order.showDen !== order.lowDen) {
+    lines.push(order.showNum + '/' + order.showDen + ' simplifies to ' + order.lowNum + '/' + order.lowDen + '.');
+  }
+  lines.push(order.lowNum + '/' + order.lowDen + ' of ' + N + ' = ' + order.target + ' ' + name + '.');
+  lines.push('Caught : Missed ' + order.partA + ' : ' + order.partB + ' means ' + order.partA + ' + ' + order.partB + ' = ' + (order.partA + order.partB) + ' parts, so take ' + order.partA + '/' + (order.partA + order.partB) + ' of ' + N + ' = ' + order.target + '.');
+  lines.push('Target : Total ' + order.wholeA + ' : ' + order.wholeB + ' means ' + order.wholeA + '/' + order.wholeB + ' of ' + N + ' = ' + order.target + '.');
+  lines.push(order.pct + ' of ' + N + ' = ' + order.target + ' ' + name + '.');
+  if (order.start > 0) {
+    lines.push('The tray started at ' + order.showStartNum + '/' + order.showStartDen + ' of ' + N + ' = ' + order.start + '.');
+    var d = lcm(order.showStartDen, order.showDen);
+    if (d && d % order.showStartDen === 0 && d % order.showDen === 0) {
+      var sEq = order.showStartNum * (d / order.showStartDen);
+      var tEq = order.showNum * (d / order.showDen);
+      lines.push(order.showStartNum + '/' + order.showStartDen + ' = ' + sEq + '/' + d + ' and ' + order.showNum + '/' + order.showDen + ' = ' + tEq + '/' + d + '.');
+    }
+    if (order.target > order.start) {
+      lines.push('Catch ' + (order.target - order.start) + ' more: ' + order.target + ' − ' + order.start + ' = ' + (order.target - order.start) + '.');
+    } else {
+      lines.push('Shake off ' + (order.start - order.target) + ': ' + order.start + ' − ' + order.target + ' = ' + (order.start - order.target) + '.');
+    }
+  }
+  return lines;
+}
+
+function integerPercent(pct) {
+  if (!/^\d+%$/.test(pct)) return -1;
+  return parseInt(pct, 10);
+}
+
+function ratioAsFractionTrap(order, served) {
+  var a = order.partA;
+  var b = order.partB;
+  if (a <= 0 || b <= 0) return false;
+  if ((a + b) === b) return false;
+  var treated = Math.round((a / b) * order.total);
+  if (treated === order.target) return false;
+  if (treated < 1 || treated > order.total) return false;
+  return served === treated;
+}
+
+function diagnose(order, served) {
+  var N = order.total;
+  var need = order.target;
+  var lines = workedLines(order);
+  var title = 'Not the order yet';
+  var alert = 'Convert the fraction, ratio, or percentage into a number of ' + order.food.plural + ', then match that count on the tray.';
+  var pctNum = integerPercent(order.pct);
+  if (served > need) {
+    title = 'Tray overfilled';
+    alert = 'Your tray has too many items! Press SHAKE OFF to drop excess items before serving.';
+  } else if (order.start > 0 && served === order.start) {
+    title = 'That is the starting tray';
+    alert = 'The customer changed the order. Convert both amounts into items out of ' + N + ', then catch more or shake off the extra.';
+  } else if (served === order.showNum && served !== need) {
+    title = 'Numerator is not the count';
+    alert = order.showNum + '/' + order.showDen + ' of ' + N + ' is not ' + order.showNum + ' items. ' + order.lowNum + '/' + order.lowDen + ' of ' + N + ' = ' + need + '.';
+  } else if (served === order.showDen && served !== need) {
+    title = 'Denominator is not the count';
+    alert = 'The denominator splits the forecast into equal parts. ' + order.showNum + '/' + order.showDen + ' of ' + N + ' = ' + need + ' ' + order.food.plural + '.';
+  } else if (pctNum === served && served !== need) {
+    title = 'A percent is not a headcount';
+    alert = order.pct + ' means ' + order.pct + ' of the forecast, not ' + served + ' items. Of ' + N + ', that is ' + need + ' ' + order.food.plural + '.';
+  } else if (served === N && need !== N) {
+    title = 'Part-to-part ratio mix-up';
+    alert = 'A ratio of ' + order.partA + ' : ' + order.partB + ' (Caught : Missed) means ' + order.partA + ' + ' + order.partB + ' = ' + (order.partA + order.partB) + ' equal parts in total! You need ' + order.partA + '/' + (order.partA + order.partB) + ' of the forecasted items, not the whole forecast.';
+  } else if (ratioAsFractionTrap(order, served)) {
+    title = 'Part-to-part ratio mix-up';
+    alert = 'A ratio of ' + order.partA + ' : ' + order.partB + ' (Caught : Missed) means ' + order.partA + ' + ' + order.partB + ' = ' + (order.partA + order.partB) + ' equal parts in total! You need ' + order.partA + '/' + (order.partA + order.partB) + ' of the forecasted items, not ' + order.partA + '/' + order.partB + '.';
+  } else if (served === order.partA && served !== need) {
+    title = 'Part-to-part ratio mix-up';
+    alert = 'A ratio of ' + order.partA + ' : ' + order.partB + ' (Caught : Missed) means ' + order.partA + ' + ' + order.partB + ' = ' + (order.partA + order.partB) + ' equal parts in total! You need ' + order.partA + '/' + (order.partA + order.partB) + ' of the forecasted items.';
+  } else if (served === order.partB && served !== need) {
+    title = 'That number is the missed part';
+    alert = order.partA + ' : ' + order.partB + ' (Caught : Missed) asks for the first part: ' + order.partA + ' out of ' + (order.partA + order.partB) + ', which is ' + need + ' of ' + N + '.';
+  } else if (served === order.wholeA + order.wholeB && served !== need) {
+    title = 'Do not add a Target : Total ratio';
+    alert = 'Target : Total ' + order.wholeA + ' : ' + order.wholeB + ' means ' + order.wholeA + '/' + order.wholeB + ' of the forecast, not ' + order.wholeA + ' + ' + order.wholeB + '.';
+  } else if (served === order.wholeA && served !== need) {
+    title = 'Target : Total is a fraction';
+    alert = order.wholeA + ' : ' + order.wholeB + ' (Target : Total) means ' + order.wholeA + '/' + order.wholeB + ' of ' + N + ' = ' + need + ', not ' + order.wholeA + ' items.';
+  } else if (served === order.wholeB && served !== need) {
+    title = 'Target : Total is a fraction';
+    alert = order.wholeA + ' : ' + order.wholeB + ' (Target : Total) means ' + order.wholeA + '/' + order.wholeB + ' of ' + N + ' = ' + need + ', not ' + order.wholeB + ' items.';
+  } else if (served === order.partA + order.partB && served !== need) {
+    title = 'Part-to-part ratio mix-up';
+    alert = 'A ratio of ' + order.partA + ' : ' + order.partB + ' (Caught : Missed) means ' + order.partA + ' + ' + order.partB + ' = ' + (order.partA + order.partB) + ' equal parts in total! You need ' + order.partA + '/' + (order.partA + order.partB) + ' of the forecasted items, not ' + served + ' items.';
+  } else if (order.start > 0 && (served === Math.abs(order.showNum - order.showStartNum) || served === order.showNum + order.showStartNum) && served !== need) {
+    title = 'Unlike denominators';
+    alert = 'Convert both fractions to the same total items first: ' + order.showStartNum + '/' + order.showStartDen + ' of ' + N + ' = ' + order.start + ' on the tray, ' + order.showNum + '/' + order.showDen + ' of ' + N + ' = ' + need + ' needed.';
+  } else if (order.start > 0) {
+    title = 'Unlike denominators';
+    var dir = need > order.start ? ('catch ' + (need - order.start) + ' more') : ('shake off ' + (order.start - need));
+    alert = 'Convert both fractions to the same total items (or a common denominator) first: ' + order.showStartNum + '/' + order.showStartDen + ' of ' + N + ' = ' + order.start + ' on the tray, ' + order.showNum + '/' + order.showDen + ' of ' + N + ' = ' + need + ' needed → ' + dir + '!';
+  }
+  return { title: title, alert: alert, lines: lines };
+}
+
+function orderSpeech(order) {
+  var food = order.food.plural;
+  var s = 'Forecast ' + order.total + ' ' + food + '. ';
+  if (order.start > 0) {
+    s += 'Tray already holds ' + order.showStartNum + ' over ' + order.showStartDen + '. ';
+  }
+  s += 'Order is ' + order.showNum + ' over ' + order.showDen + ', ' + order.pct + ', caught to missed ' + order.partA + ' to ' + order.partB + '.';
+  return s;
+}
+
+function ensureAudio() {
+  if (audio.ctx) {
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    return;
+  }
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  var ctxA = new Ctx();
+  var master = ctxA.createGain();
+  master.gain.value = 0.9;
+  master.connect(ctxA.destination);
+  var music = ctxA.createGain();
+  music.gain.value = game.muted ? 0 : 0.42;
+  music.connect(master);
+  var sfx = ctxA.createGain();
+  sfx.gain.value = game.muted ? 0 : 0.85;
+  sfx.connect(master);
+  var seconds = 1;
+  var buffer = ctxA.createBuffer(1, ctxA.sampleRate * seconds, ctxA.sampleRate);
+  var data = buffer.getChannelData(0);
+  var i;
+  for (i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  audio.ctx = ctxA;
+  audio.master = master;
+  audio.music = music;
+  audio.sfx = sfx;
+  audio.noise = buffer;
+  audio.next = ctxA.currentTime + 0.05;
+  audio.step = 0;
+  if (ctxA.state === 'suspended') ctxA.resume();
+}
+
+function applyMute() {
+  if (!audio.music) return;
+  audio.music.gain.value = game.muted ? 0 : 0.42;
+  audio.sfx.gain.value = game.muted ? 0 : 0.85;
+}
+
+function tone(freq, dur, type, gain, when, dest) {
+  if (!audio.ctx || !dest) return;
+  var o = audio.ctx.createOscillator();
+  var g = audio.ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, when);
+  g.gain.setValueAtTime(Math.max(0.0001, gain), when);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  o.connect(g);
+  g.connect(dest);
+  o.start(when);
+  o.stop(when + dur + 0.03);
+}
+
+function noiseBurst(dur, gain, when, dest, freq, type) {
+  if (!audio.ctx || !audio.noise || !dest) return;
+  var src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  var filter = audio.ctx.createBiquadFilter();
+  filter.type = type || 'highpass';
+  filter.frequency.setValueAtTime(freq || 900, when);
+  var g = audio.ctx.createGain();
+  g.gain.setValueAtTime(Math.max(0.0001, gain), when);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(dest);
+  src.start(when);
+  src.stop(when + dur + 0.02);
+}
+
+function pumpMusic() {
+  if (!audio.ctx) return;
+  var melody = [523.25, 659.25, 783.99, 659.25, 587.33, 523.25, 440, 523.25, 587.33, 659.25, 783.99, 880, 783.99, 659.25, 587.33, 523.25];
+  var bass = [130.81, 196, 174.61, 130.81];
+  var ahead = audio.ctx.currentTime + 0.28;
+  var eighth = 60 / 132 / 2;
+  while (audio.next < ahead) {
+    var step = audio.step % 16;
+    var t = audio.next;
+    tone(melody[step], 0.16, 'triangle', 0.07, t, audio.music);
+    if (step % 4 === 0) tone(bass[(step / 4) | 0], 0.24, 'square', 0.028, t, audio.music);
+    if (step % 2 === 1) noiseBurst(0.035, 0.025, t, audio.music, 5000, 'highpass');
+    if (step % 8 === 0) tone(92, 0.1, 'sine', 0.05, t, audio.music);
+    audio.next += eighth;
+    audio.step++;
+  }
+}
+
+function sfxPop(rotten) {
+  ensureAudio();
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  if (rotten) {
+    tone(180, 0.12, 'sawtooth', 0.05, t, audio.sfx);
+    tone(120, 0.16, 'square', 0.04, t + 0.04, audio.sfx);
+    return;
+  }
+  tone(480 + Math.random() * 90, 0.07, 'sine', 0.07, t, audio.sfx);
+  tone(760, 0.06, 'triangle', 0.04, t + 0.02, audio.sfx);
+}
+
+function sfxWhoosh() {
+  ensureAudio();
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  noiseBurst(0.18, 0.07, t, audio.sfx, 500, 'bandpass');
+  tone(320, 0.12, 'sine', 0.04, t, audio.sfx);
+}
+
+function sfxChime() {
+  ensureAudio();
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(660, 0.09, 'sine', 0.05, t, audio.sfx);
+  tone(990, 0.14, 'sine', 0.045, t + 0.07, audio.sfx);
+}
+
+function sfxDing() {
+  ensureAudio();
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(880, 0.08, 'square', 0.05, t, audio.sfx);
+  tone(1320, 0.12, 'square', 0.04, t + 0.06, audio.sfx);
+  tone(1760, 0.2, 'sine', 0.05, t + 0.12, audio.sfx);
+}
+
+function sfxBuzz() {
+  ensureAudio();
+  if (!audio.ctx) return;
+  var t = audio.ctx.currentTime;
+  tone(150, 0.18, 'sawtooth', 0.05, t, audio.sfx);
+  tone(96, 0.24, 'square', 0.04, t + 0.04, audio.sfx);
+}
+
+function sfxStep() {
+  if (!audio.ctx) return;
+  noiseBurst(0.03, 0.02, audio.ctx.currentTime, audio.sfx, 180, 'lowpass');
+}
+
+function sfxEmpty() {
+  ensureAudio();
+  if (!audio.ctx) return;
+  tone(220, 0.05, 'sine', 0.03, audio.ctx.currentTime, audio.sfx);
+}
+
+function announce(text) {
+  sr.textContent = '';
+  sr.textContent = text;
+}
+
+function resize() {
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  var scale = Math.min(canvas.width / VW, canvas.height / VH);
+  view.scale = scale;
+  view.ox = (canvas.width - VW * scale) / 2;
+  view.oy = (canvas.height - VH * scale) / 2;
+}
+
+function toVirtual(clientX, clientY) {
+  var rect = canvas.getBoundingClientRect();
+  var px = (clientX - rect.left) * (canvas.width / Math.max(1, rect.width));
+  var py = (clientY - rect.top) * (canvas.height / Math.max(1, rect.height));
+  return {
+    x: (px - view.ox) / view.scale,
+    y: (py - view.oy) / view.scale
+  };
+}
+
+function spot(id, x, y, w, h, extra) {
+  hotspots.push({ id: id, x: x, y: y, w: w, h: h, extra: extra });
+  return pointer.inside && pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h;
+}
+
+function hitAt(x, y) {
+  var i;
+  for (i = hotspots.length - 1; i >= 0; i--) {
+    var h = hotspots[i];
+    if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
+function pressedAny(codes) {
+  var i;
+  for (i = 0; i < codes.length; i++) if (framePress[codes[i]]) return true;
+  return false;
+}
+
+function readPad(p) {
+  if (!p || !p.buttons) return null;
+  var ax = p.axes && p.axes.length ? p.axes[0] : 0;
+  var left = p.buttons[14] && p.buttons[14].pressed;
+  var right = p.buttons[15] && p.buttons[15].pressed;
+  var x = 0;
+  if (left) x -= 1;
+  if (right) x += 1;
+  if (Math.abs(ax) > 0.28) x = ax;
+  return {
+    x: clamp(x, -1, 1),
+    serve: !!(p.buttons[0] && p.buttons[0].pressed),
+    shake: !!(p.buttons[1] && p.buttons[1].pressed),
+    mode: !!((p.buttons[2] && p.buttons[2].pressed) || (p.buttons[3] && p.buttons[3].pressed))
+  };
+}
+
+function pollPads() {
+  var list = navigator.getGamepads ? navigator.getGamepads() : [];
+  var i;
+  for (i = 0; i < 3; i++) padNow[i] = readPad(list && list[i]);
+}
+
+function padEdge(i, name) {
+  return !!(padNow[i] && padNow[i][name] && !(padPrev[i] && padPrev[i][name]));
+}
+
+function axisFor(i) {
+  var x = 0;
+  if (padNow[i] && Math.abs(padNow[i].x) > 0.2) x = padNow[i].x;
+  if (game.players === 1) {
+    if (down.KeyA || down.ArrowLeft) x -= 1;
+    if (down.KeyD || down.ArrowRight) x += 1;
+  } else if (i === 0) {
+    if (down.KeyA) x -= 1;
+    if (down.KeyD) x += 1;
+  } else if (i === 1) {
+    if (down.KeyJ) x -= 1;
+    if (down.KeyL) x += 1;
+  } else if (i === 2) {
+    if (down.ArrowLeft) x -= 1;
+    if (down.ArrowRight) x += 1;
+  }
+  return clamp(x, -1, 1);
+}
+
+function keyMove(i) {
+  if (game.players === 1) return !!(down.KeyA || down.KeyD || down.ArrowLeft || down.ArrowRight);
+  if (i === 0) return !!(down.KeyA || down.KeyD);
+  if (i === 1) return !!(down.KeyJ || down.KeyL);
+  return !!(down.ArrowLeft || down.ArrowRight);
+}
+
+function wantsServe(i) {
+  if (padEdge(i, 'serve')) return true;
+  if (game.players === 1) return pressedAny(['KeyW', 'ArrowUp', 'Space', 'Enter']);
+  if (i === 0) return pressedAny(['KeyW', 'Space']);
+  if (i === 1) return pressedAny(['KeyI', 'Enter']);
+  return pressedAny(['ArrowUp', 'ShiftRight']);
+}
+
+function wantsShake(i) {
+  if (padEdge(i, 'shake')) return true;
+  if (game.players === 1) return pressedAny(['KeyS', 'ArrowDown']);
+  if (i === 0) return pressedAny(['KeyS']);
+  if (i === 1) return pressedAny(['KeyK']);
+  return pressedAny(['ArrowDown']);
+}
+
+function wantsMode(i) {
+  if (padEdge(i, 'mode')) return true;
+  if (game.players === 1) return pressedAny(['KeyQ', 'Tab']);
+  if (i === 0) return pressedAny(['KeyQ', 'Tab']);
+  if (i === 1) return pressedAny(['KeyU']);
+  return pressedAny(['Slash']);
+}
+
+function setPlayers(n) {
+  game.players = n;
+  if (n === 1) game.mode = 'solo';
+  else if (game.mode === 'solo') game.mode = 'coop';
+}
+
+function setMode(id) {
+  if (id === 'solo') {
+    game.mode = 'solo';
+    game.players = 1;
+    return;
+  }
+  game.mode = id;
+  if (game.players < 2) game.players = 2;
+}
+
+function teamGood() {
+  var n = 0;
+  var i;
+  for (i = 0; i < game.chefs.length; i++) n += game.chefs[i].good;
+  return n;
+}
+
+function teamRotten() {
+  var n = 0;
+  var i;
+  for (i = 0; i < game.chefs.length; i++) n += game.chefs[i].rotten;
+  return n;
+}
+
+function goodOf(i) {
+  if (game.mode === 'duel') return game.chefs[i].good;
+  return teamGood();
+}
+
+function rottenOf(i) {
+  if (game.mode === 'duel') return game.chefs[i].rotten;
+  return teamRotten();
+}
+
+function laneBounds(i, n) {
+  var w = VW / n;
+  var inset = n >= 3 ? 96 : 78;
+  return {
+    x0: w * i + inset,
+    x1: w * (i + 1) - inset,
+    s0: w * i + 28,
+    s1: w * (i + 1) - 28
+  };
+}
+
+function layoutChefs() {
+  var n = game.chefs.length;
+  var duel = game.mode === 'duel';
+  var i;
+  for (i = 0; i < n; i++) {
+    var c = game.chefs[i];
+    c.scale = n === 1 ? 1 : 0.9;
+    c.y = STAGE_Y + STAGE_H - 18;
+    if (duel) {
+      var b = laneBounds(i, n);
+      c.x = (b.x0 + b.x1) * 0.5;
+      c.minX = b.x0;
+      c.maxX = b.x1;
+    } else {
+      c.x = VW * ((i + 1) / (n + 1));
+      c.minX = 70;
+      c.maxX = VW - 70;
+    }
+  }
+}
+
+function makeChefs() {
+  game.chefs = [];
+  var i;
+  for (i = 0; i < game.players; i++) {
+    game.chefs.push({
+      i: i,
+      x: VW * 0.5,
+      y: 0,
+      scale: 1,
+      facing: 1,
+      anim: Math.random() * 6,
+      good: 0,
+      rotten: 0,
+      stun: 0,
+      combo: 0,
+      wentOver: false,
+      caughtGood: 0,
+      caughtRotten: 0,
+      moving: false,
+      minX: 70,
+      maxX: VW - 70,
+      spawnT: 0.35 + i * 0.12
+    });
+  }
+  layoutChefs();
+}
+
+function trayBox(c) {
+  var sc = c.scale;
+  var dir = c.facing >= 0 ? 1 : -1;
+  var cx = c.x + dir * 34 * sc;
+  var cy = c.y - 62 * sc;
+  var front = c.x + dir * 78 * sc;
+  var back = c.x - dir * 24 * sc;
+  var x = Math.min(front, back);
+  var w = Math.abs(front - back);
+  var h = 44 * sc;
+  return { x: x, y: cy - h / 2, w: w, h: h, cx: cx, cy: cy };
+}
+
+function giveStartItems() {
+  var i;
+  for (i = 0; i < game.chefs.length; i++) {
+    game.chefs[i].good = 0;
+    game.chefs[i].rotten = 0;
+    game.chefs[i].stun = 0;
+    game.chefs[i].wentOver = false;
+    game.chefs[i].caughtGood = 0;
+    game.chefs[i].caughtRotten = 0;
+  }
+  if (game.mode === 'duel') {
+    var d;
+    for (d = 0; d < game.chefs.length; d++) game.chefs[d].good = game.order.start;
+    return;
+  }
+  var left = game.order.start;
+  var cursor = 0;
+  while (left > 0) {
+    game.chefs[cursor % game.chefs.length].good++;
+    left--;
+    cursor++;
+  }
+}
+
+function nextRound() {
+  game.round += 1;
+  var food = FOODS[game.foodIx % 3];
+  game.foodIx += 1;
+  var order = generateOrder(game.difficulty, food, game.history);
+  if (game.difficulty === 'extreme') {
+    order.spotlight = ['fraction', 'ratio', 'percentage'][game.modeSpin % 3];
+    game.modeSpin += 1;
+  }
+  game.order = order;
+  game.history.push(order.signature);
+  if (game.history.length > 8) game.history.shift();
+  game.rep = order.spotlight;
+  game.phase = 'banner';
+  game.phaseT = 1.7;
+  game.roundTime = 0;
+  game.wentOver = false;
+  game.caughtGood = 0;
+  game.caughtRotten = 0;
+  game.winner = -1;
+  game.lastAward = null;
+  game.tip = null;
+  game.note = null;
+  game.toast = null;
+  game.items = [];
+  game.flies = [];
+  game.spawnT = 0.35;
+  game.burst = 3;
+  game.sinceRotten = 3;
+  giveStartItems();
+  announce('Round ' + game.round + '. ' + orderSpeech(order));
+}
+
+function startGame() {
+  ensureAudio();
+  game.screen = 'play';
+  game.score = 0;
+  game.hearts = 3;
+  game.stars = [0, 0, 0];
+  game.points = [0, 0, 0];
+  game.round = 0;
+  game.combo = 0;
+  game.bestCombo = 0;
+  game.history = [];
+  game.serves = 0;
+  game.exacts = 0;
+  game.foodIx = (Math.random() * 3) | 0;
+  game.modeSpin = (Math.random() * 3) | 0;
+  game.pendingEnd = '';
+  game.endReason = '';
+  game.items = [];
+  game.flies = [];
+  game.particles = [];
+  game.note = null;
+  game.tip = null;
+  makeChefs();
+  nextRound();
+  pointer.seen = false;
+  canvas.focus();
+}
+
+function finish(reason) {
+  game.endReason = reason;
+  game.screen = 'results';
+  game.phase = 'banner';
+  if (reason === 'hearts') announce('The kitchen closed. Team score ' + game.score + '.');
+  else if (game.mode === 'duel') announce('Feast duel complete.');
+  else announce('Feast complete. Score ' + game.score + '.');
+}
+
+function speedBonus(time) {
+  var windows = { easy: 26, medium: 22, hard: 20, extreme: 16 };
+  var windowSec = windows[game.difficulty] || 22;
+  return Math.max(0, Math.round(150 * (1 - time / windowSec)));
+}
+
+function perfectFor(i) {
+  var sub = game.order.start > game.order.target;
+  if (game.mode === 'duel') {
+    var c = game.chefs[i];
+    if (sub) return c.caughtGood === 0 && c.caughtRotten === 0;
+    return !c.wentOver;
+  }
+  if (sub) return game.caughtGood === 0 && game.caughtRotten === 0;
+  return !game.wentOver;
+}
+
+function award(i) {
+  var bonus = speedBonus(game.roundTime);
+  var clean = perfectFor(i);
+  var comboNow = 0;
+  var cleanPts = 0;
+  if (game.mode === 'duel') {
+    if (clean) {
+      game.chefs[i].combo += 1;
+      comboNow = game.chefs[i].combo;
+    } else game.chefs[i].combo = 0;
+    if (comboNow > game.bestCombo) game.bestCombo = comboNow;
+  } else if (clean) {
+    game.combo += 1;
+    comboNow = game.combo;
+    if (game.combo > game.bestCombo) game.bestCombo = game.combo;
+  } else {
+    game.combo = 0;
+  }
+  if (clean) cleanPts = 100 * Math.min(5, Math.max(1, comboNow));
+  var total = 350 + bonus + cleanPts;
+  if (game.mode === 'duel') {
+    game.stars[i] += 1;
+    game.points[i] += total;
+  } else {
+    game.score += total;
+  }
+  game.exacts += 1;
+  game.winner = i;
+  game.lastAward = { total: total, base: 350, speed: bonus, clean: cleanPts, combo: comboNow, cleanHit: clean };
+  game.phase = 'success';
+  game.phaseT = 2.8;
+  sfxDing();
+  celebrate();
+  var who = game.mode === 'duel' ? LOOKS[i].name : 'The tray';
+  announce(who + ' served exactly ' + game.order.target + '. ' + successCopy());
+}
+
+function successCopy() {
+  var order = game.order;
+  var how = order.lowNum + '/' + order.lowDen + ' of ' + order.total + ' = ' + order.target + ' ' + order.food.plural + '.';
+  if (order.start > 0) {
+    var delta = Math.abs(order.target - order.start);
+    if (order.target > order.start) how += ' Caught ' + delta + ' more than the starting ' + order.start + '.';
+    else how += ' Shook off ' + delta + ' from the starting ' + order.start + '.';
+  }
+  return how;
+}
+
+function failServe(i, diag) {
+  sfxBuzz();
+  if (game.mode === 'duel') {
+    game.chefs[i].stun = 1.5;
+    game.chefs[i].combo = 0;
+    game.note = { who: i, title: diag.title, alert: diag.alert, lines: diag.lines.slice(0, 2), t: 3.1 };
+    announce(LOOKS[i].name + ' missed. ' + diag.alert);
+    return;
+  }
+  game.combo = 0;
+  game.hearts -= 1;
+  game.tip = diag;
+  game.phase = 'tip';
+  game.phaseT = 6.5;
+  if (game.hearts <= 0) game.pendingEnd = 'hearts';
+  announce(diag.alert);
+}
+
+function doServe(i) {
+  if (game.screen !== 'play' || game.phase !== 'live') return;
+  if (!game.chefs[i] || game.chefs[i].stun > 0) return;
+  if (game.mode === 'duel' && game.winner >= 0) return;
+  var good = goodOf(i);
+  var rotten = rottenOf(i);
+  game.serves += 1;
+  if (rotten > 0 && good > game.order.target) {
+    failServe(i, {
+      title: 'Tray overfilled',
+      alert: 'Your tray has too many items, including burnt food! Press SHAKE OFF to drop the excess before serving.',
+      lines: workedLines(game.order)
+    });
+    return;
+  }
+  if (rotten > 0) {
+    failServe(i, {
+      title: 'Burnt food on the tray',
+      alert: 'A burnt item does not belong on the order. Press SHAKE OFF to toss it before you serve.',
+      lines: workedLines(game.order)
+    });
+    return;
+  }
+  if (good === game.order.target) {
+    award(i);
+    return;
+  }
+  failServe(i, diagnose(game.order, good));
+}
+
+function removeOne(chef) {
+  var rotten = false;
+  if (chef.rotten > 0) {
+    chef.rotten -= 1;
+    rotten = true;
+  } else if (chef.good > 0) {
+    chef.good -= 1;
+  } else return false;
+  var box = trayBox(chef);
+  game.flies.push({
+    x: box.cx,
+    y: box.cy,
+    vx: (Math.random() - 0.5) * 240 + chef.facing * 90,
+    vy: -320 - Math.random() * 70,
+    rot: 0,
+    spin: (Math.random() - 0.5) * 7,
+    food: game.order.food.id,
+    rotten: rotten,
+    life: 1.15
+  });
+  sfxWhoosh();
+  return true;
+}
+
+function doShake(i) {
+  if (game.screen !== 'play' || game.phase !== 'live') return;
+  var chef = game.chefs[i];
+  if (!chef || chef.stun > 0) return;
+  if (game.mode === 'duel') {
+    if (!removeOne(chef)) sfxEmpty();
+    return;
+  }
+  var target = (chef.good + chef.rotten > 0) ? chef : null;
+  if (!target) {
+    var k;
+    for (k = 0; k < game.chefs.length; k++) {
+      if (game.chefs[k].good + game.chefs[k].rotten > 0) target = game.chefs[k];
+    }
+  }
+  if (!target || !removeOne(target)) sfxEmpty();
+}
+
+function cycleRep() {
+  var order = ['fraction', 'ratio', 'percentage'];
+  var idx = order.indexOf(game.rep);
+  game.rep = order[(idx + 1) % 3];
+  sfxChime();
+  announce(game.rep === 'percentage' ? 'Percentage view' : game.rep.charAt(0).toUpperCase() + game.rep.slice(1) + ' view');
+}
+
+function setRep(id) {
+  if (game.rep === id) return;
+  game.rep = id;
+  sfxChime();
+}
+
+function noteTotals() {
+  if (game.mode === 'duel') {
+    var i;
+    for (i = 0; i < game.chefs.length; i++) {
+      if (game.chefs[i].good > game.order.target) game.chefs[i].wentOver = true;
+    }
+  } else if (teamGood() > game.order.target) game.wentOver = true;
+}
+
+function catchItem(item, chef) {
+  if (item.rotten) {
+    chef.rotten += 1;
+    chef.caughtRotten += 1;
+    game.caughtRotten += 1;
+    floatText(item.x, item.y, 'BURNT!', '#7BA15A');
+    sfxPop(true);
+  } else {
+    chef.good += 1;
+    chef.caughtGood += 1;
+    game.caughtGood += 1;
+    floatText(item.x, item.y, '+1', INK);
+    sfxPop(false);
+  }
+  burst(item.x, item.y, item.rotten ? '#8FBF78' : '#FFD56A');
+  noteTotals();
+}
+
+function spawnInterval() {
+  if (game.difficulty === 'easy') return 0.98 + Math.random() * 0.22;
+  if (game.difficulty === 'medium') return 0.74 + Math.random() * 0.16;
+  if (game.difficulty === 'hard') return 0.56 + Math.random() * 0.12;
+  if (game.burst > 0) {
+    game.burst -= 1;
+    return 0.2;
+  }
+  game.burst = 2 + ((Math.random() * 3) | 0);
+  return 1.2;
+}
+
+function spawnItem(owner) {
+  var rotten = false;
+  if (game.difficulty === 'extreme' && game.sinceRotten > 1 && Math.random() < 0.32) rotten = true;
+  game.sinceRotten = rotten ? 0 : game.sinceRotten + 1;
+  var x = 70 + Math.random() * (VW - 140);
+  if (owner !== null) {
+    var b = laneBounds(owner, game.chefs.length);
+    x = b.s0 + Math.random() * Math.max(20, b.s1 - b.s0);
+  }
+  var speeds = { easy: 86, medium: 118, hard: 148, extreme: 196 };
+  game.items.push({
+    x: x,
+    y: STAGE_Y + 16,
+    vy: speeds[game.difficulty] * (0.88 + Math.random() * 0.26),
+    wobble: Math.random() * Math.PI * 2,
+    rot: (Math.random() - 0.5) * 0.4,
+    spin: (Math.random() - 0.5) * 1.5,
+    rotten: rotten,
+    owner: owner,
+    food: game.order.food.id
+  });
+  burst(x, STAGE_Y + 10, 'rgba(255,255,255,0.9)');
+}
+
+function updateSpawns(dt) {
+  if (game.phase !== 'live') return;
+  var cap = game.difficulty === 'extreme' ? 8 : 6;
+  if (game.mode === 'duel') {
+    var i;
+    for (i = 0; i < game.chefs.length; i++) {
+      var owned = 0;
+      var k;
+      for (k = 0; k < game.items.length; k++) if (game.items[k].owner === i) owned++;
+      if (owned >= 3) continue;
+      game.chefs[i].spawnT -= dt;
+      if (game.chefs[i].spawnT <= 0) {
+        spawnItem(i);
+        game.chefs[i].spawnT = spawnInterval();
+      }
+    }
+    return;
+  }
+  if (game.items.length >= cap) return;
+  game.spawnT -= dt;
+  if (game.spawnT <= 0) {
+    spawnItem(null);
+    game.spawnT = spawnInterval();
+  }
+}
+
+function updateItems(dt) {
+  var i;
+  for (i = game.items.length - 1; i >= 0; i--) {
+    var item = game.items[i];
+    item.wobble += dt * 2.6;
+    item.y += item.vy * dt;
+    item.rot += item.spin * dt;
+    var hx = item.x + Math.sin(item.wobble) * 12;
+    var caught = false;
+    if (game.phase === 'live') {
+      var best = null;
+      var bestDist = 1e9;
+      var c;
+      for (c = 0; c < game.chefs.length; c++) {
+        var chef = game.chefs[c];
+        if (chef.stun > 0) continue;
+        if (item.owner !== null && item.owner !== chef.i) continue;
+        var box = trayBox(chef);
+        if (hx > box.x - 6 && hx < box.x + box.w + 6 && item.y > box.y - 8 && item.y < box.y + box.h + 18) {
+          var dist = Math.abs(hx - box.cx);
+          if (dist < bestDist) {
+            best = chef;
+            bestDist = dist;
+          }
+        }
+      }
+      if (best) {
+        catchItem(item, best);
+        caught = true;
+      }
+    }
+    if (caught || item.y > STAGE_Y + STAGE_H - 6) {
+      if (!caught) burst(hx, STAGE_Y + STAGE_H - 16, 'rgba(90,60,40,0.35)');
+      game.items.splice(i, 1);
+    }
+  }
+}
+
+function updateFlies(dt) {
+  var i;
+  for (i = game.flies.length - 1; i >= 0; i--) {
+    var f = game.flies[i];
+    f.vy += 980 * dt;
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    f.rot += f.spin * dt;
+    f.life -= dt;
+    if (f.life <= 0 || f.y > STAGE_Y + STAGE_H) game.flies.splice(i, 1);
+  }
+}
+
+function updateParticles(dt) {
+  var i;
+  for (i = game.particles.length - 1; i >= 0; i--) {
+    var p = game.particles[i];
+    p.vy += (p.kind === 'text' ? 0 : 40) * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+    if (p.life <= 0) game.particles.splice(i, 1);
+  }
+}
+
+function burst(x, y, color) {
+  var n = 7;
+  var i;
+  for (i = 0; i < n; i++) {
+    if (game.particles.length > 140) return;
+    var a = Math.random() * Math.PI * 2;
+    var s = 30 + Math.random() * 110;
+    game.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 20,
+      life: 0.35 + Math.random() * 0.25,
+      max: 0.6,
+      color: color,
+      r: 2 + Math.random() * 3,
+      kind: 'dot',
+      text: ''
+    });
+  }
+}
+
+function floatText(x, y, text, color) {
+  if (game.particles.length > 140) return;
+  game.particles.push({
+    x: x, y: y - 16, vx: 0, vy: -42,
+    life: 0.75, max: 0.75, color: color, r: 0, kind: 'text', text: text
+  });
+}
+
+function celebrate() {
+  var i;
+  for (i = 0; i < 36; i++) {
+    var colors = ['#E85D4C', '#F2C14B', '#2EAE6A', '#2F7FE0', '#FFF'];
+    game.particles.push({
+      x: 200 + Math.random() * 880,
+      y: STAGE_Y + 20 + Math.random() * 40,
+      vx: (Math.random() - 0.5) * 180,
+      vy: 40 + Math.random() * 160,
+      life: 1.1 + Math.random() * 0.4,
+      max: 1.4,
+      color: colors[i % colors.length],
+      r: 3 + Math.random() * 3,
+      kind: 'dot',
+      text: ''
+    });
+  }
+}
+
+function dismissTip() {
+  if (game.pendingEnd) {
+    finish(game.pendingEnd);
+    return;
+  }
+  game.phase = 'live';
+  game.tip = null;
+}
+
+function advance() {
+  if (game.round >= ROUNDS) finish('clear');
+  else nextRound();
+}
+
+function updateChefs(dt) {
+  var speed = game.difficulty === 'extreme' ? 540 : 470;
+  var i;
+  var anyStep = false;
+  for (i = 0; i < game.chefs.length; i++) {
+    var c = game.chefs[i];
+    if (c.stun > 0) c.stun = Math.max(0, c.stun - dt);
+    var x = 0;
+    if (game.phase === 'live' || game.phase === 'banner') {
+      if (c.stun <= 0) x = axisFor(i);
+      var useMouse = (game.players === 1 || i === 0) && pointer.seen && pointer.inside && !keyMove(i) && !(padNow[i] && Math.abs(padNow[i].x) > 0.2);
+      if (useMouse && c.stun <= 0 && (game.phase === 'live' || game.phase === 'banner')) {
+        var dest = pointer.x;
+        if (game.mode === 'duel') dest = clamp(dest, c.minX, c.maxX);
+        c.x += (dest - c.x) * Math.min(1, dt * 9);
+        x = Math.abs(dest - c.x) > 1.5 ? Math.sign(dest - c.x) : 0;
+      } else if (x !== 0) {
+        c.x += x * speed * dt;
+      }
+    }
+    c.x = clamp(c.x, c.minX, c.maxX);
+    if (x !== 0) c.facing = x > 0 ? 1 : -1;
+    c.moving = Math.abs(x) > 0.08 && c.stun <= 0 && (game.phase === 'live' || game.phase === 'banner');
+    c.anim += dt * (c.moving ? 13 : 2);
+    if (c.moving) anyStep = true;
+  }
+  if (anyStep && game.phase === 'live') {
+    game.stepT -= dt;
+    if (game.stepT <= 0) {
+      sfxStep();
+      game.stepT = 0.28;
+    }
+  }
+}
+
+function updatePlay(dt) {
+  if (game.repCd > 0) game.repCd -= dt;
+  var clicks = clickQueue.splice(0, clickQueue.length);
+  var i;
+  for (i = 0; i < clicks.length; i++) {
+    var c = clicks[i];
+    if (c.spotId === 'mute') {
+      game.muted = !game.muted;
+      applyMute();
+      continue;
+    }
+    if (c.spotId === 'rep') {
+      setRep(c.extra);
+      continue;
+    }
+    if (c.spotId === 'shake') {
+      doShake(c.extra || 0);
+      continue;
+    }
+    if (c.spotId === 'serve') {
+      doServe(c.extra || 0);
+      continue;
+    }
+    if (c.spotId === 'tip-ok') {
+      dismissTip();
+      continue;
+    }
+    if (c.spotId === 'skip-success') {
+      if (game.phaseT < 1.5) advance();
+      continue;
+    }
+    if (game.phase === 'tip') {
+      dismissTip();
+      continue;
+    }
+    if (game.phase === 'success') {
+      if (game.phaseT < 1.5) advance();
+      continue;
+    }
+    if (game.phase === 'live' && game.mode !== 'duel') {
+      if (c.button === 2) doShake(0);
+      else doServe(0);
+    }
+  }
+
+  var phaseNow = game.phase;
+  var modeAsked = false;
+  for (i = 0; i < game.chefs.length; i++) {
+    if (wantsMode(i)) modeAsked = true;
+    if (phaseNow === 'live' && wantsShake(i)) doShake(i);
+    if (phaseNow === 'live' && wantsServe(i)) doServe(i);
+  }
+  if (modeAsked && game.repCd <= 0 && phaseNow !== 'success') {
+    cycleRep();
+    game.repCd = 0.22;
+  }
+  if (phaseNow === 'tip' && (pressedAny(['Space', 'Enter', 'KeyW']) || (game.players === 1 && pressedAny(['ArrowUp'])))) {
+    dismissTip();
+  }
+
+  if (game.phase === 'banner') {
+    game.phaseT -= dt;
+    updateChefs(dt);
+    if (game.phaseT <= 0) game.phase = 'live';
+  } else if (game.phase === 'tip') {
+    game.phaseT -= dt;
+    if (game.phaseT <= 0) dismissTip();
+  } else if (game.phase === 'success') {
+    game.phaseT -= dt;
+    updateParticles(dt);
+    updateFlies(dt);
+    if (game.phaseT <= 0) advance();
+  } else {
+    game.roundTime += dt;
+    updateChefs(dt);
+    updateSpawns(dt);
+    updateItems(dt);
+    updateFlies(dt);
+    updateParticles(dt);
+    if (game.note) {
+      game.note.t -= dt;
+      if (game.note.t <= 0) game.note = null;
+    }
+  }
+  var ci;
+  for (ci = 0; ci < decor.clouds.length; ci++) {
+    decor.clouds[ci].x += decor.clouds[ci].v * dt;
+    if (decor.clouds[ci].x > VW + 80) decor.clouds[ci].x = -120;
+  }
+}
+
+function updateTitle(dt) {
+  decor.titleT -= dt;
+  if (decor.titleT <= 0) {
+    decor.titleT = 0.7;
+    decor.titleBits.push({
+      x: 40 + Math.random() * (VW - 80),
+      y: -30,
+      vy: 28 + Math.random() * 24,
+      wobble: Math.random() * 6,
+      food: pick(FOODS).id,
+      rotten: false,
+      rot: 0
+    });
+  }
+  var i;
+  for (i = decor.titleBits.length - 1; i >= 0; i--) {
+    var bit = decor.titleBits[i];
+    bit.y += bit.vy * dt;
+    bit.wobble += dt;
+    bit.rot = Math.sin(bit.wobble) * 0.2;
+    if (bit.y > VH + 40) decor.titleBits.splice(i, 1);
+  }
+  var clicks = clickQueue.splice(0, clickQueue.length);
+  var started = false;
+  for (i = 0; i < clicks.length; i++) {
+    var c = clicks[i];
+    if (c.spotId === 'mute') {
+      game.muted = !game.muted;
+      applyMute();
+    } else if (c.spotId === 'players') setPlayers(c.extra);
+    else if (c.spotId === 'diff') game.difficulty = c.extra;
+    else if (c.spotId === 'mode') setMode(c.extra);
+    else if (c.spotId === 'start') {
+      started = true;
+      startGame();
+    }
+  }
+  if (!started && game.screen === 'title' && pressedAny(['Enter', 'Space'])) startGame();
+}
+
+function updateResults() {
+  var clicks = clickQueue.splice(0, clickQueue.length);
+  var i;
+  for (i = 0; i < clicks.length; i++) {
+    var c = clicks[i];
+    if (c.spotId === 'mute') {
+      game.muted = !game.muted;
+      applyMute();
+    } else if (c.spotId === 'again') startGame();
+    else if (c.spotId === 'title') game.screen = 'title';
+  }
+  if (pressedAny(['Enter'])) startGame();
+}
+
+function update(dt) {
+  game.clock += dt;
+  pollPads();
+  if (game.screen === 'title') updateTitle(dt);
+  else if (game.screen === 'results') updateResults();
+  else updatePlay(dt);
+  padPrev[0] = padNow[0] ? { x: padNow[0].x, serve: padNow[0].serve, shake: padNow[0].shake, mode: padNow[0].mode } : null;
+  padPrev[1] = padNow[1] ? { x: padNow[1].x, serve: padNow[1].serve, shake: padNow[1].shake, mode: padNow[1].mode } : null;
+  padPrev[2] = padNow[2] ? { x: padNow[2].x, serve: padNow[2].serve, shake: padNow[2].shake, mode: padNow[2].mode } : null;
+  framePress = {};
+  pumpMusic();
+}
+
+function roundRect(x, y, w, h, r) {
+  var rr = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function text(str, x, y, size, color, align, weight) {
+  ctx.fillStyle = color;
+  ctx.font = (weight || '700') + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+
+function fitText(str, x, y, size, color, align, weight, maxW) {
+  var s = size;
+  var wgt = weight || '700';
+  ctx.font = wgt + ' ' + s + 'px ' + FONT;
+  while (s > 11 && ctx.measureText(str).width > maxW) {
+    s -= 1;
+    ctx.font = wgt + ' ' + s + 'px ' + FONT;
+  }
+  text(str, x, y, s, color, align, wgt);
+  return s;
+}
+
+function wrapText(str, maxW, size, weight) {
+  ctx.font = (weight || '600') + ' ' + size + 'px ' + FONT;
+  var words = String(str).split(' ');
+  var lines = [];
+  var cur = '';
+  var i;
+  for (i = 0; i < words.length; i++) {
+    var trial = cur ? cur + ' ' + words[i] : words[i];
+    if (ctx.measureText(trial).width > maxW && cur) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = trial;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function drawHeart(x, y, s, filled) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.beginPath();
+  ctx.moveTo(0, 3);
+  ctx.bezierCurveTo(-8, -4, -16, 2, -8, 10);
+  ctx.lineTo(0, 16);
+  ctx.lineTo(8, 10);
+  ctx.bezierCurveTo(16, 2, 8, -4, 0, 3);
+  ctx.lineWidth = 1.8;
+  ctx.strokeStyle = '#FFF';
+  if (filled) {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSun(x, y, r) {
+  ctx.save();
+  ctx.translate(x, y);
+  var i;
+  ctx.strokeStyle = 'rgba(255, 214, 90, 0.85)';
+  ctx.lineWidth = 4;
+  for (i = 0; i < 10; i++) {
+    var a = (Math.PI * 2 * i) / 10 + game.clock * 0.15;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * (r + 6), Math.sin(a) * (r + 6));
+    ctx.lineTo(Math.cos(a) * (r + 18), Math.sin(a) * (r + 18));
+    ctx.stroke();
+  }
+  var g = ctx.createRadialGradient(0, 0, 4, 0, 0, r);
+  g.addColorStop(0, '#FFF6C8');
+  g.addColorStop(1, '#F5C14A');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCloud(x, y, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.beginPath();
+  ctx.arc(0, 8, 18, 0, Math.PI * 2);
+  ctx.arc(22, 10, 22, 0, Math.PI * 2);
+  ctx.arc(46, 12, 16, 0, Math.PI * 2);
+  ctx.arc(24, 0, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBunting(y, w) {
+  ctx.strokeStyle = 'rgba(58,39,28,0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(w, y + 8);
+  ctx.stroke();
+  var colors = ['#E85D4C', '#F2C14B', '#2EAE6A', '#2F7FE0', '#F48FB1'];
+  var x;
+  for (x = 16; x < w - 10; x += 28) {
+    ctx.fillStyle = colors[(x / 28) % colors.length | 0];
+    ctx.beginPath();
+    ctx.moveTo(x, y + (x / w) * 8);
+    ctx.lineTo(x + 12, y + ((x + 12) / w) * 8);
+    ctx.lineTo(x + 6, y + 16 + (x / w) * 8);
+    ctx.fill();
+  }
+}
+
+function drawTruck(x, y, body, awning) {
+  ctx.fillStyle = 'rgba(60,40,20,0.15)';
+  ctx.beginPath();
+  ctx.ellipse(x + 46, y + 58, 40, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = body;
+  roundRect(x + 28, y + 16, 62, 36, 6);
+  ctx.fill();
+  ctx.fillStyle = '#FFF8EE';
+  roundRect(x, y + 8, 40, 28, 4);
+  ctx.fill();
+  ctx.fillStyle = awning;
+  ctx.beginPath();
+  ctx.moveTo(x - 4, y + 8);
+  ctx.lineTo(x + 44, y + 8);
+  ctx.lineTo(x + 40, y + 18);
+  ctx.lineTo(x, y + 18);
+  ctx.fill();
+  ctx.fillStyle = '#3A271C';
+  ctx.beginPath();
+  ctx.arc(x + 16, y + 52, 7, 0, Math.PI * 2);
+  ctx.arc(x + 62, y + 52, 7, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawTaco(x, y, s, rotten) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.rotate(-0.2);
+  ctx.fillStyle = rotten ? '#A3B592' : '#F2C14E';
+  ctx.beginPath();
+  ctx.moveTo(-16, -2);
+  ctx.quadraticCurveTo(0, 20, 16, -2);
+  ctx.quadraticCurveTo(0, 6, -16, -2);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#6E7A62' : '#8B4A2F';
+  ctx.beginPath();
+  ctx.ellipse(0, -2, 13, 6, 0, Math.PI, 0);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#8AA878' : '#3CB371';
+  ctx.beginPath();
+  ctx.ellipse(-2, -6, 8, 4, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#C06A62' : '#E24B3A';
+  ctx.beginPath();
+  ctx.arc(4, -5, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBurger(x, y, s, rotten) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.fillStyle = rotten ? '#C2B48A' : '#E7A84A';
+  roundRect(-14, 6, 28, 8, 4);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#6E5A48' : '#6B3A2A';
+  roundRect(-13, 0, 26, 7, 3);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#D9D08A' : '#F2D04B';
+  roundRect(-14, -3, 28, 4, 2);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#8AA878' : '#4CAF50';
+  roundRect(-12, -6, 24, 4, 2);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#C2B48A' : '#F0B24A';
+  roundRect(-15, -14, 30, 10, 8);
+  ctx.fill();
+  ctx.fillStyle = rotten ? '#E6E2D0' : '#FFF6D8';
+  ctx.beginPath();
+  ctx.arc(-6, -12, 1.3, 0, Math.PI * 2);
+  ctx.arc(0, -13, 1.3, 0, Math.PI * 2);
+  ctx.arc(6, -12, 1.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawFries(x, y, s, rotten) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.fillStyle = rotten ? '#C9B07A' : '#F6D365';
+  var i;
+  for (i = -2; i <= 2; i++) {
+    roundRect(i * 4 - 1.5, -16 + (i % 2) * 3, 3.2, 16, 1.2);
+    ctx.fill();
+  }
+  ctx.fillStyle = rotten ? '#8F4A4A' : '#E23B3B';
+  ctx.beginPath();
+  ctx.moveTo(-12, -2);
+  ctx.lineTo(12, -2);
+  ctx.lineTo(9, 12);
+  ctx.lineTo(-9, 12);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(-7, 1, 3, 8);
+  ctx.restore();
+}
+
+function drawFood(id, x, y, s, rotten, rot) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot || 0);
+  if (id === 'burger') drawBurger(0, 0, s, rotten);
+  else if (id === 'fries') drawFries(0, 0, s, rotten);
+  else drawTaco(0, 0, s, rotten);
+  if (rotten) {
+    ctx.strokeStyle = '#5E7A48';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-6 * s, -24 * s);
+    ctx.quadraticCurveTo(-2 * s, -30 * s, 0, -24 * s);
+    ctx.quadraticCurveTo(3 * s, -32 * s, 6 * s, -26 * s);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(90, 130, 70, 0.92)';
+    ctx.beginPath();
+    ctx.arc(12 * s, -10 * s, 7 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#F4FFE8';
+    ctx.beginPath();
+    ctx.moveTo(9 * s, -13 * s);
+    ctx.lineTo(15 * s, -7 * s);
+    ctx.moveTo(15 * s, -13 * s);
+    ctx.lineTo(9 * s, -7 * s);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawParachute(x, y, rotten, wobble) {
+  ctx.save();
+  ctx.translate(x, y - 30);
+  ctx.rotate(Math.sin(wobble) * 0.08);
+  ctx.fillStyle = rotten ? '#C5D7BE' : '#FFF';
+  ctx.beginPath();
+  ctx.arc(0, 0, 15, Math.PI, 0);
+  ctx.quadraticCurveTo(8, 6, 0, 2);
+  ctx.quadraticCurveTo(-8, 6, -15, 0);
+  ctx.fill();
+  ctx.strokeStyle = rotten ? '#E07A72' : '#E85D4C';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(-8, 0);
+  ctx.lineTo(-8, 4);
+  ctx.moveTo(0, 1);
+  ctx.lineTo(0, 5);
+  ctx.moveTo(8, 0);
+  ctx.lineTo(8, 4);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(58,39,28,0.45)';
+  ctx.beginPath();
+  ctx.moveTo(-12, 0);
+  ctx.lineTo(0, 28);
+  ctx.moveTo(12, 0);
+  ctx.lineTo(0, 28);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawChef(c) {
+  var look = LOOKS[c.i];
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.scale(c.scale, c.scale);
+  ctx.scale(c.facing, 1);
+  var swing = Math.sin(c.anim) * (c.moving ? 8 : 1.2);
+  ctx.fillStyle = 'rgba(80, 50, 20, 0.18)';
+  ctx.beginPath();
+  ctx.ellipse(6, 2, 34, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#3A271C';
+  roundRect(-16 + swing * 0.2, -34, 10, 32, 4);
+  ctx.fill();
+  roundRect(4 - swing * 0.2, -34, 10, 32, 4);
+  ctx.fill();
+  ctx.fillStyle = '#F4E2C0';
+  roundRect(-18 + swing * 0.15, -6, 12, 6, 2);
+  ctx.fill();
+  roundRect(4 - swing * 0.15, -6, 12, 6, 2);
+  ctx.fill();
+  ctx.fillStyle = look.coat;
+  roundRect(-24, -86, 46, 56, 14);
+  ctx.fill();
+  ctx.fillStyle = look.apron;
+  roundRect(-14, -78, 26, 42, 8);
+  ctx.fill();
+  ctx.fillStyle = look.coatDark;
+  ctx.fillRect(-14, -62, 26, 5);
+  ctx.fillStyle = look.skin;
+  roundRect(-40, -70, 16, 12, 6);
+  ctx.fill();
+  ctx.save();
+  ctx.translate(28, -64);
+  ctx.rotate(-0.4);
+  roundRect(0, 0, 18, 11, 5);
+  ctx.fill();
+  ctx.restore();
+  ctx.beginPath();
+  ctx.fillStyle = look.skin;
+  ctx.arc(0, -102, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#FFF';
+  roundRect(-20, -132, 40, 16, 4);
+  ctx.fill();
+  roundRect(-16, -146, 32, 18, 6);
+  ctx.fill();
+  ctx.fillStyle = look.coat;
+  ctx.fillRect(-20, -120, 40, 5);
+  if (c.stun > 0) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-8, -106);
+    ctx.lineTo(-2, -100);
+    ctx.moveTo(-2, -106);
+    ctx.lineTo(-8, -100);
+    ctx.moveTo(4, -106);
+    ctx.lineTo(10, -100);
+    ctx.moveTo(10, -106);
+    ctx.lineTo(4, -100);
+    ctx.stroke();
+    var spin = game.clock * 6;
+    ctx.fillStyle = GOLD;
+    ctx.beginPath();
+    ctx.arc(Math.cos(spin) * 22, -124 + Math.sin(spin) * 6, 3, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(-6, -104, 1.7, 0, Math.PI * 2);
+    ctx.arc(6, -104, 1.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(0, -98, 6, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(242, 140, 140, 0.8)';
+    ctx.beginPath();
+    ctx.ellipse(-11, -98, 3, 2, 0, 0, Math.PI * 2);
+    ctx.ellipse(11, -98, 3, 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.strokeStyle = '#C5CDD4';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(36, -58, 40, 12, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#D5DDE4';
+  ctx.beginPath();
+  ctx.ellipse(36, -62, 34, 8, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  var box = trayBox(c);
+  var total = c.good + c.rotten;
+  var shown = Math.min(total, 6);
+  var gi = c.good;
+  var ri = c.rotten;
+  var n;
+  for (n = 0; n < shown; n++) {
+    var rotten = false;
+    if (ri > 0 && n >= gi) rotten = true;
+    if (n >= 6) break;
+    var fx = box.cx - 38 * c.scale + n * 14 * c.scale;
+    var fy = box.cy - 8 * c.scale;
+    drawFood(game.order.food.id, fx, fy, 0.42 * c.scale, rotten, 0);
+  }
+  if (total > 6) {
+    text('+' + (total - 6), box.cx + 48 * c.scale, box.cy - 30 * c.scale, 12, INK, 'center', '800');
+  }
+  var bubble = String(c.good);
+  ctx.fillStyle = '#FFF';
+  ctx.strokeStyle = c.rotten > 0 ? '#6E9A52' : look.coat;
+  ctx.lineWidth = 3;
+  roundRect(c.x - 18, c.y - 188 * c.scale, 36, 26, 12);
+  ctx.fill();
+  ctx.stroke();
+  text(bubble, c.x, c.y - 175 * c.scale, 16, INK, 'center', '800');
+  text(look.short, c.x, c.y - 188 * c.scale - 12, 12, look.coatDark, 'center', '800');
+  if (c.rotten > 0) {
+    ctx.fillStyle = '#4E7A38';
+    roundRect(c.x + 16, c.y - 186 * c.scale, 22, 18, 8);
+    ctx.fill();
+    text('+' + c.rotten, c.x + 27, c.y - 177 * c.scale, 11, '#F4FFE8', 'center', '800');
+  }
+}
+
+function drawRadar(x, y, r) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = '#14324A';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#8FE388';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, r - 3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.5, 0, Math.PI * 2);
+  ctx.stroke();
+  var a = game.clock * 2.4;
+  ctx.fillStyle = 'rgba(143, 227, 136, 0.55)';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, r - 4, a, a + 0.75);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawFraction(num, den, cx, cy, size, color) {
+  var ns = String(num);
+  var ds = String(den);
+  ctx.font = '800 ' + size + 'px ' + FONT;
+  var w = Math.max(ctx.measureText(ns).width, ctx.measureText(ds).width) + size * 0.4;
+  text(ns, cx, cy - size * 0.58, size, color, 'center', '800');
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - w / 2, cy - Math.max(2, size * 0.06), w, Math.max(3, size * 0.08));
+  text(ds, cx, cy + size * 0.62, size, color, 'center', '800');
+  return w;
+}
+
+function gaugeText(count) {
+  var total = game.order.total;
+  if (count <= 0) {
+    if (game.rep === 'percentage') return '0%';
+    if (game.rep === 'ratio') return '0 : ' + total;
+    return '0/' + total;
+  }
+  if (game.rep === 'percentage') return formatPercent(count, total);
+  if (game.rep === 'ratio') {
+    if (game.order.ratioStyle === 'whole') return count + ' : ' + total;
+    return count + ' : ' + Math.max(0, total - count);
+  }
+  var low = simplify(count, total);
+  if (low[0] === count && low[1] === total) return count + '/' + total;
+  return count + '/' + total + ' = ' + low[0] + '/' + low[1];
+}
+
+function drawMute(x, y) {
+  var hot = spot('mute', x, y, 58, 36);
+  roundRect(x, y, 58, 36, 10);
+  ctx.fillStyle = hot ? '#FFF' : 'rgba(255,255,255,0.2)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.save();
+  ctx.translate(x + 20, y + 18);
+  ctx.fillStyle = hot ? INK : '#FFF';
+  ctx.beginPath();
+  ctx.moveTo(-8, -4);
+  ctx.lineTo(-3, -4);
+  ctx.lineTo(2, -9);
+  ctx.lineTo(2, 9);
+  ctx.lineTo(-3, 4);
+  ctx.lineTo(-8, 4);
+  ctx.closePath();
+  ctx.fill();
+  if (game.muted) {
+    ctx.strokeStyle = '#E23B4A';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(6, -7);
+    ctx.lineTo(16, 7);
+    ctx.moveTo(16, -7);
+    ctx.lineTo(6, 7);
+    ctx.stroke();
+  } else {
+    ctx.strokeStyle = hot ? INK : '#FFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(4, 0, 5, -0.8, 0.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(4, 0, 9, -0.7, 0.7);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawButton(id, x, y, w, h, label, fill, labelColor, extra) {
+  var hot = spot(id, x, y, w, h, extra);
+  roundRect(x, y + 4, w, h, 14);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fill();
+  roundRect(x, y + (hot ? 3 : 0), w, h, 14);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  fitText(label, x + w / 2, y + (hot ? 3 : 0) + h / 2, 18, labelColor, 'center', '800', w - 16);
+}
+
+function drawPill(id, x, y, w, h, label, on, extra) {
+  var hot = spot(id, x, y, w, h, extra);
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = on ? CORAL : (hot ? '#FFF1D4' : '#FFF');
+  ctx.fill();
+  ctx.strokeStyle = on ? CORAL_DARK : '#E4CBA6';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  fitText(label, x + w / 2, y + h / 2, 14, on ? '#FFF' : INK, 'center', '800', w - 10);
+}
+
+function legendLines() {
+  if (game.players === 1) {
+    return [
+      'Mouse glide · Left click serve · Right click shake',
+      'A/D or arrows run · S/Down shake · W/Up/Space/Enter serve · Q/Tab mode',
+      'Pad 0: stick run · A serve · B shake · X/Y mode'
+    ];
+  }
+  var lines = [
+    'P1 Crimson: A/D run, S shake, W/Space serve, Q mode, Pad 0',
+    'P2 Azure: J/L run, K shake, I/Enter serve, U mode, Pad 1'
+  ];
+  if (game.players > 2) lines.push('P3 Emerald: Arrows run, Down shake, Up/Right Shift serve, / mode, Pad 2');
+  return lines;
+}
+
+function drawAction() {
+  ctx.fillStyle = CHOCOLATE;
+  ctx.fillRect(0, ACTION_Y, VW, ACTION_H);
+  ctx.fillStyle = GOLD;
+  ctx.fillRect(0, ACTION_Y, VW, 4);
+  var lines = legendLines();
+  var duel = game.mode === 'duel';
+  var legendW = duel ? 500 : 700;
+  var i;
+  for (i = 0; i < lines.length; i++) {
+    fitText(lines[i], 18, ACTION_Y + 28 + i * 24, 14, '#FFE7C4', 'left', '700', legendW);
+  }
+  if (!duel) {
+    drawButton('shake', 760, ACTION_Y + 24, 230, 64, 'SHAKE OFF (-1)', GOLD, INK, 0);
+    drawButton('serve', 1006, ACTION_Y + 24, 250, 64, 'SERVE ORDER', LEAF, '#FFF', 0);
+    return;
+  }
+  var n = game.players;
+  var groupW = n === 3 ? 240 : 280;
+  var start = 530;
+  for (i = 0; i < n; i++) {
+    var x = start + i * (groupW + 10);
+    var look = LOOKS[i];
+    drawButton('shake', x, ACTION_Y + 28, 78, 56, 'SHAKE', GOLD, INK, i);
+    drawButton('serve', x + 86, ACTION_Y + 28, groupW - 86, 56, look.short + ' SERVE', look.coat, '#FFF', i);
+  }
+}
+
+function drawOrderBlock() {
+  var order = game.order;
+  var x = 348;
+  var y = STRIP_Y + 8;
+  var w = 620;
+  var h = STRIP_H - 16;
+  roundRect(x, y, w, h, 16);
+  ctx.fillStyle = '#FFF';
+  ctx.fill();
+  ctx.strokeStyle = '#F0D7B4';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  var pre = order.start > 0;
+  if (pre) {
+    roundRect(x + 12, y + 8, 108, 20, 8);
+    ctx.fillStyle = '#F8E2B0';
+    ctx.fill();
+    text('PRELOADED', x + 66, y + 18, 11, INK, 'center', '800');
+  }
+  var capY = pre ? y + 40 : y + 26;
+  var numY = pre ? y + 72 : y + 68;
+  var part = order.ratioStyle === 'part';
+  if (!pre && game.rep === 'fraction') {
+    text('CATCH THIS FRACTION', x + w / 2, capY, 13, TEAL, 'center', '800');
+    drawFraction(order.showNum, order.showDen, x + w / 2, numY, 30, CORAL);
+  } else if (!pre && game.rep === 'ratio') {
+    text(part ? 'CAUGHT : MISSED' : 'TARGET : TOTAL', x + w / 2, capY, 13, TEAL, 'center', '800');
+    fitText(part ? (order.partA + ' : ' + order.partB) : (order.wholeA + ' : ' + order.wholeB), x + w / 2, numY, 40, CORAL, 'center', '800', w - 36);
+  } else if (!pre) {
+    text('THIS PERCENT OF THE FORECAST', x + w / 2, capY, 13, TEAL, 'center', '800');
+    fitText(order.pct, x + w / 2, numY, 40, CORAL, 'center', '800', w - 36);
+  } else if (game.rep === 'fraction') {
+    text('TRAY NOW', x + 150, capY, 12, TEAL, 'center', '800');
+    text('NEW ORDER', x + w - 150, capY, 12, CORAL, 'center', '800');
+    fitText(order.showStartNum + '/' + order.showStartDen, x + 150, numY, 32, TEAL, 'center', '800', 180);
+    text('→', x + w / 2, numY, 26, '#C9A27A', 'center', '800');
+    fitText(order.showNum + '/' + order.showDen, x + w - 150, numY, 34, CORAL, 'center', '800', 180);
+  } else if (game.rep === 'ratio') {
+    var startMain = part ? (order.startPartA + ' : ' + order.startPartB) : (order.startWholeA + ' : ' + order.startWholeB);
+    var main = part ? (order.partA + ' : ' + order.partB) : (order.wholeA + ' : ' + order.wholeB);
+    text(part ? 'ON : OFF' : 'ON : FORECAST', x + 150, capY, 12, TEAL, 'center', '800');
+    text(part ? 'CAUGHT : MISSED' : 'TARGET : TOTAL', x + w - 150, capY, 12, CORAL, 'center', '800');
+    fitText(startMain, x + 150, numY, 30, TEAL, 'center', '800', 200);
+    text('→', x + w / 2, numY, 26, '#C9A27A', 'center', '800');
+    fitText(main, x + w - 150, numY, 32, CORAL, 'center', '800', 200);
+  } else {
+    text('TRAY NOW', x + 150, capY, 12, TEAL, 'center', '800');
+    text('NEW ORDER', x + w - 150, capY, 12, CORAL, 'center', '800');
+    fitText(order.startPct, x + 150, numY, 26, TEAL, 'center', '800', 200);
+    text('→', x + w / 2, numY, 26, '#C9A27A', 'center', '800');
+    fitText(order.pct, x + w - 150, numY, 28, CORAL, 'center', '800', 200);
+  }
+  text('of ' + order.total + ' ' + order.food.plural, x + w / 2, y + h - 16, 14, '#8A6848', 'center', '700');
+}
+
+function drawGauge() {
+  var x = 984;
+  var y = STRIP_Y + 52;
+  roundRect(x, y, 280, 62, 14);
+  ctx.fillStyle = '#FFF';
+  ctx.fill();
+  ctx.strokeStyle = '#F0D7B4';
+  ctx.stroke();
+  if (game.mode === 'duel') {
+    text('TRAYS', x + 140, y + 14, 11, TEAL, 'center', '800');
+    var i;
+    var bits = [];
+    for (i = 0; i < game.chefs.length; i++) {
+      var extra = game.chefs[i].rotten ? ' (+' + game.chefs[i].rotten + ')' : '';
+      bits.push(LOOKS[i].short + ' ' + game.chefs[i].good + extra);
+    }
+    fitText(bits.join('   '), x + 140, y + 40, 18, INK, 'center', '800', 260);
+    return;
+  }
+  var good = teamGood();
+  var rotten = teamRotten();
+  var title = game.mode === 'coop' ? 'TEAM TRAY' : 'ON TRAY';
+  text(title, x + 16, y + 18, 12, TEAL, 'left', '800');
+  text(String(good), x + 250, y + 20, 22, INK, 'right', '800');
+  var g = gaugeText(good);
+  fitText(g, x + 16, y + 42, 16, CORAL, 'left', '800', rotten ? 170 : 250);
+  if (rotten) text('+' + rotten + ' burnt', x + 268, y + 42, 12, '#4E7A38', 'right', '800');
+}
+
+function drawStrip() {
+  ctx.fillStyle = CREAM;
+  ctx.fillRect(0, STRIP_Y, VW, STRIP_H);
+  ctx.fillStyle = '#F0D2A4';
+  ctx.fillRect(0, STRIP_Y + STRIP_H - 3, VW, 3);
+  var food = game.order.food;
+  roundRect(14, STRIP_Y + 14, 96, 96, 18);
+  ctx.fillStyle = food.id === 'fries' ? '#F8D2C8' : food.id === 'burger' ? '#FDE7B8' : '#D9F3D0';
+  ctx.fill();
+  drawFood(food.id, 62, STRIP_Y + 66, 1.35, false, 0);
+  drawRadar(148, STRIP_Y + 36, 16);
+  text('FORECAST', 174, STRIP_Y + 28, 12, TEAL, 'left', '800');
+  text(String(game.order.total), 174, STRIP_Y + 58, 32, INK, 'left', '800');
+  fitText(food.name.toUpperCase() + ' RAINING', 174, STRIP_Y + 92, 13, CORAL, 'left', '800', 160);
+  drawOrderBlock();
+  var labels = [
+    { id: 'fraction', label: 'FRACTION' },
+    { id: 'ratio', label: 'RATIO' },
+    { id: 'percentage', label: '%' }
+  ];
+  var i;
+  for (i = 0; i < labels.length; i++) {
+    drawPill('rep', 984 + i * 94, STRIP_Y + 10, 88, 34, labels[i].label, game.rep === labels[i].id, labels[i].id);
+  }
+  drawGauge();
+}
+
+function drawHud() {
+  ctx.fillStyle = CORAL;
+  ctx.fillRect(0, 0, VW, HUD_H);
+  ctx.fillStyle = CORAL_DARK;
+  ctx.fillRect(0, HUD_H - 4, VW, 4);
+  text('SKY-FEAST', 16, 28, 20, '#FFF', 'left', '800');
+  var diff = diffInfo(game.difficulty);
+  roundRect(168, 12, 150, 32, 10);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fill();
+  fitText(diff.name + ' · ' + diff.years, 243, 28, 13, '#FFF', 'center', '800', 136);
+  text('ROUND ' + game.round + '/' + ROUNDS, 336, 28, 14, '#FFF6E4', 'left', '800');
+  if (game.mode === 'duel') {
+    var bits = [];
+    var i;
+    for (i = 0; i < game.players; i++) bits.push(LOOKS[i].short + ' ★ ' + game.stars[i]);
+    text(bits.join('    '), 760, 28, 18, '#FFF', 'center', '800');
+  } else {
+    var label = game.mode === 'coop' ? 'TEAM SCORE' : 'FEAST POINTS';
+    text(label, 620, 18, 11, '#FFE1D6', 'left', '800');
+    text(comma(game.score), 620, 36, 20, '#FFF', 'left', '800');
+    if (game.combo >= 2) text('COMBO x' + game.combo, 760, 30, 16, GOLD, 'left', '800');
+    var h;
+    for (h = 0; h < 3; h++) drawHeart(1048 + h * 28, 14, 0.85, h < game.hearts);
+  }
+  var modeName = game.mode === 'coop' ? 'CO-OP' : game.mode === 'duel' ? 'DUEL' : 'SOLO';
+  text(modeName, 1148, 28, 13, '#FFF', 'right', '800');
+  drawMute(1210, 10);
+}
+
+function drawStage() {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, STAGE_Y, VW, STAGE_H);
+  ctx.clip();
+  var sky = ctx.createLinearGradient(0, STAGE_Y, 0, STAGE_Y + STAGE_H);
+  sky.addColorStop(0, SKY_TOP);
+  sky.addColorStop(0.72, '#B7E6FB');
+  sky.addColorStop(1, SKY_BOT);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, STAGE_Y, VW, STAGE_H);
+  drawSun(1180, STAGE_Y + 54, 28);
+  var ci;
+  for (ci = 0; ci < decor.clouds.length; ci++) {
+    var cl = decor.clouds[ci];
+    drawCloud(cl.x, STAGE_Y + 18 + cl.y * 0.35, cl.s);
+  }
+  drawBunting(STAGE_Y + 8, VW);
+  drawTruck(70, STAGE_Y + STAGE_H - 150, '#F08A5D', '#E85D4C');
+  drawTruck(210, STAGE_Y + STAGE_H - 138, '#6BB3E0', '#2F7FE0');
+  drawTruck(1040, STAGE_Y + STAGE_H - 146, '#7DCE8A', '#2EAE6A');
+  var groundY = STAGE_Y + STAGE_H - 78;
+  ctx.fillStyle = '#F2C089';
+  ctx.fillRect(0, groundY, VW, STAGE_H);
+  ctx.fillStyle = '#E7A15E';
+  var tile;
+  for (tile = 0; tile < 16; tile++) {
+    if (tile % 2 === 0) ctx.fillRect(tile * 80, groundY, 80, 18);
+  }
+  ctx.fillStyle = '#67B15A';
+  ctx.fillRect(0, groundY, VW, 8);
+  if (game.mode === 'duel') {
+    var n = game.chefs.length;
+    var li;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 8]);
+    for (li = 1; li < n; li++) {
+      var lx = (VW / n) * li;
+      ctx.beginPath();
+      ctx.moveTo(lx, STAGE_Y + 18);
+      ctx.lineTo(lx, STAGE_Y + STAGE_H);
+      ctx.stroke();
+    }
+    ctx.restore();
+    for (li = 0; li < n; li++) {
+      var mid = (VW / n) * (li + 0.5);
+      ctx.fillStyle = LOOKS[li].coat;
+      roundRect(mid - 28, STAGE_Y + 24, 56, 22, 8);
+      ctx.fill();
+      text(LOOKS[li].short, mid, STAGE_Y + 35, 13, '#FFF', 'center', '800');
+    }
+  }
+  var ii;
+  for (ii = 0; ii < game.items.length; ii++) {
+    var item = game.items[ii];
+    var ox = Math.sin(item.wobble) * 12;
+    drawParachute(item.x + ox, item.y, item.rotten, item.wobble);
+    drawFood(item.food, item.x + ox, item.y + 6, 0.92, item.rotten, item.rot);
+  }
+  var fi;
+  for (fi = 0; fi < game.flies.length; fi++) {
+    var fly = game.flies[fi];
+    drawFood(fly.food, fly.x, fly.y, 0.7, fly.rotten, fly.rot);
+  }
+  var chi;
+  for (chi = 0; chi < game.chefs.length; chi++) drawChef(game.chefs[chi]);
+  var pi;
+  for (pi = 0; pi < game.particles.length; pi++) {
+    var p = game.particles[pi];
+    var alpha = Math.max(0, p.life / p.max);
+    ctx.globalAlpha = alpha;
+    if (p.kind === 'text') text(p.text, p.x, p.y, 16, p.color, 'center', '800');
+    else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function drawCard(x, y, w, h) {
+  roundRect(x + 4, y + 6, w, h, 18);
+  ctx.fillStyle = 'rgba(58,39,28,0.18)';
+  ctx.fill();
+  roundRect(x, y, w, h, 18);
+  ctx.fillStyle = CREAM;
+  ctx.fill();
+  ctx.strokeStyle = '#E7C59A';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+}
+
+function drawBannerCard() {
+  var order = game.order;
+  var x = 300;
+  var y = STAGE_Y + 70;
+  var w = 680;
+  var h = 168;
+  drawCard(x, y, w, h);
+  text('ORDER UP', x + w / 2, y + 32, 14, CORAL, 'center', '800');
+  fitText(order.total + ' ' + order.food.name.toUpperCase() + ' IN THE FORECAST', x + w / 2, y + 64, 26, INK, 'center', '800', w - 40);
+  var msg = 'Work out the count, catch it on the tray, then serve.';
+  if (game.difficulty === 'medium') msg = 'Simplify or convert first, then catch that many items.';
+  if (order.start > 0) msg = 'The tray is already loaded. Catch more, or shake extras off, until it matches the new order.';
+  if (game.difficulty === 'extreme') msg += ' Dodge burnt food.';
+  var lines = wrapText(msg, w - 60, 16, '700');
+  var i;
+  for (i = 0; i < lines.length; i++) text(lines[i], x + w / 2, y + 104 + i * 22, 16, '#6D5138', 'center', '700');
+}
+
+function drawTipCard() {
+  var tip = game.tip;
+  if (!tip) return;
+  var x = 220;
+  var y = STAGE_Y + 24;
+  var w = 840;
+  var alertLines = wrapText(tip.alert, w - 56, 16, '700');
+  var work = tip.lines.slice(0, 4);
+  var h = 118 + alertLines.length * 22 + work.length * 20;
+  drawCard(x, y, w, h);
+  ctx.fillStyle = CORAL;
+  roundRect(x, y, w, 42, 18);
+  ctx.fill();
+  ctx.fillRect(x, y + 24, w, 18);
+  text('HEAD CHEF TIP', x + 20, y + 22, 16, '#FFF', 'left', '800');
+  text(tip.title, x + w - 20, y + 22, 16, '#FFF', 'right', '800');
+  var yy = y + 64;
+  var i;
+  for (i = 0; i < alertLines.length; i++) {
+    text(alertLines[i], x + 28, yy, 16, INK, 'left', '700');
+    yy += 22;
+  }
+  yy += 6;
+  text('Worked solution', x + 28, yy, 13, TEAL, 'left', '800');
+  yy += 20;
+  for (i = 0; i < work.length; i++) {
+    fitText(work[i], x + 28, yy, 14, '#5C4332', 'left', '600', w - 56);
+    yy += 20;
+  }
+  drawButton('tip-ok', x + w / 2 - 120, y + h - 62, 240, 46, 'KEEP COOKING', LEAF, '#FFF', 0);
+}
+
+function drawSuccessCard() {
+  var awardInfo = game.lastAward || { total: 350, base: 350, speed: 0, clean: 0, combo: 0, cleanHit: false };
+  var x = 300;
+  var y = STAGE_Y + 48;
+  var w = 680;
+  var h = 230;
+  drawCard(x, y, w, h);
+  var who = game.mode === 'duel' && game.winner >= 0 ? LOOKS[game.winner].name + ' serves it!' : 'Exact serve!';
+  text(who, x + w / 2, y + 32, 26, LEAF, 'center', '800');
+  var bits = '+' + awardInfo.base + ' feast';
+  if (awardInfo.speed) bits += '   +' + awardInfo.speed + ' speed';
+  if (awardInfo.clean) bits += '   +' + awardInfo.clean + ' clean';
+  text(bits, x + w / 2, y + 68, 16, CORAL, 'center', '800');
+  if (awardInfo.cleanHit && awardInfo.combo >= 2) text('Zero-overshoot combo x' + awardInfo.combo, x + w / 2, y + 92, 14, TEAL, 'center', '800');
+  var lines = wrapText(successCopy(), w - 60, 16, '700');
+  var i;
+  for (i = 0; i < lines.length && i < 3; i++) text(lines[i], x + w / 2, y + 124 + i * 22, 16, INK, 'center', '700');
+  text('Next order is on the way', x + w / 2, y + h - 28, 13, '#8A6848', 'center', '700');
+  spot('skip-success', x, y, w, h, 0);
+}
+
+function drawNote() {
+  if (!game.note) return;
+  var x = 180;
+  var y = STAGE_Y + 8;
+  var w = 920;
+  var h = 78;
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = 'rgba(58, 28, 18, 0.92)';
+  ctx.fill();
+  var who = LOOKS[game.note.who] ? LOOKS[game.note.who].short + ' dizzy — ' : '';
+  fitText(who + game.note.title, x + 16, y + 20, 15, GOLD, 'left', '800', w - 32);
+  fitText(game.note.alert, x + 16, y + 46, 14, '#FFF6EA', 'left', '700', w - 32);
+}
+
+function drawPlay() {
+  drawStage();
+  drawHud();
+  drawStrip();
+  drawAction();
+  if (game.phase === 'banner') drawBannerCard();
+  if (game.phase === 'tip') drawTipCard();
+  if (game.phase === 'success') drawSuccessCard();
+  if (game.note && game.phase === 'live') drawNote();
+}
+
+function drawTitle() {
+  var sky = ctx.createLinearGradient(0, 0, 0, VH);
+  sky.addColorStop(0, SKY_TOP);
+  sky.addColorStop(1, SKY_BOT);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, VW, VH);
+  drawSun(1160, 80, 34);
+  var i;
+  for (i = 0; i < decor.clouds.length; i++) drawCloud(decor.clouds[i].x, 40 + decor.clouds[i].y, decor.clouds[i].s);
+  drawBunting(8, VW);
+  for (i = 0; i < decor.titleBits.length; i++) {
+    var bit = decor.titleBits[i];
+    drawParachute(bit.x, bit.y, false, bit.wobble);
+    drawFood(bit.food, bit.x, bit.y + 8, 0.8, false, bit.rot);
+  }
+  text('SINGAPORE PRIMARY 4–6', VW / 2, 36, 13, TEAL, 'center', '800');
+  text('SKY-FEAST', VW / 2, 78, 64, CORAL, 'center', '800');
+  text('Tray Catcher', VW / 2, 122, 28, INK, 'center', '800');
+  text('Fractions  ·  Ratios  ·  Percentages', VW / 2, 154, 16, '#8A6848', 'center', '700');
+
+  var cardX = 150;
+  var cardY = 180;
+  var cardW = 980;
+  var cardH = 430;
+  drawCard(cardX, cardY, cardW, cardH);
+  text('CHEFS', cardX + 36, cardY + 36, 13, TEAL, 'left', '800');
+  var pn;
+  for (pn = 1; pn <= 3; pn++) {
+    drawPill('players', cardX + 120 + (pn - 1) * 120, cardY + 18, 104, 36, pn + (pn === 1 ? ' PLAYER' : ' PLAYERS'), game.players === pn, pn);
+  }
+  text('DIFFICULTY', cardX + 36, cardY + 86, 13, TEAL, 'left', '800');
+  var dw = 210;
+  for (i = 0; i < DIFFS.length; i++) {
+    drawPill('diff', cardX + 36 + i * (dw + 12), cardY + 104, dw, 40, DIFFS[i].name, game.difficulty === DIFFS[i].id, DIFFS[i].id);
+  }
+  var dInfo = diffInfo(game.difficulty);
+  var dLines = wrapText(dInfo.title + ' · ' + dInfo.blurb, cardW - 72, 15, '600');
+  for (i = 0; i < dLines.length; i++) text(dLines[i], cardX + 36, cardY + 164 + i * 18, 15, '#6D5138', 'left', '600');
+
+  text('MODE', cardX + 36, cardY + 214, 13, TEAL, 'left', '800');
+  var mw = 292;
+  for (i = 0; i < MODES.length; i++) {
+    drawPill('mode', cardX + 36 + i * (mw + 12), cardY + 232, mw, 40, MODES[i].name, game.mode === MODES[i].id, MODES[i].id);
+  }
+  var mInfo = modeInfo(game.mode);
+  var mLines = wrapText(mInfo.blurb, cardW - 72, 15, '600');
+  for (i = 0; i < mLines.length; i++) text(mLines[i], cardX + 36, cardY + 290 + i * 18, 15, '#6D5138', 'left', '600');
+
+  drawButton('start', cardX + cardW / 2 - 180, cardY + 348, 360, 58, 'START THE FEAST', CORAL, '#FFF', 0);
+  text('Enter also starts', cardX + cardW / 2, cardY + 414, 12, '#A68462', 'center', '700');
+  drawMute(1210, 14);
+}
+
+function drawResults() {
+  var sky = ctx.createLinearGradient(0, 0, 0, VH);
+  sky.addColorStop(0, '#7EC8F8');
+  sky.addColorStop(1, '#FFE7B8');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, VW, VH);
+  drawSun(160, 90, 30);
+  drawBunting(8, VW);
+  var closed = game.endReason === 'hearts';
+  text(closed ? 'THE KITCHEN CLOSED' : 'FEAST COMPLETE', VW / 2, 70, 36, closed ? CORAL : LEAF, 'center', '800');
+  text(diffInfo(game.difficulty).title + '  ·  ' + modeInfo(game.mode).name, VW / 2, 108, 16, TEAL, 'center', '800');
+  drawCard(250, 140, 780, 400);
+  if (game.mode === 'duel') {
+    var rank = [];
+    var i;
+    for (i = 0; i < game.players; i++) rank.push({ i: i, stars: game.stars[i], points: game.points[i] });
+    rank.sort(function (a, b) {
+      if (b.stars !== a.stars) return b.stars - a.stars;
+      return b.points - a.points;
+    });
+    for (i = 0; i < rank.length; i++) {
+      var row = rank[i];
+      var look = LOOKS[row.i];
+      var y = 190 + i * 78;
+      roundRect(290, y, 700, 66, 14);
+      ctx.fillStyle = i === 0 ? '#FFF4D2' : '#FFF';
+      ctx.fill();
+      ctx.fillStyle = look.coat;
+      ctx.beginPath();
+      ctx.arc(332, y + 33, 16, 0, Math.PI * 2);
+      ctx.fill();
+      text(look.name, 364, y + 24, 18, INK, 'left', '800');
+      text('★ ' + row.stars + '     ' + comma(row.points) + ' pts', 364, y + 46, 14, '#6D5138', 'left', '700');
+      text(i === 0 ? 'TOP CHEF' : 'PLACE ' + (i + 1), 960, y + 33, 16, look.coat, 'right', '800');
+    }
+  } else {
+    var label = game.mode === 'coop' ? 'TEAM SCORE' : 'FEAST POINTS';
+    text(label, VW / 2, 210, 14, TEAL, 'center', '800');
+    text(comma(game.score), VW / 2, 258, 54, CORAL, 'center', '800');
+    text('Exact serves  ' + game.exacts + ' / ' + Math.max(game.serves, game.exacts), VW / 2, 320, 20, INK, 'center', '800');
+    text('Best clean combo  x' + game.bestCombo, VW / 2, 354, 20, INK, 'center', '800');
+    text('Hearts left  ' + Math.max(0, game.hearts), VW / 2, 388, 20, INK, 'center', '800');
+    text('Rounds reached  ' + game.round + ' / ' + ROUNDS, VW / 2, 422, 18, '#6D5138', 'center', '700');
+  }
+  drawButton('again', 390, 470, 240, 54, 'PLAY AGAIN', CORAL, '#FFF', 0);
+  drawButton('title', 650, 470, 240, 54, 'TITLE', GOLD, INK, 0);
+  drawMute(1210, 14);
+}
+
+function render() {
+  hotspots.length = 0;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = SKY_TOP;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+  ctx.clearRect(0, 0, VW, VH);
+  if (game.screen === 'title') drawTitle();
+  else if (game.screen === 'results') drawResults();
+  else drawPlay();
+}
+
+function initDecor() {
+  decor.clouds = [];
+  var i;
+  for (i = 0; i < 6; i++) {
+    decor.clouds.push({
+      x: Math.random() * VW,
+      y: 10 + Math.random() * 80,
+      s: 0.75 + Math.random() * 0.7,
+      v: 12 + Math.random() * 18
+    });
+  }
+}
+
+var last = performance.now();
+function frame(now) {
+  var dt = Math.min(0.034, (now - last) / 1000);
+  last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+
+var BLOCK = {
+  Space: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, Tab: 1,
+  Slash: 1, KeyW: 1, KeyA: 1, KeyS: 1, KeyD: 1, KeyQ: 1, KeyI: 1, KeyJ: 1,
+  KeyK: 1, KeyL: 1, KeyU: 1, Enter: 1
+};
+
+window.addEventListener('keydown', function (e) {
+  if (!down[e.code]) framePress[e.code] = true;
+  down[e.code] = true;
+  if (BLOCK[e.code]) e.preventDefault();
+  ensureAudio();
+});
+window.addEventListener('keyup', function (e) {
+  down[e.code] = false;
+});
+canvas.addEventListener('mousemove', function (e) {
+  var p = toVirtual(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.seen = true;
+  pointer.inside = p.x >= 0 && p.y >= 0 && p.x <= VW && p.y <= VH;
+});
+canvas.addEventListener('mouseleave', function () {
+  pointer.inside = false;
+});
+canvas.addEventListener('mousedown', function (e) {
+  e.preventDefault();
+  canvas.focus();
+  ensureAudio();
+  var p = toVirtual(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.seen = true;
+  pointer.inside = true;
+  var h = hitAt(p.x, p.y);
+  clickQueue.push({ x: p.x, y: p.y, button: e.button, spotId: h ? h.id : null, extra: h ? h.extra : null });
+});
+canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+canvas.addEventListener('touchstart', function (e) {
+  e.preventDefault();
+  ensureAudio();
+  var t = e.changedTouches[0];
+  var p = toVirtual(t.clientX, t.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.seen = true;
+  pointer.inside = true;
+  var h = hitAt(p.x, p.y);
+  clickQueue.push({ x: p.x, y: p.y, button: 0, spotId: h ? h.id : null, extra: h ? h.extra : null });
+}, { passive: false });
+canvas.addEventListener('touchmove', function (e) {
+  e.preventDefault();
+  var t = e.changedTouches[0];
+  var p = toVirtual(t.clientX, t.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.seen = true;
+  pointer.inside = true;
+}, { passive: false });
+window.addEventListener('resize', resize);
+
+initDecor();
+resize();
+requestAnimationFrame(frame);
+canvas.focus();
+</script>
+</body>
+</html>
