@@ -1,0 +1,2579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Fraction Bastion: Zombie Turret Defense</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #163246;
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  noscript p { color: #fff7e8; font-family: "Trebuchet MS", sans-serif; padding: 24px; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" tabindex="0" role="application" aria-label="Fraction Bastion. Zombie turret defense for Primary 4 to 6 fraction operations. Choose the simplest form. Player 1 uses the mouse, keys 1 to 4, or gamepad A. Player 2 uses Q W E R or the second gamepad. Player 3 uses U I O P or the third gamepad."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<noscript><p>Fraction Bastion needs JavaScript turned on.</p></noscript>
+<script>
+(() => {
+  'use strict';
+
+  const VW = 1280;
+  const VH = 720;
+  const HUD_H = 52;
+  const FONT = '"Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+  const SHIRTS = ['#7c5cff', '#ff5d8f', '#3ec6e0', '#ffb703', '#fb7185', '#34d399'];
+  const TIER_FLOOR = [0, 0, 22, 44, 66, 88];
+  const FIRE = {
+    1: { cd: 0.52, dmg: 20, kind: 'bolt' },
+    2: { cd: 0.34, dmg: 16, kind: 'twin' },
+    3: { cd: 0.48, dmg: 30, kind: 'laser' },
+    4: { cd: 0.58, dmg: 34, kind: 'mortar' },
+    5: { cd: 0.30, dmg: 18, kind: 'nova' }
+  };
+  const KILL_SCORE = { zombie: 100, skeleton: 160, ogre: 420 };
+  const GUNNERS = [
+    { id: 'P1', name: 'P1 RED', color: '#e11d48', deep: '#9f1239', keys: ['1', '2', '3', '4'], codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4'] },
+    { id: 'P2', name: 'P2 BLUE', color: '#2563eb', deep: '#1e3a8a', keys: ['Q', 'W', 'E', 'R'], codes: ['KeyQ', 'KeyW', 'KeyE', 'KeyR'] },
+    { id: 'P3', name: 'P3 GREEN', color: '#059669', deep: '#065f46', keys: ['U', 'I', 'O', 'P'], codes: ['KeyU', 'KeyI', 'KeyO', 'KeyP'] }
+  ];
+  const GRADES = {
+    EASY: { id: 'EASY', badge: 'P4', name: 'EASY', role: 'Outpost Recruit', tint: '#16a34a', blurb: 'Add and subtract proper fractions with different denominators.' },
+    MEDIUM: { id: 'MEDIUM', badge: 'P5', name: 'MEDIUM', role: 'Bastion Sergeant', tint: '#0284c7', blurb: 'Mixed-number add and subtract, then multiply fractions.' },
+    HARD: { id: 'HARD', badge: 'P5–P6', name: 'HARD', role: 'Fortress Captain', tint: '#d97706', blurb: 'Divide fractions by whole numbers, and whole numbers by fractions.' },
+    EXTREME: { id: 'EXTREME', badge: 'P6', name: 'EXTREME', role: 'Citadel Overlord', tint: '#db2777', blurb: 'Divide a fraction by a fraction, then face every operation.' }
+  };
+  const GRADE_ORDER = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  const LEAD = [523.25, 659.25, 783.99, 659.25, 587.33, 523.25, 440, 392, 440, 523.25, 659.25, 783.99, 880, 783.99, 659.25, 523.25];
+  const BASS = [130.81, 130.81, 174.61, 174.61, 196, 164.81, 146.83, 130.81];
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const live = document.getElementById('live');
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dpr = 1;
+  let animT = 0;
+  let lastNow = performance.now();
+  let reduceMotion = false;
+  try { reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (err) { reduceMotion = false; }
+
+  let bestScore = 0;
+  let savedMute = false;
+  try { bestScore = Number(localStorage.getItem('fb-bastion-best')) || 0; } catch (err) { bestScore = 0; }
+  try { savedMute = localStorage.getItem('fb-bastion-mute') === '1'; } catch (err) { savedMute = false; }
+
+  const spots = [];
+  const pointer = { x: -1000, y: -1000 };
+  const keyMap = {};
+  GUNNERS.forEach((g, pi) => {
+    g.codes.forEach((code, slot) => { keyMap[code] = { player: pi, slot: slot }; });
+  });
+
+  const game = {
+    screen: 'title',
+    players: 1,
+    tier: 'EASY',
+    mode: 'SOLO',
+    coopStyle: 'TURNS',
+    best: bestScore,
+    lanes: [],
+    wave: 1,
+    clearedWaves: 0,
+    activeGunner: 0,
+    time: 0,
+    paused: false,
+    waveIntro: 0,
+    between: 0,
+    ending: 0,
+    endReason: '',
+    winner: -1,
+    shake: 0,
+    fanPlayed: false
+  };
+
+  const padMem = [0, 1, 2].map(() => ({
+    a: false, start: false, up: false, down: false, lb: false, rb: false, held: false
+  }));
+
+  const sound = {
+    ctx: null,
+    master: null,
+    muted: savedMute,
+    ready: false,
+    next: 0,
+    step: 0
+  };
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(winW * dpr));
+    canvas.height = Math.max(1, Math.floor(winH * dpr));
+    scale = Math.min(winW / VW, winH / VH);
+    offsetX = (winW - VW * scale) / 2;
+    offsetY = (winH - VH * scale) / 2;
+    applyTransform();
+  }
+
+  function applyTransform() {
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+  }
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+
+  function rand(a, b) {
+    return a + Math.floor(Math.random() * (b - a + 1));
+  }
+
+  function choice(arr) {
+    return arr[rand(0, arr.length - 1)];
+  }
+
+  function shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    return arr;
+  }
+
+  function clamp(v, a, b) {
+    return Math.max(a, Math.min(b, v));
+  }
+
+  function fmt(n) {
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function announce(s) {
+    if (live) live.textContent = s;
+  }
+
+  function gcd(a, b) {
+    let x = Math.abs(a | 0);
+    let y = Math.abs(b | 0);
+    while (y) {
+      const t = x % y;
+      x = y;
+      y = t;
+    }
+    return x || 1;
+  }
+
+  function lcm(a, b) {
+    return Math.abs(a * b) / gcd(a, b);
+  }
+
+  function simplify(n, d) {
+    if (!d) return { n: 0, d: 1 };
+    if (d < 0) { n = -n; d = -d; }
+    const g = gcd(n, d);
+    return { n: n / g, d: d / g };
+  }
+
+  function addF(a, b) { return simplify(a.n * b.d + b.n * a.d, a.d * b.d); }
+  function subF(a, b) { return simplify(a.n * b.d - b.n * a.d, a.d * b.d); }
+  function mulF(a, b) { return simplify(a.n * b.n, a.d * b.d); }
+  function divF(a, b) {
+    if (!b.n) return null;
+    return simplify(a.n * b.d, a.d * b.n);
+  }
+
+  function applyOp(op, a, b) {
+    if (op === '+') return addF(a, b);
+    if (op === '−') return subF(a, b);
+    if (op === '×') return mulF(a, b);
+    return divF(a, b);
+  }
+
+  function cmpF(a, b) {
+    return a.n * b.d - b.n * a.d;
+  }
+
+  function mixedToF(whole, n, d) {
+    return simplify(whole * d + n, d);
+  }
+
+  function canonicalDisp(f) {
+    const neg = f.n < 0;
+    const abs = Math.abs(f.n);
+    const whole = Math.floor(abs / f.d);
+    const n = abs % f.d;
+    return { neg: neg, whole: whole, n: n, d: n === 0 ? 1 : f.d };
+  }
+
+  function fracDisp(n, d) {
+    return { neg: false, whole: 0, n: n, d: d };
+  }
+
+  function copyDisp(d) {
+    return { neg: !!d.neg, whole: d.whole | 0, n: d.n | 0, d: d.d | 0 };
+  }
+
+  function dispKey(d) {
+    return (d.neg ? '-' : '') + d.whole + ',' + d.n + '/' + d.d;
+  }
+
+  function dispToValue(d) {
+    const n = d.whole * d.d + d.n;
+    return simplify(d.neg ? -n : n, d.d);
+  }
+
+  function sane(d) {
+    if (!d || d.neg || d.n < 0 || d.d <= 0) return false;
+    if (d.whole > 400 || d.n > 900 || d.d > 900) return false;
+    if (d.whole === 0 && d.n === 0) return false;
+    return true;
+  }
+
+  function coprimeNum(d) {
+    const opts = [];
+    for (let n = 1; n < d; n++) if (gcd(n, d) === 1) opts.push(n);
+    if (!opts.length) return 0;
+    return opts[rand(0, opts.length - 1)];
+  }
+
+  function asImproperDisp(f) {
+    if (Math.abs(f.n) < f.d) return null;
+    return { neg: false, whole: 0, n: Math.abs(f.n), d: f.d };
+  }
+
+  function asUnreducedDisp(f) {
+    const c = canonicalDisp(f);
+    const k = 2;
+    if (c.n === 0) {
+      if (c.whole <= 0) return null;
+      return { neg: false, whole: 0, n: c.whole * k, d: k };
+    }
+    if (c.whole > 0) return { neg: false, whole: c.whole, n: c.n * k, d: c.d * k };
+    return { neg: false, whole: 0, n: c.n * k, d: c.d * k };
+  }
+
+  function trapRank(t) {
+    const order = ['add-denoms', 'forget-whole', 'flip-dividend', 'forgot-flip', 'only-whole', 'forgot-scale', 'unsimplified', 'generic'];
+    const i = order.indexOf(t);
+    return i < 0 ? 40 : i;
+  }
+
+  function fillOptions(answer, answerDisp, seeds) {
+    const options = [{ disp: copyDisp(answerDisp), correct: true, trap: '' }];
+    const seen = new Set([dispKey(answerDisp)]);
+    function add(disp, trap) {
+      if (!disp || options.length >= 4) return;
+      if (!sane(disp)) return;
+      const key = dispKey(disp);
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({ disp: copyDisp(disp), correct: false, trap: trap || 'generic' });
+    }
+    const sorted = (seeds || []).slice().sort((a, b) => trapRank(a.trap) - trapRank(b.trap));
+    for (let i = 0; i < sorted.length; i++) add(sorted[i].disp, sorted[i].trap);
+    const extras = [
+      canonicalDisp(simplify(answer.n + 1, answer.d)),
+      canonicalDisp(simplify(answer.n + 2, answer.d)),
+      canonicalDisp(simplify(answer.n + answer.d, answer.d)),
+      canonicalDisp(simplify(answer.n + answer.d * 2, answer.d)),
+      asUnreducedDisp(answer),
+      asImproperDisp(answer)
+    ];
+    if (answer.n > 1) extras.push(canonicalDisp(simplify(answer.n - 1, answer.d)));
+    if (answer.n > 0 && (answer.n !== 1 || answer.d !== 1)) extras.push(canonicalDisp(simplify(answer.d, answer.n)));
+    for (let i = 0; i < extras.length; i++) add(extras[i], 'generic');
+    let salt = 3;
+    while (options.length < 4 && salt < 40) {
+      add(canonicalDisp(simplify(answer.n + salt, answer.d)), 'generic');
+      salt += 1;
+    }
+    return shuffle(options);
+  }
+
+  function makeProblem(op, left, right, leftDisp, rightDisp, kind, meta, seeds) {
+    const answer = applyOp(op, left, right);
+    if (!answer || answer.n <= 0 || answer.d <= 0) return null;
+    const answerDisp = canonicalDisp(answer);
+    if (!sane(answerDisp) && !(answerDisp.whole === 0 && answerDisp.n === 0)) {
+      if (answerDisp.n < 0 || answerDisp.neg) return null;
+    }
+    if (answerDisp.neg || (answerDisp.whole === 0 && answerDisp.n === 0)) return null;
+    const options = fillOptions(answer, answerDisp, seeds);
+    if (options.length < 4) return null;
+    if (options.filter(o => o.correct).length !== 1) return null;
+    return {
+      op: op,
+      left: left,
+      right: right,
+      leftDisp: copyDisp(leftDisp),
+      rightDisp: copyDisp(rightDisp),
+      answer: answer,
+      answerDisp: answerDisp,
+      kind: kind,
+      meta: meta || null,
+      options: options,
+      key: op + '|' + dispKey(leftDisp) + '|' + dispKey(rightDisp),
+      emergency: false
+    };
+  }
+
+  function genEasy() {
+    const dens = [2, 3, 4, 5, 6, 8, 9, 10, 12];
+    for (let attempt = 0; attempt < 70; attempt++) {
+      const d1 = choice(dens);
+      const d2 = choice(dens);
+      if (d1 === d2) continue;
+      const L = lcm(d1, d2);
+      if (L <= Math.max(d1, d2) || L > 48) continue;
+      const n1 = coprimeNum(d1);
+      const n2 = coprimeNum(d2);
+      if (!n1 || !n2) continue;
+      let left = { n: n1, d: d1 };
+      let right = { n: n2, d: d2 };
+      const sub = Math.random() < 0.42;
+      if (sub && cmpF(left, right) < 0) {
+        const swap = left;
+        left = right;
+        right = swap;
+      }
+      if (sub && cmpF(left, right) <= 0) continue;
+      const op = sub ? '−' : '+';
+      const lcd = lcm(left.d, right.d);
+      const rawN = sub ? Math.abs(left.n - right.n) : left.n + right.n;
+      const rawD = sub ? Math.abs(left.d - right.d) : left.d + right.d;
+      const seeds = [];
+      if (rawN > 0 && rawD > 0) seeds.push({ disp: fracDisp(rawN, rawD), trap: 'add-denoms' });
+      if (rawN > 0) seeds.push({ disp: fracDisp(rawN, lcd), trap: 'forgot-scale' });
+      const preview = applyOp(op, left, right);
+      if (!preview || preview.n <= 0) continue;
+      const unr = asUnreducedDisp(preview);
+      const imp = asImproperDisp(preview);
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      if (imp) seeds.push({ disp: imp, trap: 'unsimplified' });
+      const problem = makeProblem(op, left, right, canonicalDisp(left), canonicalDisp(right), sub ? 'sub' : 'add', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genMixed(op) {
+    const dens = [2, 3, 4, 5, 6, 8, 10];
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const d1 = choice(dens);
+      const d2 = choice(dens);
+      if (d1 === d2) continue;
+      const n1 = coprimeNum(d1);
+      const n2 = coprimeNum(d2);
+      if (!n1 || !n2) continue;
+      const w1 = rand(1, op === '−' ? 6 : 4);
+      const w2 = rand(1, op === '−' ? 5 : 4);
+      const left = mixedToF(w1, n1, d1);
+      const right = mixedToF(w2, n2, d2);
+      if (op === '−' && cmpF(left, right) <= 0) continue;
+      const answer = applyOp(op === '−' ? '−' : '+', left, right);
+      if (!answer || answer.n <= 0 || answer.n / answer.d > 24) continue;
+      const rawW = op === '−' ? w1 - w2 : w1 + w2;
+      const rawN = op === '−' ? Math.abs(n1 - n2) : n1 + n2;
+      const rawD = op === '−' ? Math.abs(d1 - d2) : d1 + d2;
+      const seeds = [];
+      if (rawW >= 0 && rawN > 0 && rawD > 0) {
+        seeds.push({ disp: { neg: false, whole: rawW, n: rawN, d: rawD }, trap: 'add-denoms' });
+      }
+      const lcd = lcm(d1, d2);
+      const forgotN = op === '−' ? Math.abs(n1 - n2) : n1 + n2;
+      if (rawW >= 0 && forgotN > 0) {
+        seeds.push({ disp: { neg: false, whole: rawW, n: forgotN, d: lcd }, trap: 'forgot-scale' });
+      }
+      const unr = asUnreducedDisp(answer);
+      const imp = asImproperDisp(answer);
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      if (imp) seeds.push({ disp: imp, trap: 'unsimplified' });
+      const leftDisp = { neg: false, whole: w1, n: n1, d: d1 };
+      const rightDisp = { neg: false, whole: w2, n: n2, d: d2 };
+      const problem = makeProblem(op === '−' ? '−' : '+', left, right, leftDisp, rightDisp, op === '−' ? 'sub' : 'add', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genProperMul() {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const k = choice([2, 3, 4]);
+      const a = rand(1, 4);
+      const b = rand(1, 4);
+      if (gcd(a, b) !== 1) continue;
+      const n1 = k * a;
+      const d2 = k * b;
+      const d1opts = [];
+      for (let d = n1 + 1; d <= 12; d++) if (gcd(n1, d) === 1) d1opts.push(d);
+      const n2opts = [];
+      for (let n = 1; n < d2; n++) if (gcd(n, d2) === 1) n2opts.push(n);
+      if (!d1opts.length || !n2opts.length) continue;
+      const d1 = choice(d1opts);
+      const n2 = choice(n2opts);
+      let left = { n: n1, d: d1 };
+      let right = { n: n2, d: d2 };
+      if (Math.random() < 0.5) {
+        const swap = left;
+        left = right;
+        right = swap;
+      }
+      const answer = mulF(left, right);
+      if (!answer || answer.n <= 0 || answer.n >= answer.d) continue;
+      const seeds = [];
+      const rawN = left.n * right.n;
+      const rawD = left.d * right.d;
+      if (gcd(rawN, rawD) > 1) seeds.push({ disp: fracDisp(rawN, rawD), trap: 'unsimplified' });
+      seeds.push({ disp: fracDisp(left.n + right.n, left.d + right.d), trap: 'add-denoms' });
+      const unr = asUnreducedDisp(answer);
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      if (answer.n > 0) seeds.push({ disp: canonicalDisp(simplify(answer.d, answer.n)), trap: 'generic' });
+      const problem = makeProblem('×', left, right, canonicalDisp(left), canonicalDisp(right), 'mul-proper', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genMixedTimesWhole() {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const d = choice([2, 3, 4, 5, 6, 8, 9]);
+      const n = coprimeNum(d);
+      if (!n) continue;
+      const w = rand(1, 5);
+      const big = Math.random() < 0.2;
+      const k = big ? choice([12, 15, 16, 18, 20, 21, 24]) : choice([2, 3, 4, 5, 6, 8, 10]);
+      if (big && w > 3) continue;
+      const mixed = mixedToF(w, n, d);
+      const whole = { n: k, d: 1 };
+      const leftFirst = Math.random() < 0.72;
+      const left = leftFirst ? mixed : whole;
+      const right = leftFirst ? whole : mixed;
+      const answer = mulF(left, right);
+      if (!answer || answer.n <= 0 || answer.n / answer.d > 120) continue;
+      const onlyFrac = addF({ n: w, d: 1 }, mulF({ n: n, d: d }, { n: k, d: 1 }));
+      const onlyWhole = addF({ n: w * k, d: 1 }, { n: n, d: d });
+      const seeds = [
+        { disp: canonicalDisp(onlyFrac), trap: 'forget-whole' },
+        { disp: canonicalDisp(onlyWhole), trap: 'only-whole' }
+      ];
+      const imp = asImproperDisp(answer);
+      const unr = asUnreducedDisp(answer);
+      if (imp) seeds.push({ disp: imp, trap: 'unsimplified' });
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      const mixedDisp = { neg: false, whole: w, n: n, d: d };
+      const wholeDisp = canonicalDisp(whole);
+      const problem = makeProblem(
+        '×',
+        left,
+        right,
+        leftFirst ? mixedDisp : wholeDisp,
+        leftFirst ? wholeDisp : mixedDisp,
+        'mul-mixed',
+        { whole: w, k: k, fn: n, fd: d },
+        seeds
+      );
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genFracDivWhole() {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const d = rand(2, 12);
+      const n = coprimeNum(d);
+      const w = choice([2, 3, 4, 5, 6, 8, 10, 12]);
+      if (!n) continue;
+      const left = { n: n, d: d };
+      const right = { n: w, d: 1 };
+      const answer = divF(left, right);
+      if (!answer || answer.n <= 0) continue;
+      const seeds = [];
+      const flip = mulF(simplify(d, n), right);
+      if (flip && flip.n > 0) seeds.push({ disp: canonicalDisp(flip), trap: 'flip-dividend' });
+      const forgot = mulF(left, right);
+      if (forgot && forgot.n > 0) seeds.push({ disp: canonicalDisp(forgot), trap: 'forgot-flip' });
+      if (gcd(n, d * w) > 1) seeds.push({ disp: fracDisp(n, d * w), trap: 'unsimplified' });
+      const unr = asUnreducedDisp(answer);
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      const problem = makeProblem('÷', left, right, canonicalDisp(left), canonicalDisp(right), 'div-fw', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genWholeDivFrac() {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const w = choice([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      const d = rand(2, 12);
+      const n = coprimeNum(d);
+      if (!n) continue;
+      const left = { n: w, d: 1 };
+      const right = { n: n, d: d };
+      const answer = divF(left, right);
+      if (!answer || answer.n <= 0 || answer.n / answer.d > 48) continue;
+      const seeds = [];
+      const forgot = mulF(left, right);
+      if (forgot && forgot.n > 0) seeds.push({ disp: canonicalDisp(forgot), trap: 'forgot-flip' });
+      if (w > 1) {
+        const flip = mulF({ n: 1, d: w }, right);
+        if (flip && flip.n > 0) seeds.push({ disp: canonicalDisp(flip), trap: 'flip-dividend' });
+      }
+      const imp = asImproperDisp(answer);
+      const unr = asUnreducedDisp(answer);
+      if (imp) seeds.push({ disp: imp, trap: 'unsimplified' });
+      if (unr) seeds.push({ disp: unr, trap: 'unsimplified' });
+      const rawN = w * d;
+      const rawD = n;
+      if (gcd(rawN, rawD) > 1) seeds.push({ disp: fracDisp(rawN, rawD), trap: 'unsimplified' });
+      const problem = makeProblem('÷', left, right, canonicalDisp(left), canonicalDisp(right), 'div-wf', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function genFracDivFrac() {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const d1 = rand(2, 12);
+      const n1 = coprimeNum(d1);
+      const d2 = rand(2, 12);
+      const n2 = coprimeNum(d2);
+      if (!n1 || !n2) continue;
+      const left = { n: n1, d: d1 };
+      const right = { n: n2, d: d2 };
+      if (left.n === right.n && left.d === right.d) continue;
+      const answer = divF(left, right);
+      if (!answer || answer.n <= 0 || answer.n / answer.d > 30) continue;
+      let leftDisp = canonicalDisp(left);
+      let rightDisp = canonicalDisp(right);
+      if (Math.random() < 0.28) {
+        const k = choice([2, 3]);
+        if (Math.random() < 0.7) leftDisp = fracDisp(n1 * k, d1 * k);
+        else rightDisp = fracDisp(n2 * k, d2 * k);
+      }
+      const leftVal = dispToValue(leftDisp);
+      const rightVal = dispToValue(rightDisp);
+      const seeds = [];
+      const flipped = mulF(simplify(leftVal.d, leftVal.n), rightVal);
+      if (flipped && flipped.n > 0) seeds.push({ disp: canonicalDisp(flipped), trap: 'flip-dividend' });
+      const product = mulF(leftVal, rightVal);
+      if (product && product.n > 0) seeds.push({ disp: canonicalDisp(product), trap: 'generic' });
+      const ln = leftDisp.whole * leftDisp.d + leftDisp.n;
+      const ld = leftDisp.d;
+      const rn = rightDisp.whole * rightDisp.d + rightDisp.n;
+      const rd = rightDisp.d;
+      const rawN = ln * rd;
+      const rawD = ld * rn;
+      if (rawN > 0 && rawD > 0 && rawN <= 900 && rawD <= 900) {
+        seeds.push({ disp: fracDisp(rawN, rawD), trap: 'unsimplified' });
+      }
+      const imp = asImproperDisp(answer);
+      if (imp) seeds.push({ disp: imp, trap: 'unsimplified' });
+      const problem = makeProblem('÷', left, right, leftDisp, rightDisp, 'div-ff', null, seeds);
+      if (problem) return problem;
+    }
+    return null;
+  }
+
+  function rollProblem(tier) {
+    if (tier === 'EASY') return genEasy();
+    if (tier === 'MEDIUM') {
+      const r = Math.random();
+      if (r < 0.30) return genMixed('+');
+      if (r < 0.52) return genMixed('−');
+      if (r < 0.76) return genProperMul();
+      return genMixedTimesWhole();
+    }
+    if (tier === 'HARD') return Math.random() < 0.42 ? genFracDivWhole() : genWholeDivFrac();
+    const r = Math.random();
+    if (r < 0.42) return genFracDivFrac();
+    if (r < 0.54) return genFracDivWhole();
+    if (r < 0.66) return genWholeDivFrac();
+    if (r < 0.80) return genProperMul();
+    if (r < 0.90) return genMixedTimesWhole();
+    return Math.random() < 0.5 ? genMixed('+') : genMixed('−');
+  }
+
+  function emergency(tier) {
+    let problem = null;
+    if (tier === 'EASY') {
+      problem = makeProblem('+', { n: 2, d: 9 }, { n: 1, d: 6 }, fracDisp(2, 9), fracDisp(1, 6), 'add', null, [
+        { disp: fracDisp(3, 15), trap: 'add-denoms' },
+        { disp: fracDisp(3, 18), trap: 'forgot-scale' },
+        { disp: fracDisp(14, 36), trap: 'unsimplified' }
+      ]);
+    } else if (tier === 'MEDIUM') {
+      problem = makeProblem('×', mixedToF(2, 1, 4), { n: 3, d: 1 }, { neg: false, whole: 2, n: 1, d: 4 }, canonicalDisp({ n: 3, d: 1 }), 'mul-mixed', { whole: 2, k: 3, fn: 1, fd: 4 }, [
+        { disp: { neg: false, whole: 2, n: 3, d: 4 }, trap: 'forget-whole' },
+        { disp: { neg: false, whole: 6, n: 1, d: 4 }, trap: 'only-whole' },
+        { disp: fracDisp(27, 4), trap: 'unsimplified' }
+      ]);
+    } else if (tier === 'HARD') {
+      problem = makeProblem('÷', { n: 2, d: 1 }, { n: 5, d: 8 }, canonicalDisp({ n: 2, d: 1 }), fracDisp(5, 8), 'div-wf', null, [
+        { disp: canonicalDisp(simplify(10, 8)), trap: 'forgot-flip' },
+        { disp: fracDisp(5, 16), trap: 'flip-dividend' },
+        { disp: fracDisp(16, 5), trap: 'unsimplified' }
+      ]);
+    } else {
+      problem = makeProblem('÷', { n: 1, d: 2 }, { n: 3, d: 4 }, fracDisp(1, 2), fracDisp(3, 4), 'div-ff', null, [
+        { disp: canonicalDisp(simplify(3, 2)), trap: 'flip-dividend' },
+        { disp: fracDisp(3, 8), trap: 'generic' },
+        { disp: fracDisp(4, 6), trap: 'unsimplified' }
+      ]);
+    }
+    if (problem) problem.emergency = true;
+    return problem;
+  }
+
+  function generateProblem(tier, history) {
+    for (let attempt = 0; attempt < 28; attempt++) {
+      const problem = rollProblem(tier);
+      if (!problem) continue;
+      if (history.indexOf(problem.key) !== -1) continue;
+      history.push(problem.key);
+      if (history.length > 8) history.shift();
+      return problem;
+    }
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const problem = rollProblem(tier);
+      if (!problem) continue;
+      history.push(problem.key);
+      if (history.length > 8) history.shift();
+      return problem;
+    }
+    const problem = emergency(tier);
+    history.push(problem.key);
+    if (history.length > 8) history.shift();
+    return problem;
+  }
+
+  function tokenText(s) {
+    const parts = String(s).split(' ');
+    const out = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      out.push({ t: 'text', s: parts[i] + (i < parts.length - 1 ? ' ' : '') });
+    }
+    return out;
+  }
+
+  function T(s) { return { t: 'text', s: s }; }
+  function F(d) { return { t: 'frac', d: d }; }
+
+  function flipShown(d) {
+    const impN = d.whole * d.d + d.n;
+    const impD = d.d;
+    if (impN <= 0) return fracDisp(0, 1);
+    return fracDisp(impD, impN);
+  }
+
+  function improperShown(f) {
+    return fracDisp(Math.abs(f.n), f.d);
+  }
+
+  function prefixFor(problem, trap) {
+    if (trap === 'add-denoms') return tokenText('Never add denominators directly! ');
+    if (trap === 'forgot-scale') return tokenText('Scale the numerators to the common denominator. ');
+    if (trap === 'forget-whole' || trap === 'only-whole') return [];
+    if (trap === 'flip-dividend' || trap === 'forgot-flip') {
+      const word = problem.leftDisp.n === 0 && problem.leftDisp.whole > 0 ? 'number' : 'fraction';
+      return tokenText('Keep the FIRST ' + word + ', change ÷ to ×, and flip the SECOND fraction. ');
+    }
+    if (trap === 'unsimplified') {
+      return tokenText('Always reduce your answer to simplest form and convert improper fractions into mixed numbers! ');
+    }
+    if ((problem.kind === 'sub') && problem.leftDisp.n > 0 && problem.rightDisp.n > 0 && problem.leftDisp.whole > 0) {
+      const leftPart = problem.leftDisp.n / problem.leftDisp.d;
+      const rightPart = problem.rightDisp.n / problem.rightDisp.d;
+      if (leftPart < rightPart) return tokenText('Regroup 1 whole when the fraction you subtract is bigger. ');
+    }
+    return [];
+  }
+
+  function methodTokens(problem) {
+    const kind = problem.kind;
+    if (kind === 'add' || kind === 'sub') return addSubMethod(problem);
+    if (kind === 'mul-mixed') return mixedMulMethod(problem);
+    if (kind === 'mul-proper') return properMulMethod(problem);
+    return kcfMethod(problem);
+  }
+
+  function addSubMethod(problem) {
+    const mixed = problem.leftDisp.whole > 0 || problem.rightDisp.whole > 0;
+    const tokens = [];
+    if (!mixed) {
+      const lcd = lcm(problem.left.d, problem.right.d);
+      const sa = problem.left.n * (lcd / problem.left.d);
+      const sb = problem.right.n * (lcd / problem.right.d);
+      tokens.push(...tokenText('Find a common denominator first: '));
+      tokens.push(F(problem.leftDisp), T(' ' + problem.op + ' '), F(problem.rightDisp), T(' = '));
+      tokens.push(F(fracDisp(sa, lcd)), T(' ' + problem.op + ' '), F(fracDisp(Math.abs(sb), lcd)), T(' = '));
+      const raw = simplify(problem.op === '−' ? sa - sb : sa + sb, lcd);
+      const rawDisp = fracDisp(Math.abs(raw.n), raw.d);
+      if (raw.n > 0 && dispKey(rawDisp) !== dispKey(problem.answerDisp) && raw.n !== raw.d) {
+        tokens.push(F(raw.n >= raw.d ? improperShown(raw) : rawDisp), T(' = '));
+      }
+      tokens.push(F(problem.answerDisp), T('!'));
+      return tokens;
+    }
+    tokens.push(...tokenText('Change mixed numbers to improper fractions, then use a common denominator: '));
+    const L = improperShown(problem.left);
+    const R = improperShown(problem.right);
+    const lcd = lcm(problem.left.d, problem.right.d);
+    const sa = problem.left.n * (lcd / problem.left.d);
+    const sb = problem.right.n * (lcd / problem.right.d);
+    tokens.push(F(problem.leftDisp), T(' ' + problem.op + ' '), F(problem.rightDisp), T(' = '));
+    tokens.push(F(L), T(' ' + problem.op + ' '), F(R), T(' = '));
+    tokens.push(F(fracDisp(sa, lcd)), T(' ' + problem.op + ' '), F(fracDisp(Math.abs(sb), lcd)), T(' = '));
+    tokens.push(F(problem.answerDisp), T('!'));
+    return tokens;
+  }
+
+  function properMulMethod(problem) {
+    const tokens = tokenText('Cross-cancel shared factors, then multiply: ');
+    tokens.push(F(problem.leftDisp), T(' × '), F(problem.rightDisp), T(' = '));
+    const raw = fracDisp(problem.left.n * problem.right.n, problem.left.d * problem.right.d);
+    if (dispKey(raw) !== dispKey(problem.answerDisp)) tokens.push(F(raw), T(' = '));
+    tokens.push(F(problem.answerDisp), T('!'));
+    return tokens;
+  }
+
+  function mixedMulMethod(problem) {
+    const meta = problem.meta;
+    if (!meta) return properMulMethod(problem);
+    const rawN = meta.fn * meta.k;
+    const raw = fracDisp(rawN, meta.fd);
+    const fracAnswer = canonicalDisp(mulF({ n: meta.fn, d: meta.fd }, { n: meta.k, d: 1 }));
+    const tokens = tokenText('Multiply BOTH the whole number (' + meta.whole + ' × ' + meta.k + ' = ' + (meta.whole * meta.k) + ') AND the fraction (');
+    tokens.push(F(fracDisp(meta.fn, meta.fd)), T(' × ' + meta.k + ' = '));
+    if (rawN >= meta.fd && dispKey(raw) !== dispKey(fracAnswer)) tokens.push(F(raw), T(' = '));
+    tokens.push(F(fracAnswer), T(') → '), F(problem.answerDisp), T('!'));
+    return tokens;
+  }
+
+  function kcfMethod(problem) {
+    const tokens = [];
+    const flip = flipShown(problem.rightDisp);
+    const ln = problem.leftDisp.whole * problem.leftDisp.d + problem.leftDisp.n;
+    const ld = problem.leftDisp.d;
+    const rn = problem.rightDisp.whole * problem.rightDisp.d + problem.rightDisp.n;
+    const rd = problem.rightDisp.d;
+    const raw = fracDisp(ln * rd, ld * rn);
+    tokens.push(F(problem.leftDisp), T(' × '), F(flip), T(' = '));
+    if (sane(raw) && dispKey(raw) !== dispKey(problem.answerDisp)) tokens.push(F(raw), T(' = '));
+    tokens.push(F(problem.answerDisp), T('!'));
+    return tokens;
+  }
+
+  function buildTip(problem, trap) {
+    return prefixFor(problem, trap).concat(methodTokens(problem));
+  }
+
+  function measureDisp(disp, size) {
+    const fracSize = disp.n === 0 ? size : Math.max(10, Math.round(size * 0.86));
+    if (disp.n === 0) {
+      ctx.font = '800 ' + size + 'px ' + FONT;
+      const s = String(disp.whole);
+      return { w: ctx.measureText(s).width, h: size, fracSize: size, wholeW: ctx.measureText(s).width, fracW: 0, gap: 0, whole: s };
+    }
+    const wholeStr = disp.whole > 0 ? String(disp.whole) : '';
+    ctx.font = '800 ' + Math.round(size * 1.02) + 'px ' + FONT;
+    const wholeW = wholeStr ? ctx.measureText(wholeStr).width : 0;
+    ctx.font = '800 ' + fracSize + 'px ' + FONT;
+    const nw = ctx.measureText(String(disp.n)).width;
+    const dw = ctx.measureText(String(disp.d)).width;
+    const fracW = Math.max(nw, dw) + fracSize * 0.55;
+    const gap = wholeStr ? size * 0.16 : 0;
+    return { w: wholeW + gap + fracW, h: fracSize * 2.3, fracSize: fracSize, wholeW: wholeW, fracW: fracW, gap: gap, whole: wholeStr };
+  }
+
+  function drawDisp(disp, x, y, size, color, align) {
+    const m = measureDisp(disp, size);
+    let left = align === 'center' ? x - m.w / 2 : x;
+    ctx.fillStyle = color;
+    ctx.textBaseline = 'middle';
+    if (disp.n === 0) {
+      ctx.font = '800 ' + size + 'px ' + FONT;
+      ctx.textAlign = align === 'center' ? 'center' : 'left';
+      ctx.fillText(String(disp.whole), align === 'center' ? x : left, y);
+      ctx.textAlign = 'left';
+      return m.w;
+    }
+    if (m.whole) {
+      ctx.font = '800 ' + Math.round(size * 1.02) + 'px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.fillText(m.whole, left, y + size * 0.06);
+      left += m.wholeW + m.gap;
+    }
+    const fs = m.fracSize;
+    ctx.font = '800 ' + fs + 'px ' + FONT;
+    ctx.textAlign = 'center';
+    const cx = left + m.fracW / 2;
+    ctx.fillText(String(disp.n), cx, y - fs * 0.64);
+    const barH = Math.max(2, Math.round(fs * 0.09));
+    ctx.fillRect(Math.round(cx - m.fracW / 2), Math.round(y - barH / 2), Math.round(m.fracW), barH);
+    ctx.fillText(String(disp.d), cx, y + fs * 0.74);
+    ctx.textAlign = 'left';
+    return m.w;
+  }
+
+  function drawDispFit(disp, x, y, size, color, maxW) {
+    let s = size;
+    while (s > 11 && measureDisp(disp, s).w > maxW) s -= 1;
+    drawDisp(disp, x, y, s, color, 'center');
+  }
+
+  function tokenWidth(tok, size) {
+    if (tok.t === 'frac') return measureDisp(tok.d, size).w;
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    return ctx.measureText(tok.s).width;
+  }
+
+  function layoutTokens(tokens, maxW, size) {
+    const lines = [];
+    let line = [];
+    let width = 0;
+    for (let i = 0; i < tokens.length; i++) {
+      const w = tokenWidth(tokens[i], size);
+      if (line.length && width + w > maxW) {
+        lines.push(line);
+        line = [];
+        width = 0;
+      }
+      line.push(tokens[i]);
+      width += w;
+    }
+    if (line.length) lines.push(line);
+    return lines;
+  }
+
+  function drawTokenLines(lines, x, y, size, color, maxW, lineH) {
+    ctx.fillStyle = color;
+    for (let i = 0; i < lines.length; i++) {
+      let lw = 0;
+      for (let k = 0; k < lines[i].length; k++) lw += tokenWidth(lines[i][k], size);
+      let cx = x + Math.max(0, (maxW - lw) / 2);
+      const cy = y + i * lineH;
+      for (let k = 0; k < lines[i].length; k++) {
+        const tok = lines[i][k];
+        if (tok.t === 'frac') {
+          const w = drawDisp(tok.d, cx, cy, size, color, 'left');
+          cx += w;
+        } else {
+          ctx.font = '700 ' + size + 'px ' + FONT;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = color;
+          ctx.fillText(tok.s, cx, cy);
+          cx += ctx.measureText(tok.s).width;
+        }
+      }
+    }
+  }
+
+  function fitTip(tokens, maxW, maxLines) {
+    const sizes = [18, 16, 14, 13, 12, 11];
+    for (let i = 0; i < sizes.length; i++) {
+      const size = sizes[i];
+      const lines = layoutTokens(tokens, maxW, size);
+      if (lines.length <= maxLines) return { lines: lines, size: size, lineH: Math.round(size * 2.15) };
+    }
+    const size = 11;
+    const lines = layoutTokens(tokens, maxW, size).slice(0, maxLines);
+    return { lines: lines, size: size, lineH: 24 };
+  }
+
+  function exprParts(problem, reveal) {
+    const parts = [
+      { t: 'frac', d: problem.leftDisp },
+      { t: 'text', s: '  ' + problem.op + '  ' },
+      { t: 'frac', d: problem.rightDisp },
+      { t: 'text', s: reveal ? '  =  ' : '  =  ?' }
+    ];
+    if (reveal) parts.push({ t: 'frac', d: problem.answerDisp });
+    return parts;
+  }
+
+  function drawExpr(problem, cx, cy, maxW, size, color, reveal) {
+    let s = size;
+    let parts = exprParts(problem, reveal);
+    let width = 0;
+    while (s > 12) {
+      width = 0;
+      for (let i = 0; i < parts.length; i++) width += tokenWidth(parts[i], s);
+      if (width <= maxW) break;
+      s -= 1;
+    }
+    let x = cx - width / 2;
+    for (let i = 0; i < parts.length; i++) {
+      const tok = parts[i];
+      if (tok.t === 'frac') {
+        x += drawDisp(tok.d, x, cy, s, color, 'left');
+      } else {
+        ctx.font = '800 ' + Math.round(s * 0.95) + 'px ' + FONT;
+        ctx.fillStyle = '#c2410c';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tok.s, x, cy + s * 0.04);
+        x += ctx.measureText(tok.s).width;
+      }
+    }
+  }
+
+  function speakDisp(d) {
+    if (d.n === 0) return String(d.whole);
+    const bit = d.n + ' over ' + d.d;
+    return d.whole > 0 ? (d.whole + ' and ' + bit) : bit;
+  }
+
+  function speakOp(op) {
+    if (op === '+') return 'plus';
+    if (op === '−') return 'minus';
+    if (op === '×') return 'times';
+    return 'divided by';
+  }
+
+  function speakProblem(problem) {
+    return speakDisp(problem.leftDisp) + ' ' + speakOp(problem.op) + ' ' + speakDisp(problem.rightDisp);
+  }
+
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function fillRound(x, y, w, h, r, fill) {
+    roundRect(x, y, w, h, r);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  function strokeRound(x, y, w, h, r, stroke, lw) {
+    roundRect(x, y, w, h, r);
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  function text(s, x, y, size, color, align, weight) {
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s, x, y);
+  }
+
+  function fitText(s, x, y, size, color, align, weight, maxW) {
+    let sz = size;
+    do {
+      ctx.font = (weight || 700) + ' ' + sz + 'px ' + FONT;
+      if (ctx.measureText(s).width <= maxW) break;
+      sz -= 1;
+    } while (sz > 10);
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s, x, y);
+  }
+
+  function hitSpot(x, y) {
+    for (let i = spots.length - 1; i >= 0; i--) {
+      const s = spots[i];
+      if (x >= s.x && y >= s.y && x <= s.x + s.w && y <= s.y + s.h) return s;
+    }
+    return null;
+  }
+
+  function inside(x, y, r) {
+    return x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+  }
+
+  function laneCount() {
+    return game.mode === 'DUEL' ? game.players : 1;
+  }
+
+  function deckHeight() {
+    return game.mode === 'DUEL' ? 286 : 304;
+  }
+
+  function laneRects() {
+    const n = laneCount();
+    const deckH = deckHeight();
+    const battleH = VH - HUD_H - deckH;
+    const gap = n > 1 ? 10 : 0;
+    const w = (VW - gap * (n - 1)) / n;
+    const rects = [];
+    for (let i = 0; i < n; i++) {
+      rects.push({
+        index: i,
+        x: i * (w + gap),
+        w: w,
+        battleY: HUD_H,
+        battleH: battleH,
+        deckY: HUD_H + battleH,
+        deckH: deckH
+      });
+    }
+    return rects;
+  }
+
+  function makeLane(index) {
+    return {
+      index: index,
+      hp: 100,
+      score: 0,
+      overdrive: 0,
+      fireTier: 1,
+      streak: 0,
+      jam: 0,
+      sustain: 0,
+      fireCd: 0,
+      angle: -0.08,
+      zombies: [],
+      shots: [],
+      beams: [],
+      pops: [],
+      particles: [],
+      rings: [],
+      problem: null,
+      questionT: 0,
+      lock: 0,
+      history: [],
+      queue: [],
+      spawnT: 0.4,
+      cursor: 0,
+      tipTokens: null,
+      reveal: false,
+      picked: -1,
+      pending: null,
+      eliminated: false,
+      muzzle: 0,
+      tierFlash: 0,
+      banner: '',
+      bannerT: 0,
+      hitFlash: 0,
+      rush: 0
+    };
+  }
+
+  function gaugeToTier(g) {
+    if (g >= 88) return 5;
+    if (g >= 66) return 4;
+    if (g >= 44) return 3;
+    if (g >= 22) return 2;
+    return 1;
+  }
+
+  function nextQuestion(lane) {
+    lane.problem = generateProblem(game.tier, lane.history);
+    lane.questionT = 0;
+    lane.lock = 0;
+    lane.reveal = false;
+    lane.picked = -1;
+    lane.pending = null;
+    lane.tipTokens = null;
+    lane.cursor = lane.cursor % 4;
+    announce('Wave ' + game.wave + '. ' + speakProblem(lane.problem) + '. Choose the simplest form.');
+  }
+
+  function buildQueue() {
+    const extreme = game.tier === 'EXTREME';
+    let count = Math.min(extreme ? 18 : 15, (extreme ? 6 : 5) + game.wave * 2);
+    if (game.mode === 'DUEL') count = Math.max(4, Math.round(count * (game.players === 3 ? 0.55 : 0.72)));
+    const queue = [];
+    const bossWave = extreme ? (game.wave % 3 === 0) : (game.wave % 4 === 0);
+    const ogres = bossWave ? (game.wave >= 7 ? 2 : 1) : (game.wave >= 8 ? 1 : 0);
+    const skeletons = Math.min(Math.max(0, count - ogres - 2), Math.floor((game.wave + 1) / 2));
+    for (let i = 0; i < ogres; i++) queue.push('ogre');
+    for (let i = 0; i < skeletons; i++) queue.push('skeleton');
+    while (queue.length < count) queue.push('zombie');
+    return shuffle(queue);
+  }
+
+  function beginWave() {
+    const queue = buildQueue();
+    game.waveIntro = 1.25;
+    game.lanes.forEach(lane => {
+      if (lane.eliminated) return;
+      lane.queue = queue.slice();
+      lane.spawnT = 0.35;
+      if (!lane.problem) nextQuestion(lane);
+    });
+  }
+
+  function marchSeconds() {
+    const base = game.tier === 'EASY' ? 24 : game.tier === 'MEDIUM' ? 21 : game.tier === 'HARD' ? 18 : 15;
+    return Math.max(8.2, base - Math.min(7.2, (game.wave - 1) * 0.8));
+  }
+
+  function spawnInterval() {
+    const base = game.tier === 'EXTREME' ? 1.28 : 1.8;
+    return Math.max(0.58, base - (game.wave - 1) * 0.09);
+  }
+
+  function spawnMonster(lane, rect) {
+    if (!lane.queue.length) return;
+    const type = lane.queue.shift();
+    const travel = Math.max(180, rect.w - 170);
+    const mul = type === 'ogre' ? 0.68 : type === 'skeleton' ? 0.86 : 1;
+    const speed = travel / marchSeconds() * mul;
+    const slots = [0.60, 0.75, 0.90];
+    const scaleBase = rect.w < 500 ? 0.68 : rect.w < 740 ? 0.84 : 1;
+    const scale = scaleBase * (type === 'ogre' ? 1.36 : type === 'skeleton' ? 1.02 : 0.96);
+    const hp = type === 'ogre' ? 230 : type === 'skeleton' ? 62 : 38;
+    lane.zombies.push({
+      type: type,
+      x: rect.x + rect.w + 24,
+      y: rect.battleY + rect.battleH * choice(slots),
+      hp: hp,
+      maxHp: hp,
+      speed: speed,
+      phase: Math.random() * Math.PI * 2,
+      flash: 0,
+      scale: scale,
+      shirt: choice(SHIRTS),
+      shield: type === 'skeleton'
+    });
+  }
+
+  function startGame() {
+    game.screen = 'play';
+    game.paused = false;
+    game.wave = 1;
+    game.clearedWaves = 0;
+    game.activeGunner = 0;
+    game.ending = 0;
+    game.endReason = '';
+    game.winner = -1;
+    game.between = 0;
+    game.shake = 0;
+    game.lanes = [];
+    const n = game.mode === 'DUEL' ? game.players : 1;
+    for (let i = 0; i < n; i++) game.lanes.push(makeLane(i));
+    beginWave();
+    announce(GRADES[game.tier].role + '. Wave 1. Defend the bastion.');
+  }
+
+  function saveBest() {
+    if (game.mode === 'DUEL') return;
+    const score = game.lanes[0] ? game.lanes[0].score : 0;
+    if (score > game.best) {
+      game.best = score;
+      try { localStorage.setItem('fb-bastion-best', String(score)); } catch (err) { /* ignore */ }
+    }
+  }
+
+  function finish(reason) {
+    if (game.screen !== 'play') return;
+    game.screen = 'over';
+    game.endReason = reason;
+    game.paused = false;
+    if (game.mode === 'DUEL') {
+      const alive = game.lanes.filter(lane => !lane.eliminated);
+      if (alive.length === 1) game.winner = alive[0].index;
+      else {
+        let best = -1;
+        let idx = -1;
+        let tie = false;
+        game.lanes.forEach(lane => {
+          if (lane.score > best) { best = lane.score; idx = lane.index; tie = false; }
+          else if (lane.score === best) tie = true;
+        });
+        game.winner = tie ? -1 : idx;
+      }
+      if (game.winner >= 0) announce(GUNNERS[game.winner].name + ' holds the bastion.');
+      else announce('The duel is a draw.');
+    } else {
+      saveBest();
+      announce('The wall has fallen. Team score ' + (game.lanes[0] ? game.lanes[0].score : 0) + '. Waves held ' + game.clearedWaves + '.');
+    }
+  }
+
+  function noteBreach(lane) {
+    if (lane.eliminated) return;
+    lane.hp = 0;
+    lane.eliminated = true;
+    lane.pending = null;
+    lane.sustain = 0;
+    sound.breach();
+    game.shake = reduceMotion ? 0 : 9;
+    const living = game.lanes.filter(item => !item.eliminated).length;
+    const over = game.mode !== 'DUEL' || living <= 1;
+    if (over && game.ending <= 0) game.ending = 1.05;
+  }
+
+  function canControl(player, lane) {
+    if (!lane || lane.eliminated) return false;
+    if (player < 0 || player >= game.players) return false;
+    if (game.mode === 'DUEL') return player === lane.index;
+    if (game.mode === 'SOLO') return player === 0;
+    if (game.coopStyle === 'SYNC') return true;
+    return player === game.activeGunner;
+  }
+
+  function laneForPlayer(player) {
+    if (game.mode === 'DUEL') return game.lanes[player] || null;
+    return game.lanes[0] || null;
+  }
+
+  function popText(lane, x, y, s, color) {
+    lane.pops.push({ x: x, y: y, s: s, color: color, life: 0.9, vy: -34 });
+  }
+
+  function burst(lane, x, y, color, n) {
+    const count = reduceMotion ? Math.max(1, Math.ceil(n / 3)) : n;
+    for (let i = 0; i < count; i++) {
+      if (lane.particles.length > 150) lane.particles.shift();
+      const a = Math.random() * Math.PI * 2;
+      const sp = 30 + Math.random() * 110;
+      lane.particles.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.35 + Math.random() * 0.35,
+        max: 0.7,
+        color: color,
+        r: 2 + Math.random() * 3.2
+      });
+    }
+  }
+
+  function addGauge(lane, amount) {
+    const before = lane.fireTier;
+    lane.overdrive = clamp(lane.overdrive + amount, 0, 100);
+    lane.fireTier = gaugeToTier(lane.overdrive);
+    if (lane.fireTier > before) {
+      lane.tierFlash = 0.85;
+      lane.banner = lane.fireTier >= 5 ? 'HYPER-NOVA OVERDRIVE' : ('TURRET LVL ' + lane.fireTier);
+      lane.bannerT = 1.7;
+      sound.tierUp();
+      burst(lane, laneTurretX(lane), laneTurretY(lane), '#ffe082', 18);
+    }
+  }
+
+  function dropGauge(lane) {
+    const next = Math.max(1, lane.fireTier - 1);
+    lane.fireTier = next;
+    lane.overdrive = TIER_FLOOR[next];
+  }
+
+  function laneRect(lane) {
+    const rects = laneRects();
+    return rects[Math.min(lane.index, rects.length - 1)];
+  }
+
+  function wallBox(rect) {
+    const w = Math.min(78, Math.max(46, rect.w * 0.13));
+    return { x: rect.x + 14, y: rect.battleY + 16, w: w, h: rect.battleH - 28 };
+  }
+
+  function laneTurretX(lane) {
+    const rect = laneRect(lane);
+    const wall = wallBox(rect);
+    return wall.x + wall.w + 36;
+  }
+
+  function laneTurretY(lane) {
+    const rect = laneRect(lane);
+    return rect.battleY + rect.battleH - 62;
+  }
+
+  function frontZombie(lane) {
+    let best = null;
+    for (let i = 0; i < lane.zombies.length; i++) {
+      const z = lane.zombies[i];
+      if (!best || z.x < best.x) best = z;
+    }
+    return best;
+  }
+
+  function zombieCenter(z) {
+    return { x: z.x - 4 * z.scale, y: z.y - 62 * z.scale };
+  }
+
+  function fireVolley(lane, power) {
+    const spec = FIRE[lane.fireTier];
+    const rect = laneRect(lane);
+    const x = laneTurretX(lane);
+    const y = laneTurretY(lane);
+    const target = frontZombie(lane);
+    let ang = lane.angle;
+    if (target) {
+      const c = zombieCenter(target);
+      ang = Math.atan2(c.y - y, c.x - x);
+    }
+    lane.angle = ang;
+    lane.muzzle = 0.12;
+    const dmg = Math.round(spec.dmg * power);
+    const speed = spec.kind === 'laser' ? 0 : (spec.kind === 'mortar' ? 430 : 640);
+    if (spec.kind === 'laser') {
+      const reach = rect.x + rect.w + 40;
+      lane.beams.push({ x: x, y: y, ang: ang, life: 0.16, max: 0.16, dmg: dmg, done: false });
+      sound.laser();
+    } else if (spec.kind === 'twin') {
+      spawnShot(lane, x, y, ang - 0.06, speed, dmg, 'twin', 7);
+      spawnShot(lane, x, y, ang + 0.06, speed, dmg, 'twin', 7);
+      sound.twin();
+    } else if (spec.kind === 'mortar') {
+      spawnShot(lane, x, y, ang - 0.14, speed, dmg, 'mortar', 9);
+      spawnShot(lane, x, y, ang, speed, dmg, 'mortar', 9);
+      spawnShot(lane, x, y, ang + 0.14, speed, dmg, 'mortar', 9);
+      sound.mortar();
+    } else if (spec.kind === 'nova') {
+      for (let i = -1; i <= 2; i++) spawnShot(lane, x, y, ang + i * 0.07, 700, dmg, 'nova', 6);
+      sound.nova();
+    } else {
+      spawnShot(lane, x, y, ang, speed, dmg, 'bolt', 6);
+      sound.shot();
+    }
+    lane.fireCd = spec.cd;
+  }
+
+  function spawnShot(lane, x, y, ang, speed, dmg, kind, r) {
+    lane.shots.push({
+      x: x + Math.cos(ang) * 36,
+      y: y + Math.sin(ang) * 36,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed,
+      dmg: dmg,
+      kind: kind,
+      r: r,
+      life: 1.4
+    });
+  }
+
+  function shockwave(lane) {
+    const x = laneTurretX(lane);
+    const y = laneTurretY(lane);
+    lane.rings.push({ x: x, y: y, r: 16, life: 0.48 });
+    for (let i = lane.zombies.length - 1; i >= 0; i--) hurtZombie(lane, lane.zombies[i], 28, true);
+    sound.nova();
+  }
+
+  function hurtZombie(lane, z, dmg, fromWave) {
+    if (z.hp <= 0) return;
+    let amount = dmg;
+    if (z.shield && z.type === 'skeleton') {
+      z.shield = false;
+      amount = Math.max(8, Math.round(dmg * 0.45));
+      burst(lane, z.x, z.y - 50 * z.scale, '#93c5fd', 8);
+    }
+    z.hp -= amount;
+    z.flash = 0.12;
+    popText(lane, z.x, z.y - 78 * z.scale, '-' + amount, '#fff7e8');
+    if (!fromWave) sound.hit();
+    if (z.hp <= 0) {
+      z.hp = 0;
+      lane.score += KILL_SCORE[z.type] || 100;
+      popText(lane, z.x, z.y - 96 * z.scale, '+' + (KILL_SCORE[z.type] || 100), '#fde68a');
+      burst(lane, z.x, z.y - 50 * z.scale, z.type === 'ogre' ? '#fb923c' : '#86efac', z.type === 'ogre' ? 22 : 12);
+    }
+  }
+
+  function explode(lane, x, y, dmg) {
+    burst(lane, x, y, '#fb923c', 16);
+    sound.hit();
+    for (let i = 0; i < lane.zombies.length; i++) {
+      const c = zombieCenter(lane.zombies[i]);
+      if (Math.hypot(c.x - x, c.y - y) < 82) hurtZombie(lane, lane.zombies[i], dmg, true);
+    }
+  }
+
+  function resolveCorrect(lane, player, optionIndex, syncCount) {
+    const problem = lane.problem;
+    const fast = lane.questionT < 4;
+    const mid = lane.questionT < 8;
+    let gain = fast ? 28 : mid ? 14 : 6;
+    if (fast && lane.streak >= 2) gain += 8;
+    if (syncCount > 1) gain += 12 * (syncCount - 1);
+    lane.streak += 1;
+    addGauge(lane, gain);
+    const points = 120 + (fast ? 80 : mid ? 36 : 0) + lane.fireTier * 12 + (syncCount > 1 ? 40 * (syncCount - 1) : 0);
+    lane.score += points;
+    lane.sustain = fast ? 3.1 : 2.25;
+    lane.jam = 0;
+    lane.reveal = true;
+    lane.picked = optionIndex;
+    lane.lock = 0.62;
+    lane.tipTokens = null;
+    lane.banner = syncCount > 1 ? 'SYNC BLAST' : (fast ? 'SPEED BONUS' : 'LOCKED');
+    lane.bannerT = 0.9;
+    popText(lane, laneTurretX(lane) + 40, laneTurretY(lane) - 46, '+' + points, '#bbf7d0');
+    fireVolley(lane, 1.85);
+    if (lane.fireTier >= 5) shockwave(lane);
+    const who = GUNNERS[player] ? GUNNERS[player].name : 'Gunner';
+    announce(who + ' locked ' + speakDisp(problem.answerDisp) + '.');
+  }
+
+  function resolveWrong(lane, player, optionIndex) {
+    const problem = lane.problem;
+    const opt = problem.options[optionIndex];
+    dropGauge(lane);
+    lane.streak = 0;
+    lane.jam = 1.2;
+    lane.sustain = 0;
+    lane.reveal = true;
+    lane.picked = optionIndex;
+    lane.lock = 2.55;
+    lane.tipTokens = buildTip(problem, opt.trap || 'generic');
+    lane.banner = 'TURRET JAMMED';
+    lane.bannerT = 1.2;
+    sound.jam();
+    game.shake = reduceMotion ? 0 : 4;
+    announce('Not quite. ' + speakProblem(problem) + ' equals ' + speakDisp(problem.answerDisp) + '.');
+  }
+
+  function choose(laneIndex, player, optionIndex) {
+    const lane = game.lanes[laneIndex];
+    if (game.screen !== 'play' || game.paused || game.ending > 0) return;
+    if (!lane || lane.eliminated || !lane.problem || lane.lock > 0) return;
+    if (!canControl(player, lane)) {
+      if (game.mode === 'COOP' && game.coopStyle === 'TURNS') {
+        lane.banner = GUNNERS[game.activeGunner].name + ' IS FIRING';
+        lane.bannerT = 0.7;
+      }
+      return;
+    }
+    const opt = lane.problem.options[optionIndex];
+    if (!opt) return;
+    lane.cursor = optionIndex;
+    if (lane.pending) {
+      if (!opt.correct || optionIndex !== lane.pending.index) {
+        lane.pending = null;
+        resolveWrong(lane, player, optionIndex);
+      } else if (lane.pending.players.indexOf(player) < 0) {
+        lane.pending.players.push(player);
+      }
+      return;
+    }
+    if (!opt.correct) {
+      resolveWrong(lane, player, optionIndex);
+      return;
+    }
+    if (game.mode === 'COOP' && game.coopStyle === 'SYNC' && game.players > 1) {
+      lane.pending = { index: optionIndex, players: [player], t: 0 };
+      return;
+    }
+    resolveCorrect(lane, player, optionIndex, 1);
+  }
+
+  function moveCursor(player, dir) {
+    if (game.screen !== 'play' || game.paused) return;
+    const lane = laneForPlayer(player);
+    if (!lane || !canControl(player, lane) || !lane.problem || lane.lock > 0) return;
+    lane.cursor = (lane.cursor + dir + 4) % 4;
+    sound.tick();
+  }
+
+  function confirmCursor(player) {
+    const lane = laneForPlayer(player);
+    if (!lane) return;
+    choose(lane.index, player, lane.cursor);
+  }
+
+  function updateQuestion(lane, dt) {
+    if (lane.eliminated || !lane.problem) return;
+    const clock = game.waveIntro <= 0 && game.between <= 0 && game.ending <= 0 && lane.lock <= 0 && !lane.pending;
+    if (clock) lane.questionT += dt;
+    if (lane.pending) {
+      lane.pending.t += dt;
+      if (lane.pending.t >= 0.32 || lane.pending.players.length >= game.players) {
+        const pending = lane.pending;
+        lane.pending = null;
+        resolveCorrect(lane, pending.players[0], pending.index, pending.players.length);
+      }
+    }
+    if (lane.lock > 0) {
+      lane.lock -= dt;
+      if (lane.lock <= 0 && !lane.eliminated && game.ending <= 0) {
+        if (game.mode === 'COOP' && game.coopStyle === 'TURNS') {
+          game.activeGunner = (game.activeGunner + 1) % game.players;
+        }
+        nextQuestion(lane);
+      }
+    }
+  }
+
+  function updateCombat(lane, dt, rect) {
+    if (lane.jam > 0) lane.jam -= dt;
+    if (lane.sustain > 0) lane.sustain -= dt;
+    if (lane.fireCd > 0) lane.fireCd -= dt;
+    if (lane.muzzle > 0) lane.muzzle -= dt;
+    if (lane.tierFlash > 0) lane.tierFlash -= dt;
+    if (lane.bannerT > 0) lane.bannerT -= dt;
+    if (lane.hitFlash > 0) lane.hitFlash -= dt;
+    const target = frontZombie(lane);
+    const tx = laneTurretX(lane);
+    const ty = laneTurretY(lane);
+    let aim = lane.angle;
+    if (target) {
+      const c = zombieCenter(target);
+      aim = Math.atan2(c.y - ty, c.x - tx);
+    } else {
+      aim = Math.sin(animT * 0.8 + lane.index) * 0.18;
+    }
+    lane.angle += (aim - lane.angle) * Math.min(1, dt * 7);
+    const canFire = lane.jam <= 0 && lane.sustain > 0 && lane.fireCd <= 0 && lane.zombies.length > 0 && !lane.eliminated && game.ending <= 0;
+    if (canFire && game.waveIntro <= 0) fireVolley(lane, 1);
+
+    const wallX = wallBox(rect).x + wallBox(rect).w + 6;
+    const rush = 1;
+    for (let i = lane.zombies.length - 1; i >= 0; i--) {
+      const z = lane.zombies[i];
+      if (game.waveIntro <= 0 && game.ending <= 0) z.x -= z.speed * rush * dt;
+      if (z.flash > 0) z.flash -= dt;
+      if (z.hp <= 0) {
+        lane.zombies.splice(i, 1);
+        continue;
+      }
+      if (z.x < wallX) {
+        const dmg = z.type === 'ogre' ? 22 : z.type === 'skeleton' ? 12 : 8;
+        lane.hp -= dmg;
+        lane.hitFlash = 0.28;
+        game.shake = Math.max(game.shake, reduceMotion ? 0 : (z.type === 'ogre' ? 7 : 4));
+        popText(lane, wallX, z.y - 40, '-' + dmg, '#fecaca');
+        burst(lane, wallX, z.y - 30, '#7dd3fc', 10);
+        sound.wall();
+        lane.zombies.splice(i, 1);
+        if (lane.hp <= 0) noteBreach(lane);
+      }
+    }
+
+    for (let i = lane.shots.length - 1; i >= 0; i--) {
+      const s = lane.shots[i];
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.life -= dt;
+      let gone = s.life <= 0 || s.x > rect.x + rect.w + 30;
+      if (!gone) {
+        for (let z = 0; z < lane.zombies.length; z++) {
+          const c = zombieCenter(lane.zombies[z]);
+          if (Math.hypot(c.x - s.x, c.y - s.y) < 26 + lane.zombies[z].scale * 8) {
+            if (s.kind === 'mortar') explode(lane, s.x, s.y, s.dmg);
+            else hurtZombie(lane, lane.zombies[z], s.dmg, false);
+            gone = true;
+            break;
+          }
+        }
+      }
+      if (gone) lane.shots.splice(i, 1);
+    }
+
+    for (let i = lane.beams.length - 1; i >= 0; i--) {
+      const b = lane.beams[i];
+      b.life -= dt;
+      if (!b.done) {
+        b.done = true;
+        for (let z = 0; z < lane.zombies.length; z++) {
+          const c = zombieCenter(lane.zombies[z]);
+          const dx = Math.cos(b.ang);
+          const dy = Math.sin(b.ang);
+          const vx = c.x - b.x;
+          const vy = c.y - b.y;
+          const proj = vx * dx + vy * dy;
+          if (proj < 10) continue;
+          const dist = Math.hypot(c.x - (b.x + dx * proj), c.y - (b.y + dy * proj));
+          if (dist < 64) hurtZombie(lane, lane.zombies[z], b.dmg, true);
+        }
+      }
+      if (b.life <= 0) lane.beams.splice(i, 1);
+    }
+
+    for (let i = lane.particles.length - 1; i >= 0; i--) {
+      const p = lane.particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 20 * dt;
+      if (p.life <= 0) lane.particles.splice(i, 1);
+    }
+    for (let i = lane.pops.length - 1; i >= 0; i--) {
+      const p = lane.pops[i];
+      p.life -= dt;
+      p.y += p.vy * dt;
+      if (p.life <= 0) lane.pops.splice(i, 1);
+    }
+    for (let i = lane.rings.length - 1; i >= 0; i--) {
+      const r = lane.rings[i];
+      r.life -= dt;
+      r.r += dt * 520;
+      if (r.life <= 0) lane.rings.splice(i, 1);
+    }
+
+    if (game.waveIntro <= 0 && game.between <= 0 && game.ending <= 0 && !lane.eliminated) {
+      if (lane.queue.length) {
+        lane.spawnT -= dt;
+        if (lane.spawnT <= 0) {
+          spawnMonster(lane, rect);
+          lane.spawnT = spawnInterval();
+        }
+      }
+    }
+  }
+
+  function grantWaveBonus() {
+    const bonus = 160 * game.wave;
+    game.clearedWaves += 1;
+    game.lanes.forEach(lane => {
+      if (lane.eliminated) return;
+      lane.score += bonus;
+      lane.hp = Math.min(100, lane.hp + 5);
+      lane.banner = 'WAVE CLEAR +' + bonus;
+      lane.bannerT = 1.8;
+    });
+    announce('Wave ' + game.wave + ' clear.');
+  }
+
+  function update(dt) {
+    game.time += dt;
+    if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 12);
+    const rects = laneRects();
+    if (game.ending > 0) {
+      game.ending -= dt;
+      game.lanes.forEach((lane, i) => updateCombat(lane, dt, rects[i] || rects[0]));
+      if (game.ending <= 0) finish(game.mode === 'DUEL' ? 'duel' : 'breach');
+      return;
+    }
+    game.lanes.forEach((lane, i) => {
+      updateQuestion(lane, dt);
+      updateCombat(lane, dt, rects[i] || rects[0]);
+    });
+    if (game.waveIntro > 0) {
+      game.waveIntro -= dt;
+      return;
+    }
+    if (game.between > 0) {
+      game.between -= dt;
+      if (game.between <= 0) {
+        game.wave += 1;
+        beginWave();
+      }
+      return;
+    }
+    const living = game.lanes.filter(lane => !lane.eliminated);
+    if (!living.length) return;
+    const allClear = living.every(lane => lane.queue.length === 0 && lane.zombies.length === 0);
+    if (allClear) {
+      game.between = 2.15;
+      sound.fanfare();
+      grantWaveBonus();
+    }
+  }
+
+  function drawBackdrop(x, y, w, h) {
+    const sky = ctx.createLinearGradient(0, y, 0, y + h * 0.58);
+    sky.addColorStop(0, '#7ed0ff');
+    sky.addColorStop(1, '#e5f8ff');
+    ctx.fillStyle = sky;
+    ctx.fillRect(x, y, w, h * 0.58);
+    const grass = ctx.createLinearGradient(0, y + h * 0.58, 0, y + h);
+    grass.addColorStop(0, '#57d56f');
+    grass.addColorStop(1, '#249349');
+    ctx.fillStyle = grass;
+    ctx.fillRect(x, y + h * 0.58, w, h * 0.42);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (let i = 0; i < 3; i++) {
+      const cx = x + ((i * 220 + animT * 18) % (w + 160)) - 40;
+      const cy = y + 28 + i * 18;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 34, 14, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx + 22, cy + 4, 24, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#ffe28a';
+    ctx.beginPath();
+    ctx.arc(x + w - 54, y + 36, 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1f7a3e';
+    ctx.beginPath();
+    ctx.moveTo(x, y + h * 0.62);
+    ctx.quadraticCurveTo(x + w * 0.3, y + h * 0.48, x + w * 0.62, y + h * 0.6);
+    ctx.quadraticCurveTo(x + w * 0.82, y + h * 0.68, x + w, y + h * 0.56);
+    ctx.lineTo(x + w, y + h * 0.7);
+    ctx.lineTo(x, y + h * 0.7);
+    ctx.fill();
+    const pathY = y + h * 0.66;
+    ctx.fillStyle = '#c9844a';
+    roundRect(x + 90, pathY, w - 80, h - (pathY - y) - 8, 18);
+    ctx.fill();
+    ctx.fillStyle = '#ddb07a';
+    for (let i = 0; i < 8; i++) {
+      ctx.fillRect(x + 120 + i * ((w - 140) / 8), pathY + (h - (pathY - y)) * 0.45, 18, 4);
+    }
+  }
+
+  function drawWall(rect, lane) {
+    const hp = clamp(lane.hp / 100, 0, 1);
+    const box = wallBox(rect);
+    const x = box.x;
+    const y = box.y;
+    const w = box.w;
+    const h = box.h;
+    ctx.save();
+    ctx.shadowColor = 'rgba(94, 234, 255, 0.85)';
+    ctx.shadowBlur = reduceMotion ? 0 : 16;
+    const g = ctx.createLinearGradient(x, y, x + w, y);
+    g.addColorStop(0, hp > 0.35 ? '#d7fbff' : '#fecaca');
+    g.addColorStop(0.45, hp > 0.35 ? '#67e8f9' : '#fb7185');
+    g.addColorStop(1, hp > 0.35 ? '#0891b2' : '#be123c');
+    fillRound(x, y, w, h, 16, g);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#155e75';
+    ctx.lineWidth = 3;
+    strokeRound(x, y, w, h, 16, '#155e75', 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 4; i++) {
+      fillRound(x + 10, y + 12 + i * (h / 4.3), w - 20, h / 5.2, 8, 'rgba(255,255,255,0.22)');
+    }
+    if (hp < 0.66) {
+      ctx.strokeStyle = 'rgba(88, 28, 48, 0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 18, y + h * 0.2);
+      ctx.lineTo(x + w * 0.55, y + h * 0.38);
+      ctx.lineTo(x + 24, y + h * 0.58);
+      ctx.stroke();
+    }
+    if (hp < 0.33) {
+      ctx.beginPath();
+      ctx.moveTo(x + w * 0.7, y + 20);
+      ctx.lineTo(x + w * 0.4, y + h * 0.45);
+      ctx.lineTo(x + w * 0.8, y + h * 0.7);
+      ctx.stroke();
+    }
+    if (lane.hitFlash > 0) {
+      ctx.fillStyle = 'rgba(255,255,255,' + (lane.hitFlash * 1.6) + ')';
+      ctx.fillRect(x, y, w, h);
+    }
+    ctx.restore();
+  }
+
+  function drawTurret(lane) {
+    const x = laneTurretX(lane);
+    const y = laneTurretY(lane);
+    const tier = lane.fireTier;
+    const s = laneRect(lane).w < 500 ? 0.78 : 1;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    fillRound(-28, 8, 56, 22, 8, '#334155');
+    ctx.fillStyle = '#1e293b';
+    ctx.beginPath();
+    ctx.arc(0, 6, 16, 0, Math.PI * 2);
+    ctx.fill();
+    const colors = ['#22d3ee', '#38bdf8', '#34d399', '#fb923c', '#f472b6'];
+    const glow = colors[tier - 1];
+    if (lane.tierFlash > 0 || tier === 5) {
+      ctx.strokeStyle = tier === 5 ? 'hsla(' + ((animT * 180) % 360) + ',90%,60%,0.9)' : glow;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 6, 22 + Math.sin(animT * 6) * 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.save();
+    ctx.translate(0, 4);
+    ctx.rotate(lane.angle);
+    if (lane.jam > 0) ctx.globalAlpha = 0.55;
+    ctx.fillStyle = '#475569';
+    if (tier === 1) {
+      fillRound(0, -7, 42, 14, 6, glow);
+    } else if (tier === 2) {
+      fillRound(0, -12, 40, 9, 4, glow);
+      fillRound(0, 3, 40, 9, 4, '#0284c7');
+    } else if (tier === 3) {
+      fillRound(0, -6, 58, 12, 6, '#34d399');
+      ctx.fillStyle = '#bbf7d0';
+      ctx.fillRect(20, -3, 34, 6);
+    } else if (tier === 4) {
+      fillRound(4, -16, 34, 10, 4, '#fb923c');
+      fillRound(0, -5, 40, 10, 4, '#f97316');
+      fillRound(4, 7, 34, 10, 4, '#ea580c');
+    } else {
+      for (let i = 0; i < 4; i++) {
+        ctx.fillStyle = 'hsl(' + ((animT * 120 + i * 40) % 360) + ', 85%, 58%)';
+        fillRound(0, -18 + i * 10, 46, 8, 4, ctx.fillStyle);
+      }
+    }
+    if (lane.muzzle > 0) {
+      ctx.fillStyle = '#fff7d6';
+      ctx.beginPath();
+      ctx.arc(48, 0, 8 + lane.muzzle * 30, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    const label = tier >= 5 ? 'LVL 5 OVERDRIVE' : ('LVL ' + tier);
+    fillRound(-46, 28, 92, 16, 8, '#0f172a');
+    text(label, 0, 36, 10, '#f8fafc', 'center', 800);
+    if (lane.jam > 0) text('JAMMED', 0, -28, 12, '#fecaca', 'center', 800);
+    ctx.restore();
+  }
+
+  function drawMonster(z) {
+    const s = z.scale;
+    const bob = reduceMotion ? 0 : Math.sin(animT * 8 + z.phase) * 2.2;
+    const step = reduceMotion ? 0 : Math.sin(animT * 10 + z.phase);
+    ctx.save();
+    ctx.translate(z.x, z.y + bob);
+    ctx.fillStyle = 'rgba(15, 60, 30, 0.22)';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 20 * s, 6 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = z.type === 'skeleton' ? '#e7e5e4' : '#14532d';
+    ctx.lineWidth = 4 * s;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-6 * s, -18 * s);
+    ctx.lineTo(-9 * s - step * 5 * s, -1 * s);
+    ctx.moveTo(5 * s, -18 * s);
+    ctx.lineTo(8 * s + step * 5 * s, -1 * s);
+    ctx.stroke();
+    const body = z.type === 'ogre' ? '#fb923c' : z.type === 'skeleton' ? '#f5f5f4' : z.shirt;
+    fillRound(-16 * s, -56 * s, 32 * s, 38 * s, 10 * s, body);
+    strokeRound(-16 * s, -56 * s, 32 * s, 38 * s, 10 * s, '#1e293b', 2);
+    ctx.fillStyle = z.type === 'ogre' ? '#fdba74' : z.type === 'skeleton' ? '#fafaf9' : '#b7eb8f';
+    ctx.beginPath();
+    ctx.arc(-2 * s, -70 * s, (z.type === 'ogre' ? 18 : 15) * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    if (z.type === 'ogre') {
+      ctx.fillStyle = '#7c2d12';
+      ctx.beginPath();
+      ctx.moveTo(-12 * s, -84 * s);
+      ctx.lineTo(-6 * s, -74 * s);
+      ctx.lineTo(-16 * s, -74 * s);
+      ctx.moveTo(8 * s, -84 * s);
+      ctx.lineTo(4 * s, -74 * s);
+      ctx.lineTo(14 * s, -74 * s);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fff';
+    if (z.type === 'skeleton') {
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-8 * s, -72 * s, 3.2 * s, 0, Math.PI * 2);
+      ctx.arc(2 * s, -72 * s, 3.2 * s, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(-8 * s, -72 * s, 4 * s, 0, Math.PI * 2);
+      ctx.arc(2 * s, -73 * s, 3.4 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-9 * s, -72 * s, 1.7 * s, 0, Math.PI * 2);
+      ctx.arc(1 * s, -73 * s, 1.7 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (z.type === 'ogre') {
+      ctx.moveTo(-8 * s, -64 * s);
+      ctx.lineTo(-2 * s, -60 * s);
+      ctx.lineTo(4 * s, -64 * s);
+    } else {
+      ctx.arc(-4 * s, -64 * s, 4 * s, 0.1, Math.PI - 0.1);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = z.type === 'skeleton' ? '#e7e5e4' : '#14532d';
+    ctx.lineWidth = 4 * s;
+    ctx.beginPath();
+    ctx.moveTo(-12 * s, -48 * s);
+    ctx.lineTo(-24 * s, -36 * s + step * 3 * s);
+    ctx.moveTo(10 * s, -46 * s);
+    ctx.lineTo(20 * s, -34 * s);
+    ctx.stroke();
+    if (z.shield) {
+      ctx.fillStyle = '#60a5fa';
+      ctx.beginPath();
+      ctx.arc(-22 * s, -46 * s, 10 * s, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#1e3a8a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-22 * s, -52 * s);
+      ctx.lineTo(-22 * s, -40 * s);
+      ctx.moveTo(-28 * s, -46 * s);
+      ctx.lineTo(-16 * s, -46 * s);
+      ctx.stroke();
+    }
+    if (z.flash > 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.beginPath();
+      ctx.arc(-2 * s, -70 * s, 16 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const barW = 28 * s;
+    const pct = clamp(z.hp / z.maxHp, 0, 1);
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(-barW / 2, -98 * s, barW, 5 * s);
+    ctx.fillStyle = pct > 0.4 ? '#4ade80' : '#f87171';
+    ctx.fillRect(-barW / 2, -98 * s, barW * pct, 5 * s);
+    if (z.type === 'ogre') text('BOSS', 0, -112 * s, 11 * s, '#7c2d12', 'center', 800);
+    ctx.restore();
+  }
+
+  function drawFx(lane) {
+    lane.shots.forEach(s => {
+      ctx.save();
+      ctx.fillStyle = s.kind === 'mortar' ? '#fb923c' : s.kind === 'nova' ? 'hsl(' + ((animT * 200 + s.x) % 360) + ',90%,62%)' : s.kind === 'twin' ? '#7dd3fc' : '#67e8f9';
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = reduceMotion ? 0 : 12;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    });
+    lane.beams.forEach(b => {
+      const len = 760;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(52, 211, 153, ' + (b.life / b.max) + ')';
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.shadowColor = '#34d399';
+      ctx.shadowBlur = reduceMotion ? 0 : 16;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x + Math.cos(b.ang) * len, b.y + Math.sin(b.ang) * len);
+      ctx.stroke();
+      ctx.restore();
+    });
+    lane.rings.forEach(r => {
+      ctx.strokeStyle = 'rgba(244, 114, 182, ' + Math.max(0, r.life * 2) + ')';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+    lane.particles.forEach(p => {
+      ctx.globalAlpha = Math.max(0, p.life / p.max);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+    lane.pops.forEach(p => {
+      ctx.globalAlpha = Math.max(0, p.life);
+      text(p.s, p.x, p.y, 16, p.color, 'center', 800);
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawGauge(x, y, w, gauge) {
+    const seg = (w - 16) / 5;
+    for (let i = 0; i < 5; i++) {
+      const need = TIER_FLOOR[i + 1];
+      const prev = i === 0 ? 0 : TIER_FLOOR[i];
+      const fill = gauge >= need ? 1 : gauge <= prev ? 0 : (gauge - prev) / (need - prev);
+      const sx = x + i * (seg + 4);
+      fillRound(sx, y, seg, 10, 4, '#0f172a');
+      if (fill > 0) {
+        const colors = ['#22d3ee', '#38bdf8', '#34d399', '#fb923c', '#f472b6'];
+        fillRound(sx, y, Math.max(4, seg * fill), 10, 4, colors[i]);
+      }
+    }
+  }
+
+  function cardKeysFor(lane) {
+    if (game.mode === 'DUEL') return [GUNNERS[lane.index]];
+    if (game.mode === 'SOLO' || game.players === 1) return [GUNNERS[0]];
+    if (game.coopStyle === 'TURNS') return [GUNNERS[game.activeGunner]];
+    const list = [];
+    for (let i = 0; i < game.players; i++) list.push(GUNNERS[i]);
+    return list;
+  }
+
+  function drawLane(lane, rect) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rect.x, rect.battleY, rect.w, rect.battleH);
+    ctx.clip();
+    const shakeX = game.shake ? (Math.random() - 0.5) * game.shake : 0;
+    const shakeY = game.shake ? (Math.random() - 0.5) * game.shake : 0;
+    ctx.translate(shakeX, shakeY);
+    drawBackdrop(rect.x, rect.battleY, rect.w, rect.battleH);
+    drawWall(rect, lane);
+    const ordered = lane.zombies.slice().sort((a, b) => a.y - b.y);
+    ordered.forEach(drawMonster);
+    drawTurret(lane);
+    drawFx(lane);
+    if (lane.bannerT > 0 && lane.banner) {
+      ctx.globalAlpha = Math.min(1, lane.bannerT);
+      fillRound(rect.x + rect.w / 2 - 130, rect.battleY + 16, 260, 28, 10, 'rgba(15, 23, 42, 0.82)');
+      text(lane.banner, rect.x + rect.w / 2, rect.battleY + 30, 14, '#fef3c7', 'center', 800);
+      ctx.globalAlpha = 1;
+    }
+    if (lane.eliminated) {
+      ctx.fillStyle = 'rgba(127, 29, 29, 0.45)';
+      ctx.fillRect(rect.x, rect.battleY, rect.w, rect.battleH);
+      text('BREACHED', rect.x + rect.w / 2, rect.battleY + rect.battleH / 2, 28, '#fff1f2', 'center', 800);
+    }
+    ctx.restore();
+
+    const dx = rect.x + 8;
+    const dw = rect.w - 16;
+    fillRound(dx, rect.deckY + 6, dw, rect.deckH - 12, 16, '#0c3344');
+    const gunners = cardKeysFor(lane);
+    const head = gunners.map(g => g.name).join('  ·  ');
+    let headText = 'LOAD THE SIMPLEST FORM';
+    if (game.mode === 'COOP' && game.coopStyle === 'TURNS') headText = GUNNERS[game.activeGunner].name + '  ·  YOUR SHOT';
+    else if (game.mode === 'COOP') headText = 'ALL GUNNERS  ·  ' + head;
+    else if (game.mode === 'DUEL') headText = GUNNERS[lane.index].name;
+    text(headText, dx + 14, rect.deckY + 24, 13, '#e0f2fe', 'left', 800);
+    const pct = clamp(1 - lane.questionT / 4, 0, 1);
+    const barX = dx + dw - 168;
+    fillRound(barX, rect.deckY + 16, 150, 12, 6, '#082f3a');
+    fillRound(barX, rect.deckY + 16, 150 * pct, 12, 6, lane.questionT < 4 ? '#4ade80' : lane.questionT < 8 ? '#fbbf24' : '#f87171');
+    text(lane.questionT < 4 ? 'SPEED' : 'STEADY', barX + 75, rect.deckY + 22, 9, '#f8fafc', 'center', 800);
+
+    const cardH = rect.w < 520 ? 104 : 118;
+    const cardY = rect.deckY + rect.deckH - cardH - 32;
+    const probY = rect.deckY + 40;
+    const probH = cardY - probY - 8;
+    fillRound(dx + 8, probY, dw - 16, probH, 12, lane.tipTokens ? '#fff7ed' : '#fffdf8');
+    if (lane.problem) {
+      if (lane.tipTokens && lane.lock > 0) {
+        text('BASTION ENGINEER', dx + dw / 2, probY + 12, 11, '#c2410c', 'center', 800);
+        const resultH = 36;
+        const fit = fitTip(lane.tipTokens, dw - 36, 3);
+        const room = Math.max(fit.lineH, probH - 24 - resultH);
+        const show = Math.max(1, Math.min(fit.lines.length, Math.floor(room / fit.lineH)));
+        drawTokenLines(fit.lines.slice(0, show), dx + 18, probY + 26, fit.size, '#7c2d12', dw - 36, fit.lineH);
+        fillRound(dx + 16, probY + probH - resultH + 2, dw - 32, resultH - 6, 8, '#ecfdf5');
+        drawExpr(lane.problem, dx + dw / 2, probY + probH - resultH / 2, dw - 52, rect.w < 520 ? 14 : 18, '#14532d', true);
+      } else {
+        text('FIRE THE TRUE VALUE', dx + dw / 2, probY + 16, 11, '#0f766e', 'center', 800);
+        drawExpr(lane.problem, dx + dw / 2, probY + probH * 0.58, dw - 36, rect.w < 520 ? 22 : 34, '#142033');
+      }
+    }
+
+    const pad = 10;
+    const gap = 8;
+    const cardsW = dw - pad * 2;
+    const cw = (cardsW - gap * 3) / 4;
+    const mouseOk = canControl(0, lane);
+    for (let i = 0; i < 4; i++) {
+      const bx = dx + pad + i * (cw + gap);
+      const opt = lane.problem ? lane.problem.options[i] : null;
+      const hot = mouseOk && inside(pointer.x, pointer.y, { x: bx, y: cardY, w: cw, h: cardH });
+      const owner = game.mode === 'DUEL' ? lane.index : (game.mode === 'COOP' ? game.activeGunner : 0);
+      const selected = lane.cursor === i && canControl(owner, lane);
+      let fill = '#fffdf8';
+      let border = selected || hot ? GUNNERS[owner].color : '#243044';
+      if (lane.reveal && opt && opt.correct) { fill = '#dcfce7'; border = '#15803d'; }
+      if (lane.reveal && opt && lane.picked === i && !opt.correct) { fill = '#ffe4e6'; border = '#be123c'; }
+      if (lane.pending && lane.pending.index === i) { fill = '#e0f2fe'; border = '#0369a1'; }
+      fillRound(bx, cardY + 3, cw, cardH, 12, 'rgba(0,0,0,0.18)');
+      fillRound(bx, cardY, cw, cardH, 12, fill);
+      strokeRound(bx, cardY, cw, cardH, 12, border, selected ? 4 : 2.5);
+      const labels = cardKeysFor(lane);
+      labels.forEach((g, gi) => {
+        const kx = bx + 8 + gi * 18;
+        fillRound(kx, cardY + 6, 16, 16, 5, g.color);
+        text(g.keys[i], kx + 8, cardY + 14, 10, '#fff', 'center', 800);
+      });
+      if (opt) drawDispFit(opt.disp, bx + cw / 2, cardY + cardH * 0.6, rect.w < 520 ? 18 : 28, '#142033', cw - 16);
+      if (mouseOk) spots.push({ id: 'card', x: bx, y: cardY, w: cw, h: cardH, lane: lane.index, n: i });
+    }
+    const gaugeW = Math.min(168, dw * 0.32);
+    drawGauge(dx + 14, rect.deckY + rect.deckH - 24, gaugeW, lane.overdrive);
+    text(lane.fireTier >= 5 ? 'OVERDRIVE' : ('LVL ' + lane.fireTier), dx + 22 + gaugeW, rect.deckY + rect.deckH - 19, 11, '#bae6fd', 'left', 800);
+    if (lane.streak >= 2) text('STREAK ' + lane.streak, dx + dw - 16, rect.deckY + rect.deckH - 19, 11, '#fde68a', 'right', 800);
+  }
+
+  function drawHud() {
+    fillRound(8, 6, VW - 16, 40, 12, '#102a3a');
+    const grade = GRADES[game.tier];
+    fillRound(16, 12, 108, 28, 8, game.mode === 'DUEL' ? '#9f1239' : game.mode === 'COOP' ? '#6d28d9' : '#0f766e');
+    text(game.mode === 'DUEL' ? 'DUEL' : game.mode === 'COOP' ? 'TEAM CO-OP' : 'SOLO', 70, 26, 12, '#fff', 'center', 800);
+    fillRound(132, 12, 86, 28, 8, grade.tint);
+    text(grade.badge, 175, 26, 13, '#fff', 'center', 800);
+    text('WAVE ' + game.wave, 232, 26, 15, '#e0f2fe', 'left', 800);
+    if (game.mode === 'DUEL') {
+      let x = 360;
+      game.lanes.forEach(lane => {
+        const g = GUNNERS[lane.index];
+        text(g.id + ' ' + fmt(lane.score), x, 26, 14, g.color, 'left', 800);
+        x += 150;
+      });
+    } else {
+      const label = game.mode === 'COOP' ? 'TEAM SCORE  ' : 'SCORE  ';
+      text(label + fmt(game.lanes[0] ? game.lanes[0].score : 0), 360, 26, 16, '#fef9c3', 'left', 800);
+    }
+    if (game.mode === 'DUEL') {
+      game.lanes.forEach((lane, i) => {
+        const y = 12 + i * 12;
+        const g = GUNNERS[lane.index];
+        text(g.id, 1004, y + 5, 9, g.color, 'left', 800);
+        fillRound(1030, y, 160, 8, 4, '#082f3a');
+        fillRound(1030, y, 160 * clamp(lane.hp / 100, 0, 1), 8, 4, lane.hp > 35 ? '#4ade80' : '#f87171');
+      });
+    } else {
+      text('WALL', 1010, 18, 9, '#bae6fd', 'left', 800);
+      const hp = game.lanes[0] ? game.lanes[0].hp : 100;
+      fillRound(1010, 26, 180, 12, 6, '#082f3a');
+      fillRound(1010, 26, 180 * clamp(hp / 100, 0, 1), 12, 6, hp > 35 ? '#4ade80' : '#f87171');
+    }
+    drawMute(1214, 12);
+  }
+
+  function drawMute(x, y) {
+    const hot = inside(pointer.x, pointer.y, { x: x, y: y, w: 54, h: 28 });
+    spots.push({ id: 'mute', x: x, y: y, w: 54, h: 28 });
+    fillRound(x, y, 54, 28, 8, hot ? '#ffffff' : 'rgba(255,255,255,0.16)');
+    strokeRound(x, y, 54, 28, 8, 'rgba(255,255,255,0.8)', 1.5);
+    ctx.save();
+    ctx.translate(x + 18, y + 14);
+    ctx.fillStyle = hot ? '#102a3a' : '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(-8, -4);
+    ctx.lineTo(-3, -4);
+    ctx.lineTo(2, -8);
+    ctx.lineTo(2, 8);
+    ctx.lineTo(-3, 4);
+    ctx.lineTo(-8, 4);
+    ctx.closePath();
+    ctx.fill();
+    if (sound.muted) {
+      ctx.strokeStyle = '#e11d48';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(6, -6);
+      ctx.lineTo(14, 6);
+      ctx.moveTo(14, -6);
+      ctx.lineTo(6, 6);
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = hot ? '#102a3a' : '#ffffff';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.arc(4, 0, 4, -0.8, 0.8);
+      ctx.arc(4, 0, 7, -0.7, 0.7);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawChoice(id, x, y, w, h, title, sub, on, enabled, extra) {
+    const hot = enabled && inside(pointer.x, pointer.y, { x: x, y: y, w: w, h: h });
+    if (enabled) spots.push(Object.assign({ id: id, x: x, y: y, w: w, h: h }, extra || {}));
+    ctx.save();
+    ctx.globalAlpha = enabled ? 1 : 0.38;
+    fillRound(x, y + 3, w, h, 12, 'rgba(0,0,0,0.15)');
+    fillRound(x, y + (hot ? 2 : 0), w, h, 12, on ? '#0f766e' : '#fffdf8');
+    strokeRound(x, y + (hot ? 2 : 0), w, h, 12, on ? '#115e59' : '#243044', on ? 3 : 2);
+    text(title, x + w / 2, y + (sub ? 18 : h / 2) + (hot ? 2 : 0), 14, on ? '#ffffff' : '#142033', 'center', 800);
+    if (sub) fitText(sub, x + w / 2, y + 40 + (hot ? 2 : 0), 11, on ? '#ccfbf1' : '#475569', 'center', 700, w - 12);
+    ctx.restore();
+  }
+
+  function drawTitle() {
+    drawBackdrop(0, 0, VW, VH);
+    ctx.fillStyle = 'rgba(8, 40, 58, 0.28)';
+    ctx.fillRect(0, 0, VW, VH);
+    text('SINGAPORE PRIMARY 4 – 6', VW / 2, 36, 13, '#ecfeff', 'center', 800);
+    text('FRACTION BASTION', VW / 2, 78, 54, '#fff7ed', 'center', 800);
+    text('Zombie Turret Defense', VW / 2, 118, 22, '#fde68a', 'center', 800);
+
+    fillRound(36, 146, 790, 548, 22, 'rgba(255, 253, 248, 0.94)');
+    text('GUNNERS', 58, 174, 13, '#0f766e', 'left', 800);
+    for (let i = 0; i < 3; i++) {
+      drawChoice('players', 58 + i * 246, 190, 232, 48, (i + 1) + ' PLAYER' + (i ? 'S' : ''), '', game.players === i + 1, true, { n: i + 1 });
+    }
+    text('GRADE', 58, 262, 13, '#0f766e', 'left', 800);
+    GRADE_ORDER.forEach((id, i) => {
+      const g = GRADES[id];
+      drawChoice('tier', 58 + (i % 4) * 190, 278, 180, 62, g.name, g.badge + ' · ' + g.role, game.tier === id, true, { tier: id });
+    });
+    fitText(GRADES[game.tier].blurb, 58, 360, 14, '#334155', 'left', 700, 740);
+    text('MODE', 58, 392, 13, '#0f766e', 'left', 800);
+    drawChoice('mode', 58, 408, 240, 52, 'SOLO', 'One gunner', game.mode === 'SOLO', game.players === 1, { mode: 'SOLO' });
+    drawChoice('mode', 310, 408, 240, 52, 'TEAM CO-OP', 'One shared score', game.mode === 'COOP', game.players > 1, { mode: 'COOP' });
+    drawChoice('mode', 562, 408, 240, 52, 'BASTION DUEL', 'Own lane, own score', game.mode === 'DUEL', game.players > 1, { mode: 'DUEL' });
+    if (game.mode === 'COOP') {
+      text('CO-OP FIRE', 58, 484, 13, '#0f766e', 'left', 800);
+      drawChoice('style', 58, 500, 360, 46, 'TAKE TURNS', '', game.coopStyle === 'TURNS', true, { style: 'TURNS' });
+      drawChoice('style', 430, 500, 372, 46, 'SYNC FIRE', '', game.coopStyle === 'SYNC', true, { style: 'SYNC' });
+    } else {
+      text(game.players === 1 ? 'Add gunners to unlock co-op and duel.' : 'Each gunner keeps a lane, a turret, and a score.', 58, 490, 15, '#334155', 'left', 700);
+    }
+    const startHot = inside(pointer.x, pointer.y, { x: 58, y: 566, w: 744, h: 64 });
+    spots.push({ id: 'start', x: 58, y: 566, w: 744, h: 64 });
+    fillRound(58, 570, 744, 64, 16, 'rgba(0,0,0,0.15)');
+    fillRound(58, startHot ? 568 : 566, 744, 64, 16, '#e11d48');
+    text('DEFEND THE BASTION', 430, (startHot ? 568 : 566) + 32, 24, '#fff', 'center', 800);
+
+    fillRound(846, 146, 400, 420, 22, 'rgba(255,253,248,0.94)');
+    text('HOW TO HOLD THE WALL', 1046, 176, 14, '#0f766e', 'center', 800);
+    const lines = [
+      'A horde marches from the right.',
+      'Pick the simplest fraction to fire.',
+      'Fast correct answers upgrade the turret',
+      'from a single bolt to Hyper-Nova.',
+      'A wrong shell jams the turret and',
+      'the engineer shows the exact fix.',
+      'Keep the crystal wall above zero.'
+    ];
+    lines.forEach((line, i) => text(line, 870, 210 + i * 26, 14, '#142033', 'left', 700));
+    text('CONTROLS', 1046, 430, 13, '#0f766e', 'center', 800);
+    text('P1  Mouse · 1 2 3 4 · Pad 0', 870, 458, 14, '#9f1239', 'left', 800);
+    text('P2  Q W E R · Pad 1', 870, 482, 14, '#1d4ed8', 'left', 800);
+    text('P3  U I O P · Pad 2', 870, 506, 14, '#047857', 'left', 800);
+    text('Arrows + Space also fire for P1.  M mutes.', 870, 534, 12, '#475569', 'left', 700);
+    text('BEST TEAM SCORE  ' + fmt(game.best), 1046, 600, 16, '#fff7ed', 'center', 800);
+    drawMute(1214, 12);
+    ctx.fillStyle = '#fff7ed';
+  }
+
+  function drawOver() {
+    drawBackdrop(0, 0, VW, VH);
+    ctx.fillStyle = 'rgba(8, 30, 44, 0.45)';
+    ctx.fillRect(0, 0, VW, VH);
+    fillRound(240, 70, 800, 580, 24, '#fffdf8');
+    const duel = game.mode === 'DUEL';
+    let title = 'THE WALL HAS FALLEN';
+    if (duel && game.winner >= 0) title = GUNNERS[game.winner].name + ' HOLDS THE BASTION';
+    if (duel && game.winner < 0) title = 'DUEL DRAW';
+    text(title, VW / 2, 130, 32, '#9f1239', 'center', 800);
+    text(GRADES[game.tier].role + '  ·  ' + (duel ? 'BASTION DUEL' : game.mode === 'COOP' ? 'TEAM CO-OP' : 'SOLO'), VW / 2, 174, 16, '#334155', 'center', 700);
+    text('WAVES HELD  ' + game.clearedWaves, VW / 2, 220, 22, '#0f766e', 'center', 800);
+    if (!duel) {
+      text('TEAM SCORE', VW / 2, 280, 14, '#64748b', 'center', 800);
+      text(fmt(game.lanes[0] ? game.lanes[0].score : 0), VW / 2, 330, 48, '#142033', 'center', 800);
+      text('BEST  ' + fmt(game.best), VW / 2, 380, 16, '#b45309', 'center', 800);
+    } else {
+      game.lanes.forEach((lane, i) => {
+        const g = GUNNERS[lane.index];
+        const y = 270 + i * 64;
+        fillRound(340, y, 600, 52, 12, lane.index === game.winner ? '#dcfce7' : '#f8fafc');
+        text(g.name, 370, y + 26, 18, g.color, 'left', 800);
+        text(fmt(lane.score), 900, y + 26, 22, '#142033', 'right', 800);
+      });
+    }
+    drawChoice('again', 340, 500, 280, 64, 'PLAY AGAIN', '', false, true, {});
+    drawChoice('title', 660, 500, 280, 64, 'TITLE', '', false, true, {});
+    text('Enter plays again.  Esc returns to the title.', VW / 2, 600, 14, '#64748b', 'center', 700);
+    drawMute(1214, 12);
+  }
+
+  function drawPause() {
+    ctx.fillStyle = 'rgba(8, 30, 44, 0.45)';
+    ctx.fillRect(0, 0, VW, VH);
+    fillRound(390, 220, 500, 260, 20, '#fffdf8');
+    text('PAUSED', VW / 2, 280, 36, '#0f766e', 'center', 800);
+    text('The horde waits. The fraction stays.', VW / 2, 324, 16, '#334155', 'center', 700);
+    drawChoice('resume', 430, 360, 420, 48, 'RESUME', '', false, true, {});
+    drawChoice('quit', 430, 420, 420, 48, 'RETURN TO TITLE', '', false, true, {});
+    drawMute(1214, 12);
+  }
+
+  function drawPlay() {
+    ctx.fillStyle = '#163246';
+    ctx.fillRect(0, 0, VW, VH);
+    const rects = laneRects();
+    game.lanes.forEach((lane, i) => drawLane(lane, rects[i]));
+    if (game.waveIntro > 0.05) {
+      const boss = game.lanes.some(lane => lane.queue.indexOf('ogre') >= 0);
+      fillRound(VW / 2 - 220, VH / 2 - 168, 440, game.tier === 'EXTREME' ? 86 : 64, 16, 'rgba(15,23,42,0.88)');
+      text(boss ? 'MEGA-OGRE WAVE  ' + game.wave : 'WAVE  ' + game.wave, VW / 2, VH / 2 - 148, 28, '#fef3c7', 'center', 800);
+      if (game.tier === 'EXTREME') text('HORDE BLITZ', VW / 2, VH / 2 - 112, 14, '#fb7185', 'center', 800);
+    }
+    drawHud();
+    if (game.paused) drawPause();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastNow) / 1000);
+    lastNow = now;
+    animT += dt;
+    if (game.screen === 'play' && !game.paused) update(dt);
+    pollPads();
+    pumpMusic();
+    spots.length = 0;
+    applyTransform();
+    ctx.clearRect(0, 0, VW, VH);
+    if (game.screen === 'title') drawTitle();
+    else if (game.screen === 'play') drawPlay();
+    else drawOver();
+    requestAnimationFrame(frame);
+  }
+
+  function setPlayers(n) {
+    game.players = n;
+    if (n === 1) game.mode = 'SOLO';
+    else if (game.mode === 'SOLO') game.mode = 'COOP';
+    sound.tick();
+  }
+
+  function cycleTier(dir) {
+    let i = GRADE_ORDER.indexOf(game.tier);
+    i = (i + dir + GRADE_ORDER.length) % GRADE_ORDER.length;
+    game.tier = GRADE_ORDER[i];
+    sound.tick();
+  }
+
+  function cycleMode(dir) {
+    if (game.players === 1) return;
+    const opts = ['COOP', 'DUEL'];
+    let i = opts.indexOf(game.mode);
+    if (i < 0) i = 0;
+    game.mode = opts[(i + dir + opts.length) % opts.length];
+    sound.tick();
+  }
+
+  function onSpot(s) {
+    if (!s) return;
+    if (s.id === 'mute') { sound.toggle(); return; }
+    if (game.screen === 'title') {
+      if (s.id === 'players') setPlayers(s.n);
+      else if (s.id === 'tier') { game.tier = s.tier; sound.tick(); }
+      else if (s.id === 'mode') { game.mode = s.mode; sound.tick(); }
+      else if (s.id === 'style') { game.coopStyle = s.style; sound.tick(); }
+      else if (s.id === 'start') startGame();
+      return;
+    }
+    if (s.id === 'card') choose(s.lane, 0, s.n);
+    else if (s.id === 'again') startGame();
+    else if (s.id === 'title' || s.id === 'quit') { game.screen = 'title'; game.paused = false; }
+    else if (s.id === 'resume') game.paused = false;
+  }
+
+  function unlockAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!sound.ctx) {
+      sound.ctx = new AC();
+      sound.master = sound.ctx.createGain();
+      sound.master.gain.value = sound.muted ? 0 : 0.9;
+      sound.master.connect(sound.ctx.destination);
+    }
+    if (sound.ctx.state === 'suspended') sound.ctx.resume();
+    if (!sound.ready) {
+      sound.ready = true;
+      sound.next = sound.ctx.currentTime + 0.05;
+    }
+  }
+
+  function tone(freq, type, dur, vol, delay, slide) {
+    if (!sound.ctx || !sound.master) return;
+    const t0 = sound.ctx.currentTime + (delay || 0);
+    const osc = sound.ctx.createOscillator();
+    const gain = sound.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(40, freq), t0);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t0 + dur);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(vol, t0 + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(sound.master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  function noise(dur, vol, freq) {
+    if (!sound.ctx || !sound.master) return;
+    const rate = sound.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * dur));
+    const buffer = sound.ctx.createBuffer(1, len, rate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = sound.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = sound.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = freq || 900;
+    const gain = sound.ctx.createGain();
+    gain.gain.setValueAtTime(vol, sound.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, sound.ctx.currentTime + dur);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(sound.master);
+    src.start();
+  }
+
+  sound.unlock = unlockAudio;
+  sound.toggle = function () {
+    unlockAudio();
+    sound.muted = !sound.muted;
+    if (sound.master && sound.ctx) sound.master.gain.setTargetAtTime(sound.muted ? 0 : 0.9, sound.ctx.currentTime, 0.03);
+    if (!sound.muted && sound.ctx) sound.next = sound.ctx.currentTime + 0.05;
+    try { localStorage.setItem('fb-bastion-mute', sound.muted ? '1' : '0'); } catch (err) { /* ignore */ }
+  };
+  sound.tick = function () { tone(740, 'square', 0.05, 0.04); };
+  sound.shot = function () { tone(660, 'square', 0.09, 0.05, 0, 240); noise(0.05, 0.04, 1400); };
+  sound.twin = function () { tone(720, 'square', 0.07, 0.045, 0, 360); tone(880, 'square', 0.07, 0.04, 0.05, 420); };
+  sound.laser = function () { tone(420, 'sawtooth', 0.16, 0.04, 0, 1400); };
+  sound.mortar = function () { tone(180, 'square', 0.14, 0.06, 0, 70); noise(0.1, 0.05, 400); };
+  sound.nova = function () { tone(523, 'square', 0.12, 0.04); tone(659, 'square', 0.12, 0.035, 0.04); tone(784, 'square', 0.14, 0.035, 0.08); };
+  sound.hit = function () { noise(0.06, 0.05, 1200); tone(320, 'square', 0.05, 0.03); };
+  sound.wall = function () { tone(110, 'sawtooth', 0.18, 0.06, 0, 60); noise(0.12, 0.05, 300); };
+  sound.jam = function () { tone(90, 'sawtooth', 0.28, 0.06, 0, 50); tone(70, 'square', 0.22, 0.04, 0.05); };
+  sound.tierUp = function () { tone(523, 'square', 0.12, 0.05); tone(659, 'square', 0.14, 0.05, 0.08); tone(784, 'square', 0.18, 0.05, 0.16); };
+  sound.fanfare = function () { [523, 659, 784, 1046].forEach((f, i) => tone(f, 'square', 0.16, 0.045, i * 0.09)); };
+  sound.breach = function () { tone(196, 'sawtooth', 0.3, 0.06, 0, 55); tone(98, 'square', 0.4, 0.05, 0.1); };
+
+  function pumpMusic() {
+    if (!sound.ready || !sound.ctx || sound.muted) return;
+    const now = sound.ctx.currentTime;
+    if (sound.next < now - 0.02) sound.next = now + 0.02;
+    const fast = game.screen === 'play' && game.lanes.some(lane => lane.fireTier >= 4);
+    const step = fast ? 0.135 : 0.17;
+    let guard = 0;
+    while (sound.next < now + 0.24 && guard < 6) {
+      const i = sound.step;
+      tone(LEAD[i % LEAD.length], 'square', 0.13, 0.03, sound.next - now);
+      if (i % 2 === 0) tone(BASS[(i / 2) % BASS.length], 'triangle', 0.24, 0.04, sound.next - now);
+      if (i % 2 === 0) {
+        const when = sound.next - now;
+        if (when < 0.3) noise(0.03, 0.015, 2200);
+      }
+      sound.next += step;
+      sound.step += 1;
+      guard += 1;
+    }
+  }
+
+  function onKey(code) {
+    unlockAudio();
+    if (code === 'KeyM') { sound.toggle(); return; }
+    if (game.screen === 'title') {
+      if (code === 'Digit1') setPlayers(1);
+      else if (code === 'Digit2') setPlayers(2);
+      else if (code === 'Digit3') setPlayers(3);
+      else if (code === 'ArrowLeft') cycleTier(-1);
+      else if (code === 'ArrowRight') cycleTier(1);
+      else if (code === 'ArrowUp') cycleMode(-1);
+      else if (code === 'ArrowDown') cycleMode(1);
+      else if (code === 'KeyT' && game.mode === 'COOP') {
+        game.coopStyle = game.coopStyle === 'TURNS' ? 'SYNC' : 'TURNS';
+        sound.tick();
+      } else if (code === 'Enter' || code === 'Space') startGame();
+      return;
+    }
+    if (game.screen === 'over') {
+      if (code === 'Enter' || code === 'Space') startGame();
+      else if (code === 'Escape') game.screen = 'title';
+      return;
+    }
+    if (code === 'Escape') {
+      if (game.paused) { game.paused = false; return; }
+      game.paused = true;
+      return;
+    }
+    if (game.paused) return;
+    if (code === 'ArrowLeft') moveCursor(0, -1);
+    else if (code === 'ArrowRight') moveCursor(0, 1);
+    else if (code === 'Space' || code === 'Enter') confirmCursor(0);
+    else if (keyMap[code]) choose(laneForPlayer(keyMap[code].player) ? laneForPlayer(keyMap[code].player).index : 0, keyMap[code].player, keyMap[code].slot);
+  }
+
+  function pollPads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < 3; i++) {
+      const pad = pads && pads[i];
+      const mem = padMem[i];
+      if (!pad) { mem.a = false; mem.start = false; continue; }
+      const pressed = (n) => !!(pad.buttons[n] && pad.buttons[n].pressed);
+      const ax = pad.axes && pad.axes.length ? pad.axes[0] : 0;
+      const ay = pad.axes && pad.axes.length > 1 ? pad.axes[1] : 0;
+      const left = pressed(14) || ax < -0.55;
+      const right = pressed(15) || ax > 0.55;
+      const up = pressed(12) || ay < -0.55;
+      const down = pressed(13) || ay > 0.55;
+      const a = pressed(0);
+      const start = pressed(9);
+      const lb = pressed(4);
+      const rb = pressed(5);
+      if (a || start || left || right || up || down) unlockAudio();
+      if (start && !mem.start) {
+        if (game.screen === 'title') startGame();
+        else if (game.screen === 'over') startGame();
+        else game.paused = !game.paused;
+      }
+      if (a && !mem.a) {
+        if (game.screen === 'title') startGame();
+        else if (game.screen === 'over') startGame();
+        else if (!game.paused) confirmCursor(i);
+      }
+      const dir = left ? -1 : right ? 1 : 0;
+      if (dir && !mem.held) {
+        if (game.screen === 'title') cycleTier(dir);
+        else if (!game.paused) moveCursor(i, dir);
+      }
+      mem.held = !!dir;
+      if (up && !mem.up) {
+        if (game.screen === 'title') cycleMode(-1);
+        else if (!game.paused) moveCursor(i, -1);
+      }
+      if (down && !mem.down) {
+        if (game.screen === 'title') cycleMode(1);
+        else if (!game.paused) moveCursor(i, 1);
+      }
+      if (game.screen === 'title') {
+        if (lb && !mem.lb) setPlayers(Math.max(1, game.players - 1));
+        if (rb && !mem.rb) setPlayers(Math.min(3, game.players + 1));
+      }
+      mem.a = a;
+      mem.start = start;
+      mem.up = up;
+      mem.down = down;
+      mem.lb = lb;
+      mem.rb = rb;
+    }
+  }
+
+  window.addEventListener('resize', resize);
+  window.addEventListener('keydown', (e) => {
+    const block = e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'ArrowLeft' || e.code === 'ArrowRight';
+    if (block) e.preventDefault();
+    if (e.repeat) return;
+    onKey(e.code);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+  });
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.focus();
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    unlockAudio();
+    onSpot(hitSpot(p.x, p.y));
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  resize();
+  canvas.focus();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
