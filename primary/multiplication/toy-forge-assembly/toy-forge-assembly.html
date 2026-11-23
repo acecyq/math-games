@@ -1,0 +1,2543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Toy-Forge Assembly: Distributive Multiplication Lab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #8fd4ff;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+(() => {
+  'use strict';
+
+  const VW = 1280;
+  const VH = 720;
+  const ORDERS = 8;
+  const HEARTS = 5;
+  const UI = {
+    hudY: 8, hudH: 48,
+    sheetX: 16, sheetW: 1248, sheetY: 64, sheetH: 84,
+    stageY: 156, stageH: 262,
+    tipY: 426, tipH: 66,
+    cardY: 500, cardH: 204, cardGap: 14
+  };
+  const TIME_LIMIT = { EASY: 56, MEDIUM: 44, HARD: 40, EXTREME: 26 };
+  const TIER_META = {
+    EASY: { name: 'EASY', role: 'Junior Toymaker', blurb: 'Clean tens + ones', tint: '#16a34a' },
+    MEDIUM: { name: 'MEDIUM', role: 'Line Supervisor', blurb: 'Split, then total', tint: '#0284c7' },
+    HARD: { name: 'HARD', role: 'Chief Engineer', blurb: 'Missing multipliers', tint: '#d97706' },
+    EXTREME: { name: 'EXTREME', role: 'Master Inventor', blurb: 'Compensation + timer', tint: '#db2777' }
+  };
+  const MODE_META = {
+    SOLO: { name: 'SOLO', blurb: 'One toymaker on the line', tint: '#0f766e' },
+    COOP: { name: 'TEAM CO-OP', blurb: 'One shared team score', tint: '#7c3aed' },
+    DUEL: { name: 'FACTORY DUEL', blurb: 'Fastest lock-in wins the star', tint: '#e11d48' }
+  };
+
+  const TOYS = [
+    { id: 'robot', title: 'TOY ROBOTS', plural: 'robots', one: 'robot', tens: 'Body Bolts', ones: 'Head Antennas', body: '#3b82f6', accent: '#fbbf24' },
+    { id: 'car', title: 'RACE CARS', plural: 'race cars', one: 'race car', tens: 'Chassis Screws', ones: 'Spoiler Pins', body: '#ef4444', accent: '#67e8f9' },
+    { id: 'rocket', title: 'SPACE ROCKETS', plural: 'space rockets', one: 'space rocket', tens: 'Hull Rivets', ones: 'Fin Pins', body: '#7c3aed', accent: '#fb7185' },
+    { id: 'owl', title: 'CLOCKWORK OWLS', plural: 'clockwork owls', one: 'clockwork owl', tens: 'Gear Cogs', ones: 'Wing Springs', body: '#d97706', accent: '#38bdf8' },
+    { id: 'dino', title: 'DINO BOTS', plural: 'dino bots', one: 'dino bot', tens: 'Spine Plates', ones: 'Tail Bolts', body: '#0f766e', accent: '#facc15' },
+    { id: 'bear', title: 'TEDDY BEARS', plural: 'teddy bears', one: 'teddy bear', tens: 'Stuffing Puffs', ones: 'Button Eyes', body: '#b45309', accent: '#fb7185' }
+  ];
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let animT = 0;
+  let lastNow = performance.now();
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(winW * dpr));
+    canvas.height = Math.max(1, Math.floor(winH * dpr));
+    scale = Math.min(winW / VW, winH / VH);
+    offsetX = (winW - VW * scale) / 2;
+    offsetY = (winH - VH * scale) / 2;
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+  function pointIn(px, py, r) {
+    return px >= r.x && py >= r.y && px <= r.x + r.w && py <= r.y + r.h;
+  }
+  function rand(a, b) {
+    return a + Math.floor(Math.random() * (b - a + 1));
+  }
+  function choice(arr) {
+    return arr[rand(0, arr.length - 1)];
+  }
+  function shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    return arr;
+  }
+  function fmt(n) {
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function formatTime(sec) {
+    const s = Math.max(0, Math.ceil(sec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+  function signOf(op) {
+    return op === '-' ? '−' : '+';
+  }
+  function clamp(v, a, b) {
+    return Math.max(a, Math.min(b, v));
+  }
+
+  function roundRect(x, y, w, h, r, fill, stroke, lw) {
+    const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lw || 2;
+      ctx.stroke();
+    }
+  }
+
+  function text(str, x, y, font, color, align) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(str, x, y);
+  }
+
+  function wrapLines(str, maxWidth, maxLines) {
+    const words = String(str).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = words[i];
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    if (lines.length <= maxLines) return lines;
+    const kept = lines.slice(0, maxLines);
+    let last = kept[maxLines - 1];
+    while (last.length > 1 && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+    kept[maxLines - 1] = last + '…';
+    return kept;
+  }
+
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.unlocked = false;
+      this.stepIdx = 0;
+      this.timer = null;
+      this.humGain = null;
+    }
+
+    unlock() {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!this.ctx) this.ctx = new AudioCtx();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (!this.unlocked) {
+        this.unlocked = true;
+        this.startHum();
+        this.startBGM();
+      }
+    }
+
+    toggleMute() {
+      this.unlock();
+      this.muted = !this.muted;
+      this.applyHum();
+      if (!this.muted && this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    }
+
+    applyHum() {
+      if (!this.humGain || !this.ctx) return;
+      const target = this.muted ? 0 : (game.screen === 'PLAYING' ? 0.02 : 0.008);
+      this.humGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.05);
+    }
+
+    playTone(freq, type, duration, vol, delay, slideTo) {
+      if (this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime + (delay || 0);
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(Math.max(40, freq), now);
+      if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), now + duration);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.03);
+    }
+
+    playNoise(duration, vol) {
+      if (this.muted || !this.ctx) return;
+      const length = Math.floor(this.ctx.sampleRate * duration);
+      const buffer = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 900;
+      const gain = this.ctx.createGain();
+      const now = this.ctx.currentTime;
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.ctx.destination);
+      src.start(now);
+      src.stop(now + duration + 0.02);
+    }
+
+    playClick() {
+      this.playTone(880, 'square', 0.04, 0.03);
+    }
+
+    playTick() {
+      this.playTone(660, 'sine', 0.035, 0.02);
+    }
+
+    playDrop() {
+      this.playNoise(0.06, 0.04);
+      this.playTone(740, 'triangle', 0.12, 0.07, 0);
+      this.playTone(988, 'sine', 0.16, 0.06, 0.07);
+      this.playTone(1318, 'sine', 0.14, 0.04, 0.14);
+    }
+
+    playBell() {
+      this.playTone(1568, 'sine', 0.42, 0.09, 0);
+      this.playTone(2093, 'sine', 0.32, 0.04, 0.02);
+    }
+
+    playBuzz() {
+      this.playTone(150, 'sawtooth', 0.22, 0.07, 0, 78);
+      this.playTone(98, 'square', 0.2, 0.04, 0.06);
+    }
+
+    playFanfare() {
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      for (let i = 0; i < notes.length; i++) this.playTone(notes[i], 'triangle', 0.22, 0.07, i * 0.08);
+    }
+
+    playStart() {
+      const notes = [392, 523.25, 659.25, 783.99];
+      for (let i = 0; i < notes.length; i++) this.playTone(notes[i], 'square', 0.12, 0.04, i * 0.06);
+    }
+
+    startHum() {
+      if (!this.ctx || this.humGain) return;
+      const seconds = 1.2;
+      const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * seconds), this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 240;
+      this.humGain = this.ctx.createGain();
+      this.humGain.gain.value = 0;
+      src.connect(filter);
+      filter.connect(this.humGain);
+      this.humGain.connect(this.ctx.destination);
+      src.start();
+      this.applyHum();
+    }
+
+    startBGM() {
+      if (this.timer) return;
+      const bass = [130.81, 196.0, 174.61, 220.0];
+      const lead = [523.25, 659.25, 783.99, 659.25, 698.46, 783.99, 659.25, 523.25];
+      this.timer = setInterval(() => {
+        if (this.muted || !this.ctx) return;
+        const i = this.stepIdx % 8;
+        this.playTone(bass[i % bass.length], 'triangle', 0.16, 0.03);
+        this.playTone(lead[i], 'square', 0.11, 0.018);
+        if (i % 2 === 0) this.playNoise(0.03, 0.012);
+        this.stepIdx++;
+      }, 188);
+    }
+  }
+
+  const sfx = new SoundEngine();
+
+  const game = {
+    screen: 'TITLE',
+    playerCount: 1,
+    tier: 'EASY',
+    mode: 'SOLO',
+    titleRow: 0,
+    orderIndex: 0,
+    step: 1,
+    phase: 'INPUT',
+    phaseT: 0,
+    timeLeft: TIME_LIMIT.EASY,
+    timeMax: TIME_LIMIT.EASY,
+    hearts: HEARTS,
+    score: 0,
+    combo: 0,
+    bestCombo: 0,
+    attempts: 0,
+    solves: 0,
+    shipped: 0,
+    clean: 0,
+    dirty: false,
+    round: null,
+    lastRound: null,
+    history: [],
+    tip: null,
+    missLock: 0,
+    hover: -1,
+    lockedIndex: -1,
+    cardFlash: null,
+    shake: 0,
+    flash: 0,
+    flashColor: 'rgba(255,255,255,0)',
+    arm: 0,
+    belt: 0,
+    hopper: { blue: 0, pink: 0 },
+    hopperTarget: { blue: 0, pink: 0 },
+    shown: { blue: null, pink: null },
+    particles: [],
+    floaters: [],
+    players: [
+      { id: 0, name: 'P1', full: 'CRIMSON', color: '#e11d48', keys: ['1', '2', '3', '4'], cursor: -1, stun: 0, stars: 0, score: 0, pad: { a: false, l: false, r: false, u: false, d: false } },
+      { id: 1, name: 'P2', full: 'AZURE', color: '#2563eb', keys: ['Q', 'W', 'E', 'R'], cursor: -1, stun: 0, stars: 0, score: 0, pad: { a: false, l: false, r: false, u: false, d: false } },
+      { id: 2, name: 'P3', full: 'EMERALD', color: '#059669', keys: ['U', 'I', 'O', 'P'], cursor: -1, stun: 0, stars: 0, score: 0, pad: { a: false, l: false, r: false, u: false, d: false } }
+    ],
+    mouse: { x: 640, y: 360 },
+    result: null
+  };
+
+  function muteRect() {
+    return { x: 1190, y: 12, w: 74, h: 32 };
+  }
+
+  function cardsGeom() {
+    const n = 4;
+    const gap = UI.cardGap;
+    const w = (UI.sheetW - gap * (n - 1)) / n;
+    const rects = [];
+    for (let i = 0; i < n; i++) {
+      rects.push({ x: UI.sheetX + i * (w + gap), y: UI.cardY, w: w, h: UI.cardH });
+    }
+    return rects;
+  }
+
+  function rowSlots(n, w, h, y, gap) {
+    const total = n * w + (n - 1) * gap;
+    const x0 = (VW - total) / 2;
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ x: x0 + i * (w + gap), y: y, w: w, h: h });
+    return out;
+  }
+
+  function titleLayout() {
+    const counts = rowSlots(3, 180, 58, 236, 22);
+    const tiers = rowSlots(4, 230, 66, 348, 16);
+    const modes = rowSlots(3, 320, 64, 470, 18);
+    return {
+      counts: counts,
+      tiers: tiers,
+      modes: modes,
+      start: { x: (VW - 420) / 2, y: 562, w: 420, h: 58 }
+    };
+  }
+
+  function resultLayout() {
+    return {
+      again: { x: 390, y: 560, w: 230, h: 54 },
+      title: { x: 660, y: 560, w: 230, h: 54 }
+    };
+  }
+
+  function activePlayer() {
+    const n = game.playerCount;
+    const start = game.orderIndex % n;
+    const offset = game.step === 1 ? 0 : 1;
+    return (start + offset) % n;
+  }
+
+  function currentStep() {
+    if (!game.round || !game.round.steps) return null;
+    return game.round.steps[game.step - 1] || null;
+  }
+
+  function canControl(pi) {
+    if (game.screen !== 'PLAYING' || game.phase !== 'INPUT') return false;
+    if (pi < 0 || pi >= game.playerCount) return false;
+    if (game.players[pi].stun > performance.now()) return false;
+    if (game.mode !== 'DUEL' && game.missLock > performance.now()) return false;
+    if (game.mode === 'COOP' && pi !== activePlayer()) return false;
+    return true;
+  }
+
+  function comboMult() {
+    if (game.tier !== 'EXTREME') return 1;
+    return Math.min(4, 1 + game.combo);
+  }
+
+  function spawnFloater(str, x, y, color, size) {
+    game.floaters.push({
+      text: str,
+      x: x,
+      y: y,
+      vy: -32,
+      life: 1.15,
+      decay: 0.55,
+      color: color,
+      size: size || 22
+    });
+    if (game.floaters.length > 16) game.floaters.shift();
+  }
+
+  function burst(x, y, color, n, upward) {
+    for (let i = 0; i < n; i++) {
+      game.particles.push({
+        x: x + (Math.random() - 0.5) * 24,
+        y: y,
+        vx: (Math.random() - 0.5) * (upward ? 180 : 70),
+        vy: upward ? (-160 - Math.random() * 180) : (60 + Math.random() * 140),
+        g: upward ? 420 : 80,
+        life: 0.7 + Math.random() * 0.3,
+        decay: 0.85,
+        color: color,
+        size: 3 + Math.random() * 3
+      });
+    }
+    if (game.particles.length > 120) game.particles.splice(0, game.particles.length - 120);
+  }
+
+  function hopperAnchor(side) {
+    if (side === 'pink') return { x: UI.sheetX + 430, y: UI.stageY + 78 };
+    return { x: UI.sheetX + 168, y: UI.stageY + 78 };
+  }
+
+  function identityLine(r) {
+    const s = signOf(r.op);
+    const comb = r.op === '-' ? (r.part1 + ' − ' + r.part2) : (r.part1 + ' + ' + r.part2);
+    return r.A + ' × ' + r.B + ' = (' + r.A + ' × ' + r.b1 + ') ' + s + ' (' + r.A + ' × ' + r.b2 + ') = ' + comb + ' = ' + r.total;
+  }
+
+  function tipTens(r) {
+    const d = Math.floor(r.b1 / 10);
+    return 'The ' + d + ' in ' + r.B + ' is in the TENS place, so it stands for ' + r.b1 + ' ' + r.toy.tens + ', not ' + d + '! Break ' + r.B + ' into ' + r.b1 + ' + ' + r.b2 + '!';
+  }
+  function tipForgot(r) {
+    return 'Every single one of the ' + r.A + ' ' + r.toy.plural + ' needs ' + r.b2 + ' ' + r.toy.ones + '! Multiply BOTH parts by ' + r.A + ': (' + r.A + ' × ' + r.b1 + ') ' + signOf(r.op) + ' (' + r.A + ' × ' + r.b2 + ')!';
+  }
+  function tipAdd(r, factor, name, product) {
+    return 'Each of the ' + r.A + ' toys requires ' + factor + ' ' + name + ' — multiply ' + r.A + ' × ' + factor + ' = ' + product + ", don't add " + r.A + ' + ' + factor + '!';
+  }
+  function tipSign(r) {
+    return 'Since ' + r.B + ' is ' + r.b2 + ' LESS than ' + r.b1 + ' (' + r.b1 + ' − ' + r.b2 + '), subtract the extra group of ' + r.A + ': (' + r.A + ' × ' + r.b1 + ') − (' + r.A + ' × ' + r.b2 + ')!';
+  }
+  function methodTip(r) {
+    if (r.op === '-') {
+      return r.B + ' is ' + r.b2 + ' less than ' + r.b1 + '. Multiply ' + r.A + ' by ' + r.b1 + ', then subtract ' + r.A + ' × ' + r.b2 + '.';
+    }
+    return 'Break ' + r.B + ' into ' + r.b1 + ' + ' + r.b2 + '. Multiply ' + r.A + ' by each part, then add the two hoppers.';
+  }
+
+  function exprText(A, b1, b2, op, bareSecond) {
+    const s = signOf(op);
+    if (bareSecond) return '(' + A + ' × ' + b1 + ') ' + s + ' ' + b2;
+    return '(' + A + ' × ' + b1 + ') ' + s + ' (' + A + ' × ' + b2 + ')';
+  }
+  function addText(A, b1, b2, op) {
+    const s = signOf(op);
+    return '(' + A + ' + ' + b1 + ') ' + s + ' (' + A + ' + ' + b2 + ')';
+  }
+
+  function card(textValue, sub, correct, tip) {
+    return { text: String(textValue), sub: sub, correct: !!correct, tip: correct ? '' : tip };
+  }
+
+  function finalize(correct, wrongs, fallback) {
+    const cards = [correct];
+    const seen = {};
+    seen[correct.text] = true;
+    for (let i = 0; i < wrongs.length; i++) {
+      const w = wrongs[i];
+      if (!w || !w.text || seen[w.text] || w.correct) continue;
+      if (!w.tip) w.tip = fallback;
+      cards.push(w);
+      seen[w.text] = true;
+      if (cards.length === 4) break;
+    }
+    let k = 1;
+    const numeric = /^-?\d+$/.test(correct.text);
+    const baseN = numeric ? parseInt(correct.text, 10) : 0;
+    while (cards.length < 4 && k < 40) {
+      let textValue;
+      if (numeric) {
+        const mag = 10 * Math.ceil(k / 2);
+        const n = baseN + (k % 2 === 0 ? mag : -mag);
+        k++;
+        if (n <= 0 || seen[String(n)]) continue;
+        textValue = String(n);
+      } else {
+        textValue = '0 × ' + k;
+        k++;
+        if (seen[textValue]) continue;
+      }
+      cards.push(card(textValue, 'try the split again', false, fallback));
+      seen[textValue] = true;
+    }
+    if (cards.length !== 4) return null;
+    return shuffle(cards);
+  }
+
+  function pushNum(list, seen, n, sub, tip) {
+    if (!Number.isFinite(n) || n <= 0 || seen[n]) return;
+    seen[n] = true;
+    list.push(card(n, sub, false, tip));
+  }
+
+  function numberWrongs(correct, entries, r) {
+    const list = [];
+    const seen = {};
+    seen[correct] = true;
+    for (let i = 0; i < entries.length; i++) {
+      pushNum(list, seen, entries[i].n, entries[i].sub, entries[i].tip);
+    }
+    const extras = [10, -10, r.A, -r.A, r.b2, r.b1, 1, -1, 2, 5, r.B, 100];
+    for (let i = 0; i < extras.length && list.length < 6; i++) {
+      pushNum(list, seen, correct + extras[i], 'check the hoppers', methodTip(r));
+    }
+    return list;
+  }
+
+  function segs(parts) {
+    const out = [];
+    for (let i = 0; i < parts.length; i++) out.push({ t: parts[i][0], hot: !!parts[i][1] });
+    return out;
+  }
+
+  function stepShell(kicker, prompt, header, detail, segments, focus, fill, reveal) {
+    return {
+      kicker: kicker,
+      prompt: prompt,
+      header: header,
+      detail: detail,
+      segments: segments,
+      focus: focus,
+      fill: fill,
+      reveal: reveal || {},
+      cards: null,
+      answer: ''
+    };
+  }
+
+  function normalHeader(r) {
+    return { header: r.A + ' ' + r.toy.title, detail: r.B + ' PARTS EACH' };
+  }
+
+  function attach(step, answer, correctCard, wrongs, r) {
+    step.answer = String(answer);
+    correctCard.text = String(answer);
+    correctCard.correct = true;
+    step.cards = finalize(correctCard, wrongs, methodTip(r));
+    return step.cards;
+  }
+
+  function kindFor(tier, orderIndex) {
+    if (tier === 'EASY') return orderIndex % 2 === 0 ? 'split-part' : 'two-parts';
+    if (tier === 'MEDIUM') return orderIndex % 2 === 0 ? 'expr-total' : 'part-total';
+    if (tier === 'HARD') return ['missing-toy', 'missing-factor', 'missing-ones', 'deduce-ones'][orderIndex % 4];
+    return ['comp-total', 'friendly-total', 'comp-missing'][orderIndex % 3];
+  }
+
+  function baseFor(tier, kind) {
+    if (tier === 'EXTREME') {
+      if (kind === 'friendly-total') {
+        const options = [
+          { B: 25, b1: 20, b2: 5 },
+          { B: 15, b1: 10, b2: 5 },
+          { B: 14, b1: 10, b2: 4 },
+          { B: 24, b1: 20, b2: 4 },
+          { B: 16, b1: 10, b2: 6 },
+          { B: 23, b1: 20, b2: 3 },
+          { B: 21, b1: 20, b2: 1 },
+          { B: 32, b1: 30, b2: 2 }
+        ];
+        const picked = choice(options);
+        return { A: rand(12, 24), B: picked.B, b1: picked.b1, b2: picked.b2, op: '+', style: (picked.B === 25 || picked.B === 15) ? 'friendly' : 'regroup' };
+      }
+      const b1 = Math.random() < 0.45 ? 30 : 20;
+      const b2 = Math.random() < 0.75 ? 1 : 2;
+      return { A: rand(12, 24), B: b1 - b2, b1: b1, b2: b2, op: '-', style: 'compensation' };
+    }
+    if (tier === 'EASY') {
+      const b2 = rand(2, 5);
+      const b1 = Math.random() < 0.62 ? 20 : 10;
+      return { A: rand(12, 19), B: b1 + b2, b1: b1, b2: b2, op: '+', style: 'tens' };
+    }
+    if (tier === 'MEDIUM') {
+      let b1 = Math.random() < 0.55 ? 30 : 20;
+      let b2 = rand(1, 5);
+      if (Math.random() < 0.22) {
+        b1 = 30;
+        b2 = rand(6, 9);
+      }
+      return { A: rand(18, 32), B: b1 + b2, b1: b1, b2: b2, op: '+', style: 'tens' };
+    }
+    const b1 = Math.random() < 0.5 ? 20 : 30;
+    const b2 = rand(2, 6);
+    return { A: rand(15, 26), B: b1 + b2, b1: b1, b2: b2, op: '+', style: 'tens' };
+  }
+
+  function productStep(r, side, kicker) {
+    const blue = side === 'blue';
+    const factor = blue ? r.b1 : r.b2;
+    const product = blue ? r.part1 : r.part2;
+    const name = blue ? r.toy.tens : r.toy.ones;
+    const other = blue ? r.part2 : r.part1;
+    const otherName = blue ? r.toy.ones : r.toy.tens;
+    const digit = factor >= 10 ? factor / 10 : factor + 1;
+    const h = normalHeader(r);
+    const step = stepShell(
+      kicker,
+      (kicker.indexOf('SHIP') === 0 ? 'SHIP ORDER — ' : '') + (blue ? 'Blue hopper: how many ' : 'Pink hopper: how many ') + name + ' for ' + r.A + ' ' + r.toy.plural + '?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + factor + ' = '], ['?', true]]),
+      blue ? 'blue' : 'pink',
+      blue ? 'blue' : 'pink',
+      blue ? { blue: product } : { pink: product }
+    );
+    const wrongs = numberWrongs(product, [
+      { n: r.A + factor, sub: 'added, not multiplied', tip: tipAdd(r, factor, name, product) },
+      { n: r.A * digit, sub: 'place-value trap', tip: factor >= 10 ? tipTens(r) : methodTip(r) },
+      { n: other, sub: otherName, tip: 'That count belongs in the other hopper (' + otherName + '). This hopper is ' + r.A + ' × ' + factor + '.' },
+      { n: factor, sub: 'per toy only', tip: factor + ' is the count for ONE toy. Multiply by all ' + r.A + ' ' + r.toy.plural + '.' },
+      { n: r.A * r.B, sub: 'whole order', tip: 'That is every part combined. This hopper only holds the ' + name + ': ' + r.A + ' × ' + factor + '.' }
+    ], r);
+    const cards = attach(step, product, card(product, name, true, ''), wrongs, r);
+    if (!cards) return null;
+    return step;
+  }
+
+  function totalWrongs(r) {
+    const signWrong = r.op === '-' ? r.part1 + r.part2 : r.part1 - r.part2;
+    const entries = [
+      { n: r.part1, sub: 'blue hopper only', tip: r.op === '-' ? 'The blue hopper is the benchmark batch. Subtract the extra group: ' + r.part1 + ' − ' + r.part2 + '.' : 'The blue hopper is only the first batch. Add the pink hopper too: ' + r.part1 + ' + ' + r.part2 + '.' },
+      { n: r.part2, sub: 'pink hopper only', tip: r.op === '-' ? 'Those are the extra parts you take away, not the total. Compute ' + r.part1 + ' − ' + r.part2 + '.' : 'That is only the ' + r.toy.ones + '. Ship both hoppers: ' + r.part1 + ' + ' + r.part2 + '.' },
+      { n: r.part1 + r.b2, sub: 'forgot to multiply', tip: 'You added the ones count (' + r.b2 + ') instead of the ones batch (' + r.A + ' × ' + r.b2 + ' = ' + r.part2 + ').' },
+      { n: r.A + r.B, sub: 'added the factors', tip: tipAdd(r, r.b1, r.toy.tens, r.part1) },
+      { n: signWrong, sub: r.op === '-' ? 'used plus' : 'used minus', tip: r.op === '-' ? tipSign(r) : 'This split is added, not subtracted. ' + r.part1 + ' + ' + r.part2 + ' = ' + r.total + '.' },
+      { n: r.A * Math.floor(r.B / 10), sub: 'tens digit only', tip: tipTens(r) }
+    ];
+    return numberWrongs(r.total, entries, r);
+  }
+
+  function stepsSplitPart(r) {
+    const h = normalHeader(r);
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'Each ' + r.toy.one + ' needs ' + r.B + ' parts. How do the hoppers split ' + r.B + '?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + r.B + ' = (' + r.A + ' × '], ['?', true], [') + (' + r.A + ' × '], ['?', true], [')']]),
+      'both',
+      'both',
+      {}
+    );
+    const answer = r.b1 + ' + ' + r.b2;
+    const digit = Math.floor(r.b1 / 10);
+    const wrongs = [
+      card(digit + ' + ' + r.b2, 'tens digit, not tens', false, tipTens(r)),
+      card(r.b1 + ' + ' + r.B, 'whole amount in both', false, r.B + ' is the whole parts list. Split it into ' + r.b1 + ' + ' + r.b2 + '.'),
+      card(r.A + ' + ' + r.B, 'added toys and parts', false, "Don't add the " + r.A + ' toys to the ' + r.B + ' parts. Split ' + r.B + ' itself into ' + r.b1 + ' + ' + r.b2 + '.'),
+      card(r.b2 + ' + ' + r.b1, 'hoppers swapped', false, 'Load the TENS part into the blue hopper first: ' + r.b1 + ' + ' + r.b2 + '.'),
+      card(r.b1 + ' + ' + digit, 'mixed place values', false, tipTens(r))
+    ];
+    if (!attach(s1, answer, card(answer, r.toy.tens + ' + ' + r.toy.ones, true, ''), wrongs, r)) return null;
+    const s2 = productStep(r, 'blue', 'STEP 2 · SHIP ORDER');
+    if (!s2) return null;
+    s2.prompt = 'SHIP ORDER — blue hopper ' + r.toy.tens + '. How many is ' + r.A + ' × ' + r.b1 + '?';
+    return [s1, s2];
+  }
+
+  function stepsTwoParts(r) {
+    const s1 = productStep(r, 'blue', 'STEP 1 · CALIBRATE');
+    const s2 = productStep(r, 'pink', 'STEP 2 · SHIP ORDER');
+    if (!s1 || !s2) return null;
+    s2.prompt = 'SHIP ORDER — pink hopper ' + r.toy.ones + '. How many is ' + r.A + ' × ' + r.b2 + '?';
+    return [s1, s2];
+  }
+
+  function stepsExprTotal(r) {
+    const h = normalHeader(r);
+    const sign = signOf(r.op);
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      r.op === '-'
+        ? r.B + ' is close to ' + r.b1 + '. Which compensation blueprint is right?'
+        : 'Which blueprint shows the distributive split?',
+      h.header,
+      h.detail,
+      (r.op === '-'
+        ? segs([[r.A + ' × ' + r.B + ' = (' + r.A + ' × '], ['?', true], [') '], ['?', true], [' (' + r.A + ' × '], ['?', true], [')']])
+        : segs([[r.A + ' × ' + r.B + ' = (' + r.A + ' × '], ['?', true], [') + (' + r.A + ' × '], ['?', true], [')']])),
+      'both',
+      'both',
+      {}
+    );
+    const answer = exprText(r.A, r.b1, r.b2, r.op, false);
+    const digit = Math.floor(r.b1 / 10);
+    const wrongs = [];
+    if (r.op === '-') {
+      wrongs.push(card(exprText(r.A, r.b1, r.b2, '+', false), 'used plus', false, tipSign(r)));
+      wrongs.push(card(exprText(r.A, digit, r.b2, '-', false), 'tens digit', false, tipTens(r)));
+    } else {
+      wrongs.push(card(exprText(r.A, digit, r.b2, '+', false), 'tens digit', false, tipTens(r)));
+    }
+    wrongs.push(card(exprText(r.A, r.b1, r.b2, r.op, true), 'one side not multiplied', false, tipForgot(r)));
+    wrongs.push(card(addText(r.A, r.b1, r.b2, r.op), 'added, not multiplied', false, tipAdd(r, r.b1, r.toy.tens, r.part1)));
+    wrongs.push(card(exprText(r.A, r.b2, r.b2, r.op, false), 'pink twice', false, 'The blue hopper must use the tens part ' + r.b1 + ', not ' + r.b2 + '.'));
+    wrongs.push(card(exprText(r.b1, r.b2, r.b2, r.op, false), 'factors swapped', false, 'Multiply the toy count ' + r.A + ' by each part.'));
+    if (!attach(s1, answer, card(answer, r.op === '-' ? 'subtract the extra group' : 'both hoppers', true, ''), wrongs, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      r.op === '-'
+        ? 'SHIP ORDER — subtract the extra group and send the total parts.'
+        : 'SHIP ORDER — add both hoppers and send the total parts.',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + r.B + ' = (' + r.A + ' × ' + r.b1 + ') ' + sign + ' (' + r.A + ' × ' + r.b2 + ') = '], ['?', true]]),
+      'both',
+      'both',
+      { blue: r.part1, pink: r.part2 }
+    );
+    if (!attach(s2, r.total, card(r.total, 'total parts', true, ''), totalWrongs(r), r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsPartTotal(r) {
+    const side = Math.random() < 0.5 ? 'blue' : 'pink';
+    const s1 = productStep(r, side, 'STEP 1 · CALIBRATE');
+    if (!s1) return null;
+    const h = normalHeader(r);
+    const sign = signOf(r.op);
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — blue ' + r.A + ' × ' + r.b1 + ' and pink ' + r.A + ' × ' + r.b2 + '. How many total parts?',
+      h.header,
+      h.detail,
+      segs([['(' + r.A + ' × ' + r.b1 + ') ' + sign + ' (' + r.A + ' × ' + r.b2 + ') = '], ['?', true]]),
+      'both',
+      'both',
+      { blue: r.part1, pink: r.part2 }
+    );
+    if (!attach(s2, r.total, card(r.total, 'total parts', true, ''), totalWrongs(r), r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsMissingToy(r) {
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'Calibrate the blue hopper on the blueprint: ' + r.A + ' × ' + r.b1 + ' ' + r.toy.tens + '.',
+      'MYSTERY ' + r.toy.title,
+      r.B + ' PARTS EACH',
+      segs([[r.A + ' × ' + r.b1 + ' = '], ['?', true]]),
+      'blue',
+      'blue',
+      { blue: r.part1 }
+    );
+    const wrongs1 = numberWrongs(r.part1, [
+      { n: r.A + r.b1, sub: 'added', tip: tipAdd(r, r.b1, r.toy.tens, r.part1) },
+      { n: r.A * Math.floor(r.b1 / 10), sub: 'tens digit', tip: tipTens(r) },
+      { n: r.A, sub: 'toy count', tip: r.A + ' is the toy count hiding on the left. This step wants the blue parts: ' + r.A + ' × ' + r.b1 + '.' },
+      { n: r.b1, sub: 'per toy', tip: r.b1 + ' is for one toy. Multiply by ' + r.A + '.' },
+      { n: r.part2, sub: 'pink hopper', tip: 'That is the pink hopper (' + r.A + ' × ' + r.b2 + '). The blue hopper is ' + r.A + ' × ' + r.b1 + '.' }
+    ], r);
+    if (!attach(s1, r.part1, card(r.part1, r.toy.tens, true, ''), wrongs1, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — both hoppers use the same toy count. What is the missing number of toys?',
+      'MYSTERY ' + r.toy.title,
+      r.B + ' PARTS EACH',
+      segs([['', false], ['?', true], [' × ' + r.B + ' = (' + r.A + ' × ' + r.b1 + ') + (' + r.A + ' × ' + r.b2 + ')']]),
+      'both',
+      null,
+      {}
+    );
+    s2.segments[0].t = '';
+    const wrongs2 = numberWrongs(r.A, [
+      { n: r.B, sub: 'parts per toy', tip: r.B + ' is how many parts each toy needs, not how many toys. The toy count is the number repeated in both bins: ' + r.A + '.' },
+      { n: r.b1, sub: 'tens part', tip: r.b1 + ' is the tens part of the parts list. The missing toy count matches the ' + r.A + ' in ' + r.A + ' × ' + r.b1 + '.' },
+      { n: r.b2, sub: 'ones part', tip: r.b2 + ' is the ones part. The missing box is the toy count ' + r.A + '.' },
+      { n: r.A + r.b2, sub: 'mixed the bins', tip: 'Do not add a parts digit onto the toys. Both bins already say ' + r.A + ' toys.' },
+      { n: r.part1, sub: 'blue parts', tip: r.part1 + ' is a parts total, not the toy count. The missing number is ' + r.A + '.' },
+      { n: r.A - 1, sub: 'one short', tip: 'The toy count is copied from both bins: ' + r.A + ', not ' + (r.A - 1) + '.' },
+      { n: r.A + 1, sub: 'one extra', tip: 'The toy count is copied from both bins: ' + r.A + '.' }
+    ], r);
+    if (!attach(s2, r.A, card(r.A, 'missing toy count', true, ''), wrongs2, r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsMissingFactor(r) {
+    const h = { header: r.A + ' ' + r.toy.title, detail: 'PARTS PER TOY UNKNOWN' };
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'Fill the blue hopper first: ' + r.A + ' × ' + r.b1 + ' ' + r.toy.tens + '.',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + r.b1 + ' = '], ['?', true]]),
+      'blue',
+      'blue',
+      { blue: r.part1 }
+    );
+    const wrongs1 = numberWrongs(r.part1, [
+      { n: r.A + r.b1, sub: 'added', tip: tipAdd(r, r.b1, r.toy.tens, r.part1) },
+      { n: r.A * Math.floor(r.b1 / 10), sub: 'tens digit', tip: tipTens(r) },
+      { n: r.B, sub: 'jumped to the multiplier', tip: r.b1 + ' + ' + r.b2 + ' is the missing multiplier, but this step wants the blue parts: ' + r.A + ' × ' + r.b1 + '.' },
+      { n: r.part2, sub: 'pink hopper', tip: 'Pink is ' + r.A + ' × ' + r.b2 + '. Blue is ' + r.A + ' × ' + r.b1 + '.' }
+    ], r);
+    if (!attach(s1, r.part1, card(r.part1, r.toy.tens, true, ''), wrongs1, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — the missing parts-per-toy is the two hopper multipliers added.',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × '], ['?', true], [' = (' + r.A + ' × ' + r.b1 + ') + (' + r.A + ' × ' + r.b2 + ')']]),
+      'both',
+      null,
+      {}
+    );
+    const wrongs2 = numberWrongs(r.B, [
+      { n: r.b1, sub: 'blue multiplier only', tip: r.b1 + ' is only the tens part. Add the ones part: ' + r.b1 + ' + ' + r.b2 + ' = ' + r.B + '.' },
+      { n: r.b2, sub: 'pink multiplier only', tip: r.b2 + ' is only the ones part. The full multiplier is ' + r.b1 + ' + ' + r.b2 + ' = ' + r.B + '.' },
+      { n: r.A, sub: 'toy count', tip: r.A + ' is how many toys, not how many parts each toy needs.' },
+      { n: r.b1 * r.b2, sub: 'multiplied the parts', tip: 'Add the hopper multipliers. Do not multiply them: ' + r.b1 + ' + ' + r.b2 + ' = ' + r.B + '.' },
+      { n: Math.abs(r.b1 - r.b2), sub: 'subtracted', tip: 'These parts are added: ' + r.b1 + ' + ' + r.b2 + ' = ' + r.B + '.' },
+      { n: r.total, sub: 'parts total', tip: r.total + ' is every part in the order. The missing multiplier is ' + r.B + '.' }
+    ], r);
+    if (!attach(s2, r.B, card(r.B, 'parts per toy', true, ''), wrongs2, r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsMissingOnes(r) {
+    const h = normalHeader(r);
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'The tens part is already ' + r.b1 + '. How many ' + r.toy.tens + ' go in the blue hopper?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + r.b1 + ' = '], ['?', true]]),
+      'blue',
+      'blue',
+      { blue: r.part1 }
+    );
+    const wrongs1 = numberWrongs(r.part1, [
+      { n: r.A + r.b1, sub: 'added', tip: tipAdd(r, r.b1, r.toy.tens, r.part1) },
+      { n: r.A * Math.floor(r.b1 / 10), sub: 'tens digit', tip: tipTens(r) },
+      { n: r.b2, sub: 'pink multiplier', tip: 'The pink multiplier is the later question. This step is ' + r.A + ' × ' + r.b1 + '.' },
+      { n: r.b1, sub: 'per toy', tip: 'Multiply the ' + r.b1 + ' by all ' + r.A + ' toys.' }
+    ], r);
+    if (!attach(s1, r.part1, card(r.part1, r.toy.tens, true, ''), wrongs1, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — ' + r.B + ' parts = ' + r.b1 + ' + the pink multiplier. What is the pink multiplier?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × ' + r.B + ' = (' + r.A + ' × ' + r.b1 + ') + (' + r.A + ' × '], ['?', true], [')']]),
+      'pink',
+      'pink',
+      {}
+    );
+    const wrongs2 = numberWrongs(r.b2, [
+      { n: r.b1, sub: 'blue multiplier', tip: r.b1 + ' is already in the blue hopper. The pink multiplier is ' + r.B + ' − ' + r.b1 + ' = ' + r.b2 + '.' },
+      { n: r.B, sub: 'all the parts', tip: r.B + ' is the whole parts list. Take away the tens part: ' + r.B + ' − ' + r.b1 + ' = ' + r.b2 + '.' },
+      { n: Math.floor(r.b1 / 10), sub: 'tens digit', tip: tipTens(r) },
+      { n: r.A, sub: 'toy count', tip: 'The toy count stays ' + r.A + '. The missing piece is the ones part ' + r.b2 + '.' },
+      { n: r.b1 + r.b2, sub: 'added again', tip: r.b1 + ' + ' + r.b2 + ' is the full ' + r.B + '. The pink box is only ' + r.b2 + '.' }
+    ], r);
+    if (!attach(s2, r.b2, card(r.b2, r.toy.ones + ' each', true, ''), wrongs2, r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsDeduceOnes(r) {
+    const h = { header: r.A + ' ' + r.toy.title, detail: 'TOTAL ' + r.total + ' PARTS' };
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'The order needs ' + r.total + ' parts. Blue already has ' + r.part1 + '. How many parts go in the pink hopper?',
+      h.header,
+      h.detail,
+      segs([[r.total + ' − ' + r.part1 + ' = '], ['?', true]]),
+      'pink',
+      'pink',
+      { pink: r.part2 }
+    );
+    const wrongs1 = numberWrongs(r.part2, [
+      { n: r.total, sub: 'whole order', tip: r.total + ' is the whole order. Take away the blue hopper: ' + r.total + ' − ' + r.part1 + ' = ' + r.part2 + '.' },
+      { n: r.part1, sub: 'blue hopper', tip: r.part1 + ' is the blue hopper, already filled. Subtract it from ' + r.total + '.' },
+      { n: r.total + r.part1, sub: 'added the bins', tip: 'The blue parts are already inside the total. Subtract: ' + r.total + ' − ' + r.part1 + '.' },
+      { n: r.A, sub: 'toy count', tip: 'This step wants pink PARTS, not the toy count. ' + r.total + ' − ' + r.part1 + ' = ' + r.part2 + '.' },
+      { n: r.b1, sub: 'blue multiplier', tip: r.b1 + ' is the per-toy tens part. The pink batch is ' + r.total + ' − ' + r.part1 + '.' }
+    ], r);
+    if (!attach(s1, r.part2, card(r.part2, 'pink parts', true, ''), wrongs1, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — share the pink parts across ' + r.A + ' toys. What multiplier makes ' + r.A + ' × ? = ' + r.part2 + '?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × '], ['?', true], [' = ' + r.part2]]),
+      'pink',
+      'pink',
+      {}
+    );
+    const wrongs2 = numberWrongs(r.b2, [
+      { n: r.part2, sub: 'parts, not the multiplier', tip: r.part2 + ' is how many parts, not the multiplier. Share them across ' + r.A + ' toys: ' + r.part2 + ' ÷ ' + r.A + ' = ' + r.b2 + '.' },
+      { n: r.b1, sub: 'blue multiplier', tip: r.b1 + ' is the blue hopper. The pink multiplier is the other part: ' + r.b2 + '.' },
+      { n: r.A, sub: 'toy count', tip: r.A + ' is the number of toys. The pink multiplier is ' + r.b2 + '.' },
+      { n: r.b2 + 1, sub: 'one too many', tip: r.A + ' × ' + r.b2 + ' = ' + r.part2 + '. The pink multiplier is ' + r.b2 + '.' },
+      { n: Math.max(1, r.b2 - 1), sub: 'one too few', tip: r.A + ' × ' + r.b2 + ' = ' + r.part2 + '.' }
+    ], r);
+    if (!attach(s2, r.b2, card(r.b2, 'pink multiplier', true, ''), wrongs2, r)) return null;
+    return [s1, s2];
+  }
+
+  function stepsCompMissing(r) {
+    const h = { header: r.A + ' ' + r.toy.title, detail: 'BENCHMARK ' + r.b1 };
+    const s1 = stepShell(
+      'STEP 1 · CALIBRATE',
+      'Compensation split. Compute the right side: how many parts ship?',
+      h.header,
+      h.detail,
+      segs([['(' + r.A + ' × ' + r.b1 + ') − (' + r.A + ' × ' + r.b2 + ') = '], ['?', true]]),
+      'both',
+      'both',
+      { blue: r.part1, pink: r.part2 }
+    );
+    const wrongs1 = numberWrongs(r.total, [
+      { n: r.part1 + r.part2, sub: 'used plus', tip: tipSign(r) },
+      { n: r.part1, sub: 'forgot to subtract', tip: 'Subtract the extra group of ' + r.A + ': ' + r.part1 + ' − ' + r.part2 + ' = ' + r.total + '.' },
+      { n: r.part1 - r.b2, sub: 'subtracted the digit only', tip: tipForgot(r) },
+      { n: r.part2, sub: 'extra group only', tip: r.part2 + ' is the group you remove, not the shipment. Compute ' + r.part1 + ' − ' + r.part2 + '.' },
+      { n: r.A + r.b1, sub: 'added', tip: tipAdd(r, r.b1, r.toy.tens, r.part1) }
+    ], r);
+    if (!attach(s1, r.total, card(r.total, 'parts that ship', true, ''), wrongs1, r)) return null;
+
+    const s2 = stepShell(
+      'STEP 2 · SHIP ORDER',
+      'SHIP ORDER — the benchmark is ' + r.b1 + ', and each toy needs ' + r.b2 + ' fewer parts. What is the missing multiplier?',
+      h.header,
+      h.detail,
+      segs([[r.A + ' × '], ['?', true], [' = (' + r.A + ' × ' + r.b1 + ') − (' + r.A + ' × ' + r.b2 + ')']]),
+      'both',
+      null,
+      {}
+    );
+    const wrongs2 = numberWrongs(r.B, [
+      { n: r.b1, sub: 'benchmark', tip: r.b1 + ' is the friendly benchmark. Because we are ' + r.b2 + ' under it, the multiplier is ' + r.b1 + ' − ' + r.b2 + ' = ' + r.B + '.' },
+      { n: r.b1 + r.b2, sub: 'used plus', tip: tipSign(r) },
+      { n: r.b2, sub: 'the extra only', tip: r.b2 + ' is how many you subtract from ' + r.b1 + ', not the parts per toy.' },
+      { n: r.A, sub: 'toy count', tip: r.A + ' is the number of toys. The missing multiplier is ' + r.B + '.' },
+      { n: r.total, sub: 'parts total', tip: r.total + ' is the parts total you just computed. The multiplier is ' + r.b1 + ' − ' + r.b2 + ' = ' + r.B + '.' }
+    ], r);
+    if (!attach(s2, r.B, card(r.B, 'missing multiplier', true, ''), wrongs2, r)) return null;
+    return [s1, s2];
+  }
+
+  function makeSteps(r) {
+    if (r.kind === 'split-part') return stepsSplitPart(r);
+    if (r.kind === 'two-parts') return stepsTwoParts(r);
+    if (r.kind === 'expr-total' || r.kind === 'comp-total') return stepsExprTotal(r);
+    if (r.kind === 'part-total' || r.kind === 'friendly-total') return stepsPartTotal(r);
+    if (r.kind === 'missing-toy') return stepsMissingToy(r);
+    if (r.kind === 'missing-factor') return stepsMissingFactor(r);
+    if (r.kind === 'missing-ones') return stepsMissingOnes(r);
+    if (r.kind === 'deduce-ones') return stepsDeduceOnes(r);
+    if (r.kind === 'comp-missing') return stepsCompMissing(r);
+    return null;
+  }
+
+  function audit(round) {
+    if (!round || !round.steps || round.steps.length !== 2) return false;
+    if (round.total !== round.A * round.B) return false;
+    if (round.part1 !== round.A * round.b1 || round.part2 !== round.A * round.b2) return false;
+    if (round.op === '+') {
+      if (round.b1 + round.b2 !== round.B) return false;
+      if (round.part1 + round.part2 !== round.total) return false;
+    } else if (round.op === '-') {
+      if (round.b1 - round.b2 !== round.B) return false;
+      if (round.part1 - round.part2 !== round.total) return false;
+    } else {
+      return false;
+    }
+    if (round.kind === 'split-part') {
+      if (round.steps[0].answer !== round.b1 + ' + ' + round.b2) return false;
+      if (round.steps[1].answer !== String(round.part1)) return false;
+    }
+    if (round.kind === 'two-parts') {
+      if (round.steps[0].answer !== String(round.part1)) return false;
+      if (round.steps[1].answer !== String(round.part2)) return false;
+    }
+    if (round.kind === 'expr-total' || round.kind === 'comp-total' || round.kind === 'part-total' || round.kind === 'friendly-total') {
+      if (round.steps[1].answer !== String(round.total)) return false;
+    }
+    if (round.kind === 'expr-total' || round.kind === 'comp-total') {
+      if (round.steps[0].answer.indexOf(String(round.b1)) < 0) return false;
+      if (round.steps[0].answer.indexOf('× ' + round.b2) < 0 && round.steps[0].answer.indexOf('× ' + round.b2 + ')') < 0) return false;
+    }
+    if (round.kind === 'part-total' || round.kind === 'friendly-total') {
+      const a = round.steps[0].answer;
+      if (a !== String(round.part1) && a !== String(round.part2)) return false;
+    }
+    if (round.kind === 'missing-toy' && round.steps[1].answer !== String(round.A)) return false;
+    if (round.kind === 'missing-factor' && round.steps[1].answer !== String(round.B)) return false;
+    if (round.kind === 'missing-ones' && round.steps[1].answer !== String(round.b2)) return false;
+    if (round.kind === 'deduce-ones') {
+      if (round.steps[0].answer !== String(round.part2)) return false;
+      if (round.steps[1].answer !== String(round.b2)) return false;
+    }
+    if (round.kind === 'comp-missing') {
+      if (round.steps[0].answer !== String(round.total)) return false;
+      if (round.steps[1].answer !== String(round.B)) return false;
+    }
+    for (let i = 0; i < 2; i++) {
+      const s = round.steps[i];
+      if (!s.prompt || !s.header || !s.cards || s.cards.length !== 4) return false;
+      const good = [];
+      const seen = {};
+      let hot = false;
+      for (let c = 0; c < s.cards.length; c++) {
+        const cardItem = s.cards[c];
+        if (!cardItem.text || seen[cardItem.text]) return false;
+        seen[cardItem.text] = true;
+        if (cardItem.correct) good.push(cardItem);
+        else if (!cardItem.tip || cardItem.tip.length < 12) return false;
+      }
+      if (good.length !== 1 || good[0].text !== s.answer) return false;
+      if (!s.segments || !s.segments.length) return false;
+      for (let g = 0; g < s.segments.length; g++) {
+        if (s.segments[g].hot) hot = true;
+      }
+      if (!hot) return false;
+    }
+    return true;
+  }
+
+  function compose(tier, orderIndex, toy, base) {
+    const part1 = base.A * base.b1;
+    const part2 = base.A * base.b2;
+    const total = base.op === '-' ? part1 - part2 : part1 + part2;
+    const round = {
+      toy: toy,
+      kind: kindFor(tier, orderIndex),
+      tier: tier,
+      A: base.A,
+      B: base.B,
+      b1: base.b1,
+      b2: base.b2,
+      op: base.op,
+      style: base.style,
+      part1: part1,
+      part2: part2,
+      total: total,
+      key: base.A + 'x' + base.B,
+      prefill: null,
+      steps: null
+    };
+    if (round.kind === 'deduce-ones') round.prefill = { blue: part1 };
+    round.steps = makeSteps(round);
+    return round;
+  }
+
+  function buildRound(tier, orderIndex, history) {
+    let last = null;
+    for (let attempt = 0; attempt < 28; attempt++) {
+      const toy = TOYS[rand(0, TOYS.length - 1)];
+      const kind = kindFor(tier, orderIndex);
+      const base = baseFor(tier, kind);
+      const round = compose(tier, orderIndex, toy, base);
+      last = round;
+      if (!round.steps) continue;
+      if (!audit(round)) continue;
+      if (history && history.indexOf(round.key) !== -1) continue;
+      return round;
+    }
+    const toy = TOYS[0];
+    let fallback;
+    const kind = kindFor(tier, orderIndex);
+    if (tier === 'EXTREME' && kind !== 'friendly-total') {
+      fallback = { A: 16, B: 19, b1: 20, b2: 1, op: '-', style: 'compensation' };
+    } else if (tier === 'EXTREME') {
+      fallback = { A: 16, B: 25, b1: 20, b2: 5, op: '+', style: 'friendly' };
+    } else if (tier === 'MEDIUM') {
+      fallback = { A: 24, B: 23, b1: 20, b2: 3, op: '+', style: 'tens' };
+    } else if (tier === 'HARD') {
+      fallback = { A: 17, B: 26, b1: 20, b2: 6, op: '+', style: 'tens' };
+    } else {
+      fallback = { A: 14, B: 23, b1: 20, b2: 3, op: '+', style: 'tens' };
+    }
+    const round = compose(tier, orderIndex, toy, fallback);
+    if (round.steps && audit(round)) return round;
+    return last;
+  }
+
+  function freshShown(round) {
+    game.shown = { blue: null, pink: null };
+    game.hopper.blue = 0;
+    game.hopper.pink = 0;
+    game.hopperTarget.blue = 0;
+    game.hopperTarget.pink = 0;
+    if (round.prefill && round.prefill.blue != null) {
+      game.shown.blue = round.prefill.blue;
+      game.hopper.blue = 0.82;
+      game.hopperTarget.blue = 0.82;
+    }
+    if (round.prefill && round.prefill.pink != null) {
+      game.shown.pink = round.prefill.pink;
+      game.hopper.pink = 0.82;
+      game.hopperTarget.pink = 0.82;
+    }
+  }
+
+  function beginOrder() {
+    const round = buildRound(game.tier, game.orderIndex, game.history);
+    game.round = round;
+    game.lastRound = round;
+    if (game.history.indexOf(round.key) === -1) game.history.push(round.key);
+    if (game.history.length > 8) game.history.shift();
+    game.step = 1;
+    game.phase = 'INPUT';
+    game.phaseT = 0;
+    game.timeMax = TIME_LIMIT[game.tier];
+    game.timeLeft = game.timeMax;
+    game.dirty = false;
+    game.missLock = 0;
+    game.lockedIndex = -1;
+    game.cardFlash = null;
+    game.tip = null;
+    game.arm = 0;
+    freshShown(round);
+    for (let i = 0; i < game.players.length; i++) {
+      game.players[i].cursor = -1;
+      game.players[i].stun = 0;
+    }
+  }
+
+  function normalizedMode() {
+    if (game.playerCount <= 1) return 'SOLO';
+    if (game.mode === 'SOLO') return 'COOP';
+    return game.mode;
+  }
+
+  function startShift() {
+    sfx.unlock();
+    sfx.playStart();
+    game.mode = normalizedMode();
+    game.playerCount = game.playerCount < 1 ? 1 : game.playerCount;
+    game.score = 0;
+    game.combo = 0;
+    game.bestCombo = 0;
+    game.hearts = HEARTS;
+    game.attempts = 0;
+    game.solves = 0;
+    game.shipped = 0;
+    game.clean = 0;
+    game.orderIndex = 0;
+    game.particles = [];
+    game.floaters = [];
+    game.shake = 0;
+    game.flash = 0;
+    game.result = null;
+    for (let i = 0; i < game.players.length; i++) {
+      game.players[i].stars = 0;
+      game.players[i].score = 0;
+      game.players[i].stun = 0;
+      game.players[i].cursor = -1;
+    }
+    game.screen = 'PLAYING';
+    beginOrder();
+  }
+
+  function finishShift(ranOut) {
+    const stars = game.players.map(p => p.stars);
+    let winner = -1;
+    if (game.mode === 'DUEL') {
+      let best = -1;
+      for (let i = 0; i < game.playerCount; i++) {
+        const scoreKey = game.players[i].stars * 100000 + game.players[i].score;
+        if (scoreKey > best) {
+          best = scoreKey;
+          winner = i;
+        } else if (scoreKey === best) {
+          winner = -1;
+        }
+      }
+    }
+    game.result = {
+      ranOut: !!ranOut,
+      winner: winner,
+      stars: stars,
+      accuracy: game.attempts ? Math.round(100 * game.solves / game.attempts) : 0
+    };
+    game.screen = 'RESULTS';
+    game.phase = 'INPUT';
+    if (!ranOut) {
+      burst(420, 180, '#fbbf24', 18, true);
+      burst(860, 180, '#38bdf8', 18, true);
+      sfx.playFanfare();
+    }
+  }
+
+  function applyReveal(step) {
+    if (!step || !step.reveal) return;
+    if (step.reveal.blue != null) game.shown.blue = step.reveal.blue;
+    if (step.reveal.pink != null) game.shown.pink = step.reveal.pink;
+    if (step.fill === 'blue' || step.fill === 'both') game.hopperTarget.blue = Math.max(game.hopperTarget.blue, 0.78);
+    if (step.fill === 'pink' || step.fill === 'both') game.hopperTarget.pink = Math.max(game.hopperTarget.pink, 0.78);
+  }
+
+  function award(pi, base) {
+    const mult = comboMult();
+    let pts = base * mult;
+    const ratio = game.timeMax > 0 ? game.timeLeft / game.timeMax : 0;
+    let bonus = 0;
+    if (ratio > 0.72) bonus = 100;
+    else if (ratio > 0.4) bonus = 50;
+    if (game.mode === 'DUEL') game.players[pi].score += pts + bonus;
+    else game.score += pts + bonus;
+    return { pts: pts, bonus: bonus, mult: mult };
+  }
+
+  function enterStep2() {
+    game.step = 2;
+    game.phase = 'INPUT';
+    game.lockedIndex = -1;
+    game.cardFlash = null;
+    for (let i = 0; i < game.players.length; i++) game.players[i].cursor = -1;
+  }
+
+  function nextOrder() {
+    game.orderIndex += 1;
+    if (game.orderIndex >= ORDERS) {
+      finishShift(false);
+      return;
+    }
+    beginOrder();
+  }
+
+  function hurt() {
+    if (game.mode === 'DUEL') return;
+    game.hearts -= 1;
+    game.flash = 0.18;
+    game.flashColor = 'rgba(225, 29, 72, 0.28)';
+    if (game.hearts <= 0) {
+      game.hearts = 0;
+      game.phase = 'DEAD';
+      game.phaseUntil = performance.now() + 950;
+    }
+  }
+
+  function onTimeout() {
+    if (game.phase !== 'INPUT') return;
+    game.timeLeft = 0;
+    game.dirty = true;
+    game.combo = 0;
+    sfx.playBuzz();
+    game.tip = { text: 'The factory timer hit zero. Split the multiplier into its parts, multiply each hopper, then combine.', life: 2.4 };
+    game.shake = 0.2;
+    hurt();
+    if (game.phase !== 'DEAD') {
+      game.phase = 'NEXT';
+      game.phaseUntil = performance.now() + 850;
+    }
+  }
+
+  function onCorrect(pi) {
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step) return;
+    game.attempts += 1;
+    game.solves += 1;
+    game.lockedIndex = -1;
+    for (let i = 0; i < step.cards.length; i++) {
+      if (step.cards[i].correct) game.lockedIndex = i;
+    }
+    game.cardFlash = { index: game.lockedIndex, bad: false, t: 0.4 };
+    const base = game.step === 1 ? 150 : 350;
+    const got = award(pi, base);
+    const px = game.mode === 'DUEL' ? 520 + pi * 150 : 700;
+    spawnFloater('+' + got.pts, px, 198, '#15803d', 26);
+    if (got.mult > 1) spawnFloater('COMBO ×' + got.mult, px, 226, '#db2777', 16);
+    if (got.bonus) spawnFloater('SPEED +' + got.bonus, px, 252, '#b45309', 16);
+    game.tip = null;
+    game.arm = 1;
+    if (game.step === 1) {
+      applyReveal(step);
+      sfx.playDrop();
+      const blue = hopperAnchor('blue');
+      const pink = hopperAnchor('pink');
+      if (step.fill === 'blue' || step.fill === 'both') burst(blue.x, blue.y - 20, '#60a5fa', 12, false);
+      if (step.fill === 'pink' || step.fill === 'both') burst(pink.x, pink.y - 20, '#fb7185', 12, false);
+      game.phase = 'DROP';
+      game.phaseUntil = performance.now() + 850;
+      if (game.mode === 'DUEL') {
+        spawnFloater(game.players[pi].name + ' LOCKED THE HOPPER', 640, 210, game.players[pi].color, 20);
+      }
+    } else {
+      applyReveal(step);
+      game.shown.blue = game.round.part1;
+      game.shown.pink = game.round.part2;
+      game.hopperTarget.blue = 1;
+      game.hopperTarget.pink = 1;
+      if (!game.dirty) {
+        game.combo += 1;
+        if (game.combo > game.bestCombo) game.bestCombo = game.combo;
+        game.clean += 1;
+      }
+      game.shipped += 1;
+      if (game.mode === 'DUEL') {
+        game.players[pi].stars += 1;
+        spawnFloater(game.players[pi].name + ' SHIPPED', 700, 286, game.players[pi].color, 20);
+      } else {
+        spawnFloater('ORDER SHIPPED', 700, 286, '#b45309', 20);
+      }
+      sfx.playBell();
+      sfx.playFanfare();
+      burst(UI.sheetX + 1080, UI.stageY + 200, '#fbbf24', 16, true);
+      game.flash = 0.16;
+      game.flashColor = 'rgba(250, 204, 21, 0.28)';
+      game.phase = 'SHIP';
+      game.phaseUntil = performance.now() + 1150;
+    }
+  }
+
+  function onWrong(pi, cardItem) {
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step) return;
+    game.attempts += 1;
+    game.dirty = true;
+    game.combo = 0;
+    let idx = 0;
+    for (let i = 0; i < step.cards.length; i++) if (step.cards[i] === cardItem) idx = i;
+    game.cardFlash = { index: idx, bad: true, t: 0.45 };
+    game.shake = 0.22;
+    game.tip = { text: cardItem.tip || methodTip(game.round), life: 5 };
+    sfx.playBuzz();
+    if (game.mode === 'DUEL') {
+      game.players[pi].stun = performance.now() + 1500;
+      spawnFloater(game.players[pi].name + ' JAMMED 1.5s', 640, 220, '#be123c', 22);
+    } else {
+      game.missLock = performance.now() + 280;
+      hurt();
+    }
+  }
+
+  function selectCard(pi, index) {
+    if (index < 0 || index > 3) return;
+    if (game.mode === 'COOP' && pi !== activePlayer() && game.phase === 'INPUT' && game.screen === 'PLAYING') {
+      if (pi === 0) spawnFloater(game.players[activePlayer()].name + ' ' + game.players[activePlayer()].full + ' IS AT THE LINE', 640, 230, game.players[activePlayer()].color, 18);
+      return;
+    }
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step || !step.cards[index]) return;
+    game.players[pi].cursor = index;
+    const chosen = step.cards[index];
+    if (chosen.correct) onCorrect(pi);
+    else onWrong(pi, chosen);
+  }
+
+  function nudge(pi, dir) {
+    if (!canControl(pi)) return;
+    const p = game.players[pi];
+    if (p.cursor < 0) p.cursor = dir < 0 ? 3 : 0;
+    else p.cursor = (p.cursor + dir + 4) % 4;
+    sfx.playTick();
+  }
+
+  function confirmCursor(pi) {
+    if (!canControl(pi)) return;
+    if (game.players[pi].cursor < 0) return;
+    selectCard(pi, game.players[pi].cursor);
+  }
+
+  function cycleTitle(dir) {
+    const layout = titleLayout();
+    if (game.titleRow === 0) {
+      const next = game.playerCount + dir;
+      if (next >= 1 && next <= 3) {
+        game.playerCount = next;
+        if (game.playerCount === 1) game.mode = 'SOLO';
+        else if (game.mode === 'SOLO') game.mode = 'COOP';
+      }
+    } else if (game.titleRow === 1) {
+      const keys = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+      let idx = keys.indexOf(game.tier) + dir;
+      if (idx < 0) idx = 0;
+      if (idx > 3) idx = 3;
+      game.tier = keys[idx];
+    } else if (game.titleRow === 2) {
+      const keys = ['SOLO', 'COOP', 'DUEL'];
+      let idx = keys.indexOf(game.mode);
+      for (let n = 0; n < 3; n++) {
+        idx = (idx + dir + 3) % 3;
+        const id = keys[idx];
+        const allowed = (game.playerCount === 1 && id === 'SOLO') || (game.playerCount > 1 && id !== 'SOLO');
+        if (allowed) {
+          game.mode = id;
+          break;
+        }
+      }
+    }
+    sfx.playTick();
+    return layout;
+  }
+
+  function titleKey(low) {
+    if (low === 'arrowup') game.titleRow = (game.titleRow + 3) % 4;
+    else if (low === 'arrowdown') game.titleRow = (game.titleRow + 1) % 4;
+    else if (low === 'arrowleft') cycleTitle(-1);
+    else if (low === 'arrowright') cycleTitle(1);
+    else if (low === 'enter' || low === ' ') startShift();
+  }
+
+  function resultKey(low) {
+    if (low === 'enter' || low === ' ') startShift();
+    else if (low === 'escape' || low === 'backspace') {
+      game.screen = 'TITLE';
+      sfx.playClick();
+    }
+  }
+
+  function playKey(low) {
+    const maps = [
+      { keys: ['1', '2', '3', '4'], pi: 0 },
+      { keys: ['q', 'w', 'e', 'r'], pi: 1 },
+      { keys: ['u', 'i', 'o', 'p'], pi: 2 }
+    ];
+    for (let i = 0; i < maps.length; i++) {
+      const idx = maps[i].keys.indexOf(low);
+      if (idx >= 0) {
+        selectCard(maps[i].pi, idx);
+        return;
+      }
+    }
+    const arrowsOk = game.mode !== 'DUEL' && (game.mode === 'SOLO' || activePlayer() === 0);
+    if (!arrowsOk) return;
+    if (low === 'arrowleft') nudge(0, -1);
+    else if (low === 'arrowright') nudge(0, 1);
+    else if (low === ' ' || low === 'enter') confirmCursor(0);
+  }
+
+  function onKeyDown(e) {
+    if (e.repeat) return;
+    const low = e.key.toLowerCase();
+    if (low === ' ' || low === 'arrowleft' || low === 'arrowright' || low === 'arrowup' || low === 'arrowdown') e.preventDefault();
+    sfx.unlock();
+    if (low === 'm') {
+      sfx.toggleMute();
+      return;
+    }
+    if (game.screen === 'TITLE') titleKey(low);
+    else if (game.screen === 'RESULTS') resultKey(low);
+    else playKey(low);
+  }
+  window.addEventListener('keydown', onKeyDown);
+
+  function cardAt(x, y) {
+    const rects = cardsGeom();
+    for (let i = 0; i < rects.length; i++) if (pointIn(x, y, rects[i])) return i;
+    return -1;
+  }
+
+  function onPointerMove(e) {
+    const p = screenToVirtual(e.clientX, e.clientY);
+    game.mouse.x = p.x;
+    game.mouse.y = p.y;
+    if (game.screen !== 'PLAYING') {
+      game.hover = -1;
+      return;
+    }
+    const hit = cardAt(p.x, p.y);
+    if (hit !== game.hover) {
+      game.hover = hit;
+      if (hit >= 0 && canControl(0)) {
+        game.players[0].cursor = hit;
+        sfx.playTick();
+      }
+    }
+  }
+
+  function onPointerDown(e) {
+    sfx.unlock();
+    const p = screenToVirtual(e.clientX, e.clientY);
+    game.mouse.x = p.x;
+    game.mouse.y = p.y;
+    if (pointIn(p.x, p.y, muteRect())) {
+      sfx.toggleMute();
+      return;
+    }
+    if (game.screen === 'TITLE') {
+      const layout = titleLayout();
+      for (let i = 0; i < layout.counts.length; i++) {
+        if (pointIn(p.x, p.y, layout.counts[i])) {
+          game.playerCount = i + 1;
+          game.titleRow = 0;
+          if (game.playerCount === 1) game.mode = 'SOLO';
+          else if (game.mode === 'SOLO') game.mode = 'COOP';
+          sfx.playClick();
+          return;
+        }
+      }
+      const tierIds = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+      for (let i = 0; i < layout.tiers.length; i++) {
+        if (pointIn(p.x, p.y, layout.tiers[i])) {
+          game.tier = tierIds[i];
+          game.titleRow = 1;
+          sfx.playClick();
+          return;
+        }
+      }
+      const modeIds = ['SOLO', 'COOP', 'DUEL'];
+      for (let i = 0; i < layout.modes.length; i++) {
+        if (pointIn(p.x, p.y, layout.modes[i])) {
+          const id = modeIds[i];
+          const allowed = (game.playerCount === 1 && id === 'SOLO') || (game.playerCount > 1 && id !== 'SOLO');
+          if (!allowed) {
+            sfx.playBuzz();
+            return;
+          }
+          game.mode = id;
+          game.titleRow = 2;
+          sfx.playClick();
+          return;
+        }
+      }
+      if (pointIn(p.x, p.y, layout.start)) startShift();
+      return;
+    }
+    if (game.screen === 'RESULTS') {
+      const layout = resultLayout();
+      if (pointIn(p.x, p.y, layout.again)) startShift();
+      else if (pointIn(p.x, p.y, layout.title)) {
+        game.screen = 'TITLE';
+        sfx.playClick();
+      }
+      return;
+    }
+    const hit = cardAt(p.x, p.y);
+    if (hit >= 0) selectCard(0, hit);
+  }
+
+  let lastPointerAt = 0;
+  function pointerGate(e) {
+    const now = performance.now();
+    if (now - lastPointerAt < 40) return false;
+    lastPointerAt = now;
+    if (e && e.preventDefault) e.preventDefault();
+    return true;
+  }
+  function onPrimaryDown(e) {
+    if (!pointerGate(e)) return;
+    onPointerDown(e);
+  }
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPrimaryDown);
+  canvas.addEventListener('mousedown', onPrimaryDown);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  function pollGamepads() {
+    let pads;
+    try {
+      pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    } catch (err) {
+      return;
+    }
+    if (!pads) return;
+    for (let i = 0; i < 3; i++) {
+      const gp = pads[i];
+      const prev = game.players[i].pad;
+      if (!gp) {
+        prev.a = prev.l = prev.r = prev.u = prev.d = false;
+        continue;
+      }
+      const a = !!((gp.buttons[0] && gp.buttons[0].pressed) || (gp.buttons[1] && gp.buttons[1].pressed));
+      const l = !!((gp.buttons[14] && gp.buttons[14].pressed) || gp.axes[0] < -0.55);
+      const r = !!((gp.buttons[15] && gp.buttons[15].pressed) || gp.axes[0] > 0.55);
+      const u = !!((gp.buttons[12] && gp.buttons[12].pressed) || gp.axes[1] < -0.55);
+      const d = !!((gp.buttons[13] && gp.buttons[13].pressed) || gp.axes[1] > 0.55);
+      const fresh = (a && !prev.a) || (l && !prev.l) || (r && !prev.r) || (u && !prev.u) || (d && !prev.d);
+      if (fresh) sfx.unlock();
+      if (game.screen === 'TITLE' && i === 0) {
+        if (u && !prev.u) game.titleRow = (game.titleRow + 3) % 4;
+        if (d && !prev.d) game.titleRow = (game.titleRow + 1) % 4;
+        if (l && !prev.l) cycleTitle(-1);
+        if (r && !prev.r) cycleTitle(1);
+        if (a && !prev.a) startShift();
+      } else if (game.screen === 'RESULTS' && i === 0) {
+        if (a && !prev.a) startShift();
+      } else if (game.screen === 'PLAYING') {
+        if (l && !prev.l) nudge(i, -1);
+        if (r && !prev.r) nudge(i, 1);
+        if (u && !prev.u) nudge(i, -1);
+        if (d && !prev.d) nudge(i, 1);
+        if (a && !prev.a) confirmCursor(i);
+      }
+      prev.a = a;
+      prev.l = l;
+      prev.r = r;
+      prev.u = u;
+      prev.d = d;
+    }
+  }
+
+  function update(dt) {
+    game.belt += dt * (game.phase === 'SHIP' ? 260 : 78);
+    game.arm = Math.max(0, game.arm - dt);
+    if (game.shake > 0) game.shake = Math.max(0, game.shake - dt);
+    if (game.flash > 0) game.flash = Math.max(0, game.flash - dt);
+    if (game.cardFlash) {
+      game.cardFlash.t -= dt;
+      if (game.cardFlash.t <= 0) game.cardFlash = null;
+    }
+    if (game.tip) {
+      game.tip.life -= dt;
+      if (game.tip.life <= 0) game.tip = null;
+    }
+    for (let i = 0; i < game.players.length; i++) {
+      if (game.players[i].stun > 0 && game.players[i].stun <= performance.now()) game.players[i].stun = 0;
+    }
+    game.hopper.blue += (game.hopperTarget.blue - game.hopper.blue) * Math.min(1, dt * 4);
+    game.hopper.pink += (game.hopperTarget.pink - game.hopper.pink) * Math.min(1, dt * 4);
+    for (let i = game.particles.length - 1; i >= 0; i--) {
+      const p = game.particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += p.g * dt;
+      p.life -= p.decay * dt;
+      if (p.life <= 0) game.particles.splice(i, 1);
+    }
+    for (let i = game.floaters.length - 1; i >= 0; i--) {
+      const f = game.floaters[i];
+      f.y += f.vy * dt;
+      f.life -= f.decay * dt;
+      if (f.life <= 0) game.floaters.splice(i, 1);
+    }
+    if (game.screen === 'PLAYING' && game.phase === 'INPUT') {
+      game.timeLeft -= dt;
+      if (game.timeLeft <= 0) onTimeout();
+    }
+    if (game.screen === 'PLAYING' && game.phase !== 'INPUT' && performance.now() >= (game.phaseUntil || 0)) {
+      const leaving = game.phase;
+      game.phase = 'INPUT';
+      if (leaving === 'DROP') enterStep2();
+      else if (leaving === 'SHIP' || leaving === 'NEXT') nextOrder();
+      else if (leaving === 'DEAD') finishShift(true);
+    }
+    sfx.applyHum();
+  }
+
+  function drawBackground() {
+    const sky = ctx.createLinearGradient(0, 0, 0, VH);
+    sky.addColorStop(0, '#7ec8ff');
+    sky.addColorStop(0.42, '#dff4ff');
+    sky.addColorStop(1, '#fff3dd');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, VW, VH);
+
+    ctx.fillStyle = '#f7fbff';
+    ctx.fillRect(0, 0, VW, 58);
+    ctx.fillStyle = '#f4b942';
+    ctx.fillRect(0, 58, VW, 8);
+
+    for (let i = 0; i < 5; i++) {
+      const x = 120 + i * 250;
+      ctx.fillStyle = '#e8f6ff';
+      roundRect(x, 78, 120, 70, 8, '#e7f6ff', '#9ec9e6', 2);
+      ctx.fillStyle = 'rgba(125, 196, 240, 0.45)';
+      ctx.fillRect(x + 10, 90, 44, 46);
+      ctx.fillRect(x + 64, 90, 44, 46);
+    }
+
+    for (let i = 0; i < 4; i++) {
+      const x = 180 + i * 300;
+      ctx.strokeStyle = '#94a3b8';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, 28);
+      ctx.stroke();
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath();
+      ctx.ellipse(x, 40, 18, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(253, 230, 138, 0.28)';
+      ctx.beginPath();
+      ctx.moveTo(x - 26, 44);
+      ctx.lineTo(x + 26, 44);
+      ctx.lineTo(x + 10, 90);
+      ctx.lineTo(x - 10, 90);
+      ctx.fill();
+    }
+  }
+
+  function drawHeart(x, y, filled) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, 3);
+    ctx.bezierCurveTo(-12, -8, -18, 4, 0, 14);
+    ctx.bezierCurveTo(18, 4, 12, -8, 0, 3);
+    ctx.closePath();
+    ctx.fillStyle = filled ? '#ef3b5b' : 'rgba(255,255,255,0.45)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = filled ? '#9f1239' : '#94a3b8';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawStar(x, y, r, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const ang = -Math.PI / 2 + i * Math.PI / 5;
+      const rad = i % 2 === 0 ? r : r * 0.45;
+      const px = Math.cos(ang) * rad;
+      const py = Math.sin(ang) * rad;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHat(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(x, y + 8, 16, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y + 4, 10, Math.PI, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillRect(x - 8, y + 2, 16, 3);
+  }
+
+  function drawBolt(x, y, color, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.45, 0);
+    ctx.lineTo(s * 0.45, 0);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawToy(id, x, y, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    const bob = Math.sin(animT * 3 + x * 0.01) * 2;
+    ctx.translate(0, bob);
+    if (id === 'robot') {
+      ctx.fillStyle = '#1f2937';
+      ctx.fillRect(-2, -46, 4, 12);
+      ctx.beginPath();
+      ctx.arc(0, -50, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fill();
+      roundRect(-16, -40, 32, 22, 6, '#dbeafe', '#1d4ed8', 2);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(-8, -33, 5, 5);
+      ctx.fillRect(3, -33, 5, 5);
+      roundRect(-20, -16, 40, 32, 8, '#3b82f6', '#1e3a8a', 2);
+      ctx.fillStyle = '#bfdbfe';
+      roundRect(-8, -8, 16, 12, 3, '#bfdbfe', null, 0);
+      ctx.fillStyle = '#1d4ed8';
+      ctx.fillRect(-28, -8, 8, 8);
+      ctx.fillRect(20, -8, 8, 8);
+      ctx.fillRect(-12, 16, 7, 12);
+      ctx.fillRect(5, 16, 7, 12);
+    } else if (id === 'car') {
+      ctx.fillStyle = '#ef4444';
+      roundRect(-28, -8, 56, 18, 8, '#ef4444', '#991b1b', 2);
+      roundRect(-12, -22, 26, 16, 6, '#fecaca', '#991b1b', 2);
+      ctx.fillStyle = '#7f1d1d';
+      ctx.fillRect(18, -18, 8, 6);
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-16, 12, 8, 0, Math.PI * 2);
+      ctx.arc(16, 12, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#e5e7eb';
+      ctx.beginPath();
+      ctx.arc(-16, 12, 3, 0, Math.PI * 2);
+      ctx.arc(16, 12, 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (id === 'rocket') {
+      ctx.fillStyle = '#fb7185';
+      ctx.beginPath();
+      ctx.moveTo(0, -48);
+      ctx.lineTo(14, -18);
+      ctx.lineTo(-14, -18);
+      ctx.closePath();
+      ctx.fill();
+      roundRect(-14, -18, 28, 40, 8, '#7c3aed', '#4c1d95', 2);
+      ctx.fillStyle = '#bfdbfe';
+      ctx.beginPath();
+      ctx.arc(0, -2, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f97316';
+      ctx.beginPath();
+      ctx.moveTo(-8, 22);
+      ctx.lineTo(0, 36 + Math.sin(animT * 20) * 3);
+      ctx.lineTo(8, 22);
+      ctx.fill();
+    } else if (id === 'owl') {
+      ctx.fillStyle = '#d97706';
+      ctx.beginPath();
+      ctx.moveTo(-16, -28);
+      ctx.lineTo(-6, -44);
+      ctx.lineTo(0, -28);
+      ctx.moveTo(16, -28);
+      ctx.lineTo(6, -44);
+      ctx.lineTo(0, -28);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(0, 0, 24, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff7ed';
+      ctx.beginPath();
+      ctx.arc(-8, -4, 8, 0, Math.PI * 2);
+      ctx.arc(8, -4, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-8, -4, 3, 0, Math.PI * 2);
+      ctx.arc(8, -4, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath();
+      ctx.moveTo(-4, 6);
+      ctx.lineTo(4, 6);
+      ctx.lineTo(0, 12);
+      ctx.fill();
+      ctx.strokeStyle = '#92400e';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 8, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (id === 'dino') {
+      ctx.fillStyle = '#0f766e';
+      ctx.beginPath();
+      ctx.ellipse(0, 4, 26, 18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(18, -8, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#115e59';
+      ctx.beginPath();
+      ctx.moveTo(-8, -12);
+      ctx.lineTo(-2, -24);
+      ctx.lineTo(4, -12);
+      ctx.moveTo(6, -14);
+      ctx.lineTo(12, -26);
+      ctx.lineTo(16, -10);
+      ctx.fill();
+      ctx.fillStyle = '#042f2e';
+      ctx.beginPath();
+      ctx.arc(22, -10, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#115e59';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(-20, 8);
+      ctx.quadraticCurveTo(-40, 18, -28, 28);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = '#b45309';
+      ctx.beginPath();
+      ctx.arc(-14, -18, 8, 0, Math.PI * 2);
+      ctx.arc(14, -18, 8, 0, Math.PI * 2);
+      ctx.arc(0, 2, 24, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath();
+      ctx.ellipse(0, 8, 10, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.beginPath();
+      ctx.arc(-8, -2, 2.5, 0, Math.PI * 2);
+      ctx.arc(8, -2, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.arc(0, 10, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawArm(x, y, drop) {
+    const angle = -0.4 + drop * 1.15;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = '#64748b';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, 18);
+    ctx.stroke();
+    ctx.translate(0, 18);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(36, 18);
+    ctx.stroke();
+    ctx.translate(36, 18);
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(-8, -6, 16, 12);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(-14, 4, 10, 16);
+    ctx.fillRect(4, 4, 10, 16);
+    ctx.restore();
+  }
+
+  function drawHopper(x, y, w, h, opts) {
+    const fill = clamp(opts.fill, 0, 1);
+    roundRect(x, y, w, h, 16, '#ffffff', opts.hot ? opts.color : '#94a3b8', opts.hot ? 4 : 2);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(x + 10, y + 36, w - 20, h - 70, 10, null, null, 0);
+    ctx.clip();
+    ctx.fillStyle = opts.deep;
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(x + 10, y + 36, w - 20, h - 70);
+    ctx.globalAlpha = 1;
+    const bolts = Math.round(fill * 10);
+    for (let i = 0; i < bolts; i++) {
+      const col = i % 5;
+      const row = Math.floor(i / 5);
+      drawBolt(x + 28 + col * 28, y + h - 52 - row * 18, opts.color, 6);
+    }
+    ctx.restore();
+    ctx.fillStyle = opts.deep;
+    roundRect(x + 8, y + 8, w - 16, 24, 8, opts.deep, null, 0);
+    text(opts.name, x + w / 2, y + 20, 'bold 12px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    text(opts.factor, x + w / 2, y + 48, '600 13px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+    text(opts.value, x + w / 2, y + h / 2 + 18, 'bold 32px "Segoe UI", system-ui, sans-serif', opts.deep, 'center');
+    if (opts.minus) {
+      roundRect(x + w - 36, y + 40, 26, 22, 6, '#be123c', null, 0);
+      text('−', x + w - 23, y + 51, 'bold 16px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    }
+  }
+
+  function drawConveyor(x, y, w, h) {
+    roundRect(x, y, w, h, 12, '#f0b429', '#b7791f', 3);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(x + 6, y + 8, w - 12, h - 16, 8, null, null, 0);
+    ctx.clip();
+    ctx.fillStyle = '#f6c453';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(146, 64, 14, 0.35)';
+    ctx.lineWidth = 6;
+    const offset = game.belt % 28;
+    for (let px = x - 28 + offset; px < x + w; px += 28) {
+      ctx.beginPath();
+      ctx.moveTo(px, y + 8);
+      ctx.lineTo(px + 14, y + h - 8);
+      ctx.stroke();
+    }
+    ctx.restore();
+    for (let i = 0; i < 6; i++) {
+      const rx = x + 24 + i * ((w - 40) / 5);
+      ctx.fillStyle = '#0f766e';
+      ctx.beginPath();
+      ctx.arc(rx, y + h / 2, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ccfbf1';
+      ctx.beginPath();
+      ctx.arc(rx, y + h / 2, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawGift(x, y, s, bounce) {
+    ctx.save();
+    ctx.translate(x, y - bounce);
+    roundRect(-18 * s, -14 * s, 36 * s, 28 * s, 4, '#f472b6', '#9d174d', 2);
+    ctx.fillStyle = '#fde68a';
+    ctx.fillRect(-3 * s, -14 * s, 6 * s, 28 * s);
+    ctx.fillRect(-18 * s, -3 * s, 36 * s, 6 * s);
+    ctx.beginPath();
+    ctx.moveTo(0, -14 * s);
+    ctx.lineTo(-10 * s, -24 * s);
+    ctx.lineTo(0, -16 * s);
+    ctx.lineTo(10 * s, -24 * s);
+    ctx.closePath();
+    ctx.fillStyle = '#fbbf24';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHUD() {
+    roundRect(12, UI.hudY, 168, UI.hudH, 12, '#ffffff', '#7dd3fc', 2);
+    text('TOY-FORGE', 96, UI.hudY + 24, 'bold 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+
+    const modeLabel = game.mode === 'COOP' ? 'TEAM CO-OP' : (game.mode === 'DUEL' ? 'DUEL' : 'SOLO');
+    roundRect(188, UI.hudY, 132, UI.hudH, 12, '#ffffff', MODE_META[game.mode].tint, 2);
+    text(modeLabel, 254, UI.hudY + 24, 'bold 14px "Segoe UI", system-ui, sans-serif', MODE_META[game.mode].tint, 'center');
+
+    const tier = TIER_META[game.tier];
+    roundRect(328, UI.hudY, 132, UI.hudH, 12, '#ffffff', tier.tint, 2);
+    text(tier.name, 394, UI.hudY + 18, 'bold 14px "Segoe UI", system-ui, sans-serif', tier.tint, 'center');
+    const tierSub = (game.tier === 'EXTREME' && game.mode === 'DUEL') ? ('COMBO ×' + comboMult()) : tier.role;
+    text(tierSub, 394, UI.hudY + 34, '11px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+
+    if (game.mode === 'DUEL') {
+      const n = game.playerCount;
+      const gap = n === 3 ? 124 : 156;
+      const start = n === 3 ? 548 : 620;
+      for (let i = 0; i < n; i++) {
+        const p = game.players[i];
+        const x = start + i * gap;
+        text(p.name, x, UI.hudY + 24, 'bold 14px "Segoe UI", system-ui, sans-serif', p.color, 'left');
+        drawStar(x + 36, UI.hudY + 24, 9, '#fbbf24');
+        text(String(p.stars), x + 52, UI.hudY + 24, 'bold 18px "Segoe UI", system-ui, sans-serif', '#0f172a', 'left');
+        if (p.stun > performance.now()) text('JAM', x + 78, UI.hudY + 24, 'bold 11px "Segoe UI", system-ui, sans-serif', '#be123c', 'left');
+      }
+    } else {
+      const label = game.mode === 'COOP' ? 'TEAM' : 'SCORE';
+      text(label, 640, UI.hudY + 16, 'bold 11px "Segoe UI", system-ui, sans-serif', '#64748b', 'center');
+      text(fmt(game.score), 640, UI.hudY + 34, 'bold 20px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    }
+
+    if (game.tier === 'EXTREME' && game.mode !== 'DUEL') {
+      roundRect(760, UI.hudY + 8, 96, 32, 10, game.combo > 0 ? '#fce7f3' : '#ffffff', '#db2777', 2);
+      text('×' + comboMult(), 808, UI.hudY + 24, 'bold 16px "Segoe UI", system-ui, sans-serif', '#be185d', 'center');
+    }
+
+    if (game.mode !== 'DUEL') {
+      for (let i = 0; i < HEARTS; i++) drawHeart(900 + i * 26, UI.hudY + 16, i < game.hearts);
+    } else {
+      roundRect(948, UI.hudY + 8, 70, 32, 10, '#fff1f2', '#e11d48', 2);
+      text('RACE', 983, UI.hudY + 24, 'bold 13px "Segoe UI", system-ui, sans-serif', '#be123c', 'center');
+    }
+
+    const timerX = 1048;
+    const urgent = game.timeLeft < 8;
+    roundRect(timerX, UI.hudY + 6, 78, 36, 10, urgent ? '#ffe4e6' : '#ffffff', urgent ? '#e11d48' : '#0f766e', 2);
+    text(formatTime(game.timeLeft), timerX + 39, UI.hudY + 18, 'bold 16px "Segoe UI", system-ui, sans-serif', urgent ? '#be123c' : '#0f172a', 'center');
+    text((game.orderIndex + 1) + '/' + ORDERS, timerX + 39, UI.hudY + 34, '11px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+
+    drawMute();
+  }
+
+  function drawMute() {
+    const m = muteRect();
+    roundRect(m.x, m.y, m.w, m.h, 10, sfx.muted ? '#ffe4e6' : '#ecfeff', sfx.muted ? '#e11d48' : '#0f766e', 2);
+    text(sfx.muted ? 'MUTE' : 'SOUND', m.x + m.w / 2, m.y + m.h / 2, 'bold 12px "Segoe UI", system-ui, sans-serif', sfx.muted ? '#be123c' : '#0f766e', 'center');
+  }
+
+  function drawBlueprint() {
+    const r = game.round;
+    const step = currentStep();
+    roundRect(UI.sheetX, UI.sheetY, UI.sheetW, UI.sheetH, 16, 'rgba(255,255,255,0.94)', '#7dd3fc', 2);
+    if (!r || !step) return;
+    drawToy(r.toy.id, UI.sheetX + 46, UI.sheetY + 48, 0.58);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(UI.sheetX + 86, UI.sheetY + 10, 300, UI.sheetH - 20);
+    ctx.clip();
+    text(step.header, UI.sheetX + 88, UI.sheetY + 30, 'bold 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'left');
+    text(step.detail, UI.sheetX + 88, UI.sheetY + 54, '600 13px "Segoe UI", system-ui, sans-serif', '#0369a1', 'left');
+    ctx.restore();
+
+    let pill = step.kicker;
+    let pillColor = '#0f766e';
+    if (game.mode === 'COOP') {
+      const p = game.players[activePlayer()];
+      pill = p.name + ' ' + p.full;
+      pillColor = p.color;
+    } else if (game.mode === 'DUEL') {
+      pill = 'ALL RACE';
+      pillColor = '#e11d48';
+    }
+    const pillX = UI.sheetX + UI.sheetW - 214;
+    roundRect(pillX, UI.sheetY + 16, 198, 52, 12, '#ffffff', pillColor, 2);
+    text(pill, pillX + 99, UI.sheetY + 34, 'bold 14px "Segoe UI", system-ui, sans-serif', pillColor, 'center');
+    text(game.mode === 'COOP' ? step.kicker : ('ORDER ' + (game.orderIndex + 1)), pillX + 99, UI.sheetY + 54, '11px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(420, UI.sheetY + 8, 620, UI.sheetH - 16);
+    ctx.clip();
+    drawSegments(step.segments, 730, UI.sheetY + 42, 580);
+    ctx.restore();
+  }
+
+  function drawSegments(segments, cx, cy, maxW) {
+    let size = 22;
+    const fontOf = (s) => 'bold ' + s + 'px "Segoe UI", system-ui, sans-serif';
+    const widthOf = () => {
+      let w = 0;
+      ctx.font = fontOf(size);
+      for (let i = 0; i < segments.length; i++) w += ctx.measureText(segments[i].t).width;
+      return w;
+    };
+    let total = widthOf();
+    while (total > maxW && size > 15) {
+      size -= 1;
+      total = widthOf();
+    }
+    let x = cx - total / 2;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      ctx.font = fontOf(size);
+      const tw = ctx.measureText(seg.t).width;
+      if (seg.hot && seg.t) {
+        const pulse = 0.5 + 0.5 * Math.sin(animT * 5);
+        roundRect(x - 5, cy - size / 2 - 4, tw + 10, size + 8, 8, 'rgba(253, 230, 138,' + (0.75 + pulse * 0.25) + ')', '#f59e0b', 2);
+      }
+      text(seg.t, x, cy, fontOf(size), seg.hot ? '#c2410c' : '#0f172a', 'left');
+      x += tw;
+    }
+  }
+
+  function drawStage() {
+    const r = game.round;
+    const step = currentStep();
+    roundRect(UI.sheetX, UI.stageY, UI.sheetW, UI.stageH, 18, 'rgba(255,255,255,0.72)', '#bae6fd', 2);
+    if (!r || !step) return;
+    const drop = Math.sin(clamp(1 - game.arm, 0, 1) * Math.PI);
+    drawArm(UI.sheetX + 120, UI.stageY + 8, drop);
+    drawArm(UI.sheetX + 390, UI.stageY + 8, Math.max(0, drop - 0.15));
+
+    const focus = step.focus;
+    drawHopper(UI.sheetX + 36, UI.stageY + 18, 230, 150, {
+      name: r.toy.tens,
+      factor: r.A + ' × ' + r.b1,
+      value: game.shown.blue == null ? '?' : String(game.shown.blue),
+      fill: game.hopper.blue,
+      color: '#2563eb',
+      deep: '#1e3a8a',
+      hot: focus === 'blue' || focus === 'both',
+      minus: false
+    });
+    drawHopper(UI.sheetX + 290, UI.stageY + 18, 230, 150, {
+      name: r.toy.ones,
+      factor: (r.op === '-' ? '− ' : '') + r.A + ' × ' + r.b2,
+      value: game.shown.pink == null ? '?' : String(game.shown.pink),
+      fill: game.hopper.pink,
+      color: '#fb7185',
+      deep: '#9f1239',
+      hot: focus === 'pink' || focus === 'both',
+      minus: r.op === '-'
+    });
+
+    const previewX = UI.sheetX + 760;
+    const previewY = UI.stageY + 96;
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.beginPath();
+    ctx.ellipse(previewX, previewY + 28, 54, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawToy(r.toy.id, previewX, previewY, 1);
+    text('ON THE LINE', previewX, UI.stageY + 28, 'bold 12px "Segoe UI", system-ui, sans-serif', '#0369a1', 'center');
+
+    const giftBounce = game.phase === 'SHIP' ? Math.abs(Math.sin(animT * 8)) * 8 : 0;
+    drawGift(UI.sheetX + 1040, UI.stageY + 78, 1.15, giftBounce);
+    drawGift(UI.sheetX + 1100, UI.stageY + 96, 0.9, giftBounce * 0.6);
+    text('GIFT DOCK', UI.sheetX + 1070, UI.stageY + 28, 'bold 12px "Segoe UI", system-ui, sans-serif', '#9d174d', 'center');
+
+    const beltY = UI.stageY + 176;
+    drawConveyor(UI.sheetX + 24, beltY, UI.sheetW - 48, 58);
+    if (r) {
+      for (let i = 0; i < 4; i++) {
+        const span = 240;
+        let x = UI.sheetX + 80 + ((game.belt * (game.phase === 'SHIP' ? 1 : 0.55) + i * span) % (UI.sheetW - 160));
+        const boxed = game.phase === 'SHIP' && x > UI.sheetX + 980;
+        if (boxed) drawGift(x, beltY + 24, 0.7, 0);
+        else drawToy(r.toy.id, x, beltY + 18, 0.42);
+      }
+    }
+
+    const ratio = game.timeMax > 0 ? clamp(game.timeLeft / game.timeMax, 0, 1) : 0;
+    roundRect(UI.sheetX + 24, UI.stageY + UI.stageH - 18, UI.sheetW - 48, 8, 4, '#e2e8f0', null, 0);
+    roundRect(UI.sheetX + 24, UI.stageY + UI.stageH - 18, (UI.sheetW - 48) * ratio, 8, 4, ratio < 0.25 ? '#fb7185' : '#14b8a6', null, 0);
+  }
+
+  function drawTip() {
+    const step = currentStep();
+    roundRect(UI.sheetX, UI.tipY, UI.sheetW, UI.tipH, 14, '#ffffff', game.tip ? '#fb7185' : '#67e8f9', 2);
+    if (!step) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(UI.sheetX + 8, UI.tipY + 4, UI.sheetW - 16, UI.tipH - 8);
+    ctx.clip();
+    if (game.tip) {
+      drawHat(UI.sheetX + 28, UI.tipY + 14, '#e11d48');
+      text('CHIEF ENGINEER', UI.sheetX + 52, UI.tipY + 18, 'bold 12px "Segoe UI", system-ui, sans-serif', '#be123c', 'left');
+      ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
+      const lines = wrapLines(game.tip.text, UI.sheetW - 48, 2);
+      for (let i = 0; i < lines.length; i++) {
+        text(lines[i], UI.sheetX + 18, UI.tipY + 40 + i * 16, '600 15px "Segoe UI", system-ui, sans-serif', '#1f2937', 'left');
+      }
+    } else {
+      text(step.kicker, UI.sheetX + 18, UI.tipY + 18, 'bold 12px "Segoe UI", system-ui, sans-serif', '#0f766e', 'left');
+      let promptSize = 18;
+      let promptFont = 'bold ' + promptSize + 'px "Segoe UI", system-ui, sans-serif';
+      ctx.font = promptFont;
+      while (promptSize > 13 && ctx.measureText(step.prompt).width > UI.sheetW - 40) {
+        promptSize -= 1;
+        promptFont = 'bold ' + promptSize + 'px "Segoe UI", system-ui, sans-serif';
+        ctx.font = promptFont;
+      }
+      text(step.prompt, UI.sheetX + 18, UI.tipY + 42, promptFont, '#0f172a', 'left');
+    }
+    ctx.restore();
+  }
+
+  function keyLabels(index) {
+    if (game.mode === 'DUEL') {
+      const out = [];
+      for (let p = 0; p < game.playerCount; p++) out.push({ t: game.players[p].keys[index], c: game.players[p].color });
+      return out;
+    }
+    if (game.mode === 'COOP') {
+      const p = game.players[activePlayer()];
+      return [{ t: p.keys[index], c: p.color }];
+    }
+    return [{ t: game.players[0].keys[index], c: '#0f766e' }];
+  }
+
+  function drawCards() {
+    const step = currentStep();
+    if (!step) return;
+    const rects = cardsGeom();
+    const dim = game.phase !== 'INPUT';
+    for (let i = 0; i < rects.length; i++) {
+      const base = rects[i];
+      const bad = game.cardFlash && game.cardFlash.bad && game.cardFlash.index === i;
+      const jiggle = bad ? Math.sin(animT * 46) * 4 : 0;
+      const r = { x: base.x + jiggle, y: base.y, w: base.w, h: base.h };
+      const item = step.cards[i];
+      let border = '#cbd5e1';
+      let width = 2;
+      let fill = '#ffffff';
+      if (game.lockedIndex === i) {
+        border = '#16a34a';
+        width = 4;
+        fill = '#f0fdf4';
+      } else if (bad) {
+        border = '#e11d48';
+        width = 4;
+        fill = '#fff1f2';
+      } else if (game.hover === i || (canControl(0) && game.players[0].cursor === i && game.mode !== 'DUEL')) {
+        border = '#f59e0b';
+        width = 4;
+        fill = '#fffbeb';
+      }
+      ctx.save();
+      ctx.globalAlpha = dim && game.lockedIndex !== i ? 0.72 : 1;
+      roundRect(r.x, r.y, r.w, r.h, 16, fill, border, width);
+      ctx.save();
+      ctx.beginPath();
+      roundRect(r.x, r.y, r.w, r.h, 16, null, null, 0);
+      ctx.clip();
+      ctx.globalAlpha = 0.16;
+      ctx.strokeStyle = '#7dd3fc';
+      ctx.lineWidth = 1;
+      for (let gx = r.x; gx < r.x + r.w; gx += 18) {
+        ctx.beginPath();
+        ctx.moveTo(gx, r.y);
+        ctx.lineTo(gx, r.y + r.h);
+        ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = dim && game.lockedIndex !== i ? 0.72 : 1;
+
+      if (game.mode === 'DUEL') {
+        for (let p = 0; p < game.playerCount; p++) {
+          if (game.players[p].cursor === i) {
+            ctx.fillStyle = game.players[p].color;
+            ctx.fillRect(r.x + 12 + p * 16, r.y + 8, 12, 6);
+          }
+        }
+      } else if (canControl(0) && game.players[0].cursor === i) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(r.x + 12, r.y + 8, 36, 6);
+      }
+
+      const labels = keyLabels(i);
+      for (let k = 0; k < labels.length; k++) {
+        const lx = r.x + 16 + k * 36;
+        roundRect(lx, r.y + 20, 30, 24, 6, labels[k].c, null, 0);
+        text(labels[k].t, lx + 15, r.y + 32, 'bold 13px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+      }
+
+      let size = 30;
+      if (item.text.length > 26) size = 16;
+      else if (item.text.length > 20) size = 18;
+      else if (item.text.length > 14) size = 22;
+      else if (item.text.length > 8) size = 26;
+      text(item.text, r.x + r.w / 2, r.y + 104, 'bold ' + size + 'px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      const subLines = wrapLines(item.sub || '', r.w - 28, 2);
+      for (let s = 0; s < subLines.length; s++) {
+        text(subLines[s], r.x + r.w / 2, r.y + 150 + s * 18, '600 14px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawFloaters() {
+    for (let i = 0; i < game.particles.length; i++) {
+      const p = game.particles[i];
+      ctx.globalAlpha = clamp(p.life, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < game.floaters.length; i++) {
+      const f = game.floaters[i];
+      ctx.globalAlpha = clamp(f.life, 0, 1);
+      text(f.text, f.x, f.y, 'bold ' + f.size + 'px "Segoe UI", system-ui, sans-serif', f.color, 'center');
+    }
+    ctx.globalAlpha = 1;
+    if (game.flash > 0) {
+      ctx.globalAlpha = game.flash;
+      ctx.fillStyle = game.flashColor;
+      ctx.fillRect(0, 0, VW, VH);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function controlBlurb() {
+    if (game.playerCount === 1 || game.mode === 'SOLO') {
+      return 'Mouse, keys 1 2 3 4, arrows + space, or gamepad A. Press M to mute.';
+    }
+    if (game.mode === 'COOP') {
+      return 'Shared team score and hearts. Turns rotate. P1: 1 2 3 4 / mouse.   P2: Q W E R.   P3: U I O P.';
+    }
+    return 'First correct lock wins the star. A miss jams you for 1.5s. P1: 1 2 3 4.   P2: Q W E R.   P3: U I O P.';
+  }
+
+  function drawTitle() {
+    drawBackground();
+    roundRect(70, 52, VW - 140, 640, 24, '#ffffff', '#7dd3fc', 3);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(70, 52, VW - 140, 640, 24, null, null, 0);
+    ctx.clip();
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(70, 52, VW - 140, 14);
+    ctx.restore();
+    drawToy('robot', 150, 128, 0.72);
+    drawToy('bear', 1130, 128, 0.72);
+    text('SINGAPORE PRIMARY 3–4  ·  DISTRIBUTIVE PROPERTY OF MULTIPLICATION', VW / 2, 72, 'bold 13px "Segoe UI", system-ui, sans-serif', '#0369a1', 'center');
+    text('TOY-FORGE ASSEMBLY', VW / 2, 112, 'bold 46px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text('Distributive Multiplication Lab', VW / 2, 152, 'bold 22px "Segoe UI", system-ui, sans-serif', '#db2777', 'center');
+    text('Split a 2-digit parts list into two hoppers, multiply every toy, then ship the batch.', VW / 2, 186, '600 16px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+
+    const layout = titleLayout();
+    const focus = game.titleRow;
+    text('TOYMAKERS', VW / 2, 220, 'bold 12px "Segoe UI", system-ui, sans-serif', focus === 0 ? '#b45309' : '#64748b', 'center');
+    for (let i = 0; i < 3; i++) {
+      const r = layout.counts[i];
+      const on = game.playerCount === i + 1;
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? '#ecfeff' : '#ffffff', on ? '#0f766e' : '#cbd5e1', on ? 4 : 2);
+      text((i + 1) + (i === 0 ? ' PLAYER' : ' PLAYERS'), r.x + r.w / 2, r.y + r.h / 2, 'bold 18px "Segoe UI", system-ui, sans-serif', on ? '#0f766e' : '#334155', 'center');
+    }
+
+    text('DIFFICULTY', VW / 2, 330, 'bold 12px "Segoe UI", system-ui, sans-serif', focus === 1 ? '#b45309' : '#64748b', 'center');
+    const tierIds = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+    for (let i = 0; i < 4; i++) {
+      const r = layout.tiers[i];
+      const meta = TIER_META[tierIds[i]];
+      const on = game.tier === tierIds[i];
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? '#fffbeb' : '#ffffff', on ? meta.tint : '#cbd5e1', on ? 4 : 2);
+      text(meta.name, r.x + r.w / 2, r.y + 24, 'bold 16px "Segoe UI", system-ui, sans-serif', meta.tint, 'center');
+      text(meta.blurb, r.x + r.w / 2, r.y + 46, '12px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+    }
+
+    text('MODE', VW / 2, 452, 'bold 12px "Segoe UI", system-ui, sans-serif', focus === 2 ? '#b45309' : '#64748b', 'center');
+    const modeIds = ['SOLO', 'COOP', 'DUEL'];
+    for (let i = 0; i < 3; i++) {
+      const r = layout.modes[i];
+      const id = modeIds[i];
+      const meta = MODE_META[id];
+      const allowed = (game.playerCount === 1 && id === 'SOLO') || (game.playerCount > 1 && id !== 'SOLO');
+      const on = game.mode === id && allowed;
+      ctx.save();
+      ctx.globalAlpha = allowed ? 1 : 0.38;
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? '#f0fdfa' : '#ffffff', on ? meta.tint : '#cbd5e1', on ? 4 : 2);
+      text(meta.name, r.x + r.w / 2, r.y + 24, 'bold 16px "Segoe UI", system-ui, sans-serif', meta.tint, 'center');
+      text(meta.blurb, r.x + r.w / 2, r.y + 46, '12px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+      ctx.restore();
+    }
+
+    const start = layout.start;
+    const startHot = focus === 3;
+    roundRect(start.x, start.y, start.w, start.h, 16, '#0f766e', startHot ? '#fbbf24' : '#115e59', startHot ? 4 : 2);
+    text('START THE SHIFT', start.x + start.w / 2, start.y + start.h / 2, 'bold 22px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    text(controlBlurb(), VW / 2, 648, '13px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+    if (game.playerCount === 1) {
+      text('Add a 2nd toymaker to open Team Co-op and Factory Duel.', VW / 2, 672, '12px "Segoe UI", system-ui, sans-serif', '#64748b', 'center');
+    }
+    drawMute();
+  }
+
+  function drawResults() {
+    drawBackground();
+    drawMute();
+    roundRect(180, 70, VW - 360, 580, 24, 'rgba(255,255,255,0.96)', '#7dd3fc', 3);
+    const res = game.result || { ranOut: false, winner: -1, accuracy: 0 };
+    const title = res.ranOut ? 'FACTORY HEARTS RAN OUT' : 'SHIFT COMPLETE';
+    text(title, VW / 2, 120, 'bold 34px "Segoe UI", system-ui, sans-serif', res.ranOut ? '#be123c' : '#0f766e', 'center');
+    text(TIER_META[game.tier].role + '  ·  ' + (game.mode === 'COOP' ? 'TEAM CO-OP' : MODE_META[game.mode].name), VW / 2, 160, '600 16px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+
+    if (game.mode === 'DUEL') {
+      text(res.winner < 0 ? 'SHARED BELT — TIE' : (game.players[res.winner].name + ' ' + game.players[res.winner].full + ' WINS'), VW / 2, 210, 'bold 24px "Segoe UI", system-ui, sans-serif', '#b45309', 'center');
+      for (let i = 0; i < game.playerCount; i++) {
+        const p = game.players[i];
+        const x = 420 + i * 180;
+        drawHat(x, 250, p.color);
+        text(p.name, x, 290, 'bold 16px "Segoe UI", system-ui, sans-serif', p.color, 'center');
+        drawStar(x - 16, 320, 12, '#fbbf24');
+        text(String(p.stars), x + 8, 320, 'bold 22px "Segoe UI", system-ui, sans-serif', '#0f172a', 'left');
+        text(fmt(p.score) + ' pts', x, 348, '13px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+      }
+    } else if (game.mode === 'COOP') {
+      text('TEAM SCORE', VW / 2, 214, 'bold 14px "Segoe UI", system-ui, sans-serif', '#64748b', 'center');
+      text(fmt(game.score), VW / 2, 258, 'bold 48px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+      text('One crew. One score. Hearts left: ' + game.hearts, VW / 2, 304, '16px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+    } else {
+      text('TOYMAKER POINTS', VW / 2, 214, 'bold 14px "Segoe UI", system-ui, sans-serif', '#64748b', 'center');
+      text(fmt(game.score), VW / 2, 258, 'bold 48px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    }
+
+    const y0 = game.mode === 'SOLO' ? 330 : (game.mode === 'COOP' ? 350 : 390);
+    text('Orders shipped  ' + game.shipped + ' / ' + ORDERS, VW / 2, y0, '600 18px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text('Clean shipments  ' + game.clean + '    Accuracy  ' + res.accuracy + '%    Best combo  ' + game.bestCombo, VW / 2, y0 + 32, '16px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+
+    if (game.lastRound) {
+      roundRect(240, y0 + 58, 800, 78, 12, '#f0fdfa', '#99f6e4', 2);
+      text('LAST BLUEPRINT', VW / 2, y0 + 78, 'bold 12px "Segoe UI", system-ui, sans-serif', '#0f766e', 'center');
+      text(identityLine(game.lastRound), VW / 2, y0 + 106, '600 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    }
+
+    const layout = resultLayout();
+    roundRect(layout.again.x, layout.again.y, layout.again.w, layout.again.h, 14, '#0f766e', '#115e59', 2);
+    text('RUN ANOTHER SHIFT', layout.again.x + layout.again.w / 2, layout.again.y + 27, 'bold 16px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    roundRect(layout.title.x, layout.title.y, layout.title.w, layout.title.h, 14, '#ffffff', '#0284c7', 2);
+    text('BACK TO TITLE', layout.title.x + layout.title.w / 2, layout.title.y + 27, 'bold 16px "Segoe UI", system-ui, sans-serif', '#0369a1', 'center');
+    text('Enter runs another shift. Esc returns to the title.', VW / 2, 640, '13px "Segoe UI", system-ui, sans-serif', '#64748b', 'center');
+  }
+
+  function drawPlay() {
+    drawBackground();
+    drawHUD();
+    drawBlueprint();
+    drawStage();
+    drawTip();
+    drawCards();
+    drawFloaters();
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastNow) / 1000) || 0.016;
+    lastNow = now;
+    animT += dt;
+    try {
+      pollGamepads();
+      update(dt);
+      ctx.save();
+      if (game.shake > 0) ctx.translate((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6);
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      if (game.screen === 'TITLE') drawTitle();
+      else if (game.screen === 'RESULTS') drawResults();
+      else drawPlay();
+      ctx.restore();
+    } catch (err) {
+      ctx.restore();
+      if (!window.__loopError) window.__loopError = String(err && err.stack ? err.stack : err);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
