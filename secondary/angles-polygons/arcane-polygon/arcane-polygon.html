@@ -1,0 +1,3585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Arcane Polygon: Elemental AoE Spellcaster</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314081f'/%3E%3Cpolygon points='32,8 52,20 52,44 32,56 12,44 12,20' fill='none' stroke='%23ffd56a' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23ff5a1f'/%3E%3C/svg%3E">
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #100814;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    outline: none;
+  }
+  noscript {
+    color: #f7f0e4;
+    font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>Arcane Polygon needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game" tabindex="0" aria-label="Arcane Polygon. Elemental area spellcaster for Secondary 1 polygon angles. Choose a mage, a difficulty, and solo, co-op, or duel. Answer with the mouse, number keys, or a gamepad."></canvas>
+<script>
+'use strict';
+
+/* Arcane Polygon: Elemental AoE Spellcaster
+   Singapore Secondary 1 — interior and exterior angles of polygons.
+   Every wave is generated, solved, and checked before it is shown. */
+
+const W = 1280;
+const H = 720;
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const DEG = '\u00b0';
+const MINUS = '\u2212';
+const ANGLE = '\u2220';
+const CLEAN = [5, 6, 8, 9, 10, 12, 15, 18, 20, 24];
+const BLAST_DUR = 2.2;
+const JOIN = [3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24];
+
+const COL = {
+  bg: '#100814',
+  ink: '#f7f0e4',
+  dim: '#b6a7c9',
+  gold: '#ffd56a',
+  good: '#7dffa8',
+  bad: '#ff5d7a',
+  p1: '#ff4d6a',
+  p2: '#4db4ff',
+  p3: '#3ee08f',
+  panel: 'rgba(16, 8, 28, 0.82)',
+  line: 'rgba(255, 214, 140, 0.45)'
+};
+
+const PLAYER_COL = [COL.p1, COL.p2, COL.p3];
+const PLAYER_NAME = ['Crimson Mage', 'Azure Mage', 'Emerald Mage'];
+const KEY_LABELS = [
+  ['1', '2', '3', '4'],
+  ['Q', 'W', 'E', 'R'],
+  ['U', 'I', 'O', 'P']
+];
+
+const EL = {
+  FIRE: { name: 'FIRE', a: '#ff5a1f', b: '#ffd15a', c: '#ff2d55', deep: '#4a0d08' },
+  ICE: { name: 'ICE', a: '#7ef0ff', b: '#e7fdff', c: '#3d8bff', deep: '#062838' },
+  EARTH: { name: 'EARTH', a: '#3ecf7a', b: '#e6c36a', c: '#1f8a4c', deep: '#102816' },
+  LIGHTNING: { name: 'LIGHTNING', a: '#d9a6ff', b: '#ffe56a', c: '#7c3aed', deep: '#241038' }
+};
+
+const TIER_META = {
+  EASY: { name: 'EASY', role: 'Apprentice Caster', blurb: 'Regular polygons and exterior sums' },
+  MEDIUM: { name: 'MEDIUM', role: 'Elemental Adept', blurb: 'Ratios and algebraic angle sums' },
+  HARD: { name: 'HARD', role: 'Archmage Tactician', blurb: 'Regular polygons joined at a point' },
+  EXTREME: { name: 'EXTREME', role: 'Grand Sorcerer', blurb: 'Extended sides under a spell timer' }
+};
+
+const SHAPE = {
+  3: 'triangle', 4: 'quadrilateral', 5: 'pentagon', 6: 'hexagon', 8: 'octagon',
+  9: 'nonagon', 10: 'decagon', 12: '12-gon', 15: '15-gon', 18: '18-gon', 20: '20-gon', 24: '24-gon'
+};
+
+const POLY_NAME = {
+  3: 'equilateral triangle', 4: 'square', 5: 'regular pentagon', 6: 'regular hexagon',
+  8: 'regular octagon', 9: 'regular nonagon', 10: 'regular decagon', 12: 'regular 12-gon',
+  15: 'regular 15-gon', 18: 'regular 18-gon', 20: 'regular 20-gon', 24: 'regular 24-gon'
+};
+
+let GAP_PAIRS = [];
+let JOIN_TRIOS = [];
+let RATIO_BOOK = null;
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const view = { s: 1, ox: 0, oy: 0 };
+const keysDown = new Set();
+const keyEdge = new Set();
+const padMem = [0, 1, 2].map(function () {
+  return { b: [], left: false, right: false, up: false, down: false, cool: 0 };
+});
+
+const game = {
+  screen: 'title',
+  mode: 'SOLO',
+  tier: 'EASY',
+  playerCount: 1,
+  chars: ['wizard', 'witch', 'wizard'],
+  score: 0,
+  scores: [0, 0, 0],
+  lives: 3,
+  livesP: [3, 3, 3],
+  stars: [0, 0, 0],
+  wave: 1,
+  cleared: 0,
+  wrongs: 0,
+  step: 0,
+  phase: 'play',
+  phaseT: 0,
+  problem: null,
+  history: [],
+  elementOrder: ['FIRE', 'ICE', 'EARTH', 'LIGHTNING'],
+  reveal: false,
+  showAnswer: false,
+  timer: 0,
+  timerMax: 0,
+  waveTime: 0,
+  lock: 0,
+  tip: '',
+  tipGood: false,
+  shake: 0,
+  flash: 0,
+  lunge: 0,
+  particles: [],
+  floats: [],
+  monsters: [],
+  horde: { cx: 1100, cy: 360 },
+  sel: [0, 0, 0],
+  stun: [0, 0, 0],
+  anchorPlayer: -1,
+  paused: false,
+  time: 0,
+  mouse: { x: 640, y: 360, inside: false },
+  click: null,
+  hits: [],
+  padOn: [false, false, false],
+  overReason: '',
+  overTip: '',
+  winner: '',
+  best: {},
+  fatal: '',
+  lastAward: ''
+};
+
+const audio = {
+  ctx: null,
+  master: null,
+  music: null,
+  muted: false,
+  started: false,
+  step: 0,
+  next: 0,
+  noise: null
+};
+
+try { audio.muted = localStorage.getItem('arcane-polygon-mute') === '1'; } catch (err) { audio.muted = false; }
+try {
+  const saved = localStorage.getItem('arcane-polygon-best');
+  if (saved) game.best = JSON.parse(saved) || {};
+} catch (err) { game.best = {}; }
+
+function extOf(n) {
+  if (n < 3 || (360 % n) !== 0) return null;
+  return 360 / n;
+}
+function intOf(n) {
+  const e = extOf(n);
+  return e == null ? null : 180 - e;
+}
+function sumOf(n) { return (n - 2) * 180; }
+function polyName(n) { return POLY_NAME[n] || ('regular ' + n + '-gon'); }
+function shapeName(n) { return SHAPE[n] || (n + '-gon'); }
+function articled(n, cap) {
+  const name = polyName(n);
+  const art = /^[aeiou]/i.test(name) ? 'an' : 'a';
+  return (cap ? art.charAt(0).toUpperCase() + art.slice(1) : art) + ' ' + name;
+}
+function pairPhrase(a, b) {
+  if (a === b) {
+    const name = polyName(a);
+    return 'Two ' + name + (name.charAt(name.length - 1) === 's' ? 'es' : 's');
+  }
+  return articled(a, true) + ' and ' + articled(b, false);
+}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function randInt(rng, a, b) { return a + Math.floor(rng() * (b - a + 1)); }
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+function shuffle(list, rng) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+function deg(n) { return n + DEG; }
+function fmtSides(n) { return n + ' sides'; }
+
+function sideLengths(interiors) {
+  const n = interiors.length;
+  const U = [];
+  let h = 0;
+  for (let i = 0; i < n; i++) {
+    U.push({ x: Math.cos(h), y: Math.sin(h) });
+    h += Math.PI - interiors[(i + 1) % n] * Math.PI / 180;
+  }
+  let sx = 0;
+  let sy = 0;
+  let a00 = 0;
+  let a01 = 0;
+  let a11 = 0;
+  for (let i = 0; i < n; i++) {
+    sx += U[i].x;
+    sy += U[i].y;
+    a00 += U[i].x * U[i].x;
+    a01 += U[i].x * U[i].y;
+    a11 += U[i].y * U[i].y;
+  }
+  const det = a00 * a11 - a01 * a01;
+  if (Math.abs(det) < 1e-8) return null;
+  const b0 = -sx;
+  const b1 = -sy;
+  const y0 = (a11 * b0 - a01 * b1) / det;
+  const y1 = (-a01 * b0 + a00 * b1) / det;
+  const L = U.map(function (u) { return 1 + u.x * y0 + u.y * y1; });
+  if (L.some(function (v) { return v <= 0.22; })) return null;
+  return { U: U, L: L };
+}
+function irregularPoints(interiors) {
+  const sol = sideLengths(interiors);
+  if (!sol) return null;
+  const pts = [];
+  let x = 0;
+  let y = 0;
+  for (let i = 0; i < interiors.length; i++) {
+    pts.push({ x: x, y: y });
+    x += sol.U[i].x * sol.L[i];
+    y += sol.U[i].y * sol.L[i];
+  }
+  return pts;
+}
+function regularPoints(n) {
+  const pts = [];
+  const rot = -Math.PI / 2;
+  for (let i = 0; i < n; i++) {
+    const a = rot + i * 2 * Math.PI / n;
+    pts.push({ x: Math.cos(a), y: Math.sin(a) });
+  }
+  return pts;
+}
+function lineIntersect(a, b, c, d) {
+  const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
+  if (Math.abs(den) < 1e-8) return null;
+  const t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
+  return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y), t: t };
+}
+function extendedFigure(n) {
+  const pts = regularPoints(n);
+  const P = pts[n - 1];
+  const Q = pts[0];
+  const R = pts[1];
+  const S = pts[2];
+  const T = pts[3];
+  const U = pts[4 % n];
+  const X = lineIntersect(Q, R, S, T);
+  return { pts: pts, P: P, Q: Q, R: R, S: S, T: T, U: U, X: X };
+}
+
+function buildTables() {
+  GAP_PAIRS = [];
+  JOIN_TRIOS = [];
+  for (let i = 0; i < JOIN.length; i++) {
+    for (let j = i; j < JOIN.length; j++) {
+      const a = JOIN[i];
+      const b = JOIN[j];
+      const ia = intOf(a);
+      const ib = intOf(b);
+      const x = 360 - ia - ib;
+      if (x >= 36 && x <= 150 && x !== ia && x !== ib) {
+        GAP_PAIRS.push({ a: a, b: b, ia: ia, ib: ib, x: x });
+      }
+      const R = 360 - ia - ib;
+      const E = 180 - R;
+      if (E > 0 && E < 180 && (360 % E) === 0) {
+        const n = 360 / E;
+        if (n >= 3 && n <= 24 && intOf(n) === R) {
+          JOIN_TRIOS.push({ a: a, b: b, n: n, R: R, E: E, ia: ia, ib: ib });
+        }
+      }
+    }
+  }
+}
+function ratioBook() {
+  if (RATIO_BOOK) return RATIO_BOOK;
+  const book = { 5: [], 6: [] };
+  [5, 6].forEach(function (n) {
+    const S = sumOf(n);
+    const lim = n === 5 ? 12 : 14;
+    const parts = [];
+    function rec(prev) {
+      if (book[n].length > 18) return;
+      if (parts.length === n) {
+        let U = 0;
+        for (let k = 0; k < parts.length; k++) U += parts[k];
+        if (S % U !== 0) return;
+        const unit = S / U;
+        if (unit < 9 || unit > 36) return;
+        const ints = parts.map(function (p) { return p * unit; });
+        if (ints.some(function (v) { return v < 48 || v > 168; })) return;
+        const uniq = {};
+        for (let k = 0; k < ints.length; k++) uniq[ints[k]] = true;
+        if (Object.keys(uniq).length !== n) return;
+        if (!sideLengths(ints)) return;
+        book[n].push({ parts: parts.slice(), unit: unit, ints: ints, S: S, U: U });
+        return;
+      }
+      for (let p = prev + 1; p <= lim; p++) {
+        parts.push(p);
+        rec(p);
+        parts.pop();
+        if (book[n].length > 18) return;
+      }
+    }
+    rec(0);
+  });
+  RATIO_BOOK = book;
+  return book;
+}
+
+function alertWhy(trap, num) {
+  if (trap === 'divInterior') {
+    if (num && num.I != null && num.E != null && num.n != null) {
+      return 'Always divide 360' + DEG + ' by the EXTERIOR angle, not the interior angle! First find Exterior Angle = 180' + DEG + ' ' + MINUS + ' ' + num.I + DEG + ' = ' + num.E + DEG + ', then n = 360' + DEG + ' \u00f7 ' + num.E + DEG + ' = ' + num.n + ' sides!';
+    }
+    return 'Always divide 360' + DEG + ' by the EXTERIOR angle, not the interior angle!';
+  }
+  if (trap === 'sumFormula') {
+    if (num && num.n) {
+      return 'A polygon with n sides splits into (n ' + MINUS + ' 2) triangles! Subtract 2 from the number of sides BEFORE multiplying by 180' + DEG + '! Sum = (' + num.n + ' ' + MINUS + ' 2) \u00d7 180' + DEG + ' = ' + sumOf(num.n) + DEG + '.';
+    }
+    return 'A polygon with n sides splits into (n ' + MINUS + ' 2) triangles! Subtract 2 from the number of sides BEFORE multiplying by 180' + DEG + '!';
+  }
+  if (trap === 'straight') {
+    return 'Interior and exterior angles at any vertex lie on a straight line and add up to 180' + DEG + '!';
+  }
+  if (trap === 'point360') {
+    return 'Where polygons meet at a shared corner, all angles around that point add up to 360' + DEG + '!';
+  }
+  return 'Check the polygon rule on the scroll, then choose the next rune.';
+}
+function buildCards(correct, wrongs, format, num) {
+  if (!Number.isInteger(correct) || correct <= 0) return null;
+  const chosen = [];
+  const seen = {};
+  seen[correct] = true;
+  for (let i = 0; i < wrongs.length && chosen.length < 3; i++) {
+    const w = wrongs[i];
+    if (!w || !Number.isInteger(w.value) || w.value <= 0 || w.value > 4000 || seen[w.value]) continue;
+    seen[w.value] = true;
+    chosen.push({
+      value: w.value,
+      ok: false,
+      trap: w.trap || '',
+      why: w.why || alertWhy(w.trap, num),
+      text: format(w.value),
+      spent: false
+    });
+  }
+  const fillers = [correct + 10, correct - 10, correct + 5, correct - 4, correct + 15, correct + 2, Math.max(1, correct - 2), correct + 8, correct + 20];
+  for (let i = 0; i < fillers.length && chosen.length < 3; i++) {
+    const v = fillers[i];
+    if (!Number.isInteger(v) || v <= 0 || seen[v]) continue;
+    seen[v] = true;
+    chosen.push({
+      value: v,
+      ok: false,
+      trap: '',
+      why: 'That value does not satisfy the polygon equation. Recompute the anchor, then the final rune.',
+      text: format(v),
+      spent: false
+    });
+  }
+  if (chosen.length < 3) return null;
+  const cards = [{
+    value: correct,
+    ok: true,
+    trap: '',
+    why: '',
+    text: format(correct),
+    spent: false
+  }].concat(chosen.slice(0, 3));
+  return shuffle(cards, Math.random);
+}
+function nearClean(n) {
+  return CLEAN.filter(function (v) { return v !== n; }).sort(function (a, b) {
+    return Math.abs(a - n) - Math.abs(b - n);
+  });
+}
+
+function checkProof(proof, answers) {
+  if (!proof) return 'proof';
+  const t = proof.type;
+  if (t === 'ext-n') {
+    if (extOf(proof.n) !== proof.E) return 'ext';
+    if (answers[0] !== 360 || answers[1] !== proof.n) return 'ans';
+    return '';
+  }
+  if (t === 'int-n') {
+    if (intOf(proof.n) !== proof.I) return 'int';
+    if (proof.E !== 180 - proof.I) return 'ext';
+    if (proof.n !== 360 / proof.E) return 'n';
+    if (answers[0] !== proof.E || answers[1] !== proof.n) return 'ans';
+    return '';
+  }
+  if (t === 'sum') {
+    if (answers[0] !== proof.n - 2 || answers[1] !== sumOf(proof.n)) return 'ans';
+    return '';
+  }
+  if (t === 'unequal') {
+    if (proof.A + (proof.n - 1) * proof.x !== 360) return 'sum';
+    if (answers[0] !== 360 - proof.A || answers[1] !== proof.x) return 'ans';
+    return '';
+  }
+  if (t === 'k') {
+    if (proof.I !== proof.k * proof.E) return 'ratio';
+    if (proof.I + proof.E !== 180) return 'line';
+    if (360 / proof.E !== proof.n) return 'n';
+    if (intOf(proof.n) !== proof.I) return 'int';
+    if (answers[0] !== proof.E || answers[1] !== proof.n) return 'ans';
+    return '';
+  }
+  if (t === 'ratio') {
+    let s = 0;
+    for (let i = 0; i < proof.ints.length; i++) s += proof.ints[i];
+    if (s !== sumOf(proof.n)) return 'sum';
+    if (proof.unit * proof.U !== sumOf(proof.n)) return 'unit';
+    if (answers[0] !== proof.unit || answers[1] !== proof.target) return 'ans';
+    return '';
+  }
+  if (t === 'algebra') {
+    if (proof.S !== sumOf(proof.n)) return 'sum';
+    let s = 0;
+    for (let i = 0; i < proof.exprs.length; i++) {
+      const e = proof.exprs[i];
+      s += e.a * proof.x + e.b;
+    }
+    if (s !== proof.S) return 'eval';
+    if (proof.coeff * proof.x + proof.rest !== proof.S) return 'eq';
+    if (answers[0] !== proof.S || answers[1] !== proof.x) return 'ans';
+    return '';
+  }
+  if (t === 'gap') {
+    if (intOf(proof.a) + intOf(proof.b) + proof.x !== 360) return 'point';
+    if (answers[0] !== proof.focus || answers[1] !== proof.x) return 'ans';
+    return '';
+  }
+  if (t === 'joinn') {
+    if (intOf(proof.a) + intOf(proof.b) + proof.R !== 360) return 'point';
+    if (intOf(proof.n) !== proof.R) return 'int';
+    if (360 / proof.E !== proof.n || proof.E !== 180 - proof.R) return 'ext';
+    if (answers[0] !== proof.R || answers[1] !== proof.n) return 'ans';
+    return '';
+  }
+  if (t === 'iso') {
+    if (intOf(proof.a) + intOf(proof.b) + proof.R !== 360) return 'point';
+    if (intOf(proof.n) !== proof.R) return 'int';
+    if (proof.base * 2 !== proof.R) return 'base';
+    if ((180 - proof.E) / 2 !== proof.base) return 'iso';
+    if (answers[0] !== proof.R || answers[1] !== proof.base) return 'ans';
+    return '';
+  }
+  if (t === 'rxs') {
+    const E = extOf(proof.n);
+    if (E == null || proof.base !== E) return 'base';
+    if (proof.xAng !== 180 - 2 * E) return 'x';
+    if (answers[0] !== proof.base || answers[1] !== proof.xAng) return 'ans';
+    return '';
+  }
+  if (t === 'qtu') {
+    const E = extOf(proof.n);
+    const I = intOf(proof.n);
+    if (proof.I !== I || proof.q !== I - E) return 'q';
+    if (answers[0] !== proof.I || answers[1] !== proof.q) return 'ans';
+    return '';
+  }
+  if (t === 'ext-int') {
+    if (proof.E !== extOf(proof.n) || proof.I !== intOf(proof.n)) return 'ang';
+    if (answers[0] !== proof.E || answers[1] !== proof.I) return 'ans';
+    return '';
+  }
+  return 'type';
+}
+function audit(p) {
+  if (!p || !p.steps || p.steps.length !== 2 || !p.answers || !p.diagram) return 'shape';
+  if (!p.prompt || p.prompt.length < 16) return 'prompt';
+  if (!p.aoeN || p.aoeN < 3) return 'aoe';
+  for (let s = 0; s < 2; s++) {
+    const step = p.steps[s];
+    if (!step || !step.cards || step.cards.length !== 4 || !step.ask) return 'cards';
+    const oks = step.cards.filter(function (c) { return c.ok; });
+    if (oks.length !== 1 || oks[0].value !== p.answers[s]) return 'ok';
+    const seen = {};
+    for (let i = 0; i < step.cards.length; i++) {
+      const c = step.cards[i];
+      if (!Number.isInteger(c.value) || c.value <= 0 || seen[c.value]) return 'dup';
+      seen[c.value] = true;
+      if (!c.text) return 'text';
+    }
+  }
+  return checkProof(p.proof, p.answers);
+}
+
+function pack(spec) {
+  const num = spec.num || {};
+  const c1 = buildCards(spec.a1, spec.w1, spec.f1, num);
+  const c2 = buildCards(spec.a2, spec.w2, spec.f2, num);
+  if (!c1 || !c2) return null;
+  const problem = {
+    key: spec.key,
+    tier: spec.tier,
+    kind: spec.kind,
+    prompt: spec.prompt,
+    bridge: spec.bridge,
+    hint: spec.hint,
+    aoeN: spec.aoeN,
+    hideN: !!spec.hideN,
+    answers: [spec.a1, spec.a2],
+    proof: spec.proof,
+    num: num,
+    diagram: spec.diagram,
+    steps: [
+      { ask: spec.ask1, cards: c1, glow: spec.glow1 },
+      { ask: spec.ask2, cards: c2, glow: spec.glow2 }
+    ]
+  };
+  const err = audit(problem);
+  if (err) return null;
+  return problem;
+}
+
+function genExtN(rng) {
+  const n = pick(rng, CLEAN);
+  const E = extOf(n);
+  const wrongN = nearClean(n).slice(0, 3).map(function (v) {
+    return { value: v, why: 'Use n = 360' + DEG + ' \u00f7 ' + E + DEG + '. ' + v + ' belongs to a different exterior angle.' };
+  });
+  if (E !== n) wrongN.push({ value: E, why: E + DEG + ' is the exterior angle itself. The side count is 360 \u00f7 that angle.' });
+  return pack({
+    key: 'ext-n|' + n,
+    tier: 'EASY',
+    kind: 'ext-n',
+    prompt: 'Each exterior angle of a regular polygon is ' + E + DEG + '. How many sides does the polygon have?',
+    ask1: 'Sum of the exterior angles',
+    ask2: 'Number of sides n',
+    a1: 360,
+    a2: n,
+    f1: deg,
+    f2: fmtSides,
+    w1: [
+      { value: 180, trap: 'straight' },
+      { value: sumOf(n), trap: 'sumFormula' },
+      { value: n * 180, trap: 'sumFormula' }
+    ],
+    w2: wrongN,
+    num: { n: n, E: E, I: intOf(n) },
+    aoeN: n,
+    hideN: true,
+    bridge: 'Exterior angles of any convex polygon sum to 360' + DEG + '. Divide that sum by ' + E + DEG + '.',
+    hint: 'The exterior angles of every convex polygon add up to 360' + DEG + ', so n = 360 \u00f7 ' + E + '.',
+    proof: { type: 'ext-n', n: n, E: E },
+    diagram: { type: 'corner', n: n, given: 'ext', givenText: E + DEG },
+    glow1: 'sum',
+    glow2: 'ext'
+  });
+}
+function genIntN(rng) {
+  const n = pick(rng, CLEAN);
+  const I = intOf(n);
+  const E = extOf(n);
+  const wrongN = nearClean(n).slice(0, 2).map(function (v) {
+    return { value: v, why: 'Find the exterior angle first (180' + DEG + ' ' + MINUS + ' ' + I + DEG + ' = ' + E + DEG + '), then n = 360 \u00f7 ' + E + '.' };
+  });
+  if ((360 % I) === 0 && (360 / I) !== n) {
+    wrongN.unshift({ value: 360 / I, trap: 'divInterior' });
+  }
+  const half = 180 / E;
+  if (Number.isInteger(half) && half !== n) {
+    wrongN.push({ value: half, why: 'Divide the full turn 360' + DEG + ' by the exterior angle, not 180' + DEG + '.' });
+  }
+  wrongN.push({ value: E, why: 'You stopped at the exterior angle. Keep going: n = 360 \u00f7 ' + E + '.' });
+  return pack({
+    key: 'int-n|' + n,
+    tier: 'EASY',
+    kind: 'int-n',
+    prompt: 'Each interior angle of a regular polygon is ' + I + DEG + '. How many sides does the polygon have?',
+    ask1: 'Exterior angle at one vertex',
+    ask2: 'Number of sides n',
+    a1: E,
+    a2: n,
+    f1: deg,
+    f2: fmtSides,
+    w1: [
+      { value: I, trap: 'straight' },
+      { value: 90, why: '90' + DEG + ' is the exterior angle of a square, not of this polygon.' },
+      { value: 180 - E, trap: 'straight' }
+    ],
+    w2: wrongN,
+    num: { n: n, E: E, I: I },
+    aoeN: n,
+    hideN: true,
+    bridge: 'Exterior angle locked at ' + E + DEG + '. Now divide 360' + DEG + ' by that exterior angle.',
+    hint: 'Interior + exterior = 180' + DEG + '. Then n = 360 \u00f7 exterior.',
+    proof: { type: 'int-n', n: n, I: I, E: E },
+    diagram: { type: 'corner', n: n, given: 'int', givenText: I + DEG },
+    glow1: 'ext',
+    glow2: 'int'
+  });
+}
+function genSum(rng) {
+  const n = pick(rng, CLEAN);
+  const tris = n - 2;
+  const S = sumOf(n);
+  return pack({
+    key: 'sum|' + n,
+    tier: 'EASY',
+    kind: 'sum',
+    prompt: 'A convex polygon has ' + n + ' sides. What is the sum of its interior angles?',
+    ask1: 'Triangles the polygon splits into',
+    ask2: 'Sum of the interior angles',
+    a1: tris,
+    a2: S,
+    f1: function (v) { return v + (v === 1 ? ' triangle' : ' triangles'); },
+    f2: deg,
+    w1: [
+      { value: n, trap: 'sumFormula' },
+      { value: n - 1, why: 'Subtract 2, not 1. A polygon of n sides splits into (n ' + MINUS + ' 2) triangles.' },
+      { value: Math.max(1, n - 3), why: 'The split is (n ' + MINUS + ' 2) triangles.' }
+    ],
+    w2: [
+      { value: n * 180, trap: 'sumFormula' },
+      { value: (n - 1) * 180, why: 'Use (n ' + MINUS + ' 2) \u00d7 180' + DEG + ', not (n ' + MINUS + ' 1) \u00d7 180' + DEG + '.' },
+      { value: Math.max(180, (n - 3) * 180), why: 'Count (n ' + MINUS + ' 2) triangles before multiplying by 180' + DEG + '.' }
+    ],
+    num: { n: n },
+    aoeN: n,
+    hideN: false,
+    bridge: 'There are ' + tris + ' triangles. Multiply that count by 180' + DEG + '.',
+    hint: 'Sum of interior angles = (n ' + MINUS + ' 2) \u00d7 180' + DEG + '.',
+    proof: { type: 'sum', n: n },
+    diagram: { type: 'full', n: n, caption: n + ' sides' },
+    glow1: 'tris',
+    glow2: 'ints'
+  });
+}
+function genUnequal(rng) {
+  const n = pick(rng, CLEAN);
+  const k = n - 1;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const maxX = Math.floor((360 - 24) / k);
+    if (maxX < 8) continue;
+    const minX = Math.max(8, maxX - 22);
+    const x = randInt(rng, minX, maxX);
+    const A = 360 - k * x;
+    if (A < 24 || A > 165 || Math.abs(A - x) < 8) continue;
+    const left = 360 - A;
+    const wrongX = [];
+    if (left % n === 0 && left / n !== x) {
+      wrongX.push({ value: left / n, why: 'There are ' + k + ' equal exteriors, not ' + n + '. Divide ' + left + DEG + ' by ' + k + '.' });
+    }
+    if (k > 2 && left % (k - 1) === 0) {
+      const v = left / (k - 1);
+      if (v !== x) wrongX.push({ value: v, why: 'Keep all ' + k + ' equal angles in the divisor.' });
+    }
+    const alt = 180 - A;
+    if (alt > 0 && alt % k === 0) {
+      const v = alt / k;
+      if (v !== x && v > 0) wrongX.push({ value: v, trap: 'straight' });
+    }
+    wrongX.push({ value: A, why: A + DEG + ' is the odd exterior. The equal ones share what remains of 360' + DEG + '.' });
+    const w1 = [
+      { value: 360, why: 'Subtract the given exterior before you share the remainder.' },
+      { value: sumOf(n), trap: 'sumFormula' },
+      { value: Math.abs(180 - A) > 0 ? 180 - A : A + x, trap: 'straight' }
+    ];
+    const problem = pack({
+      key: 'unequal|' + n + '|' + A + '|' + x,
+      tier: 'EASY',
+      kind: 'unequal',
+      prompt: 'A convex ' + shapeName(n) + ' has one exterior angle of ' + A + DEG + ' and the remaining ' + k + ' exterior angles are each x' + DEG + '. Find x.',
+      ask1: 'Sum of the equal exterior angles',
+      ask2: 'Each equal exterior angle x',
+      a1: left,
+      a2: x,
+      f1: deg,
+      f2: deg,
+      w1: w1,
+      w2: wrongX,
+      num: { n: n, E: x, I: 180 - x },
+      aoeN: n,
+      hideN: false,
+      bridge: 'The equal exteriors share ' + left + DEG + '. Divide by ' + k + '.',
+      hint: 'All exterior angles sum to 360' + DEG + '. Subtract ' + A + DEG + ', then divide by ' + k + '.',
+      proof: { type: 'unequal', n: n, A: A, x: x },
+      diagram: { type: 'unequal', n: n, A: A, count: k },
+      glow1: 'rest',
+      glow2: 'x'
+    });
+    if (problem) return problem;
+  }
+  return null;
+}
+function genK(rng) {
+  const evens = CLEAN.filter(function (n) { return n % 2 === 0; });
+  const n = pick(rng, evens);
+  const k = n / 2 - 1;
+  const E = 180 / (k + 1);
+  const I = k * E;
+  const wrongN = nearClean(n).filter(function (v) { return v % 2 === 0; }).slice(0, 2).map(function (v) {
+    return { value: v, why: 'Exterior angle is ' + E + DEG + ', so n = 360 \u00f7 ' + E + ' = ' + n + '.' };
+  });
+  wrongN.push({ value: E, why: E + DEG + ' is the exterior angle. The side count is 360 \u00f7 ' + E + '.' });
+  if (k !== n) wrongN.push({ value: k, why: k + ' is the multiplier, not the number of sides.' });
+  return pack({
+    key: 'k|' + n,
+    tier: 'MEDIUM',
+    kind: 'k',
+    prompt: 'Each interior angle of a regular polygon is ' + k + ' times each exterior angle. How many sides does the polygon have?',
+    ask1: 'Each exterior angle',
+    ask2: 'Number of sides n',
+    a1: E,
+    a2: n,
+    f1: deg,
+    f2: fmtSides,
+    w1: [
+      { value: I, trap: 'straight' },
+      { value: 180, why: '180' + DEG + ' is the straight line they share. One part of that line is the exterior angle.' },
+      { value: 2 * E === I ? E + 10 : 2 * E, why: 'Interior and exterior together are ' + (k + 1) + ' equal parts of 180' + DEG + '.' }
+    ],
+    w2: wrongN,
+    num: { n: n, E: E, I: I },
+    aoeN: n,
+    hideN: true,
+    bridge: 'Exterior angle locked at ' + E + DEG + '. n = 360' + DEG + ' \u00f7 ' + E + DEG + '.',
+    hint: 'Interior + exterior = 180' + DEG + ', and the interior is ' + k + ' times the exterior, so ' + (k + 1) + ' parts make 180' + DEG + '.',
+    proof: { type: 'k', n: n, k: k, E: E, I: I },
+    diagram: { type: 'ratio-line', k: k, n: n },
+    glow1: 'ext',
+    glow2: 'int'
+  });
+}
+function genRatio(rng) {
+  const book = ratioBook();
+  const n = rng() < 0.55 ? 5 : 6;
+  const bag = book[n];
+  if (!bag || !bag.length) return null;
+  const row = pick(rng, bag);
+  const ints = row.ints;
+  let minI = ints[0];
+  let maxI = ints[0];
+  for (let i = 1; i < ints.length; i++) {
+    if (ints[i] < minI) minI = ints[i];
+    if (ints[i] > maxI) maxI = ints[i];
+  }
+  const asks = [
+    { id: 'maxExt', name: 'the largest exterior angle', target: 180 - minI },
+    { id: 'minExt', name: 'the smallest exterior angle', target: 180 - maxI },
+    { id: 'maxInt', name: 'the largest interior angle', target: maxI },
+    { id: 'minInt', name: 'the smallest interior angle', target: minI }
+  ];
+  const ask = pick(rng, asks);
+  const wrongU = [
+    { value: Math.round(row.S / n), why: 'That is the average interior angle. Divide the sum by the total number of ratio parts, not by n.' },
+    { value: row.unit * 2, why: '1 unit is the whole sum divided by all the parts, not double a part.' },
+    { value: n * 180 / row.U === row.unit ? row.unit + row.parts[0] : (row.S % (row.U + 1) === 0 ? row.S / (row.U + 1) : row.unit + 3), trap: 'sumFormula' }
+  ];
+  const w2 = [];
+  if (ask.id === 'maxExt' || ask.id === 'minExt') {
+    w2.push({ value: ask.id === 'maxExt' ? minI : maxI, trap: 'straight' });
+    w2.push({ value: ask.id === 'maxExt' ? (180 - maxI) : (180 - minI), why: 'Pair the largest exterior with the smallest interior, and the smallest exterior with the largest interior.' });
+    w2.push({ value: ask.id === 'maxExt' ? maxI : minI, why: 'That is an interior angle. The exterior angle beside it is 180' + DEG + ' minus that interior.' });
+  } else {
+    w2.push({ value: ask.id === 'maxInt' ? minI : maxI, why: 'Check which end of the ratio you were asked for.' });
+    w2.push({ value: 180 - (ask.id === 'maxInt' ? maxI : minI), trap: 'straight' });
+    w2.push({ value: row.unit * row.parts[0] === ask.target ? row.unit * row.parts[1] : row.unit * row.parts[0], why: 'Multiply the correct part of the ratio by the unit you locked.' });
+  }
+  const ratioText = row.parts.join(' : ');
+  return pack({
+    key: 'ratio|' + n + '|' + row.parts.join('.') + '|' + ask.id,
+    tier: 'MEDIUM',
+    kind: 'ratio',
+    prompt: 'The interior angles of a ' + shapeName(n) + ' are in the ratio ' + ratioText + '. Find ' + ask.name + '.',
+    ask1: 'Size of 1 ratio unit',
+    ask2: ask.name.charAt(0).toUpperCase() + ask.name.slice(1),
+    a1: row.unit,
+    a2: ask.target,
+    f1: deg,
+    f2: deg,
+    w1: wrongU,
+    w2: w2,
+    num: { n: n },
+    aoeN: n,
+    hideN: false,
+    bridge: '1 unit = ' + row.unit + DEG + '. Scale the part you need, then use interior + exterior = 180' + DEG + ' if an exterior was asked.',
+    hint: 'Interior sum = (' + n + ' ' + MINUS + ' 2) \u00d7 180' + DEG + ' = ' + row.S + DEG + '. The ratio has ' + row.U + ' parts, so 1 unit = ' + row.S + ' \u00f7 ' + row.U + '.',
+    proof: { type: 'ratio', n: n, ints: ints, unit: row.unit, U: row.U, target: ask.target },
+    diagram: { type: 'irregular', angles: ints, labels: row.parts.map(function (p) { return p + ' parts'; }), caption: 'ratio ' + ratioText },
+    glow1: 'all',
+    glow2: ask.id.indexOf('Ext') >= 0 ? 'ext' : 'int'
+  });
+}
+function exprText(a, b) {
+  if (a === 0) return b + DEG;
+  let body;
+  if (a < 0 && b > 0) {
+    const mag = Math.abs(a) === 1 ? 'x' : Math.abs(a) + 'x';
+    body = b + ' ' + MINUS + ' ' + mag;
+  } else {
+    const xpart = Math.abs(a) === 1 ? 'x' : Math.abs(a) + 'x';
+    if (b === 0) body = (a < 0 ? MINUS : '') + xpart;
+    else if (b > 0) body = xpart + ' + ' + b;
+    else body = xpart + ' ' + MINUS + ' ' + Math.abs(b);
+  }
+  return '(' + body + ')' + DEG;
+}
+function genAlgebra(rng) {
+  const n = rng() < 0.5 ? 5 : 6;
+  const S = sumOf(n);
+  const algCount = n === 5 ? 3 : 4;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const x = randInt(rng, 16, 54);
+    const angles = [];
+    let sum = 0;
+    let okAngles = false;
+    for (let t = 0; t < 30 && !okAngles; t++) {
+      angles.length = 0;
+      sum = 0;
+      for (let i = 0; i < n - 1; i++) {
+        const a = randInt(rng, 78, 148);
+        angles.push(a);
+        sum += a;
+      }
+      const last = S - sum;
+      if (last >= 64 && last <= 160) {
+        angles.push(last);
+        okAngles = true;
+      }
+    }
+    if (!okAngles) continue;
+    const order = shuffle(angles, rng);
+    const exprs = [];
+    let coeff = 0;
+    let rest = 0;
+    let good = true;
+    const seenExpr = {};
+    let usedNeg = false;
+    for (let i = 0; i < n; i++) {
+      if (i < algCount) {
+        let a = randInt(rng, 1, 4);
+        if (!usedNeg && i === algCount - 1 && rng() < 0.75) {
+          a = rng() < 0.5 ? -1 : -2;
+          usedNeg = true;
+        }
+        const b = order[i] - a * x;
+        if (a > 0 && (b < -30 || b > 90)) { good = false; break; }
+        if (a < 0 && (b < 50 || b > 190)) { good = false; break; }
+        const sig = a + ':' + b;
+        if (seenExpr[sig]) { good = false; break; }
+        seenExpr[sig] = true;
+        exprs.push({ a: a, b: b });
+        coeff += a;
+        rest += b;
+      } else {
+        exprs.push({ a: 0, b: order[i] });
+        rest += order[i];
+      }
+    }
+    if (!good || coeff === 0) continue;
+    if (coeff * x + rest !== S) continue;
+    if (!irregularPoints(order)) continue;
+    const labels = exprs.map(function (e) { return exprText(e.a, e.b); });
+    const list = labels.join(', ').replace(/, ([^,]*)$/, ' and $1');
+    const w2 = [];
+    [n * 180, (n - 1) * 180].forEach(function (wrongS, idx) {
+      const numer = wrongS - rest;
+      if (numer % coeff === 0) {
+        const vx = numer / coeff;
+        if (vx > 0 && vx !== x && vx < 200) {
+          w2.push({ value: vx, trap: idx === 0 ? 'sumFormula' : '', why: idx === 0 ? '' : 'The interior sum is (n ' + MINUS + ' 2) \u00d7 180' + DEG + ', not (n ' + MINUS + ' 1) \u00d7 180' + DEG + '.' });
+        }
+      }
+    });
+    w2.push({ value: x + coeff, why: 'Check the coefficient of x after you combine like terms.' });
+    w2.push({ value: Math.max(1, x - 2), why: 'Substitute back: every expression must rebuild an angle, and the angles must sum to ' + S + DEG + '.' });
+    return pack({
+      key: 'alg|' + n + '|' + x + '|' + labels.join(';'),
+      tier: 'MEDIUM',
+      kind: 'algebra',
+      prompt: 'The interior angles of a ' + shapeName(n) + ', in order, are ' + list + '. Find x.',
+      ask1: 'Sum of the interior angles',
+      ask2: 'Value of x',
+      a1: S,
+      a2: x,
+      f1: deg,
+      f2: function (v) { return 'x = ' + v; },
+      w1: [
+        { value: n * 180, trap: 'sumFormula' },
+        { value: (n - 1) * 180, why: 'Use (n ' + MINUS + ' 2) \u00d7 180' + DEG + '.' },
+        { value: Math.max(180, (n - 3) * 180), why: 'A ' + shapeName(n) + ' splits into ' + (n - 2) + ' triangles.' }
+      ],
+      w2: w2,
+      num: { n: n },
+      aoeN: n,
+      hideN: false,
+      bridge: 'Interior sum locked at ' + S + DEG + '. Combine the x terms and solve.',
+      hint: 'Add the angles, including the algebraic ones, and set the total equal to (' + n + ' ' + MINUS + ' 2) \u00d7 180' + DEG + '.',
+      proof: { type: 'algebra', n: n, S: S, x: x, coeff: coeff, rest: rest, exprs: exprs },
+      diagram: { type: 'irregular', angles: order, labels: labels, caption: shapeName(n) },
+      glow1: 'all',
+      glow2: 'all'
+    });
+  }
+  return null;
+}
+function focusPoly(a, b) {
+  return a >= b ? { n: a, other: b } : { n: b, other: a };
+}
+function genGap(rng) {
+  if (!GAP_PAIRS.length) return null;
+  const row = pick(rng, GAP_PAIRS);
+  const focus = focusPoly(row.a, row.b);
+  const focusI = intOf(focus.n);
+  const w1 = [
+    { value: intOf(focus.other), why: 'That is the other polygon. This step asks for the ' + polyName(focus.n) + '.' },
+    { value: row.x, why: 'x is the final gap. First lock an interior angle.' },
+    { value: 180 - focusI > 0 ? extOf(focus.n) : focusI + 10, trap: 'straight' }
+  ];
+  const w2 = [
+    { value: row.ia + row.ib, trap: 'point360' },
+    { value: focusI, why: 'That interior is only one of the angles at the point.' },
+    { value: intOf(focus.other), why: 'Subtract both interiors from 360' + DEG + '.' }
+  ];
+  if (180 - row.ia - row.ib > 0) w2.push({ value: 180 - row.ia - row.ib, trap: 'point360' });
+  return pack({
+    key: 'gap|' + row.a + '|' + row.b,
+    tier: 'HARD',
+    kind: 'gap',
+    prompt: pairPhrase(row.a, row.b) + ' share a side and meet at a vertex. Find the angle x' + DEG + ' between them.',
+    ask1: 'Interior angle of the ' + polyName(focus.n),
+    ask2: 'Angle x between the polygons',
+    a1: focusI,
+    a2: row.x,
+    f1: deg,
+    f2: deg,
+    w1: w1,
+    w2: w2,
+    num: { n: focus.n, I: focusI, E: extOf(focus.n) },
+    aoeN: Math.max(row.a, row.b),
+    hideN: false,
+    bridge: polyName(focus.n) + ' interior locked. Find the other interior too, then subtract both from 360' + DEG + '.',
+    hint: 'Angles around the shared vertex add up to 360' + DEG + '.',
+    proof: { type: 'gap', a: row.a, b: row.b, x: row.x, focus: focusI },
+    diagram: { type: 'joined', mode: 'gap', a: row.a, b: row.b, focus: focus.n, x: row.x },
+    glow1: 'focus',
+    glow2: 'x'
+  });
+}
+function genJoinN(rng) {
+  if (!JOIN_TRIOS.length) return null;
+  const row = pick(rng, JOIN_TRIOS);
+  const wrongN = [row.a, row.b].concat(nearClean(row.n).slice(0, 2));
+  const w2 = [];
+  const seen = {};
+  for (let i = 0; i < wrongN.length; i++) {
+    const v = wrongN[i];
+    if (v === row.n || seen[v] || v < 3) continue;
+    seen[v] = true;
+    w2.push({
+      value: v,
+      why: v === row.a || v === row.b
+        ? 'That is one of the polygons already named. The unknown interior is ' + row.R + DEG + '.'
+        : 'Interior ' + row.R + DEG + ' means exterior ' + row.E + DEG + ', and n = 360 \u00f7 ' + row.E + '.'
+    });
+  }
+  if ((360 % row.R) === 0 && 360 / row.R !== row.n) w2.unshift({ value: 360 / row.R, trap: 'divInterior' });
+  const half = 180 / row.E;
+  if (Number.isInteger(half) && half !== row.n) w2.push({ value: half, why: 'Divide 360' + DEG + ' by the exterior angle, not 180' + DEG + '.' });
+  return pack({
+    key: 'joinn|' + row.a + '|' + row.b + '|' + row.n,
+    tier: 'HARD',
+    kind: 'joinn',
+    prompt: pairPhrase(row.a, row.b) + ' and part of a regular n-sided polygon meet at a vertex with no gap. How many sides does the n-sided polygon have?',
+    ask1: 'Interior angle of the n-sided polygon',
+    ask2: 'Number of sides n',
+    a1: row.R,
+    a2: row.n,
+    f1: deg,
+    f2: fmtSides,
+    w1: [
+      { value: row.E, trap: 'straight' },
+      { value: row.ia, why: 'That is an interior of a polygon already named. The n-gon takes the angle that is left at the point.' },
+      { value: row.ib, why: 'Subtract both known interiors from 360' + DEG + '.' }
+    ],
+    w2: w2,
+    num: { n: row.n, I: row.R, E: row.E },
+    aoeN: row.n,
+    hideN: true,
+    bridge: 'Interior of the n-gon locked at ' + row.R + DEG + '. Exterior = 180' + DEG + ' ' + MINUS + ' ' + row.R + DEG + ', then n = 360 \u00f7 exterior.',
+    hint: 'Angles at a point sum to 360' + DEG + '. The leftover is the interior of the regular n-gon.',
+    proof: { type: 'joinn', a: row.a, b: row.b, n: row.n, R: row.R, E: row.E },
+    diagram: { type: 'joined', mode: 'fill', a: row.a, b: row.b, n: row.n, R: row.R },
+    glow1: 'unknown',
+    glow2: 'unknown'
+  });
+}
+function genIso(rng) {
+  const bag = JOIN_TRIOS.filter(function (row) { return row.R % 2 === 0; });
+  if (!bag.length) return null;
+  const row = pick(rng, bag);
+  const base = row.R / 2;
+  return pack({
+    key: 'iso|' + row.a + '|' + row.b + '|' + row.n,
+    tier: 'HARD',
+    kind: 'iso',
+    prompt: pairPhrase(row.a, row.b) + ' and part of a regular n-sided polygon meet at a vertex with no gap. Radii of the n-gon to two neighbouring vertices form an isosceles triangle. Find each base angle x' + DEG + '.',
+    ask1: 'Interior angle of the n-sided polygon',
+    ask2: 'Each base angle x of the isosceles triangle',
+    a1: row.R,
+    a2: base,
+    f1: deg,
+    f2: deg,
+    w1: [
+      { value: row.E, trap: 'straight' },
+      { value: row.ia, why: 'That belongs to a named polygon. The n-gon occupies whatever is left of 360' + DEG + '.' },
+      { value: base, why: 'The base angle is half the interior, but lock the interior itself first.' }
+    ],
+    w2: [
+      { value: row.R, why: 'The radius bisects the interior angle. x is one of the two equal pieces.' },
+      { value: row.E, why: row.E + DEG + ' is the vertex angle at the centre (the exterior angle), not a base angle.' },
+      { value: Math.max(1, row.E / 2), why: 'Halve the interior angle, or take (180' + DEG + ' ' + MINUS + ' centre angle) \u00f7 2.' }
+    ],
+    num: { n: row.n, I: row.R, E: row.E },
+    aoeN: row.n,
+    hideN: true,
+    bridge: 'Interior locked at ' + row.R + DEG + '. The centre angle of the isosceles triangle is the exterior angle, 180' + DEG + ' ' + MINUS + ' interior. Each base angle is half of (180' + DEG + ' ' + MINUS + ' that centre angle).',
+    hint: 'Find the n-gon interior from 360' + DEG + ' at the point. In the isosceles centre triangle, the vertex angle is the exterior angle.',
+    proof: { type: 'iso', a: row.a, b: row.b, n: row.n, R: row.R, E: row.E, base: base },
+    diagram: { type: 'joined', mode: 'iso', a: row.a, b: row.b, n: row.n, R: row.R },
+    glow1: 'unknown',
+    glow2: 'base'
+  });
+}
+function genExtreme(rng) {
+  const kinds = ['rxs', 'rxs', 'qtu', 'qtu', 'ext-int'];
+  const kind = pick(rng, kinds);
+  let pool = CLEAN.filter(function (n) { return n >= 6; });
+  if (kind === 'rxs') pool = pool.filter(function (n) { return n !== 6; });
+  const n = pick(rng, pool);
+  const E = extOf(n);
+  const I = intOf(n);
+  const xAng = 180 - 2 * E;
+  const q = I - E;
+  if (kind === 'rxs') {
+    return pack({
+      key: 'rxs|' + n,
+      tier: 'EXTREME',
+      kind: 'rxs',
+      prompt: 'P, Q, R, S and T are consecutive vertices of a regular ' + n + '-sided polygon. Sides QR and ST are extended to meet at X. Find ' + ANGLE + 'RXS.',
+      ask1: 'Each base angle of triangle XRS',
+      ask2: ANGLE + 'RXS',
+      a1: E,
+      a2: xAng,
+      f1: deg,
+      f2: deg,
+      w1: [
+        { value: I, trap: 'straight' },
+        { value: xAng, why: 'That is the angle at X. Each base angle equals one exterior angle of the polygon.' },
+        { value: 2 * E, why: 'One base angle equals the exterior angle ' + E + DEG + ', not twice it.' }
+      ],
+      w2: [
+        { value: 180 - E, why: 'Subtract both base angles from 180' + DEG + '. Each base is ' + E + DEG + '.' },
+        { value: I, trap: 'straight' },
+        { value: E, why: E + DEG + ' is a base angle of triangle XRS. The angle at X is 180' + DEG + ' minus both bases.' }
+      ],
+      num: { n: n, E: E, I: I },
+      aoeN: n,
+      hideN: false,
+      bridge: 'Each base angle equals the exterior angle ' + E + DEG + '. Triangle XRS is isosceles, so ' + ANGLE + 'RXS = 180' + DEG + ' ' + MINUS + ' ' + E + DEG + ' ' + MINUS + ' ' + E + DEG + '.',
+      hint: 'Extending QR past R makes ' + ANGLE + 'XRS equal to the exterior angle, ' + E + DEG + '. The same happens at S.',
+      proof: { type: 'rxs', n: n, base: E, xAng: xAng },
+      diagram: { type: 'extended', n: n, focus: 'rxs' },
+      glow1: 'base',
+      glow2: 'x'
+    });
+  }
+  if (kind === 'qtu') {
+    return pack({
+      key: 'qtu|' + n,
+      tier: 'EXTREME',
+      kind: 'qtu',
+      prompt: 'P, Q, R, S, T and U are consecutive vertices of a regular ' + n + '-sided polygon. Sides QR and ST are extended to meet at X, and diagonal QT is drawn. Find ' + ANGLE + 'QTU.',
+      ask1: 'Interior angle of the regular polygon',
+      ask2: ANGLE + 'QTU',
+      a1: I,
+      a2: q,
+      f1: deg,
+      f2: deg,
+      w1: [
+        { value: E, trap: 'straight' },
+        { value: q, why: 'That is the diagonal angle. First lock the full interior angle.' },
+        { value: xAng === I ? I - 10 : xAng, why: 'Interior = 180' + DEG + ' ' + MINUS + ' exterior, and the exterior is 360' + DEG + ' \u00f7 ' + n + '.' }
+      ],
+      w2: [
+        { value: I, why: 'Diagonal QT splits the interior. ' + ANGLE + 'STQ equals the exterior angle, so ' + ANGLE + 'QTU is the rest.' },
+        { value: E, trap: 'straight' },
+        { value: 180 - E, why: 'Subtract the exterior angle from the interior angle: ' + I + DEG + ' ' + MINUS + ' ' + E + DEG + '.' }
+      ],
+      num: { n: n, E: E, I: I },
+      aoeN: n,
+      hideN: false,
+      bridge: 'Interior locked at ' + I + DEG + '. Diagonal QT cuts off ' + ANGLE + 'STQ equal to the exterior angle ' + E + DEG + ', so ' + ANGLE + 'QTU = interior ' + MINUS + ' exterior.',
+      hint: 'Exterior = 360' + DEG + ' \u00f7 n. Interior = 180' + DEG + ' ' + MINUS + ' exterior. ' + ANGLE + 'QTU = interior ' + MINUS + ' exterior.',
+      proof: { type: 'qtu', n: n, I: I, q: q },
+      diagram: { type: 'extended', n: n, focus: 'qtu' },
+      glow1: 'int',
+      glow2: 'qtu'
+    });
+  }
+  return pack({
+    key: 'ext-int|' + n,
+    tier: 'EXTREME',
+    kind: 'ext-int',
+    prompt: 'P, Q, R, S and T are consecutive vertices of a regular ' + n + '-sided polygon. Sides QR and ST are extended to meet at X. Find each interior angle of the polygon.',
+    ask1: 'Exterior angle of the polygon',
+    ask2: 'Each interior angle',
+    a1: E,
+    a2: I,
+    f1: deg,
+    f2: deg,
+    w1: [
+      { value: I, trap: 'straight' },
+      { value: xAng, why: xAng + DEG + ' is ' + ANGLE + 'RXS. The exterior angle is 360' + DEG + ' \u00f7 ' + n + '.' },
+      { value: 2 * E, why: 'One exterior angle is 360' + DEG + ' \u00f7 ' + n + ' = ' + E + DEG + '.' }
+    ],
+    w2: [
+      { value: E, trap: 'straight' },
+      { value: xAng, why: 'That is the angle where the extended sides meet, not an interior angle of the polygon.' },
+      { value: 180 - xAng > 0 ? 180 - xAng : I - E, why: 'Interior = 180' + DEG + ' ' + MINUS + ' exterior.' }
+    ],
+    num: { n: n, E: E, I: I },
+    aoeN: n,
+    hideN: false,
+    bridge: 'Exterior angle locked at ' + E + DEG + '. Interior and exterior lie on a straight line.',
+    hint: 'Exterior = 360' + DEG + ' \u00f7 n, then interior = 180' + DEG + ' ' + MINUS + ' exterior.',
+    proof: { type: 'ext-int', n: n, E: E, I: I },
+    diagram: { type: 'extended', n: n, focus: 'int' },
+    glow1: 'base',
+    glow2: 'int'
+  });
+}
+
+const GENERATORS = {
+  EASY: [genExtN, genIntN, genSum, genUnequal],
+  MEDIUM: [genK, genRatio, genAlgebra],
+  HARD: [genGap, genJoinN, genIso],
+  EXTREME: [genExtreme]
+};
+
+function freshProblem(tier, history, rng) {
+  const gens = GENERATORS[tier];
+  let lastErr = '';
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < 48; i++) {
+      const gen = gens[Math.floor(rng() * gens.length)];
+      let problem = null;
+      try { problem = gen(rng); } catch (err) { problem = null; lastErr = 'throw'; }
+      if (!problem) { lastErr = lastErr || 'null'; continue; }
+      if (pass === 0 && history.indexOf(problem.key) !== -1) continue;
+      const err = audit(problem);
+      if (err) { lastErr = err; continue; }
+      return problem;
+    }
+  }
+  game.lastAudit = lastErr;
+  return null;
+}
+
+function layout() {
+  const cards = [];
+  for (let i = 0; i < 4; i++) cards.push({ x: 30 + i * 312, y: 536, w: 296, h: 160, i: i });
+  return {
+    hud: { x: 16, y: 8, w: 1248, h: 48 },
+    quest: { x: 16, y: 64, w: 1248, h: 128 },
+    stage: { x: 16, y: 200, w: 1248, h: 292 },
+    caster: { x: 28, y: 212, w: 230, h: 268 },
+    diagram: { x: 270, y: 212, w: 688, h: 268 },
+    horde: { x: 970, y: 212, w: 278, h: 268 },
+    deck: { x: 16, y: 500, w: 1248, h: 208 },
+    mute: { x: 1168, y: 14, w: 80, h: 36 },
+    cards: cards
+  };
+}
+function hit(x, y, r) {
+  return x >= r.x && y >= r.y && x <= r.x + r.w && y <= r.y + r.h;
+}
+function cardAt(x, y) {
+  const cards = layout().cards;
+  for (let i = 0; i < cards.length; i++) if (hit(x, y, cards[i])) return i;
+  return -1;
+}
+function currentElement() {
+  const i = (Math.max(1, game.wave) - 1) % 4;
+  return EL[game.elementOrder[i]] || EL.FIRE;
+}
+function stepOwner() {
+  if (game.mode !== 'COOP') return 0;
+  const n = game.playerCount;
+  const base = (game.wave - 1) % n;
+  return (base + game.step) % n;
+}
+function speedBonus() {
+  if (game.tier === 'EXTREME' && game.timerMax > 0) {
+    return Math.round(200 * clamp(game.timer / game.timerMax, 0, 1));
+  }
+  return Math.max(0, Math.round(200 - game.waveTime * 7));
+}
+function bestKey() { return game.mode + '-' + game.tier; }
+function scoreNow() {
+  if (game.mode === 'DUEL') return Math.max(game.scores[0], game.scores[1], game.scores[2]);
+  return game.score;
+}
+function saveBest() {
+  try {
+    const k = bestKey();
+    const s = scoreNow();
+    if (!game.best[k] || s > game.best[k]) {
+      game.best[k] = s;
+      localStorage.setItem('arcane-polygon-best', JSON.stringify(game.best));
+    }
+  } catch (err) { /* storage may be blocked */ }
+}
+
+function dealElements(avoid) {
+  const order = shuffle(['FIRE', 'ICE', 'EARTH', 'LIGHTNING'], Math.random);
+  if (avoid && order[0] === avoid) order.push(order.shift());
+  game.elementOrder = order;
+}
+function spawnMonsters() {
+  const L = layout();
+  const cx = L.horde.x + L.horde.w / 2;
+  const cy = L.horde.y + L.horde.h / 2 + 16;
+  game.horde = { cx: cx, cy: cy };
+  const kinds = ['imp', 'slime', 'bat', 'eye', 'golem'];
+  const tints = ['#ffd0ea', '#d7d0ff', '#ffe1b0', '#c8fff0', '#ffd0d0'];
+  const count = 4 + ((game.wave - 1) % 3);
+  game.monsters = [];
+  for (let i = 0; i < count; i++) {
+    const a = -Math.PI / 2 + i * (Math.PI * 2 / count);
+    const rad = 26 + (i % 2) * 18;
+    game.monsters.push({
+      kind: kinds[i % kinds.length],
+      ox: Math.cos(a) * rad,
+      oy: Math.sin(a) * rad * 0.62,
+      bob: Math.random() * Math.PI * 2,
+      sc: 0.82 + (i % 3) * 0.12,
+      tint: tints[i % tints.length],
+      vx: 0,
+      vy: 0,
+      kicked: false
+    });
+  }
+}
+function spawnWave(first) {
+  const problem = freshProblem(game.tier, game.history, Math.random);
+  if (!problem) {
+    finishOver('The spellbook could not verify a new polygon.');
+    return;
+  }
+  game.history.push(problem.key);
+  if (game.history.length > 8) game.history.shift();
+  game.problem = problem;
+  game.step = 0;
+  game.reveal = false;
+  game.showAnswer = false;
+  game.phase = 'play';
+  game.phaseT = 0;
+  game.lock = first ? 0.2 : 0.28;
+  game.waveTime = 0;
+  game.timerMax = game.tier === 'EXTREME' ? 50 : 0;
+  game.timer = game.timerMax;
+  game.sel = [0, 0, 0];
+  game.stun = [0, 0, 0];
+  game.anchorPlayer = -1;
+  game.tip = '';
+  game.tipGood = false;
+  game.impactSpawned = false;
+  spawnMonsters();
+}
+function startRun() {
+  resumeAudio();
+  sfxUi();
+  game.screen = 'play';
+  game.score = 0;
+  game.scores = [0, 0, 0];
+  game.lives = 3;
+  game.livesP = [3, 3, 3];
+  game.stars = [0, 0, 0];
+  game.wave = 1;
+  game.cleared = 0;
+  game.wrongs = 0;
+  game.history = [];
+  game.particles = [];
+  game.floats = [];
+  game.paused = false;
+  game.shake = 0;
+  game.flash = 0;
+  game.overReason = '';
+  game.overTip = '';
+  game.winner = '';
+  game.fatal = '';
+  game.lastAward = '';
+  dealElements(null);
+  spawnWave(true);
+  if (game.screen === 'play') canvas.focus();
+}
+function livingCount() {
+  let n = 0;
+  for (let i = 0; i < game.playerCount; i++) if (game.livesP[i] > 0) n++;
+  return n;
+}
+function finishOver(reason) {
+  game.overReason = reason || game.overReason || 'The sanctum falls.';
+  game.overTip = game.tip || game.overTip;
+  if (game.mode === 'DUEL') {
+    let best = -1;
+    let who = [];
+    for (let i = 0; i < game.playerCount; i++) {
+      const s = game.scores[i];
+      if (s > best) { best = s; who = [i]; }
+      else if (s === best) who.push(i);
+    }
+    if (who.length === 1) game.winner = 'Player ' + (who[0] + 1) + ' claims the sanctum.';
+    else game.winner = 'Shared victory.';
+  } else {
+    game.winner = game.cleared ? 'The horde is stalled.' : 'The sanctum needs another cast.';
+  }
+  saveBest();
+  game.screen = 'over';
+  game.phase = 'play';
+  game.paused = false;
+}
+function nextWave() {
+  const done = game.wave;
+  if (done % 4 === 0) dealElements(currentElement().name);
+  game.wave += 1;
+  spawnWave(false);
+}
+function burst(x, y, colors, count, speed) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = speed * (0.35 + Math.random());
+    game.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - speed * 0.15,
+      life: 0.45 + Math.random() * 0.55,
+      max: 1,
+      color: colors[i % colors.length],
+      r: 1.5 + Math.random() * 3.2
+    });
+  }
+}
+function floatText(x, y, text, color) {
+  game.floats.push({ x: x, y: y, text: text, color: color || COL.gold, life: 1.25 });
+}
+function onTimeout() {
+  sfxThud();
+  game.wrongs += 1;
+  game.flash = 0.45;
+  game.shake = 7;
+  game.lunge = 0.7;
+  const p = game.problem;
+  const right = p ? p.steps[p.steps.length - 1].cards.filter(function (c) { return c.ok; })[0] : null;
+  game.tip = 'The spell window closed.' + (right ? ' The final rune was ' + right.text + '.' : '');
+  game.tipGood = false;
+  game.showAnswer = true;
+  if (game.mode === 'DUEL') {
+    for (let i = 0; i < game.playerCount; i++) game.livesP[i] = Math.max(0, game.livesP[i] - 1);
+    if (livingCount() <= 0) {
+      game.overReason = 'Every mage ran out of arcane lives.';
+      game.phase = 'downed';
+      game.phaseT = 1.15;
+      return;
+    }
+  } else {
+    game.lives -= 1;
+    if (game.lives <= 0) {
+      game.overReason = 'The sanctum ran out of arcane lives.';
+      game.phase = 'downed';
+      game.phaseT = 1.15;
+      return;
+    }
+  }
+  game.phase = 'timeout';
+  game.phaseT = 1.35;
+}
+function succeed(player) {
+  const problem = game.problem;
+  if (!problem) return;
+  if (game.step === 0) {
+    sfxChime();
+    game.reveal = true;
+    game.step = 1;
+    game.sel = [0, 0, 0];
+    game.anchorPlayer = player;
+    game.tip = problem.bridge;
+    game.tipGood = true;
+    game.lock = 0.32;
+    const L = layout();
+    const card = L.cards[game.sel[player]] || L.cards[0];
+    burst(card.x + card.w / 2, card.y + 40, [COL.good, COL.gold], 16, 90);
+    return;
+  }
+  const bonus = speedBonus();
+  const total = 400 + bonus;
+  if (game.mode === 'DUEL') {
+    game.scores[player] += total;
+    game.stars[player] += 1;
+  } else {
+    game.score += total;
+  }
+  game.lastAward = '+' + total;
+  game.cleared += 1;
+  game.showAnswer = true;
+  game.phase = 'blast';
+  game.phaseT = BLAST_DUR;
+  game.lock = BLAST_DUR;
+  game.impactSpawned = false;
+  const el = currentElement();
+  const shape = blastShapeName(problem.aoeN);
+  game.tip = (game.mode === 'DUEL' ? 'Player ' + (player + 1) + ' casts ' : '') + el.name + ' ' + shape + '  +' + total + '  (' + bonus + ' speed)';
+  game.tipGood = true;
+  sfxBlast(el.name);
+  sfxFanfare();
+  floatText(game.horde.cx, game.horde.cy - 102, '+' + total, COL.gold);
+}
+function failCast(player, card) {
+  sfxThud();
+  game.wrongs += 1;
+  game.shake = 8;
+  game.flash = 0.42;
+  game.lunge = 0.85;
+  card.spent = true;
+  game.tip = card.why || alertWhy(card.trap, game.problem && game.problem.num);
+  game.tipGood = false;
+  game.overTip = game.tip;
+  const L = layout();
+  const rect = L.cards[cardIndex(card)] || L.cards[0];
+  burst(rect.x + rect.w / 2, rect.y + rect.h / 2, [COL.bad, '#ffd0d8'], 18, 110);
+  if (game.mode === 'DUEL') {
+    game.stun[player] = 1.5;
+    game.livesP[player] = Math.max(0, game.livesP[player] - 1);
+    floatText(rect.x + rect.w / 2, rect.y, 'P' + (player + 1) + ' fizzle', COL.bad);
+    if (livingCount() <= 0) {
+      game.overReason = 'Every mage ran out of arcane lives.';
+      game.phase = 'downed';
+      game.phaseT = 1.15;
+    }
+  } else {
+    game.lives -= 1;
+    floatText(rect.x + rect.w / 2, rect.y, 'Counterattack', COL.bad);
+    if (game.lives <= 0) {
+      game.overReason = 'The sanctum ran out of arcane lives.';
+      game.phase = 'downed';
+      game.phaseT = 1.15;
+    }
+  }
+}
+function cardIndex(card) {
+  const cards = game.problem.steps[game.step].cards;
+  for (let i = 0; i < cards.length; i++) if (cards[i] === card) return i;
+  return 0;
+}
+function submit(player, index) {
+  if (game.screen !== 'play' || game.paused || game.phase !== 'play' || game.lock > 0) return;
+  if (player < 0 || player >= game.playerCount) return;
+  if (game.mode === 'DUEL') {
+    if (game.livesP[player] <= 0 || game.stun[player] > 0) return;
+  } else if (game.mode === 'COOP') {
+    if (player !== stepOwner()) {
+      floatText(W / 2, 430, 'Player ' + (stepOwner() + 1) + ' weaves this step', PLAYER_COL[stepOwner()]);
+      return;
+    }
+  } else if (player !== 0) return;
+  const cards = game.problem.steps[game.step].cards;
+  const card = cards[index];
+  if (!card || card.spent) return;
+  game.sel[player] = index;
+  if (card.ok) succeed(player);
+  else failCast(player, card);
+}
+function moveCursor(player, dir) {
+  if (!game.problem || game.phase !== 'play') return;
+  const cards = game.problem.steps[game.step].cards;
+  let i = game.sel[player];
+  for (let k = 0; k < 4; k++) {
+    i = (i + dir + 4) % 4;
+    if (!cards[i].spent) { game.sel[player] = i; return; }
+  }
+}
+
+function midi(n) { return 440 * Math.pow(2, (n - 69) / 12); }
+function ensureAudio() {
+  if (audio.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  audio.ctx = new AC();
+  audio.master = audio.ctx.createGain();
+  audio.master.gain.value = audio.muted ? 0 : 0.22;
+  audio.master.connect(audio.ctx.destination);
+  audio.music = audio.ctx.createGain();
+  audio.music.gain.value = 0.42;
+  audio.music.connect(audio.master);
+  const len = Math.floor(audio.ctx.sampleRate * 0.4);
+  audio.noise = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
+  const data = audio.noise.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+}
+function resumeAudio() {
+  try {
+    ensureAudio();
+    if (!audio.ctx) return;
+    if (audio.ctx.state === 'suspended') audio.ctx.resume();
+    if (!audio.started) {
+      audio.started = true;
+      audio.next = audio.ctx.currentTime + 0.05;
+    }
+  } catch (err) { /* audio is optional */ }
+}
+function toggleMute() {
+  resumeAudio();
+  audio.muted = !audio.muted;
+  if (audio.master && audio.ctx) {
+    audio.master.gain.setTargetAtTime(audio.muted ? 0 : 0.22, audio.ctx.currentTime, 0.03);
+  }
+  if (!audio.muted && audio.ctx) audio.next = audio.ctx.currentTime + 0.05;
+  try { localStorage.setItem('arcane-polygon-mute', audio.muted ? '1' : '0'); } catch (err) { /* ignore */ }
+}
+function blip(time, freq, dur, type, gain, dest, slide) {
+  if (!audio.ctx || audio.muted) return;
+  const o = audio.ctx.createOscillator();
+  const g = audio.ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(40, freq), time);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(gain, time + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  o.connect(g);
+  g.connect(dest || audio.master);
+  o.start(time);
+  o.stop(time + dur + 0.02);
+}
+function noiseHit(time, dur, gain, freq, type) {
+  if (!audio.ctx || audio.muted || !audio.noise) return;
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = type || 'bandpass';
+  filter.frequency.setValueAtTime(freq || 800, time);
+  const g = audio.ctx.createGain();
+  g.gain.setValueAtTime(gain, time);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(audio.master);
+  src.start(time);
+  src.stop(time + dur + 0.02);
+}
+function sfxUi() {
+  if (!audio.ctx) return;
+  blip(audio.ctx.currentTime, 660, 0.05, 'square', 0.03);
+}
+function sfxChime() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 523, 0.08, 'triangle', 0.05);
+  blip(t + 0.07, 784, 0.12, 'sine', 0.04);
+}
+function sfxFanfare() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  [523, 659, 784, 1046].forEach(function (f, i) { blip(t + i * 0.08, f, 0.22, 'triangle', 0.045); });
+}
+function sfxThud() {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  blip(t, 150, 0.22, 'sine', 0.07, audio.master, 48);
+  noiseHit(t, 0.16, 0.05, 220, 'lowpass');
+}
+function sfxBlast(name) {
+  if (!audio.ctx) return;
+  const t = audio.ctx.currentTime;
+  if (name === 'FIRE') {
+    noiseHit(t, 0.45, 0.08, 420, 'lowpass');
+    blip(t, 220, 0.35, 'sawtooth', 0.04, audio.master, 70);
+    blip(t + 0.05, 540, 0.18, 'triangle', 0.03, audio.master, 180);
+  } else if (name === 'ICE') {
+    [1568, 1975, 2349, 2793].forEach(function (f, i) { blip(t + i * 0.045, f, 0.16, 'sine', 0.035); });
+    noiseHit(t, 0.12, 0.04, 3200, 'highpass');
+  } else if (name === 'EARTH') {
+    blip(t, 90, 0.4, 'sine', 0.07, audio.master, 42);
+    noiseHit(t, 0.35, 0.06, 180, 'lowpass');
+    blip(t + 0.08, 140, 0.2, 'triangle', 0.03);
+  } else {
+    noiseHit(t, 0.18, 0.07, 1800, 'highpass');
+    blip(t, 980, 0.12, 'square', 0.04, audio.master, 180);
+    blip(t + 0.06, 1560, 0.08, 'sawtooth', 0.025, audio.master, 320);
+  }
+}
+const LEAD = [62, 65, 67, 69, 72, 69, 67, 65, 74, 72, 69, 67];
+const BASS = [38, 45, 41, 43];
+function playMusicStep(index, time) {
+  const step = index % 12;
+  const bar = Math.floor(index / 12) % 4;
+  if (step % 3 === 0) blip(time, midi(BASS[bar]), 0.22, 'triangle', 0.05, audio.music);
+  blip(time, midi(LEAD[step] + (bar === 2 ? 12 : 0)), 0.16, 'square', 0.018, audio.music);
+  if (step % 2 === 0) blip(time, midi(LEAD[(step + 4) % 12] + 12), 0.1, 'triangle', 0.012, audio.music);
+  if (step % 3 === 2) noiseHit(time, 0.04, 0.012, 2400, 'highpass');
+}
+function tickMusic() {
+  if (!audio.started || !audio.ctx || audio.muted) return;
+  if (game.paused) return;
+  if (audio.next < audio.ctx.currentTime) audio.next = audio.ctx.currentTime + 0.02;
+  const stepDur = (60 / 132) / 2;
+  let guard = 0;
+  while (audio.next < audio.ctx.currentTime + 0.12 && guard < 6) {
+    playMusicStep(audio.step, audio.next);
+    audio.step = (audio.step + 1) % 48;
+    audio.next += stepDur;
+    guard++;
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  view.s = s * dpr;
+  view.ox = (canvas.width - W * view.s) / 2;
+  view.oy = (canvas.height - H * view.s) / 2;
+}
+function worldFromEvent(e) {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (canvas.width / r.width);
+  const y = (e.clientY - r.top) * (canvas.height / r.height);
+  return { x: (x - view.ox) / view.s, y: (y - view.oy) / view.s };
+}
+function pollPads(dt, actions) {
+  const list = (navigator.getGamepads && navigator.getGamepads()) || [];
+  for (let i = 0; i < 3; i++) {
+    const p = list[i];
+    const m = padMem[i];
+    m.cool = Math.max(0, m.cool - dt);
+    if (!p) { game.padOn[i] = false; m.b = []; continue; }
+    game.padOn[i] = true;
+    const b = [];
+    for (let k = 0; k < p.buttons.length; k++) b[k] = !!(p.buttons[k] && p.buttons[k].pressed);
+    if (b[0] && !m.b[0]) actions.push({ type: 'confirm', player: i });
+    const left = !!(b[14] || (p.axes[0] || 0) < -0.55);
+    const right = !!(b[15] || (p.axes[0] || 0) > 0.55);
+    const up = !!(b[12] || (p.axes[1] || 0) < -0.55);
+    const down = !!(b[13] || (p.axes[1] || 0) > 0.55);
+    if (left !== right) {
+      if ((left && !m.left) || (right && !m.right) || m.cool <= 0) {
+        actions.push({ type: 'move', player: i, dir: left ? -1 : 1 });
+        m.cool = 0.18;
+      }
+    }
+    if (up && !m.up) actions.push({ type: 'up', player: i });
+    if (down && !m.down) actions.push({ type: 'down', player: i });
+    m.b = b;
+    m.left = left;
+    m.right = right;
+    m.up = up;
+    m.down = down;
+  }
+}
+const KEY_PICK = {
+  Digit1: [0, 0], Digit2: [0, 1], Digit3: [0, 2], Digit4: [0, 3],
+  Numpad1: [0, 0], Numpad2: [0, 1], Numpad3: [0, 2], Numpad4: [0, 3],
+  KeyQ: [1, 0], KeyW: [1, 1], KeyE: [1, 2], KeyR: [1, 3],
+  KeyU: [2, 0], KeyI: [2, 1], KeyO: [2, 2], KeyP: [2, 3]
+};
+function cycleMode(dir) {
+  const all = game.playerCount <= 1 ? ['SOLO'] : ['COOP', 'DUEL'];
+  let i = all.indexOf(game.mode);
+  if (i < 0) i = 0;
+  game.mode = all[(i + dir + all.length) % all.length];
+}
+function cycleTier(dir) {
+  const all = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  const i = all.indexOf(game.tier);
+  game.tier = all[(i + dir + all.length) % all.length];
+}
+function setPlayers(n) {
+  game.playerCount = clamp(n, 1, 3);
+  if (game.playerCount === 1) game.mode = 'SOLO';
+  else if (game.mode === 'SOLO') game.mode = 'COOP';
+}
+function titleAction(id) {
+  if (id === 'p1') setPlayers(1);
+  else if (id === 'p2') setPlayers(2);
+  else if (id === 'p3') setPlayers(3);
+  else if (id === 'c0' || id === 'c1' || id === 'c2') {
+    const i = Number(id.charAt(1));
+    if (i < game.playerCount) game.chars[i] = game.chars[i] === 'wizard' ? 'witch' : 'wizard';
+  } else if (id.indexOf('tier-') === 0) game.tier = id.slice(5);
+  else if (id === 'SOLO' && game.playerCount === 1) game.mode = 'SOLO';
+  else if (id === 'COOP' && game.playerCount > 1) game.mode = 'COOP';
+  else if (id === 'DUEL' && game.playerCount > 1) game.mode = 'DUEL';
+  else if (id === 'start') startRun();
+  else if (id === 'mute') toggleMute();
+  if (id !== 'start' && id !== 'mute') sfxUi();
+}
+function handleTitle(actions) {
+  if (game.click) {
+    for (let i = 0; i < game.hits.length; i++) {
+      const h = game.hits[i];
+      if (hit(game.click.x, game.click.y, h)) { titleAction(h.id); break; }
+    }
+  }
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i];
+    if (a.player !== 0) continue;
+    if (a.type === 'move') cycleTier(a.dir);
+    else if (a.type === 'up') setPlayers(game.playerCount - 1);
+    else if (a.type === 'down') setPlayers(game.playerCount + 1);
+    else if (a.type === 'confirm') startRun();
+  }
+  if (keyEdge.has('ArrowLeft')) cycleTier(-1);
+  if (keyEdge.has('ArrowRight')) cycleTier(1);
+  if (keyEdge.has('ArrowUp')) setPlayers(game.playerCount - 1);
+  if (keyEdge.has('ArrowDown')) setPlayers(game.playerCount + 1);
+  if (keyEdge.has('Enter') || keyEdge.has('Space')) startRun();
+  if (keyEdge.has('KeyZ')) cycleMode(1);
+  if (keyEdge.has('KeyV')) game.chars[0] = game.chars[0] === 'wizard' ? 'witch' : 'wizard';
+  if (keyEdge.has('KeyB') && game.playerCount > 1) game.chars[1] = game.chars[1] === 'wizard' ? 'witch' : 'wizard';
+  if (keyEdge.has('KeyN') && game.playerCount > 2) game.chars[2] = game.chars[2] === 'wizard' ? 'witch' : 'wizard';
+  if (keyEdge.has('Digit1')) setPlayers(1);
+  if (keyEdge.has('Digit2')) setPlayers(2);
+  if (keyEdge.has('Digit3')) setPlayers(3);
+}
+function handleOver(actions) {
+  const again = { x: 390, y: 470, w: 220, h: 54 };
+  const title = { x: 670, y: 470, w: 220, h: 54 };
+  if (game.click) {
+    if (hit(game.click.x, game.click.y, again)) startRun();
+    else if (hit(game.click.x, game.click.y, title)) { sfxUi(); game.screen = 'title'; }
+  }
+  for (let i = 0; i < actions.length; i++) {
+    if (actions[i].type === 'confirm' && actions[i].player === 0) startRun();
+  }
+  if (keyEdge.has('Enter') || keyEdge.has('Space')) startRun();
+  if (keyEdge.has('Escape')) game.screen = 'title';
+}
+function handlePlay(actions) {
+  if (game.paused) return;
+  if (game.click && game.phase === 'play' && game.lock <= 0) {
+    const idx = cardAt(game.click.x, game.click.y);
+    if (idx >= 0) submit(0, idx);
+  }
+  const hover = cardAt(game.mouse.x, game.mouse.y);
+  if (hover >= 0 && game.mouse.inside && game.phase === 'play') game.sel[0] = hover;
+  for (let i = 0; i < actions.length; i++) {
+    const a = actions[i];
+    if (a.player >= game.playerCount) continue;
+    if (a.type === 'move') moveCursor(a.player, a.dir);
+    else if (a.type === 'confirm') submit(a.player, game.sel[a.player]);
+  }
+  if (keyEdge.has('ArrowLeft')) moveCursor(0, -1);
+  if (keyEdge.has('ArrowRight')) moveCursor(0, 1);
+  if (keyEdge.has('Space') || keyEdge.has('Enter')) submit(0, game.sel[0]);
+  keyEdge.forEach(function (code) {
+    const pick = KEY_PICK[code];
+    if (!pick) return;
+    if (pick[0] >= game.playerCount) return;
+    submit(pick[0], pick[1]);
+  });
+}
+function update(dt) {
+  game.time += dt;
+  if (game.shake > 0) game.shake = Math.max(0, game.shake - dt * 16);
+  if (game.flash > 0) game.flash = Math.max(0, game.flash - dt);
+  if (game.lunge > 0) game.lunge = Math.max(0, game.lunge - dt);
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += (p.kind === 'ember' ? -36 : 28) * dt;
+    if (p.kind === 'shard' || p.kind === 'rock') p.rot = (p.rot || 0) + dt * 5;
+    if (p.life <= 0) game.particles.splice(i, 1);
+  }
+  for (let i = game.floats.length - 1; i >= 0; i--) {
+    const f = game.floats[i];
+    f.life -= dt;
+    f.y -= 26 * dt;
+    if (f.life <= 0) game.floats.splice(i, 1);
+  }
+  tickMusic();
+  const actions = [];
+  pollPads(dt, actions);
+  if (keyEdge.has('KeyM')) toggleMute();
+  if (game.screen === 'title') { handleTitle(actions); return; }
+  if (game.screen === 'over') { handleOver(actions); return; }
+  if (game.screen === 'play' && keyEdge.has('Escape')) game.paused = !game.paused;
+  if (game.screen === 'play' && game.paused) return;
+  for (let i = 0; i < 3; i++) game.stun[i] = Math.max(0, game.stun[i] - dt);
+  if (game.lock > 0) game.lock = Math.max(0, game.lock - dt);
+  if (game.phase === 'play') {
+    game.waveTime += dt;
+    if (game.timerMax > 0) {
+      game.timer -= dt;
+      if (game.timer <= 0) onTimeout();
+    }
+    if (game.phase === 'play') handlePlay(actions);
+  } else {
+    game.phaseT -= dt;
+    if (game.phase === 'blast') {
+      const age = blastAge();
+      if (!game.impactSpawned && age >= 0.4) {
+        game.impactSpawned = true;
+        unleashAoE(currentElement());
+      }
+      if (age >= 0.62) {
+        for (let i = 0; i < game.monsters.length; i++) {
+          const m = game.monsters[i];
+          if (m.kicked) continue;
+          m.kicked = true;
+          m.vx = m.ox * 1.6 + (Math.random() - 0.5) * 20;
+          m.vy = m.oy * 1.6 - 70;
+        }
+      }
+    }
+    for (let i = 0; i < game.monsters.length; i++) {
+      const m = game.monsters[i];
+      if (!m.kicked) continue;
+      m.ox += m.vx * dt;
+      m.oy += m.vy * dt;
+      m.vy += 40 * dt;
+    }
+    if (game.phaseT <= 0) {
+      if (game.phase === 'downed') finishOver(game.overReason);
+      else nextWave();
+    }
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function panel(rect, fill, stroke) {
+  roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.fillStyle = fill || COL.panel;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+function text(str, x, y, font, fill, align, base) {
+  ctx.font = font;
+  ctx.fillStyle = fill;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = base || 'middle';
+  ctx.fillText(str, x, y);
+}
+function halo(str, x, y, font, fill, align) {
+  ctx.font = font;
+  ctx.textAlign = align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(10, 4, 18, 0.88)';
+  ctx.strokeText(str, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(str, x, y);
+}
+function wrap(str, maxW, font) {
+  ctx.font = font;
+  const words = String(str).split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (ctx.measureText(next).width > maxW && cur) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function heart(x, y, filled, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, 3);
+  ctx.bezierCurveTo(-6, -4, -12, 2, 0, 11);
+  ctx.bezierCurveTo(12, 2, 6, -4, 0, 3);
+  ctx.fillStyle = filled ? color : 'rgba(255,255,255,0.12)';
+  ctx.fill();
+  ctx.restore();
+}
+function star(x, y, r, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = Math.cos(a) * rad;
+    const py = Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.restore();
+}
+function makeFit(pts, rect, pad) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (!p) continue;
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const bw = Math.max(1e-4, maxX - minX);
+  const bh = Math.max(1e-4, maxY - minY);
+  const s = Math.min((rect.w - pad * 2) / bw, (rect.h - pad * 2) / bh);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const ox = rect.x + rect.w / 2 - cx * s;
+  const oy = rect.y + rect.h / 2 - cy * s;
+  return function map(p) { return { x: ox + p.x * s, y: oy + p.y * s }; };
+}
+function drawMinorArc(v, towardA, towardB, radius, labelGap) {
+  const a1 = Math.atan2(towardA.y - v.y, towardA.x - v.x);
+  const a2 = Math.atan2(towardB.y - v.y, towardB.x - v.x);
+  let d = a2 - a1;
+  while (d <= -Math.PI) d += Math.PI * 2;
+  while (d > Math.PI) d -= Math.PI * 2;
+  ctx.beginPath();
+  const steps = 14;
+  for (let i = 0; i <= steps; i++) {
+    const a = a1 + d * (i / steps);
+    const x = v.x + Math.cos(a) * radius;
+    const y = v.y + Math.sin(a) * radius;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  const mid = a1 + d / 2;
+  const gap = labelGap == null ? 16 : labelGap;
+  return {
+    x: v.x + Math.cos(mid) * (radius + gap),
+    y: v.y + Math.sin(mid) * (radius + gap),
+    a: mid
+  };
+}
+function strokePoly(pts, close) {
+  if (!pts.length) return;
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  if (close) ctx.closePath();
+}
+function polyChain(n, heading) {
+  const ext = 2 * Math.PI / n;
+  const pts = [];
+  let x = 0;
+  let y = 0;
+  let h = heading;
+  for (let i = 0; i < n; i++) {
+    pts.push({ x: x, y: y });
+    x += Math.cos(h);
+    y += Math.sin(h);
+    h += ext;
+  }
+  return pts;
+}
+
+function drawCornerDiagram(rect, d, reveal, glow) {
+  const n = d.n;
+  const pts = regularPoints(n);
+  const prev = pts[n - 1];
+  const V = pts[0];
+  const next = pts[1];
+  const prev2 = pts[n - 2];
+  const next2 = pts[2 % n];
+  const extPt = { x: V.x * 2 - prev.x, y: V.y * 2 - prev.y };
+  const local = [prev2, prev, V, next, next2, extPt];
+  const map = makeFit(local, rect, 46);
+  const A = map(prev);
+  const B = map(V);
+  const C = map(next);
+  const A2 = map(prev2);
+  const C2 = map(next2);
+  const E = map(extPt);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(247,240,228,0.25)';
+  ctx.setLineDash([4, 6]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(A2.x, A2.y);
+  ctx.lineTo(A.x, A.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(C.x, C.y);
+  ctx.lineTo(C2.x, C2.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(A.x, A.y);
+  ctx.lineTo(B.x, B.y);
+  ctx.lineTo(C.x, C.y);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,213,106,0.8)';
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(A.x, A.y);
+  ctx.lineTo(E.x, E.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  const showExt = d.given === 'ext' || glow === 'ext' || (reveal && d.given === 'int');
+  const showInt = d.given === 'int' || glow === 'int' || glow === 'ints';
+  ctx.lineWidth = showInt ? 4 : 2;
+  ctx.strokeStyle = showInt ? COL.gold : 'rgba(255,213,106,0.45)';
+  const ip = drawMinorArc(B, A, C, 34);
+  ctx.stroke();
+  ctx.lineWidth = showExt ? 4 : 2;
+  ctx.strokeStyle = showExt ? '#7ef0ff' : 'rgba(126,240,255,0.4)';
+  const ep = drawMinorArc(B, E, C, 52);
+  ctx.stroke();
+  if (d.given === 'int') halo(d.givenText, ip.x, ip.y, '700 16px ' + FONT, COL.gold);
+  else halo('int', ip.x, ip.y, '700 13px ' + FONT, 'rgba(255,213,106,0.7)');
+  if (d.given === 'ext') halo(d.givenText, ep.x, ep.y, '700 16px ' + FONT, '#7ef0ff');
+  else if (reveal && d.given === 'int') halo(extOf(n) + DEG, ep.x, ep.y, '700 16px ' + FONT, COL.good);
+  else halo('ext', ep.x, ep.y, '700 13px ' + FONT, 'rgba(126,240,255,0.75)');
+  halo('regular polygon', rect.x + rect.w / 2, rect.y + 22, '700 14px ' + FONT, COL.dim);
+  if (glow === 'sum' || (reveal && d.given === 'ext')) {
+    halo(reveal ? '360' + DEG : 'exterior sum', rect.x + rect.w / 2, rect.y + rect.h - 22, '700 16px ' + FONT, reveal ? COL.good : COL.gold);
+  }
+}
+function drawFullDiagram(rect, d, reveal, glow) {
+  const pts = regularPoints(d.n);
+  const map = makeFit(pts, rect, 36);
+  const sp = pts.map(map);
+  ctx.beginPath();
+  sp.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255, 213, 106, 0.08)';
+  ctx.fill();
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  const hot = glow === 'ints' || glow === 'tris' || reveal;
+  for (let i = 0; i < sp.length; i++) {
+    const V = sp[i];
+    const P = sp[(i - 1 + sp.length) % sp.length];
+    const N = sp[(i + 1) % sp.length];
+    ctx.strokeStyle = hot ? COL.gold : 'rgba(255,213,106,0.35)';
+    ctx.lineWidth = hot ? 3 : 1.5;
+    if (d.n <= 12 || i % Math.ceil(d.n / 8) === 0) drawMinorArc(V, P, N, d.n > 12 ? 12 : 16);
+    ctx.stroke();
+  }
+  halo(d.caption || (d.n + ' sides'), rect.x + rect.w / 2, rect.y + rect.h / 2, '700 18px ' + FONT, COL.gold);
+  if (glow === 'tris') {
+    const c = sp.reduce(function (a, p) { return { x: a.x + p.x, y: a.y + p.y }; }, { x: 0, y: 0 });
+    c.x /= sp.length;
+    c.y /= sp.length;
+    ctx.strokeStyle = 'rgba(126,240,255,0.35)';
+    ctx.lineWidth = 1;
+    sp.forEach(function (p) {
+      ctx.beginPath();
+      ctx.moveTo(c.x, c.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    });
+  }
+}
+function drawUnequalDiagram(rect, d) {
+  const n = d.n;
+  const use = Math.min(n, 10);
+  const pts = regularPoints(use);
+  const map = makeFit(pts, rect, 42);
+  const sp = pts.map(map);
+  ctx.beginPath();
+  sp.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,90,31,0.06)';
+  ctx.fill();
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+  const V = sp[0];
+  const P = sp[sp.length - 1];
+  const N = sp[1];
+  const extPt = { x: V.x * 2 - P.x, y: V.y * 2 - P.y };
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#ffb088';
+  ctx.beginPath();
+  ctx.moveTo(P.x, P.y);
+  ctx.lineTo(extPt.x, extPt.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#ff8a5a';
+  ctx.lineWidth = 3;
+  const lp = drawMinorArc(V, extPt, N, 28);
+  ctx.stroke();
+  halo(d.A + DEG, lp.x, lp.y, '700 15px ' + FONT, '#ffb088');
+  if (sp.length > 3) {
+    const V2 = sp[2];
+    const P2 = sp[1];
+    const N2 = sp[3 % sp.length];
+    const dx = V2.x - P2.x;
+    const dy = V2.y - P2.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const tip = { x: V2.x + dx / len * 36, y: V2.y + dy / len * 36 };
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = COL.gold;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(V2.x, V2.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 3;
+    const lp2 = drawMinorArc(V2, tip, N2, 16, 8);
+    ctx.stroke();
+    let cx = 0;
+    let cy = 0;
+    sp.forEach(function (p) { cx += p.x; cy += p.y; });
+    cx /= sp.length;
+    cy /= sp.length;
+    const ox = V2.x - cx;
+    const oy = V2.y - cy;
+    const ol = Math.hypot(ox, oy) || 1;
+    halo('x' + DEG, lp2.x + ox / ol * 10, lp2.y + oy / ol * 10, '700 15px ' + FONT, COL.gold);
+  }
+  halo(d.count + ' equal exteriors of x' + DEG, rect.x + rect.w / 2, rect.y + 20, '700 14px ' + FONT, COL.dim);
+}
+function drawRatioLine(rect, d, reveal) {
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2 + 10;
+  const pts = regularPoints(Math.min(d.n, 12));
+  const map = makeFit(pts, { x: rect.x, y: rect.y, w: rect.w, h: rect.h - 20 }, 48);
+  const sp = pts.map(map);
+  const V = sp[0];
+  const P = sp[sp.length - 1];
+  const N = sp[1];
+  const extPt = { x: V.x * 2 - P.x, y: V.y * 2 - P.y };
+  ctx.strokeStyle = 'rgba(247,240,228,0.35)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([3, 6]);
+  ctx.beginPath();
+  ctx.moveTo(sp[sp.length - 2].x, sp[sp.length - 2].y);
+  ctx.lineTo(P.x, P.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(N.x, N.y);
+  ctx.lineTo(sp[2].x, sp[2].y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(P.x, P.y);
+  ctx.lineTo(V.x, V.y);
+  ctx.lineTo(N.x, N.y);
+  ctx.stroke();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#7ef0ff';
+  ctx.beginPath();
+  ctx.moveTo(P.x, P.y);
+  ctx.lineTo(extPt.x, extPt.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = COL.gold;
+  const ip = drawMinorArc(V, P, N, 36);
+  ctx.stroke();
+  ctx.strokeStyle = '#7ef0ff';
+  const ep = drawMinorArc(V, extPt, N, 54);
+  ctx.stroke();
+  halo(d.k + '\u00d7 exterior', ip.x, ip.y, '700 14px ' + FONT, COL.gold);
+  halo(reveal ? 'exterior' : '1\u00d7', ep.x, ep.y, '700 14px ' + FONT, '#7ef0ff');
+  halo('interior + exterior = 180' + DEG, cx, rect.y + 22, '700 15px ' + FONT, COL.ink);
+}
+function drawIrregular(rect, d, reveal) {
+  const pts = irregularPoints(d.angles);
+  if (!pts) {
+    halo('Polygon', rect.x + rect.w / 2, rect.y + rect.h / 2, '700 18px ' + FONT, COL.gold);
+    return;
+  }
+  const map = makeFit(pts, rect, 36);
+  const sp = pts.map(map);
+  ctx.beginPath();
+  sp.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+  ctx.closePath();
+  ctx.fillStyle = reveal ? 'rgba(125,255,168,0.08)' : 'rgba(255,213,106,0.07)';
+  ctx.fill();
+  ctx.strokeStyle = COL.ink;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+  let cx = 0;
+  let cy = 0;
+  sp.forEach(function (p) { cx += p.x; cy += p.y; });
+  cx /= sp.length;
+  cy /= sp.length;
+  for (let i = 0; i < sp.length; i++) {
+    const V = sp[i];
+    const P = sp[(i - 1 + sp.length) % sp.length];
+    const N = sp[(i + 1) % sp.length];
+    ctx.strokeStyle = reveal ? COL.good : COL.gold;
+    ctx.lineWidth = 2.5;
+    drawMinorArc(V, P, N, 16);
+    ctx.stroke();
+    const vx = V.x - cx;
+    const vy = V.y - cy;
+    const len = Math.hypot(vx, vy) || 1;
+    const lx = V.x - vx / len * 28;
+    const ly = V.y - vy / len * 28;
+    halo(d.labels[i], lx, ly, '700 12px ' + FONT, COL.ink);
+  }
+  if (d.caption) halo(d.caption, rect.x + rect.w / 2, rect.y + 18, '700 13px ' + FONT, COL.dim);
+}
+function chunkOf(n, heading, partial) {
+  const pts = polyChain(n, heading);
+  const I = intOf(n) * Math.PI / 180;
+  const keep = [];
+  if (partial || n > 8) {
+    [0, 1, 2, n - 1, n - 2].forEach(function (i) { keep.push(pts[i]); });
+  } else {
+    for (let i = 0; i < pts.length; i++) keep.push(pts[i]);
+  }
+  return { pts: pts, keep: keep, ray0: heading, ray1: heading + I, n: n, partial: partial || n > 8 };
+}
+function drawJoined(rect, d, reveal, glow) {
+  let heading = 0.15;
+  const parts = [];
+  parts.push(chunkOf(d.a, heading, false));
+  heading += intOf(d.a) * Math.PI / 180;
+  parts.push(chunkOf(d.b, heading, false));
+  heading += intOf(d.b) * Math.PI / 180;
+  let unknown = null;
+  let center = null;
+  if (d.mode === 'fill' || d.mode === 'iso') {
+    unknown = chunkOf(d.n, heading, true);
+    parts.push(unknown);
+    if (d.mode === 'iso') {
+      const bis = (unknown.ray0 + unknown.ray1) / 2;
+      const radius = 1 / (2 * Math.sin(Math.PI / d.n));
+      center = { x: Math.cos(bis) * radius, y: Math.sin(bis) * radius };
+    }
+  }
+  const cloud = [{ x: 0, y: 0 }];
+  parts.forEach(function (part) {
+    part.keep.forEach(function (p) { cloud.push(p); });
+  });
+  if (center) cloud.push(center);
+  if (d.mode === 'gap') {
+    const end = parts[1].ray1;
+    cloud.push({ x: Math.cos(parts[0].ray0) * 0.85, y: Math.sin(parts[0].ray0) * 0.85 });
+    cloud.push({ x: Math.cos(end) * 0.85, y: Math.sin(end) * 0.85 });
+  }
+  const map = makeFit(cloud, rect, 42);
+  const fills = ['rgba(255,77,106,0.16)', 'rgba(77,180,255,0.16)', 'rgba(255,213,106,0.16)'];
+  const strokes = [COL.p1, COL.p2, COL.gold];
+  parts.forEach(function (part, idx) {
+    const sp = part.pts.map(map);
+    const local = (part.partial ? [sp[part.n - 2], sp[part.n - 1], sp[0], sp[1], sp[2]] : sp);
+    ctx.beginPath();
+    if (part.partial) {
+      ctx.moveTo(sp[0].x, sp[0].y);
+      ctx.lineTo(sp[1].x, sp[1].y);
+      ctx.lineTo(sp[part.n - 1].x, sp[part.n - 1].y);
+      ctx.closePath();
+    } else {
+      sp.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+      ctx.closePath();
+    }
+    ctx.fillStyle = fills[idx % fills.length];
+    ctx.fill();
+    ctx.strokeStyle = strokes[idx % strokes.length];
+    ctx.lineWidth = 2.4;
+    strokePoly(local, !part.partial);
+    ctx.stroke();
+    const name = (idx === 2) ? 'n-gon' : polyName(part.n);
+    const mid = {
+      x: (sp[0].x + sp[1].x + sp[part.n - 1].x) / 3,
+      y: (sp[0].y + sp[1].y + sp[part.n - 1].y) / 3
+    };
+    halo(name, mid.x, mid.y, '700 12px ' + FONT, COL.ink);
+    const focused = (glow === 'focus' && part.n === d.focus && idx < 2) || (glow === 'unknown' && idx === 2);
+    if (focused || (reveal && idx === 2 && d.mode !== 'gap')) {
+      ctx.strokeStyle = reveal && idx === 2 ? COL.good : COL.gold;
+      ctx.lineWidth = 3.5;
+      const lab = drawMinorArc(sp[0], sp[1], sp[part.n - 1], 26);
+      ctx.stroke();
+      if (reveal && idx === 2) halo((d.R || d.x) + DEG, lab.x, lab.y, '700 14px ' + FONT, COL.good);
+      else if (focused && idx < 2 && reveal) halo(intOf(part.n) + DEG, lab.x, lab.y, '700 14px ' + FONT, COL.good);
+    }
+  });
+  const origin = map({ x: 0, y: 0 });
+  ctx.fillStyle = COL.ink;
+  ctx.beginPath();
+  ctx.arc(origin.x, origin.y, 4, 0, Math.PI * 2);
+  ctx.fill();
+  if (d.mode === 'gap') {
+    const p0 = map({ x: Math.cos(parts[0].ray0), y: Math.sin(parts[0].ray0) });
+    const p1 = map({ x: Math.cos(parts[1].ray1), y: Math.sin(parts[1].ray1) });
+    ctx.strokeStyle = glow === 'x' || reveal ? '#ff7ad9' : COL.gold;
+    ctx.lineWidth = 3.5;
+    const lab = drawMinorArc(origin, p0, p1, 34);
+    ctx.stroke();
+    halo(reveal && glow !== 'focus' ? '' : 'x' + DEG, lab.x, lab.y, '700 16px ' + FONT, '#ff7ad9');
+    if (!(reveal && glow !== 'focus')) {
+      /* x label already drawn */
+    } else if (game.step > 0 && glow === 'x') {
+      halo('x' + DEG, lab.x, lab.y, '700 16px ' + FONT, '#ff7ad9');
+    }
+    if (!reveal || game.step === 0) halo('x' + DEG, lab.x, lab.y, '700 16px ' + FONT, '#ff7ad9');
+  }
+  if (d.mode === 'iso' && unknown && center) {
+    const O = map(center);
+    const B = map(unknown.pts[1]);
+    const C = map(unknown.pts[unknown.n - 1]);
+    ctx.strokeStyle = '#d9a6ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(O.x, O.y);
+    ctx.lineTo(origin.x, origin.y);
+    ctx.lineTo(B.x, B.y);
+    ctx.lineTo(O.x, O.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#d9a6ff';
+    ctx.beginPath();
+    ctx.arc(O.x, O.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    halo('O', O.x + 10, O.y - 10, '700 12px ' + FONT, '#d9a6ff');
+    tick(origin, O);
+    tick(origin, B);
+    ctx.strokeStyle = glow === 'base' ? COL.gold : '#ff7ad9';
+    ctx.lineWidth = 3;
+    const lab = drawMinorArc(origin, O, B, 22);
+    ctx.stroke();
+    halo('x' + DEG, lab.x, lab.y, '700 14px ' + FONT, '#ff7ad9');
+    void C;
+  }
+}
+function tick(a, b) {
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len * 6;
+  const ny = dx / len * 6;
+  ctx.strokeStyle = '#d9a6ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(mx - nx, my - ny);
+  ctx.lineTo(mx + nx, my + ny);
+  ctx.stroke();
+}
+function drawExtended(rect, d, reveal, glow) {
+  const fig = extendedFigure(d.n);
+  if (!fig.X) return;
+  const cloud = fig.pts.concat([fig.X]);
+  const map = makeFit(cloud, rect, 34);
+  const sp = fig.pts.map(map);
+  const X = map(fig.X);
+  const Q = map(fig.Q);
+  const R = map(fig.R);
+  const S = map(fig.S);
+  const T = map(fig.T);
+  const U = map(fig.U);
+  const P = map(fig.P);
+  ctx.beginPath();
+  sp.forEach(function (p, i) { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(126,240,255,0.05)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(247,240,228,0.75)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = currentElement().a;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(Q.x, Q.y);
+  ctx.lineTo(R.x, R.y);
+  ctx.lineTo(X.x, X.y);
+  ctx.moveTo(T.x, T.y);
+  ctx.lineTo(S.x, S.y);
+  ctx.lineTo(X.x, X.y);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,122,217,0.12)';
+  ctx.beginPath();
+  ctx.moveTo(X.x, X.y);
+  ctx.lineTo(R.x, R.y);
+  ctx.lineTo(S.x, S.y);
+  ctx.closePath();
+  ctx.fill();
+  if (d.focus === 'qtu') {
+    ctx.strokeStyle = COL.gold;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(Q.x, Q.y);
+    ctx.lineTo(T.x, T.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  const letters = [['P', P], ['Q', Q], ['R', R], ['S', S], ['T', T], ['X', X]];
+  if (d.focus === 'qtu') letters.push(['U', U]);
+  const cen = sp.reduce(function (a, p) { return { x: a.x + p.x, y: a.y + p.y }; }, { x: 0, y: 0 });
+  cen.x /= sp.length;
+  cen.y /= sp.length;
+  letters.forEach(function (pair) {
+    const name = pair[0];
+    const p = pair[1];
+    const vx = p.x - cen.x;
+    const vy = p.y - cen.y;
+    const len = Math.hypot(vx, vy) || 1;
+    halo(name, p.x + vx / len * 14, p.y + vy / len * 14, '700 13px ' + FONT, name === 'X' ? '#ff7ad9' : COL.ink);
+  });
+  ctx.fillStyle = COL.ink;
+  [P, Q, R, S, T, U, X].forEach(function (p) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  if (glow === 'base' || d.focus === 'rxs' || reveal) {
+    ctx.strokeStyle = glow === 'base' ? COL.gold : 'rgba(255,213,106,0.7)';
+    ctx.lineWidth = glow === 'base' ? 3.5 : 2;
+    const b1 = drawMinorArc(R, X, S, 20);
+    ctx.stroke();
+    const b2 = drawMinorArc(S, X, R, 20);
+    ctx.stroke();
+    if (reveal && glow !== 'int' && d.focus !== 'qtu') {
+      halo(extOf(d.n) + DEG, b1.x, b1.y, '700 12px ' + FONT, COL.good);
+    } else if (glow === 'base') {
+      halo('ext', b1.x, b1.y, '700 12px ' + FONT, COL.gold);
+      halo('ext', b2.x, b2.y, '700 12px ' + FONT, COL.gold);
+    }
+  }
+  if (d.focus === 'rxs' || glow === 'x') {
+    ctx.strokeStyle = '#ff7ad9';
+    ctx.lineWidth = 3.5;
+    const lab = drawMinorArc(X, R, S, 26);
+    ctx.stroke();
+    halo('x' + DEG, lab.x, lab.y, '700 15px ' + FONT, '#ff7ad9');
+  }
+  if (d.focus === 'int' || d.focus === 'qtu' || glow === 'int') {
+    const V = map(fig.pts[5 % d.n]);
+    const PV = map(fig.pts[4 % d.n]);
+    const NV = map(fig.pts[6 % d.n]);
+    ctx.strokeStyle = glow === 'int' ? COL.gold : 'rgba(255,213,106,0.8)';
+    ctx.lineWidth = 3;
+    const lab = drawMinorArc(V, PV, NV, 18);
+    ctx.stroke();
+    if (reveal && (d.focus === 'qtu' || d.focus === 'int') && game.step > 0 && glow !== 'qtu') {
+      halo(intOf(d.n) + DEG, lab.x, lab.y, '700 12px ' + FONT, COL.good);
+    }
+  }
+  if (d.focus === 'qtu') {
+    ctx.strokeStyle = glow === 'qtu' ? '#ff7ad9' : 'rgba(255,122,217,0.8)';
+    ctx.lineWidth = 3.5;
+    const lab = drawMinorArc(T, Q, U, 22);
+    ctx.stroke();
+    halo(glow === 'qtu' ? 'x' + DEG : ANGLE + 'QTU', lab.x, lab.y, '700 12px ' + FONT, '#ff7ad9');
+  }
+  halo('n = ' + d.n, rect.x + rect.w / 2, rect.y + 18, '700 14px ' + FONT, COL.dim);
+}
+function drawDiagram(rect, problem) {
+  panel(rect, 'rgba(10, 6, 20, 0.55)', 'rgba(255,214,140,0.18)');
+  if (!problem) return;
+  const d = problem.diagram;
+  const glow = problem.steps[Math.min(game.step, 1)].glow;
+  const reveal = game.reveal;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x + 6, rect.y + 6, rect.w - 12, rect.h - 12);
+  ctx.clip();
+  if (d.type === 'corner') drawCornerDiagram(rect, d, reveal, glow);
+  else if (d.type === 'full') drawFullDiagram(rect, d, reveal, glow);
+  else if (d.type === 'unequal') drawUnequalDiagram(rect, d);
+  else if (d.type === 'ratio-line') drawRatioLine(rect, d, reveal);
+  else if (d.type === 'irregular') drawIrregular(rect, d, reveal);
+  else if (d.type === 'joined') drawJoined(rect, d, reveal, glow);
+  else if (d.type === 'extended') drawExtended(rect, d, reveal, glow);
+  ctx.restore();
+}
+
+function drawCaster(box, who, robe, element, casting, mini) {
+  const cx = box.x + box.w * 0.48;
+  const foot = box.y + box.h - (mini ? 16 : 28);
+  const sc = mini ? 0.72 : 1;
+  const bob = Math.sin(game.time * 2.2 + box.x) * 3 * sc;
+  ctx.save();
+  ctx.translate(cx, foot + bob);
+  ctx.scale(sc, sc);
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.beginPath();
+  ctx.ellipse(0, 6, 34, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = robe;
+  ctx.beginPath();
+  ctx.moveTo(-26, 0);
+  ctx.lineTo(22, 0);
+  ctx.lineTo(30, -78);
+  ctx.quadraticCurveTo(0, -96, -22, -78);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(-6, -70, 8, 62);
+  ctx.fillStyle = '#f3d2b5';
+  ctx.beginPath();
+  ctx.arc(-2, -102, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = who === 'witch' ? '#2a1238' : '#3a2418';
+  if (who === 'witch') {
+    ctx.beginPath();
+    ctx.moveTo(-16, -104);
+    ctx.quadraticCurveTo(-24, -78, -18, -70);
+    ctx.quadraticCurveTo(-8, -88, -4, -100);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(8, -104);
+    ctx.quadraticCurveTo(20, -80, 16, -66);
+    ctx.quadraticCurveTo(6, -86, 2, -102);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(-10, -92);
+    ctx.quadraticCurveTo(-2, -74, 8, -92);
+    ctx.quadraticCurveTo(2, -86, -10, -92);
+    ctx.fill();
+  }
+  ctx.fillStyle = robe;
+  ctx.beginPath();
+  if (who === 'witch') {
+    ctx.moveTo(-18, -112);
+    ctx.lineTo(14, -112);
+    ctx.lineTo(4, -148);
+    ctx.quadraticCurveTo(28, -132, 18, -112);
+  } else {
+    ctx.moveTo(-16, -112);
+    ctx.lineTo(12, -112);
+    ctx.lineTo(-2, -156);
+    ctx.closePath();
+  }
+  ctx.fill();
+  ctx.strokeStyle = element.b;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-16, -112);
+  ctx.lineTo(who === 'witch' ? 16 : 12, -112);
+  ctx.stroke();
+  ctx.strokeStyle = '#3a2414';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(24, -8);
+  ctx.lineTo(46, -86);
+  ctx.stroke();
+  const pulse = 7 + Math.sin(game.time * 6) * 2 + (casting ? 4 : 0);
+  ctx.fillStyle = element.b;
+  ctx.shadowColor = element.a;
+  ctx.shadowBlur = casting ? 18 : 8;
+  ctx.beginPath();
+  ctx.arc(48, -90, pulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+  return { x: cx + 48 * sc, y: foot + bob - 90 * sc };
+}
+function drawMonster(m, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(m.sc, m.sc);
+  ctx.fillStyle = m.tint;
+  if (m.kind === 'slime') {
+    ctx.beginPath();
+    ctx.ellipse(0, 6, 16, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#241028';
+    ctx.beginPath();
+    ctx.arc(-5, 4, 2, 0, Math.PI * 2);
+    ctx.arc(5, 4, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (m.kind === 'bat') {
+    ctx.beginPath();
+    ctx.moveTo(-20, 4);
+    ctx.quadraticCurveTo(-10, -12, 0, 2);
+    ctx.quadraticCurveTo(10, -12, 20, 4);
+    ctx.quadraticCurveTo(0, 8, -20, 4);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(0, 2, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (m.kind === 'eye') {
+    ctx.beginPath();
+    ctx.ellipse(0, 4, 14, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#241028';
+    ctx.beginPath();
+    ctx.arc(0, 4, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(1, 3, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (m.kind === 'golem') {
+    ctx.fillRect(-12, -8, 24, 20);
+    ctx.fillStyle = '#241028';
+    ctx.fillRect(-6, 0, 4, 4);
+    ctx.fillRect(3, 0, 4, 4);
+  } else {
+    ctx.beginPath();
+    ctx.arc(0, 4, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-8, -2);
+    ctx.lineTo(-14, -14);
+    ctx.lineTo(-2, -4);
+    ctx.moveTo(8, -2);
+    ctx.lineTo(14, -14);
+    ctx.lineTo(2, -4);
+    ctx.fill();
+    ctx.fillStyle = '#241028';
+    ctx.fillRect(-5, 2, 3, 3);
+    ctx.fillRect(2, 2, 3, 3);
+  }
+  ctx.restore();
+}
+function magicSides() {
+  const p = game.problem;
+  if (!p) return 6;
+  if (p.hideN && game.phase !== 'blast' && game.phase !== 'timeout' && game.phase !== 'downed') return 0;
+  return p.aoeN;
+}
+function blastAge() {
+  if (game.phase !== 'blast') return -1;
+  return clamp(1 - game.phaseT / BLAST_DUR, 0, 1);
+}
+function blastShapeName(n) {
+  const names = {
+    3: 'TRIANGLE', 4: 'SQUARE', 5: 'PENTAGON', 6: 'HEXAGON', 8: 'OCTAGON',
+    9: 'NONAGON', 10: 'DECAGON', 12: '12-GON', 15: '15-GON', 18: '18-GON',
+    20: '20-GON', 24: '24-GON'
+  };
+  return names[n] || (n + '-GON');
+}
+function traceRegular(cx, cy, radius, n, rot) {
+  const sides = Math.max(3, n || 3);
+  ctx.beginPath();
+  for (let i = 0; i < sides; i++) {
+    const a = (rot || 0) - Math.PI / 2 + i * Math.PI * 2 / sides;
+    const x = cx + Math.cos(a) * radius;
+    const y = cy + Math.sin(a) * radius;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+}
+function drawElementInnards(cx, cy, radius, n, el, rot) {
+  const sides = Math.max(3, n);
+  if (el.name === 'FIRE') {
+    const tongues = sides * 2;
+    for (let i = 0; i < tongues; i++) {
+      const a = rot + i * Math.PI * 2 / tongues;
+      const base = radius * (0.15 + (i % 3) * 0.16);
+      const bx = cx + Math.cos(a) * base;
+      const by = cy + Math.sin(a) * base * 0.72 + 8;
+      const h = 18 + Math.sin(game.time * 11 + i * 1.7) * 9;
+      ctx.fillStyle = i % 2 ? '#ffe08a' : '#ff6a1a';
+      ctx.beginPath();
+      ctx.moveTo(bx - 7, by);
+      ctx.quadraticCurveTo(bx, by - h, bx + 7, by);
+      ctx.quadraticCurveTo(bx, by - h * 0.25, bx - 7, by);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(255, 244, 210, 0.9)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (el.name === 'ICE') {
+    for (let i = 0; i < sides; i++) {
+      const a = rot - Math.PI / 2 + i * Math.PI * 2 / sides;
+      const x = cx + Math.cos(a) * radius * 0.62;
+      const y = cy + Math.sin(a) * radius * 0.62;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(a + Math.PI / 2);
+      ctx.fillStyle = i % 2 ? '#ffffff' : '#d8fbff';
+      ctx.beginPath();
+      ctx.moveTo(0, -18);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(0, 20);
+      ctx.lineTo(-7, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 6; i++) {
+      const a = game.time * 0.4 + i;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * radius * 0.42, cy + Math.sin(a) * radius * 0.42);
+      ctx.stroke();
+    }
+  } else if (el.name === 'EARTH') {
+    ctx.strokeStyle = '#24180c';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < sides; i++) {
+      const a = rot - Math.PI / 2 + i * Math.PI * 2 / sides;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a + 0.35) * radius * 0.42, cy + Math.sin(a + 0.35) * radius * 0.42);
+      ctx.lineTo(cx + Math.cos(a) * radius * 0.9, cy + Math.sin(a) * radius * 0.9);
+      ctx.stroke();
+    }
+    for (let i = 0; i < sides; i++) {
+      const a = rot + i * Math.PI * 2 / sides;
+      ctx.fillStyle = i % 2 ? '#e6c36a' : '#8a5a28';
+      ctx.beginPath();
+      ctx.ellipse(cx + Math.cos(a) * radius * 0.48, cy + Math.sin(a) * radius * 0.48, 7, 5, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else {
+    ctx.strokeStyle = '#fff4b0';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#ffe56a';
+    ctx.shadowBlur = 10;
+    for (let i = 0; i < sides; i++) {
+      const a = rot - Math.PI / 2 + i * Math.PI * 2 / sides;
+      const tx = cx + Math.cos(a) * radius * 0.92;
+      const ty = cy + Math.sin(a) * radius * 0.92;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      for (let s = 1; s <= 4; s++) {
+        const t = s / 4;
+        const j = Math.sin(game.time * 28 + i * 2.2 + s) * 9;
+        ctx.lineTo(cx + (tx - cx) * t + Math.cos(a + 1.57) * j, cy + (ty - cy) * t + Math.sin(a + 1.57) * j);
+      }
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff8d0';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 8 + Math.sin(game.time * 20) * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+function drawVertexMarks(cx, cy, radius, n, el, rot) {
+  const sides = Math.max(3, n);
+  for (let i = 0; i < sides; i++) {
+    const a = rot - Math.PI / 2 + i * Math.PI * 2 / sides;
+    const x = cx + Math.cos(a) * (radius + 2);
+    const y = cy + Math.sin(a) * (radius + 2);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(a);
+    ctx.fillStyle = el.b;
+    if (el.name === 'FIRE') {
+      ctx.beginPath();
+      ctx.moveTo(0, -9);
+      ctx.lineTo(5, 4);
+      ctx.lineTo(-5, 4);
+      ctx.fill();
+    } else if (el.name === 'ICE') {
+      ctx.beginPath();
+      ctx.moveTo(0, -7);
+      ctx.lineTo(4, 0);
+      ctx.lineTo(0, 7);
+      ctx.lineTo(-4, 0);
+      ctx.fill();
+    } else if (el.name === 'EARTH') {
+      ctx.fillRect(-4, -4, 8, 8);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(0, -7);
+      ctx.lineTo(2, -2);
+      ctx.lineTo(7, 0);
+      ctx.lineTo(2, 2);
+      ctx.lineTo(0, 7);
+      ctx.lineTo(-2, 2);
+      ctx.lineTo(-7, 0);
+      ctx.lineTo(-2, -2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+function drawElementPolygon(cx, cy, radius, n, el, opt) {
+  const rot = opt.rot || 0;
+  const alpha = opt.alpha == null ? 1 : opt.alpha;
+  const sides = Math.max(3, n || 3);
+  ctx.save();
+  if (opt.fill) {
+    traceRegular(cx, cy, radius, sides, rot);
+    ctx.save();
+    ctx.clip();
+    ctx.globalAlpha = alpha * (opt.fillAlpha == null ? 0.82 : opt.fillAlpha);
+    const g = ctx.createRadialGradient(cx, cy - radius * 0.2, radius * 0.08, cx, cy, radius);
+    g.addColorStop(0, el.b);
+    g.addColorStop(0.48, el.a);
+    g.addColorStop(1, el.deep);
+    ctx.fillStyle = g;
+    ctx.fillRect(cx - radius - 8, cy - radius - 8, radius * 2 + 16, radius * 2 + 16);
+    if (opt.innards) {
+      ctx.globalAlpha = alpha;
+      drawElementInnards(cx, cy, radius, sides, el, rot);
+    }
+    ctx.restore();
+  }
+  if (opt.stroke) {
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = el.a;
+    ctx.shadowBlur = opt.heavy ? 16 : 8;
+    ctx.lineWidth = opt.heavy ? 4.5 : 2.5;
+    ctx.strokeStyle = el.b;
+    traceRegular(cx, cy, radius, sides, rot);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    traceRegular(cx, cy, radius, sides, rot);
+    ctx.stroke();
+    if (opt.marks) drawVertexMarks(cx, cy, radius, sides, el, rot);
+  }
+  ctx.restore();
+}
+function drawTargetRing(cx, cy, el) {
+  const n = magicSides();
+  const rot = game.time * 0.28;
+  if (!n) {
+    ctx.save();
+    ctx.strokeStyle = el.a;
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = el.a;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 74, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = el.a;
+    ctx.globalAlpha = 0.12;
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+  drawElementPolygon(cx, cy, 74, n, el, {
+    fill: true,
+    innards: false,
+    stroke: true,
+    marks: true,
+    alpha: 1,
+    fillAlpha: 0.2,
+    rot: rot
+  });
+}
+function unleashAoE(el) {
+  const n = (game.problem && game.problem.aoeN) || 6;
+  const cx = game.horde.cx;
+  const cy = game.horde.cy;
+  const kind = el.name === 'FIRE' ? 'ember' : (el.name === 'ICE' ? 'shard' : (el.name === 'EARTH' ? 'rock' : 'spark'));
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + i * Math.PI * 2 / n;
+    for (let k = 0; k < 4; k++) {
+      const speed = 60 + Math.random() * 120;
+      game.particles.push({
+        x: cx + Math.cos(a) * 16,
+        y: cy + Math.sin(a) * 16,
+        vx: Math.cos(a) * speed,
+        vy: Math.sin(a) * speed - (kind === 'ember' ? 50 : 8),
+        life: 0.75 + Math.random() * 0.45,
+        color: k % 2 ? el.b : el.a,
+        r: 3.5 + Math.random() * 3.5,
+        kind: kind,
+        rot: Math.random() * 6
+      });
+    }
+  }
+  for (let i = 0; i < game.monsters.length; i++) {
+    const m = game.monsters[i];
+    burst(cx + m.ox, cy + m.oy, [el.a, el.b, '#fff8e8'], 8, 90);
+  }
+}
+function drawMonsterDoom(m, x, y, el, age) {
+  const hit = clamp((age - 0.32) / 0.2, 0, 1);
+  const fade = clamp((age - 0.5) / 0.42, 0, 1);
+  ctx.save();
+  if (hit > 0) {
+    ctx.globalAlpha = hit * (1 - fade) * 0.85;
+    ctx.fillStyle = el.a;
+    ctx.beginPath();
+    ctx.arc(x, y, 20, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1 - fade * 0.94;
+  drawMonster(m, x, y);
+  if (hit > 0) {
+    ctx.globalAlpha = hit * (1 - fade);
+    ctx.translate(x, y);
+    if (el.name === 'FIRE') {
+      ctx.fillStyle = '#ffe08a';
+      ctx.beginPath();
+      ctx.moveTo(-6, 2);
+      ctx.quadraticCurveTo(0, -16 - hit * 8, 6, 2);
+      ctx.fill();
+    } else if (el.name === 'ICE') {
+      ctx.strokeStyle = '#f4feff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-12, 0);
+      ctx.lineTo(12, 0);
+      ctx.moveTo(0, -12);
+      ctx.lineTo(0, 12);
+      ctx.moveTo(-8, -8);
+      ctx.lineTo(8, 8);
+      ctx.stroke();
+    } else if (el.name === 'EARTH') {
+      ctx.fillStyle = '#e6c36a';
+      ctx.fillRect(-5, -8, 7, 6);
+      ctx.fillStyle = '#5a3818';
+      ctx.fillRect(2, 2, 7, 6);
+    } else {
+      ctx.strokeStyle = '#ffe56a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-12, 8);
+      ctx.lineTo(-2, -1);
+      ctx.lineTo(10, -12);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+function drawHorde(rect, el) {
+  const age = blastAge();
+  const n = (game.problem && game.problem.aoeN) || 6;
+  const shape = age >= 0 ? blastShapeName(n) : '';
+  panel(rect, 'rgba(10, 6, 20, 0.55)', el.a);
+  text(age >= 0 ? el.name + ' ' + shape : el.name + ' AOE', rect.x + rect.w / 2, rect.y + 18, '700 13px ' + FONT, el.b, 'center');
+  const cx = game.horde.cx;
+  const cy = game.horde.cy;
+  if (age < 0.34) drawTargetRing(cx, cy, el);
+  if (age >= 0.28) {
+    const arrive = clamp((age - 0.28) / 0.22, 0, 1);
+    const ease = arrive * arrive * (3 - 2 * arrive);
+    const radius = 30 + ease * 58;
+    const hold = age > 0.88 ? clamp(1 - (age - 0.88) / 0.12, 0, 1) : 1;
+    drawElementPolygon(cx, cy, radius, n, el, {
+      fill: true,
+      innards: true,
+      stroke: false,
+      alpha: hold,
+      fillAlpha: 0.78,
+      rot: -0.2
+    });
+    if (arrive < 0.4) {
+      ctx.save();
+      ctx.globalAlpha = (1 - arrive / 0.4) * 0.7 * hold;
+      ctx.fillStyle = '#fff';
+      traceRegular(cx, cy, radius * 0.92, n, -0.2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  const lean = game.lunge * 36;
+  for (let i = 0; i < game.monsters.length; i++) {
+    const m = game.monsters[i];
+    const y = cy + m.oy + Math.sin(game.time * 3 + m.bob) * 4;
+    const x = cx + m.ox - lean;
+    if (age >= 0) drawMonsterDoom(m, x, y, el, age);
+    else drawMonster(m, x, y);
+  }
+  if (age >= 0.28) {
+    const arrive = clamp((age - 0.28) / 0.22, 0, 1);
+    const ease = arrive * arrive * (3 - 2 * arrive);
+    const radius = 30 + ease * 58;
+    const hold = age > 0.88 ? clamp(1 - (age - 0.88) / 0.12, 0, 1) : 1;
+    drawElementPolygon(cx, cy, radius, n, el, {
+      fill: false,
+      stroke: true,
+      marks: true,
+      heavy: true,
+      alpha: hold,
+      rot: -0.2
+    });
+  }
+}
+function drawTravelingPolygon(el) {
+  const age = blastAge();
+  if (age < 0 || age > 0.46) return;
+  const travel = clamp(age / 0.42, 0, 1);
+  const ease = travel * travel * (3 - 2 * travel);
+  const L = layout();
+  const fromX = L.caster.x + L.caster.w * 0.72;
+  const fromY = L.caster.y + 78;
+  const x = fromX + (game.horde.cx - fromX) * ease;
+  const y = fromY + (game.horde.cy - fromY) * ease - Math.sin(ease * Math.PI) * 42;
+  const n = (game.problem && game.problem.aoeN) || 6;
+  ctx.save();
+  ctx.strokeStyle = el.a;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = 10;
+  ctx.shadowColor = el.b;
+  ctx.shadowBlur = 14;
+  ctx.beginPath();
+  ctx.moveTo(fromX, fromY);
+  ctx.quadraticCurveTo((fromX + x) / 2, (fromY + y) / 2 - 28, x, y);
+  ctx.stroke();
+  ctx.restore();
+  const radius = 34 + ease * 30;
+  const ghost = 0.42;
+  const gx = fromX + (x - fromX) * ghost;
+  const gy = fromY + (game.horde.cy - fromY) * (ease * ghost) - Math.sin(ease * ghost * Math.PI) * 42;
+  drawElementPolygon(gx, gy, radius * 0.72, n, el, {
+    fill: true,
+    innards: false,
+    stroke: true,
+    marks: false,
+    alpha: 0.35,
+    fillAlpha: 0.45,
+    rot: game.time * 2.4 - 0.4
+  });
+  drawElementPolygon(x, y, radius, n, el, {
+    fill: true,
+    innards: true,
+    stroke: true,
+    marks: true,
+    heavy: true,
+    alpha: 1,
+    fillAlpha: 0.94,
+    rot: game.time * 2.4
+  });
+}
+function drawParty(rect, el) {
+  panel(rect, 'rgba(10, 6, 20, 0.55)', 'rgba(255,214,140,0.18)');
+  const casting = game.phase === 'blast' || game.reveal;
+  if (game.mode === 'DUEL' && game.playerCount > 1) {
+    const n = game.playerCount;
+    for (let i = 0; i < n; i++) {
+      const slice = { x: rect.x + i * (rect.w / n), y: rect.y + 24, w: rect.w / n, h: rect.h - 36 };
+      const dead = game.livesP[i] <= 0;
+      ctx.globalAlpha = dead ? 0.35 : 1;
+      drawCaster(slice, game.chars[i], PLAYER_COL[i], el, casting && game.anchorPlayer === i, true);
+      ctx.globalAlpha = 1;
+      text('P' + (i + 1), slice.x + slice.w / 2, rect.y + 16, '700 12px ' + FONT, PLAYER_COL[i], 'center');
+      if (game.stun[i] > 0) text('FIZZLE', slice.x + slice.w / 2, rect.y + rect.h - 16, '700 11px ' + FONT, COL.bad, 'center');
+    }
+  } else {
+    const i = game.mode === 'COOP' ? stepOwner() : 0;
+    drawCaster(rect, game.chars[i], PLAYER_COL[i], el, casting, false);
+    const who = game.chars[i] === 'witch' ? 'Witch' : 'Wizard';
+    text(who, rect.x + rect.w / 2, rect.y + 18, '700 14px ' + FONT, COL.ink, 'center');
+    text(PLAYER_NAME[i], rect.x + rect.w / 2, rect.y + rect.h - 18, '700 12px ' + FONT, PLAYER_COL[i], 'center');
+  }
+}
+function drawBeam(from, to, el) {
+  if (!from || !to) return;
+  ctx.save();
+  ctx.strokeStyle = el.b;
+  ctx.globalAlpha = 0.85;
+  ctx.lineWidth = game.phase === 'blast' ? 6 : 2;
+  ctx.shadowColor = el.a;
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  const mx = (from.x + to.x) / 2;
+  const my = (from.y + to.y) / 2 - 30;
+  ctx.quadraticCurveTo(mx, my, to.x, to.y);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawHud(el) {
+  const L = layout();
+  panel(L.hud, 'rgba(12, 6, 22, 0.9)', 'rgba(255,214,140,0.2)');
+  const modeName = game.mode === 'COOP' ? 'TEAM CO-OP' : (game.mode === 'DUEL' ? 'ARCANE DUEL' : 'SOLO');
+  text(modeName + '   ·   ' + TIER_META[game.tier].role + '   ·   WAVE ' + game.wave, 32, 32, '700 15px ' + FONT, COL.ink, 'left');
+  const badgeW = Math.max(108, el.name.length * 9 + 28);
+  const bx = W / 2 - badgeW / 2;
+  roundRect(bx, 16, badgeW, 32, 16);
+  ctx.fillStyle = el.deep;
+  ctx.fill();
+  ctx.strokeStyle = el.a;
+  ctx.stroke();
+  text(el.name, W / 2, 32, '800 13px ' + FONT, el.b, 'center');
+  if (game.mode === 'DUEL') {
+    let x = 760;
+    for (let i = 0; i < game.playerCount; i++) {
+      text('P' + (i + 1), x, 24, '800 11px ' + FONT, PLAYER_COL[i], 'left');
+      text(String(game.scores[i]), x + 22, 24, '700 13px ' + FONT, COL.ink, 'left');
+      for (let h = 0; h < 3; h++) heart(x + 18 + h * 14, 34, h < game.livesP[i], PLAYER_COL[i]);
+      star(x + 68, 40, 6, game.stars[i] ? COL.gold : 'rgba(255,255,255,0.15)');
+      text(String(game.stars[i]), x + 78, 40, '700 11px ' + FONT, COL.gold, 'left');
+      x += 130;
+    }
+  } else {
+    const label = game.mode === 'COOP' ? 'TEAM' : 'SCORE';
+    text(label, 860, 32, '800 12px ' + FONT, COL.gold, 'left');
+    text(String(game.score), 910, 32, '800 18px ' + FONT, COL.ink, 'left');
+    for (let i = 0; i < 3; i++) heart(1060 + i * 22, 26, i < game.lives, COL.bad);
+  }
+  roundRect(L.mute.x, L.mute.y, L.mute.w, L.mute.h, 10);
+  ctx.fillStyle = audio.muted ? 'rgba(255,93,122,0.2)' : 'rgba(125,255,168,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = audio.muted ? COL.bad : COL.good;
+  ctx.stroke();
+  text(audio.muted ? 'MUTED' : 'SOUND', L.mute.x + L.mute.w / 2, L.mute.y + L.mute.h / 2, '800 11px ' + FONT, audio.muted ? COL.bad : COL.good, 'center');
+}
+function drawQuest(el) {
+  const L = layout();
+  const problem = game.problem;
+  panel(L.quest, 'rgba(22, 12, 36, 0.92)', el.a);
+  if (!problem) return;
+  const font = '600 16px ' + FONT;
+  const lines = wrap(problem.prompt, L.quest.w - 36, font).slice(0, 2);
+  for (let i = 0; i < lines.length; i++) {
+    text(lines[i], L.quest.x + 16, L.quest.y + 20 + i * 20, font, COL.ink, 'left');
+  }
+  let stepLine = 'STEP ' + (game.step + 1) + ' OF 2   ·   ' + (game.step === 0 ? 'LOCK THE ANCHOR' : 'UNLEASH THE AOE');
+  if (game.mode === 'COOP') {
+    const o = stepOwner();
+    stepLine += '   ·   P' + (o + 1) + ' ' + PLAYER_NAME[o].toUpperCase();
+  } else if (game.mode === 'DUEL') {
+    stepLine += '   ·   FIRST CORRECT RUNE CASTS';
+  }
+  text(stepLine, L.quest.x + 16, L.quest.y + 68, '700 13px ' + FONT, game.step === 0 ? COL.gold : el.b, 'left');
+  if (game.tier === 'EXTREME') {
+    const frac = game.timerMax ? clamp(game.timer / game.timerMax, 0, 1) : 0;
+    const bw = 180;
+    const bx = L.quest.x + L.quest.w - bw - 16;
+    roundRect(bx, L.quest.y + 58, bw, 10, 5);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    roundRect(bx, L.quest.y + 58, Math.max(8, bw * frac), 10, 5);
+    ctx.fillStyle = frac < 0.25 ? COL.bad : el.a;
+    ctx.fill();
+    text(Math.max(0, Math.ceil(game.timer)) + 's', bx - 8, L.quest.y + 63, '700 12px ' + FONT, frac < 0.25 ? COL.bad : COL.dim, 'right');
+  }
+  if (game.tip) {
+    const tipFont = '600 13px ' + FONT;
+    const tipLines = wrap(game.tip, L.quest.w - 36, tipFont).slice(0, 2);
+    for (let i = 0; i < tipLines.length; i++) {
+      text(tipLines[i], L.quest.x + 16, L.quest.y + 92 + i * 16, tipFont, game.tipGood ? COL.good : '#ffd0a8', 'left');
+    }
+  }
+}
+function drawDeck(el) {
+  const L = layout();
+  panel(L.deck, 'rgba(12, 6, 22, 0.92)', 'rgba(255,214,140,0.16)');
+  const problem = game.problem;
+  if (!problem) return;
+  const step = problem.steps[Math.min(game.step, problem.steps.length - 1)];
+  text(step.ask, L.deck.x + 18, L.deck.y + 18, '700 14px ' + FONT, COL.gold, 'left');
+  const legend = [];
+  for (let p = 0; p < game.playerCount; p++) legend.push(KEY_LABELS[p][0] + ' ' + KEY_LABELS[p][1] + ' ' + KEY_LABELS[p][2] + ' ' + KEY_LABELS[p][3]);
+  text(legend.join('    '), L.deck.x + L.deck.w - 18, L.deck.y + 18, '700 12px ' + FONT, COL.dim, 'right');
+  for (let i = 0; i < 4; i++) {
+    const r = L.cards[i];
+    const card = step.cards[i];
+    const hover = game.mouse.inside && hit(game.mouse.x, game.mouse.y, r);
+    let y = r.y;
+    if (hover && !card.spent) y -= 3;
+    roundRect(r.x, y, r.w, r.h, 14);
+    ctx.fillStyle = card.spent ? 'rgba(40, 16, 24, 0.85)' : 'rgba(28, 14, 48, 0.95)';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    let stroke = el.a;
+    for (let p = 0; p < game.playerCount; p++) {
+      if (game.sel[p] === i && !card.spent && (game.mode === 'DUEL' || p === stepOwner() || game.mode === 'SOLO')) stroke = PLAYER_COL[p];
+    }
+    if (game.showAnswer && card.ok) stroke = COL.good;
+    ctx.strokeStyle = card.spent ? 'rgba(255,93,122,0.45)' : stroke;
+    ctx.stroke();
+    text(card.text, r.x + r.w / 2, y + 62, '800 28px ' + FONT, card.spent ? 'rgba(247,240,228,0.35)' : COL.ink, 'center');
+    let lx = r.x + 16;
+    for (let p = 0; p < game.playerCount; p++) {
+      roundRect(lx, y + r.h - 36, 28, 22, 6);
+      ctx.fillStyle = PLAYER_COL[p];
+      ctx.fill();
+      text(KEY_LABELS[p][i], lx + 14, y + r.h - 25, '800 12px ' + FONT, '#1a0a14', 'center');
+      lx += 34;
+    }
+    if (game.padOn[0] && game.playerCount >= 1 && game.sel[0] === i) {
+      text('A', r.x + r.w - 22, y + r.h - 25, '800 12px ' + FONT, COL.gold, 'center');
+    }
+    if (card.spent) text('FIZZLE', r.x + r.w / 2, y + 96, '800 12px ' + FONT, COL.bad, 'center');
+  }
+}
+function drawStage(el) {
+  const L = layout();
+  panel(L.stage, 'rgba(18, 8, 32, 0.35)', 'rgba(255,214,140,0.12)');
+  drawParty(L.caster, el);
+  drawDiagram(L.diagram, game.problem);
+  drawHorde(L.horde, el);
+  if (game.phase === 'blast') drawTravelingPolygon(el);
+  else if (game.reveal) {
+    drawBeam(
+      { x: L.caster.x + L.caster.w * 0.72, y: L.caster.y + 86 },
+      { x: L.diagram.x + L.diagram.w / 2, y: L.diagram.y + L.diagram.h / 2 },
+      el
+    );
+  }
+}
+function drawFloats() {
+  for (let i = 0; i < game.floats.length; i++) {
+    const f = game.floats[i];
+    ctx.globalAlpha = clamp(f.life, 0, 1);
+    halo(f.text, f.x, f.y, '800 18px ' + FONT, f.color);
+    ctx.globalAlpha = 1;
+  }
+  for (let i = 0; i < game.particles.length; i++) drawParticle(game.particles[i]);
+}
+function drawParticle(p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.rot || 0);
+  ctx.globalAlpha = clamp(p.life, 0, 1);
+  ctx.fillStyle = p.color;
+  if (p.kind === 'shard') {
+    ctx.beginPath();
+    ctx.moveTo(0, -p.r * 1.7);
+    ctx.lineTo(p.r * 0.7, 0);
+    ctx.lineTo(0, p.r * 1.9);
+    ctx.lineTo(-p.r * 0.7, 0);
+    ctx.closePath();
+    ctx.fill();
+  } else if (p.kind === 'rock') {
+    ctx.beginPath();
+    ctx.moveTo(-p.r, p.r * 0.4);
+    ctx.lineTo(-p.r * 0.35, -p.r);
+    ctx.lineTo(p.r * 0.85, -p.r * 0.25);
+    ctx.lineTo(p.r, p.r * 0.7);
+    ctx.closePath();
+    ctx.fill();
+  } else if (p.kind === 'spark') {
+    ctx.strokeStyle = p.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-p.r * 1.5, p.r);
+    ctx.lineTo(-p.r * 0.1, -p.r * 0.1);
+    ctx.lineTo(p.r * 0.35, p.r * 0.15);
+    ctx.lineTo(p.r * 1.7, -p.r * 1.5);
+    ctx.stroke();
+  } else if (p.kind === 'ember') {
+    ctx.beginPath();
+    ctx.ellipse(0, 2, p.r * 0.65, p.r, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff2c0';
+    ctx.beginPath();
+    ctx.arc(0, -1, p.r * 0.38, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(6, 2, 12, 0.55)';
+  ctx.fillRect(0, 0, W, H);
+  panel({ x: 440, y: 250, w: 400, h: 160 }, 'rgba(16,8,28,0.95)', COL.gold);
+  text('PAUSED', W / 2, 310, '800 36px ' + FONT, COL.gold, 'center');
+  text('Esc resumes the cast', W / 2, 360, '600 16px ' + FONT, COL.ink, 'center');
+}
+function drawPlay() {
+  const el = currentElement();
+  drawBackdrop(el);
+  ctx.save();
+  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+  drawHud(el);
+  drawQuest(el);
+  drawStage(el);
+  drawDeck(el);
+  drawFloats();
+  if (game.flash > 0) {
+    ctx.fillStyle = 'rgba(255, 40, 60, ' + (game.flash * 0.35) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+  if (game.paused) drawPause();
+}
+function drawBackdrop(el) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1a0c2e');
+  g.addColorStop(1, '#100814');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.strokeStyle = el ? el.a : COL.gold;
+  ctx.lineWidth = 2;
+  for (let k = 0; k < 3; k++) {
+    ctx.save();
+    ctx.translate(180 + k * 420, 140 + (k % 2) * 40);
+    ctx.rotate(game.time * 0.15 + k);
+    const n = [6, 5, 8][k];
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = i * 2 * Math.PI / n;
+      const rad = 70 + k * 16;
+      const x = Math.cos(a) * rad;
+      const y = Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function button(rect, label, sub, on, enabled) {
+  roundRect(rect.x, rect.y, rect.w, rect.h, 14);
+  ctx.fillStyle = !enabled ? 'rgba(255,255,255,0.04)' : (on ? 'rgba(255,213,106,0.18)' : 'rgba(255,255,255,0.05)');
+  ctx.fill();
+  ctx.strokeStyle = !enabled ? 'rgba(255,255,255,0.08)' : (on ? COL.gold : 'rgba(255,255,255,0.16)');
+  ctx.lineWidth = on ? 2.5 : 1.5;
+  ctx.stroke();
+  text(label, rect.x + rect.w / 2, rect.y + (sub ? 24 : rect.h / 2), '800 15px ' + FONT, enabled ? COL.ink : 'rgba(247,240,228,0.35)', 'center');
+  if (sub) text(sub, rect.x + rect.w / 2, rect.y + 46, '600 12px ' + FONT, enabled ? COL.dim : 'rgba(182,167,201,0.4)', 'center');
+}
+function drawTitle() {
+  drawBackdrop(EL.FIRE);
+  game.hits = [{ id: 'mute', x: layout().mute.x, y: layout().mute.y, w: layout().mute.w, h: layout().mute.h }];
+  text('SINGAPORE SECONDARY 1  ·  ANGLES & POLYGONS', W / 2, 42, '800 13px ' + FONT, COL.gold, 'center');
+  text('ARCANE POLYGON', W / 2, 86, '800 54px ' + FONT, COL.ink, 'center');
+  text('Elemental AoE Spellcaster', W / 2, 124, '600 18px ' + FONT, COL.dim, 'center');
+  const best = game.best[game.mode + '-' + game.tier];
+  if (best) text('Best ' + TIER_META[game.tier].name + ' ' + (game.mode === 'COOP' ? 'co-op' : game.mode.toLowerCase()) + '  ' + best, W / 2, 150, '600 13px ' + FONT, COL.gold, 'center');
+
+  text('PARTY', 70, 184, '800 12px ' + FONT, COL.gold, 'left');
+  for (let i = 0; i < 3; i++) {
+    const r = { x: 70 + i * 150, y: 198, w: 140, h: 46 };
+    button(r, (i + 1) + (i === 0 ? ' PLAYER' : ' PLAYERS'), '', game.playerCount === i + 1, true);
+    game.hits.push({ id: 'p' + (i + 1), x: r.x, y: r.y, w: r.w, h: r.h });
+  }
+  for (let i = 0; i < 3; i++) {
+    const r = { x: 540 + i * 230, y: 184, w: 214, h: 78 };
+    const on = i < game.playerCount;
+    button(r, 'P' + (i + 1) + '  ' + (game.chars[i] === 'witch' ? 'WITCH' : 'WIZARD'), PLAYER_NAME[i], on, on);
+    if (on) game.hits.push({ id: 'c' + i, x: r.x, y: r.y, w: r.w, h: r.h });
+    ctx.save();
+    ctx.translate(r.x + 28, r.y + 24);
+    ctx.fillStyle = on ? PLAYER_COL[i] : 'rgba(255,255,255,0.2)';
+    ctx.beginPath();
+    ctx.moveTo(0, 18);
+    ctx.lineTo(16, 18);
+    ctx.lineTo(12, 0);
+    ctx.lineTo(4, 0);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  text('DIFFICULTY', 70, 292, '800 12px ' + FONT, COL.gold, 'left');
+  const tiers = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  for (let i = 0; i < tiers.length; i++) {
+    const id = tiers[i];
+    const r = { x: 70 + i * 300, y: 306, w: 284, h: 72 };
+    button(r, TIER_META[id].name + '  ·  ' + TIER_META[id].role, TIER_META[id].blurb, game.tier === id, true);
+    game.hits.push({ id: 'tier-' + id, x: r.x, y: r.y, w: r.w, h: r.h });
+  }
+
+  text('MODE', 70, 408, '800 12px ' + FONT, COL.gold, 'left');
+  const modes = [
+    { id: 'SOLO', name: 'SOLO', sub: 'One mage, full control', ok: game.playerCount === 1 },
+    { id: 'COOP', name: 'TEAM CO-OP', sub: 'One team score and shared lives', ok: game.playerCount > 1 },
+    { id: 'DUEL', name: 'ARCANE DUEL', sub: 'Fastest spellcaster takes the wave', ok: game.playerCount > 1 }
+  ];
+  for (let i = 0; i < modes.length; i++) {
+    const m = modes[i];
+    const r = { x: 70 + i * 400, y: 422, w: 380, h: 72 };
+    button(r, m.name, m.sub, game.mode === m.id, m.ok);
+    if (m.ok) game.hits.push({ id: m.id, x: r.x, y: r.y, w: r.w, h: r.h });
+  }
+
+  const start = { x: 440, y: 524, w: 400, h: 58 };
+  roundRect(start.x, start.y, start.w, start.h, 16);
+  ctx.fillStyle = '#ffd56a';
+  ctx.fill();
+  text('BEGIN THE CAST', W / 2, start.y + 30, '800 20px ' + FONT, '#2a1608', 'center');
+  game.hits.push({ id: 'start', x: start.x, y: start.y, w: start.w, h: start.h });
+  text('Arrows change party and tier.  Z cycles mode.  V B N toggle robes.  Enter begins.  M mutes.', W / 2, 608, '600 13px ' + FONT, COL.dim, 'center');
+  text('Solo: mouse, 1–4 or arrows + Space, gamepad A.   Co-op rotates steps.   Duel: P2 QWER, P3 UIOP, pads 2 and 3.', W / 2, 632, '600 13px ' + FONT, COL.dim, 'center');
+  text('Co-op keeps a single team score. Duel keeps a score, lives, and stars for each mage.', W / 2, 656, '600 13px ' + FONT, COL.dim, 'center');
+  roundRect(layout().mute.x, layout().mute.y, layout().mute.w, layout().mute.h, 10);
+  ctx.fillStyle = audio.muted ? 'rgba(255,93,122,0.2)' : 'rgba(125,255,168,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = audio.muted ? COL.bad : COL.good;
+  ctx.stroke();
+  text(audio.muted ? 'MUTED' : 'SOUND', layout().mute.x + 40, layout().mute.y + 18, '800 11px ' + FONT, audio.muted ? COL.bad : COL.good, 'center');
+}
+function drawOver() {
+  drawBackdrop(currentElement());
+  panel({ x: 280, y: 120, w: 720, h: 440 }, 'rgba(12,6,22,0.94)', COL.gold);
+  text(game.mode === 'DUEL' ? 'DUEL COMPLETE' : 'SANCTUM REPORT', W / 2, 170, '800 32px ' + FONT, COL.gold, 'center');
+  text(game.winner || '', W / 2, 214, '600 16px ' + FONT, COL.ink, 'center');
+  text(game.overReason || '', W / 2, 244, '600 14px ' + FONT, COL.dim, 'center');
+  if (game.mode === 'DUEL') {
+    for (let i = 0; i < game.playerCount; i++) {
+      const y = 290 + i * 36;
+      text('P' + (i + 1) + '  ' + (game.chars[i] === 'witch' ? 'Witch' : 'Wizard'), 360, y, '700 16px ' + FONT, PLAYER_COL[i], 'left');
+      text(game.scores[i] + ' pts', 620, y, '700 16px ' + FONT, COL.ink, 'left');
+      text(game.stars[i] + ' stars', 760, y, '700 16px ' + FONT, COL.gold, 'left');
+      text(game.livesP[i] + ' lives', 880, y, '700 16px ' + FONT, COL.dim, 'left');
+    }
+  } else {
+    const label = game.mode === 'COOP' ? 'Team score' : 'Score';
+    text(label + '   ' + game.score, W / 2, 310, '800 28px ' + FONT, COL.ink, 'center');
+    text('Waves cleared   ' + game.cleared, W / 2, 352, '600 16px ' + FONT, COL.dim, 'center');
+  }
+  if (game.overTip) {
+    const lines = wrap(game.overTip, 640, '600 13px ' + FONT).slice(0, 2);
+    for (let i = 0; i < lines.length; i++) text(lines[i], W / 2, 400 + i * 18, '600 13px ' + FONT, '#ffd0a8', 'center');
+  }
+  const again = { x: 390, y: 470, w: 220, h: 54 };
+  const title = { x: 670, y: 470, w: 220, h: 54 };
+  button(again, 'CAST AGAIN', '', true, true);
+  button(title, 'TITLE', '', false, true);
+  text('Enter casts again.  Esc returns to the title.', W / 2, 536, '600 12px ' + FONT, COL.dim, 'center');
+}
+function drawFatal() {
+  ctx.fillStyle = '#100814';
+  ctx.fillRect(0, 0, W, H);
+  text('The spellbook hit a snag.', W / 2, 300, '700 22px ' + FONT, COL.bad, 'center');
+  const lines = wrap(game.fatal, 900, '14px ' + FONT).slice(0, 8);
+  for (let i = 0; i < lines.length; i++) text(lines[i], W / 2, 340 + i * 18, '14px ' + FONT, COL.dim, 'center');
+}
+function drawFrame() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  if (game.screen === 'title') drawTitle();
+  else if (game.screen === 'over') drawOver();
+  else drawPlay();
+}
+function draw() {
+  if (game.fatal) {
+    ctx.setTransform(view.s, 0, 0, view.s, view.ox, view.oy);
+    drawFatal();
+    return;
+  }
+  try { drawFrame(); }
+  catch (err) {
+    console.error(err);
+    game.fatal = (err && err.stack) || String(err);
+  }
+}
+
+let lastTs = 0;
+function frame(ts) {
+  const dt = Math.min(0.034, lastTs ? (ts - lastTs) / 1000 : 0.016);
+  lastTs = ts;
+  update(dt);
+  draw();
+  keyEdge.clear();
+  game.click = null;
+  requestAnimationFrame(frame);
+}
+
+function arcaneAudit(perTier) {
+  buildTables();
+  ratioBook();
+  const tiers = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  const report = [];
+  for (let t = 0; t < tiers.length; t++) {
+    const hist = [];
+    let ok = 0;
+    let fail = 0;
+    const keys = {};
+    for (let i = 0; i < perTier; i++) {
+      const p = freshProblem(tiers[t], hist, Math.random);
+      if (!p) { fail++; continue; }
+      ok++;
+      keys[p.kind] = (keys[p.kind] || 0) + 1;
+      hist.push(p.key);
+      if (hist.length > 8) hist.shift();
+      if (p.diagram.type === 'irregular' && !irregularPoints(p.diagram.angles)) fail++;
+      if (p.diagram.type === 'extended' && !extendedFigure(p.diagram.n).X) fail++;
+    }
+    report.push({ tier: tiers[t], ok: ok, fail: fail, kinds: keys, gaps: GAP_PAIRS.length, trios: JOIN_TRIOS.length });
+  }
+  return report;
+}
+window.__arcaneAudit = arcaneAudit;
+
+window.addEventListener('resize', resize);
+window.addEventListener('keydown', function (e) {
+  if (e.repeat) return;
+  keysDown.add(e.code);
+  keyEdge.add(e.code);
+  const block = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'Enter', 'KeyM'];
+  if (block.indexOf(e.code) >= 0 || KEY_PICK[e.code]) e.preventDefault();
+  resumeAudio();
+});
+window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+canvas.addEventListener('pointerdown', function (e) {
+  canvas.focus();
+  resumeAudio();
+  const w = worldFromEvent(e);
+  game.mouse.x = w.x;
+  game.mouse.y = w.y;
+  game.mouse.inside = true;
+  game.click = w;
+  const m = layout().mute;
+  if (hit(w.x, w.y, m) && game.screen === 'play') toggleMute();
+});
+canvas.addEventListener('pointermove', function (e) {
+  const w = worldFromEvent(e);
+  game.mouse.x = w.x;
+  game.mouse.y = w.y;
+  game.mouse.inside = true;
+});
+canvas.addEventListener('pointerleave', function () { game.mouse.inside = false; });
+
+if (!ctx) {
+  document.body.textContent = 'Canvas is not available in this browser.';
+} else {
+  buildTables();
+  ratioBook();
+  resize();
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
