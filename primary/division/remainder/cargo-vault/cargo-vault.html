@@ -27,7 +27,7 @@
 </style>
 </head>
 <body>
-<canvas id="gameCanvas" aria-label="Cargo Vault: Reverse-Packer Factory. Primary 4 and 5 division and remainders. Solo uses the mouse, keys 1 2 3 4, arrow keys and space, or gamepad A. Player 2 uses Q W E R or gamepad 2. Player 3 uses U I O P or gamepad 3."></canvas>
+<canvas id="gameCanvas" aria-label="Cargo Vault: Reverse-Packer Factory. Primary 4 and 5 division and remainders. Solo uses the mouse, keys 1 2 3 4, arrow keys and space, or gamepad A. Player 2 uses Q W E R or gamepad 2. Player 3 uses U I O P or gamepad 3. Press Escape or the controller Start button to pause."></canvas>
 <div id="live" class="sr" aria-live="polite"></div>
 <script>
 (() => {
@@ -400,6 +400,9 @@
     dirty: false,
     tip: null,
     missLock: 0,
+    paused: false,
+    pauseAt: 0,
+    padStart: [false, false, false],
     cardFlash: null,
     hover: -1,
     shake: 0,
@@ -1465,6 +1468,7 @@
   }
 
   function canControl(pi) {
+    if (game.paused) return false;
     if (game.screen !== 'PLAYING' || game.phase !== 'INPUT') return false;
     if (pi < 0 || pi >= game.playerCount) return false;
     if (game.players[pi].stun > performance.now()) return false;
@@ -1575,9 +1579,35 @@
     return game.mode;
   }
 
+  function togglePause() {
+    if (game.screen !== 'PLAYING') return;
+    sfx.playTick();
+    if (!game.paused) {
+      game.paused = true;
+      game.pauseAt = performance.now();
+      speak('Paused. Press Escape or Start to resume.');
+      return;
+    }
+    const held = performance.now() - game.pauseAt;
+    game.paused = false;
+    if (game.phaseUntil) game.phaseUntil += held;
+    if (game.missLock) game.missLock += held;
+    for (let i = 0; i < game.players.length; i++) {
+      if (game.players[i].stun) game.players[i].stun += held;
+    }
+    speak('Resumed.');
+  }
+
+  function leaveToTitle() {
+    game.paused = false;
+    game.screen = 'TITLE';
+    speak('Cargo Vault title dock.');
+  }
+
   function beginShift() {
     sfx.unlock();
     sfx.playStart();
+    game.paused = false;
     game.mode = normalizedMode();
     game.playerCount = game.playerCount < 1 ? 1 : Math.min(3, game.playerCount);
     game.score = 0;
@@ -2446,7 +2476,7 @@
     roundRect(start.x, start.y, start.w, start.h, 16, '#fbbf24', '#0f172a', 4);
     text('OPEN THE VAULT BAY', start.x + start.w / 2, start.y + 30, '800 22px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
     hit('start', start.x, start.y, start.w, start.h);
-    text('Step 1 locks the crates or the key property. Step 2 opens the vault.  P2: Q W E R.  P3: U I O P.  M mutes.', VW / 2, 694, '600 13px "Segoe UI", system-ui, sans-serif', '#e0f2fe', 'center');
+    text('Step 1 locks the crates. Step 2 opens the vault.  Esc or 8BitDo Start pauses.  M mutes.', VW / 2, 694, '600 13px "Segoe UI", system-ui, sans-serif', '#e0f2fe', 'center');
     if (game.titleRow === 0) text('PLAYERS', 70, 300, '800 12px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'left');
     if (game.audit && game.audit.length) {
       roundRect(16, 640, 1248, 28, 8, '#fee2e2', '#b91c1c', 2);
@@ -2526,9 +2556,28 @@
     drawCards();
     ctx.restore();
     drawFX();
+    if (game.paused) drawPause();
+  }
+
+  function drawPause() {
+    ctx.fillStyle = 'rgba(8, 20, 40, 0.72)';
+    ctx.fillRect(0, 0, VW, VH);
+    roundRect(340, 188, 600, 320, 22, '#fffaf3', '#0f172a', 4);
+    text('PAUSED', VW / 2, 248, '800 42px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text('The cargo train is holding.', VW / 2, 300, '600 18px "Segoe UI", system-ui, sans-serif', '#9a3412', 'center');
+    text('Esc or Start resumes.  B returns to the dock.', VW / 2, 334, '600 15px "Segoe UI", system-ui, sans-serif', '#334155', 'center');
+    const resume = { x: 390, y: 390, w: 230, h: 58 };
+    const dock = { x: 660, y: 390, w: 230, h: 58 };
+    roundRect(resume.x, resume.y, resume.w, resume.h, 14, '#fbbf24', '#0f172a', 3);
+    text('RESUME', resume.x + resume.w / 2, resume.y + 29, '800 18px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    roundRect(dock.x, dock.y, dock.w, dock.h, 14, '#0f2744', '#fbbf24', 3);
+    text('TITLE DOCK', dock.x + dock.w / 2, dock.y + 29, '800 18px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'center');
+    hit('resume', resume.x, resume.y, resume.w, resume.h);
+    hit('pause-title', dock.x, dock.y, dock.w, dock.h);
   }
 
   function update(dt) {
+    if (game.paused) return;
     game.belt += dt * 90;
     game.shake = Math.max(0, game.shake - dt * 1.6);
     game.flash = Math.max(0, game.flash - dt);
@@ -2593,10 +2642,12 @@
     }
     if (game.screen === 'RESULTS') {
       if (id === 'again') beginShift();
-      else if (id === 'title') {
-        game.screen = 'TITLE';
-        speak('Cargo Vault title dock.');
-      }
+      else if (id === 'title') leaveToTitle();
+      return;
+    }
+    if (game.paused) {
+      if (id === 'resume') togglePause();
+      else if (id === 'pause-title') leaveToTitle();
       return;
     }
     if (game.screen === 'PLAYING' && id.indexOf('card-') === 0) {
@@ -2650,13 +2701,23 @@
       sfx.toggleMute();
       return;
     }
+    if (key === 'Escape') {
+      if (game.screen === 'PLAYING') togglePause();
+      else if (game.screen === 'RESULTS') leaveToTitle();
+      return;
+    }
+    if (game.screen === 'PLAYING' && game.paused) {
+      if (key === 'Enter' || key === ' ') togglePause();
+      else if (key === 'Backspace') leaveToTitle();
+      return;
+    }
     if (game.screen === 'TITLE') {
       titleKey(key);
       return;
     }
     if (game.screen === 'RESULTS') {
       if (key === 'Enter' || key === ' ') beginShift();
-      else if (key === 'Escape' || key === 'Backspace') game.screen = 'TITLE';
+      else if (key === 'Backspace') leaveToTitle();
       return;
     }
     const mapped = playerFromKey(key);
@@ -2691,6 +2752,23 @@
   function pollPads() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     if (!pads) return;
+    if (game.screen === 'PLAYING') {
+      let startEdge = false;
+      for (let i = 0; i < 3; i++) {
+        const gp = pads[i];
+        const start = gp ? padPressed(gp, 9) : false;
+        if (start && !game.padStart[i]) startEdge = true;
+        game.padStart[i] = start;
+      }
+      if (startEdge) {
+        sfx.unlock();
+        togglePause();
+        for (let i = 0; i < game.playerCount; i++) {
+          if (pads[i]) game.players[i].pad = readPad(pads[i]);
+        }
+        return;
+      }
+    }
     if (game.screen !== 'PLAYING') {
       const gp = pads[0];
       if (!gp) return;
@@ -2707,8 +2785,20 @@
         if (game.screen === 'TITLE') beginShift();
         else if (game.screen === 'RESULTS') beginShift();
       }
-      if (now.b && !prev.b && game.screen === 'RESULTS') game.screen = 'TITLE';
+      if (now.b && !prev.b && game.screen === 'RESULTS') leaveToTitle();
       game.nav = now;
+      return;
+    }
+    if (game.paused) {
+      for (let i = 0; i < game.playerCount; i++) {
+        const gp = pads[i];
+        if (!gp) continue;
+        const now = readPad(gp);
+        const prev = game.players[i].pad;
+        if (now.a && !prev.a) togglePause();
+        if (now.b && !prev.b) leaveToTitle();
+        game.players[i].pad = now;
+      }
       return;
     }
     for (let i = 0; i < game.playerCount; i++) {
