@@ -1,0 +1,2716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Cargo Vault: Reverse-Packer Factory</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #082038;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" aria-label="Cargo Vault: Reverse-Packer Factory. Primary 4 and 5 division and remainders. Solo uses the mouse, keys 1 2 3 4, arrow keys and space, or gamepad A. Player 2 uses Q W E R or gamepad 2. Player 3 uses U I O P or gamepad 3."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+(() => {
+  'use strict';
+
+  const VW = 1280;
+  const VH = 720;
+  const SHIPMENTS = 8;
+  const SHIELDS = 5;
+  const UI = {
+    hudX: 16, hudY: 8, hudW: 1248, hudH: 52,
+    sheetX: 16, sheetY: 68, sheetW: 1248, sheetH: 108,
+    stageX: 16, stageY: 184, stageW: 1248, stageH: 246,
+    tipX: 16, tipY: 438, tipW: 1248, tipH: 58,
+    cardY: 506, cardH: 198, cardGap: 12
+  };
+  const TIME_LIMIT = { EASY: 70, MEDIUM: 56, HARD: 50, EXTREME: 30 };
+  const TIER_META = {
+    EASY: { name: 'EASY', role: 'Warehouse Rookie', blurb: 'D × Q + R and box round-up', tint: '#15803d', chip: 'D × Q + R' },
+    MEDIUM: { name: 'MEDIUM', role: 'Cargo Supervisor', blurb: 'Max remainder and re-division', tint: '#0369a1', chip: 'MAX R = D − 1' },
+    HARD: { name: 'HARD', role: 'Vault Logistics Chief', blurb: 'Dual and triple remainder riddles', tint: '#c2410c', chip: 'LCM ± CLUE' },
+    EXTREME: { name: 'EXTREME', role: 'Master Quartermaster', blurb: 'Safes, blitz, combo ×2 ×3', tint: '#be185d', chip: 'COMBO' }
+  };
+  const MODE_META = {
+    SOLO: { name: 'SOLO', blurb: 'One quartermaster, record chase', tint: '#0f766e' },
+    COOP: { name: 'TEAM CO-OP', blurb: 'One shared team score', tint: '#6d28d9' },
+    DUEL: { name: 'CARGO DUEL', blurb: 'Fastest lock-in wins the star', tint: '#e11d48' }
+  };
+  const P1K = ['1', '2', '3', '4'];
+  const P2K = ['Q', 'W', 'E', 'R'];
+  const P3K = ['U', 'I', 'O', 'P'];
+  const NAMES = ['Faizal', 'Mr Ali', 'Mrs Tan', 'Priya', 'Wei Ming', 'Aisha', 'Siti', 'Daniel', 'Mrs Lim', 'Hafiz', 'Nurul', 'Mr Goh', 'Kavita', 'Jun Wei'];
+  const CARGO = [
+    { id: 'marble', plural: 'marbles', one: 'marble', color: '#38bdf8', shape: 'marble' },
+    { id: 'gem', plural: 'gemstones', one: 'gemstone', color: '#c084fc', shape: 'gem' },
+    { id: 'sticker', plural: 'stickers', one: 'sticker', color: '#fb7185', shape: 'sticker' },
+    { id: 'orange', plural: 'oranges', one: 'orange', color: '#fb923c', shape: 'orange' },
+    { id: 'bead', plural: 'beads', one: 'bead', color: '#34d399', shape: 'bead' },
+    { id: 'coin', plural: 'gold coins', one: 'gold coin', color: '#facc15', shape: 'coin' }
+  ];
+  const BAKED = [
+    { id: 'muffin', plural: 'muffins', one: 'muffin', color: '#f59e0b', shape: 'muffin' },
+    { id: 'cupcake', plural: 'cupcakes', one: 'cupcake', color: '#f472b6', shape: 'muffin' },
+    { id: 'bun', plural: 'buns', one: 'bun', color: '#fbbf24', shape: 'muffin' },
+    { id: 'cookie', plural: 'cookies', one: 'cookie', color: '#d97706', shape: 'cookie' }
+  ];
+  const TRIPLES = [[2, 3, 4], [2, 3, 5], [2, 3, 7], [2, 5, 7], [3, 4, 5], [3, 4, 7], [3, 5, 7], [4, 5, 6], [4, 5, 7], [2, 4, 5], [3, 4, 6], [2, 5, 6], [3, 5, 6], [4, 6, 9], [2, 4, 7]];
+  const PAIRS = [[3, 4], [3, 5], [3, 8], [4, 5], [4, 7], [5, 6], [5, 7], [5, 8], [6, 7], [7, 8], [8, 9], [4, 9], [6, 8], [4, 6], [8, 3], [9, 6]];
+  const DEFICIT_PAIRS = [[4, 3], [6, 7], [5, 8], [4, 7], [9, 5], [8, 3], [6, 5], [8, 5], [7, 4], [9, 8], [8, 7], [5, 9], [4, 9], [6, 11], [8, 9], [7, 9], [5, 6], [8, 11]];
+
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const live = document.getElementById('live');
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let lastNow = performance.now();
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(winW * dpr));
+    canvas.height = Math.max(1, Math.floor(winH * dpr));
+    scale = Math.min(winW / VW, winH / VH);
+    offsetX = (winW - VW * scale) / 2;
+    offsetY = (winH - VH * scale) / 2;
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+  function pointIn(px, py, r) {
+    return px >= r.x && py >= r.y && px <= r.x + r.w && py <= r.y + r.h;
+  }
+  function rand(a, b) {
+    return a + Math.floor(Math.random() * (b - a + 1));
+  }
+  function choice(arr) {
+    return arr[rand(0, arr.length - 1)];
+  }
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+  function fmt(n) {
+    const v = Math.round(Number(n));
+    const sign = v < 0 ? '-' : '';
+    return sign + String(Math.abs(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function pretty(text) {
+    if (/^-?\d+$/.test(String(text))) return fmt(Number(text));
+    return String(text);
+  }
+  function clamp(v, a, b) {
+    return Math.max(a, Math.min(b, v));
+  }
+  function ease(t) {
+    const x = clamp(t, 0, 1);
+    return 1 - Math.pow(1 - x, 3);
+  }
+  function gcd(a, b) {
+    let x = Math.abs(a);
+    let y = Math.abs(b);
+    while (y) {
+      const t = x % y;
+      x = y;
+      y = t;
+    }
+    return x;
+  }
+  function lcm(a, b) {
+    if (!a || !b) return 0;
+    return Math.abs(Math.round(a / gcd(a, b)) * b);
+  }
+  function lcmAll(arr) {
+    return arr.reduce((acc, n) => lcm(acc, n), 1);
+  }
+  function gcdAll(arr) {
+    return arr.reduce((acc, n) => gcd(acc, n), 0);
+  }
+  function speak(msg) {
+    if (live) live.textContent = msg;
+  }
+
+  function roundRect(x, y, w, h, r, fill, stroke, lw) {
+    const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lw || 2;
+      ctx.stroke();
+    }
+  }
+
+  function text(str, x, y, font, color, align) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(str, x, y);
+  }
+
+  function wrapLines(str, maxWidth, maxLines) {
+    const words = String(str).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = words[i];
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    if (lines.length <= maxLines) return lines;
+    const kept = lines.slice(0, maxLines);
+    let last = kept[maxLines - 1];
+    while (last.length > 1 && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+    kept[maxLines - 1] = last.replace(/\s+$/, '') + '…';
+    return kept;
+  }
+
+  class SoundEngine {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.unlocked = false;
+      this.stepIdx = 0;
+      this.timer = null;
+      this.humGain = null;
+    }
+
+    unlock() {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!this.ctx) this.ctx = new AudioCtx();
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+      if (!this.unlocked) {
+        this.unlocked = true;
+        this.startHum();
+        this.startBGM();
+      }
+    }
+
+    toggleMute() {
+      this.unlock();
+      this.muted = !this.muted;
+      this.applyHum();
+      if (!this.muted && this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    }
+
+    applyHum() {
+      if (!this.humGain || !this.ctx) return;
+      const target = this.muted ? 0 : (game.screen === 'PLAYING' ? 0.018 : 0.008);
+      this.humGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.05);
+    }
+
+    playTone(freq, type, duration, vol, delay, slideTo) {
+      if (this.muted || !this.ctx) return;
+      const now = this.ctx.currentTime + (delay || 0);
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(Math.max(40, freq), now);
+      if (slideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), now + duration);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.03);
+    }
+
+    playNoise(duration, vol, freq) {
+      if (this.muted || !this.ctx) return;
+      const length = Math.max(1, Math.floor(this.ctx.sampleRate * duration));
+      const buffer = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = freq || 700;
+      const gain = this.ctx.createGain();
+      const now = this.ctx.currentTime;
+      gain.gain.setValueAtTime(vol, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.ctx.destination);
+      src.start(now);
+      src.stop(now + duration + 0.02);
+    }
+
+    playTick() {
+      this.playTone(740, 'square', 0.04, 0.03);
+    }
+
+    playBeep() {
+      this.playTone(880, 'square', 0.05, 0.035);
+      this.playTone(1320, 'square', 0.07, 0.025, 0.05);
+    }
+
+    playConveyor() {
+      this.playNoise(0.16, 0.045, 420);
+      this.playTone(210, 'triangle', 0.14, 0.07, 0.04, 70);
+      this.playTone(98, 'sine', 0.12, 0.05, 0.08);
+    }
+
+    playVault() {
+      this.playTone(92, 'square', 0.18, 0.08, 0, 48);
+      this.playNoise(0.08, 0.04, 180);
+      this.playTone(523.25, 'triangle', 0.22, 0.06, 0.16);
+      this.playTone(784, 'sine', 0.36, 0.07, 0.24);
+      this.playTone(1174, 'sine', 0.28, 0.035, 0.3);
+    }
+
+    playBuzz() {
+      this.playTone(150, 'sawtooth', 0.22, 0.06, 0, 78);
+      this.playTone(98, 'square', 0.18, 0.04, 0.05);
+    }
+
+    playFanfare() {
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      for (let i = 0; i < notes.length; i++) this.playTone(notes[i], 'triangle', 0.22, 0.07, i * 0.08);
+    }
+
+    playStart() {
+      const notes = [392, 523.25, 659.25, 783.99];
+      for (let i = 0; i < notes.length; i++) this.playTone(notes[i], 'square', 0.12, 0.04, i * 0.06);
+    }
+
+    startHum() {
+      if (!this.ctx || this.humGain) return;
+      const seconds = 1.1;
+      const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * seconds), this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 220;
+      this.humGain = this.ctx.createGain();
+      this.humGain.gain.value = 0;
+      src.connect(filter);
+      filter.connect(this.humGain);
+      this.humGain.connect(this.ctx.destination);
+      src.start();
+      this.applyHum();
+    }
+
+    startBGM() {
+      if (this.timer) return;
+      const bass = [98, 130.81, 146.83, 130.81, 110, 146.83, 164.81, 130.81];
+      const lead = [523.25, 587.33, 659.25, 523.25, 698.46, 659.25, 587.33, 523.25];
+      this.timer = setInterval(() => {
+        if (this.muted || !this.ctx) return;
+        const i = this.stepIdx % 8;
+        this.playTone(bass[i], 'triangle', 0.16, game.screen === 'PLAYING' ? 0.028 : 0.016);
+        if (i % 2 === 0) this.playTone(lead[i], 'square', 0.1, 0.016);
+        else this.playTone(lead[i] * 0.5, 'square', 0.08, 0.01);
+        if (i % 2 === 0) this.playNoise(0.03, 0.01, 1400);
+        this.stepIdx++;
+      }, 176);
+    }
+  }
+
+  const sfx = new SoundEngine();
+
+  function loadBest() {
+    try {
+      const n = Number(localStorage.getItem('cargoVaultQuartermasterBest'));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch (err) {
+      return 0;
+    }
+  }
+  function saveBest(n) {
+    try { localStorage.setItem('cargoVaultQuartermasterBest', String(n)); } catch (err) { /* ignore private mode */ }
+  }
+
+  const game = {
+    screen: 'TITLE',
+    playerCount: 1,
+    tier: 'EASY',
+    mode: 'SOLO',
+    titleRow: 3,
+    shipmentIndex: 0,
+    step: 1,
+    phase: 'INPUT',
+    phaseUntil: 0,
+    round: null,
+    history: [],
+    score: 0,
+    shields: SHIELDS,
+    combo: 0,
+    bestCombo: 0,
+    attempts: 0,
+    solves: 0,
+    unlocked: 0,
+    clean: 0,
+    timeLeft: 0,
+    timeMax: 1,
+    dirty: false,
+    tip: null,
+    missLock: 0,
+    cardFlash: null,
+    hover: -1,
+    shake: 0,
+    flash: 0,
+    flashColor: 'rgba(250, 204, 21, 0.25)',
+    belt: 0,
+    particles: [],
+    floaters: [],
+    hot: [],
+    best: loadBest(),
+    newRecord: false,
+    audit: [],
+    result: null,
+    players: [
+      { id: 0, name: 'P1', full: 'CRIMSON', color: '#e11d48', keys: P1K, cursor: -1, stun: 0, stars: 0, score: 0, combo: 0, pad: { a: false, b: false, l: false, r: false, u: false, d: false } },
+      { id: 1, name: 'P2', full: 'AZURE', color: '#2563eb', keys: P2K, cursor: -1, stun: 0, stars: 0, score: 0, combo: 0, pad: { a: false, b: false, l: false, r: false, u: false, d: false } },
+      { id: 2, name: 'P3', full: 'EMERALD', color: '#059669', keys: P3K, cursor: -1, stun: 0, stars: 0, score: 0, combo: 0, pad: { a: false, b: false, l: false, r: false, u: false, d: false } }
+    ],
+    nav: { a: false, b: false, l: false, r: false, u: false, d: false }
+  };
+
+  function card(textValue, sub, correct, tip) {
+    return { text: String(textValue), sub: sub || '', correct: !!correct, tip: correct ? '' : String(tip || '') };
+  }
+
+  function pushCard(list, seen, correctText, textValue, sub, tip) {
+    const t = String(textValue);
+    if (!t || t === 'NaN' || t === 'Infinity' || t === '-Infinity') return;
+    if (t === String(correctText) || seen[t]) return;
+    if (!tip || tip.length < 24) return;
+    seen[t] = true;
+    list.push(card(t, sub, false, tip));
+  }
+
+  function finalize(correct, wrongs, fallbackTip, padder) {
+    const cards = [card(correct.text, correct.sub, true, '')];
+    const seen = {};
+    seen[cards[0].text] = true;
+    for (let i = 0; i < wrongs.length; i++) {
+      const w = wrongs[i];
+      if (!w) continue;
+      const t = String(w.text);
+      if (!t || seen[t]) continue;
+      const tip = w.tip && w.tip.length >= 24 ? w.tip : fallbackTip;
+      if (!tip || tip.length < 24) continue;
+      cards.push(card(t, w.sub, false, tip));
+      seen[t] = true;
+      if (cards.length === 4) break;
+    }
+    let k = 1;
+    while (cards.length < 4 && k < 48) {
+      const extra = padder ? padder(k, seen) : null;
+      k++;
+      if (!extra) continue;
+      const t = String(extra.text);
+      if (!t || seen[t]) continue;
+      const tip = extra.tip && extra.tip.length >= 24 ? extra.tip : fallbackTip;
+      if (!tip || tip.length < 24) continue;
+      cards.push(card(t, extra.sub, false, tip));
+      seen[t] = true;
+    }
+    if (cards.length !== 4) return null;
+    return shuffle(cards);
+  }
+
+  function numPad(answer, tip) {
+    const base = Number(answer);
+    return function (k, seen) {
+      const mag = Math.ceil(k / 2) * (k % 6 === 0 ? 10 : 1);
+      const n = base + (k % 2 === 0 ? mag : -mag);
+      if (!Number.isFinite(n) || n < 0 || seen[String(n)]) return null;
+      return card(n, 'recheck the vault math', false, tip);
+    };
+  }
+
+  function kindFor(tier, index) {
+    if (tier === 'EASY') return ['reverse', 'spot', 'boxes'][index % 3];
+    if (tier === 'MEDIUM') return ['max', 'rediv'][index % 2];
+    if (tier === 'HARD') return ['shared3', 'shared2', 'deficit', 'deficit3', 'nested'][index % 5];
+    return ['consec', 'deficit3', 'max', 'consec', 'deficit3', 'max', 'rediv', 'shared3'][index % 8];
+  }
+
+  function tipMultiply(D, Q, R, packed, total) {
+    return 'Multiply Divisor × Quotient FIRST to get the full groups (' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + '), THEN ADD the ' + R + ' loose leftovers (+ ' + R + ' = ' + fmt(total) + ')!';
+  }
+  function tipBox(name, item, full, cap, left, total) {
+    const held = full * cap;
+    return full + ' boxes hold ' + fmt(held) + ' ' + item.plural + ', leaving ' + left + ' ' + item.plural + ' unpacked! Since ALL ' + item.plural + ' must be packed, ' + name + ' needs ' + full + ' + 1 = ' + (full + 1) + ' boxes!';
+  }
+  function tipMax(D, Q) {
+    const maxR = D - 1;
+    const answer = D * Q + maxR;
+    return 'The remainder must ALWAYS be smaller than the divisor (' + D + ')! The largest possible remainder is ' + D + ' - 1 = ' + maxR + ', giving ' + D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ' + fmt(answer) + '!';
+  }
+  function tipDeficit(D1, R1, D2, R2, K, L, answer, three) {
+    const base = 'Notice both clues are ' + K + ' SHORT of a multiple (' + D1 + ' - ' + R1 + ' = ' + K + ' and ' + D2 + ' - ' + R2 + ' = ' + K + ')! Find a multiple of ' + L + ' and subtract ' + K + '!';
+    if (three) return base + ' The smallest 3-digit value is ' + answer + '.';
+    return base + ' The smallest positive number is ' + answer + '.';
+  }
+
+  function makeReverse(spec) {
+    const D = spec.D;
+    const Q = spec.Q;
+    const R = spec.R;
+    if (!(D > 1 && Q > 0 && R > 0 && R < D)) return null;
+    const packed = D * Q;
+    const total = packed + R;
+    const item = spec.item || choice(CARGO);
+    const name = spec.name || choice(NAMES);
+    const style = spec.style || 'number';
+    const container = spec.container || choice(['bags', 'crates', 'pouches']);
+    const story = style === 'bags'
+      ? name + ' packed ' + item.plural + ' into ' + container + ' of ' + D + '. There were ' + fmt(Q) + ' full ' + container + ' and ' + R + ' left unpacked. How many ' + item.plural + ' were there?'
+      : 'When a number is divided by ' + D + ', the quotient is ' + fmt(Q) + ' and the remainder is ' + R + '. Find the number.';
+    const multiplyTip = tipMultiply(D, Q, R, packed, total);
+    const fallback = 'Build the full groups first (' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + '), then add the ' + R + ' leftovers to get ' + fmt(total) + '.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, packed, D * Q * R, D + ' × ' + fmt(Q) + ' × ' + R, multiplyTip);
+    pushCard(wrong1, seen1, packed, D * (Q + R), D + ' × (' + fmt(Q) + ' + ' + R + ')', multiplyTip);
+    pushCard(wrong1, seen1, packed, total, 'added leftovers too early', 'That is the finished total. Step 1 only seals the full groups: ' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + '. Add ' + R + ' on Step 2.');
+    pushCard(wrong1, seen1, packed, packed - R, 'subtracted the leftovers', fallback);
+    pushCard(wrong1, seen1, packed, Q * R, fmt(Q) + ' × ' + R, multiplyTip);
+    const step1Cards = finalize(card(packed, 'items in full groups', true, ''), wrong1, fallback, numPad(packed, fallback));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, total, D * (Q + R), D + ' × (' + fmt(Q) + ' + ' + R + ')', multiplyTip);
+    pushCard(wrong2, seen2, total, D * Q * R, D + ' × ' + fmt(Q) + ' × ' + R, multiplyTip);
+    pushCard(wrong2, seen2, total, packed, 'forgot to add leftovers', 'The full groups hold ' + fmt(packed) + '. The ' + R + ' loose ' + item.plural + ' still count: ' + fmt(packed) + ' + ' + R + ' = ' + fmt(total) + '.');
+    pushCard(wrong2, seen2, total, packed + D, 'remainder as big as the divisor', 'A remainder must be smaller than ' + D + '. Add the real leftover ' + R + ', not another full group: ' + fmt(packed) + ' + ' + R + ' = ' + fmt(total) + '.');
+    pushCard(wrong2, seen2, total, Q * R + D, 'mixed the factors', multiplyTip);
+    const step2Cards = finalize(card(total, 'original total', true, ''), wrong2, fallback, numPad(total, fallback));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'reverse',
+      key: 'reverse|' + D + '|' + Q + '|' + R,
+      story: story,
+      coach: D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + ', then ' + fmt(packed) + ' + ' + R + ' = ' + fmt(total) + '.',
+      item: item,
+      plaque: style === 'bags' ? (D + ' PER ' + container.slice(0, -1).toUpperCase()) : ('DIVISOR ' + D),
+      scan1: D + ' × ' + fmt(Q) + ' = ?',
+      scan1done: D + ' × ' + fmt(Q) + ' = ' + fmt(packed),
+      scan2: fmt(packed) + ' + ' + R + ' = ?',
+      scan2done: fmt(packed) + ' + ' + R + ' = ' + fmt(total),
+      meta: { D: D, Q: Q, R: R, packed: packed, total: total },
+      steps: [
+        {
+          kicker: 'STEP 1 · PACKED CRATES',
+          prompt: 'How many ' + item.plural + ' are sealed inside the full groups?',
+          hint: 'Multiply the divisor by the quotient. Leave the loose leftovers for Step 2.',
+          locked: 'Full groups locked: ' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + '. Now add the ' + R + ' leftovers.',
+          answer: String(packed),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · OPEN THE VAULT',
+          prompt: 'Add the unpacked leftovers. What is the original number?',
+          hint: 'Dividend = full groups + remainder.',
+          locked: 'Vault open. The number is ' + fmt(total) + '.',
+          answer: String(total),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeSpot(spec) {
+    const D = spec.D;
+    const Q = spec.Q;
+    const R = spec.R;
+    if (!(D > 1 && Q > 1 && R > 0 && R < D) || Q === R) return null;
+    const packed = D * Q;
+    const total = packed + R;
+    const item = spec.item || choice(CARGO);
+    const name = spec.name || choice(NAMES);
+    const container = spec.container || choice(['bundles', 'bags', 'crates']);
+    const story = name + ' counted ' + fmt(total) + ' ' + item.plural + ' and packs them into ' + container + ' of ' + D + '. Which quotient and remainder does that division give?';
+    const fallback = fmt(total) + ' ÷ ' + D + ' = ' + fmt(Q) + ' remainder ' + R + ', because ' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + ' and ' + fmt(total) + ' − ' + fmt(packed) + ' = ' + R + '.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, Q, Q + 1, 'rounded up too soon', 'There is still a remainder, so the quotient stays ' + fmt(Q) + '. The extra ' + item.plural + ' do not make another full ' + container.slice(0, -1) + '.');
+    pushCard(wrong1, seen1, Q, Q - 1, 'missed a full group', D + ' × ' + fmt(Q - 1) + ' = ' + fmt(D * (Q - 1)) + ', which is too small. ' + D + ' × ' + fmt(Q) + ' = ' + fmt(packed) + ' still fits.');
+    pushCard(wrong1, seen1, Q, R, 'swapped in the remainder', 'The remainder is the leftover, not the number of full groups. ' + fmt(total) + ' ÷ ' + D + ' gives quotient ' + fmt(Q) + '.');
+    pushCard(wrong1, seen1, Q, D, 'used the divisor', 'The divisor is the group size ' + D + '. The quotient is how many full groups fit: ' + fmt(Q) + '.');
+    pushCard(wrong1, seen1, Q, total, 'did not divide', fallback);
+    const step1Cards = finalize(card(Q, 'full ' + container, true, ''), wrong1, fallback, numPad(Q, fallback));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, R, 0, 'thought it divides evenly', fallback);
+    pushCard(wrong2, seen2, R, Q, 'reported the quotient', 'The quotient ' + fmt(Q) + ' is how many groups are full. The remainder is what is left: ' + R + '.');
+    pushCard(wrong2, seen2, R, D, 'reported the divisor', 'The divisor ' + D + ' is the size of each group. The leftover is ' + fmt(total) + ' − ' + fmt(packed) + ' = ' + R + '.');
+    pushCard(wrong2, seen2, R, D - R, 'used the deficit', 'The amount short of the next group is not the remainder. The remainder is the unpacked count: ' + R + '.');
+    const alt = R + 1 < D ? R + 1 : R - 1;
+    pushCard(wrong2, seen2, R, alt, 'off by one leftover', fallback);
+    const step2Cards = finalize(card(R, 'left unpacked', true, ''), wrong2, fallback, numPad(R, fallback));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'spot',
+      key: 'spot|' + D + '|' + Q + '|' + R,
+      story: story,
+      coach: fmt(total) + ' ÷ ' + D + ' = ' + fmt(Q) + ' remainder ' + R + '.',
+      item: item,
+      plaque: fmt(total) + ' ' + item.plural.toUpperCase(),
+      scan1: fmt(total) + ' ÷ ' + D + ' = ?',
+      scan1done: fmt(total) + ' ÷ ' + D + ' = ' + fmt(Q) + ' R ?',
+      scan2: fmt(packed) + ' packed, leftover = ?',
+      scan2done: fmt(total) + ' ÷ ' + D + ' = ' + fmt(Q) + ' R ' + R,
+      meta: { D: D, Q: Q, R: R, packed: packed, total: total },
+      steps: [
+        {
+          kicker: 'STEP 1 · FULL GROUPS',
+          prompt: 'How many full ' + container + ' of ' + D + ' fit into ' + fmt(total) + '?',
+          hint: 'The quotient is how many complete groups you can make.',
+          locked: fmt(Q) + ' full ' + container + ' use ' + fmt(packed) + ' ' + item.plural + '. Now find the leftover.',
+          answer: String(Q),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · LEFTOVER TRAY',
+          prompt: 'What remainder is left when ' + fmt(total) + ' is divided by ' + D + '?',
+          hint: 'Subtract the packed amount from the total.',
+          locked: 'The division is ' + fmt(Q) + ' remainder ' + R + '.',
+          answer: String(R),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeBoxes(spec) {
+    const cap = spec.cap;
+    const full = spec.full;
+    const left = spec.left;
+    if (!(cap > 1 && full > 2 && left > 0 && left < cap)) return null;
+    const total = full * cap + left;
+    const boxes = full + 1;
+    const item = spec.item || choice(BAKED);
+    const name = spec.name || choice(NAMES);
+    const story = name + ' made ' + fmt(total) + ' ' + item.plural + '. Each box packs at most ' + cap + '. Every ' + item.one + ' must be packed. How many boxes are needed?';
+    const boxTip = tipBox(name, item, full, cap, left, total);
+    const fallback = fmt(total) + ' ÷ ' + cap + ' = ' + full + ' remainder ' + left + ', so the boxes needed are ' + full + ' + 1 = ' + boxes + '.';
+    const s1 = full + ' full, ' + left + ' left';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, s1, (full + 1) + ' full, 0 left', 'rounded up already', 'Step 1 counts only the completely full boxes. ' + full + ' boxes are full and ' + left + ' ' + item.plural + ' are still loose. Round up on Step 2.');
+    pushCard(wrong1, seen1, s1, full + ' full, 0 left', 'dropped the remainder', fmt(total) + ' does not divide evenly by ' + cap + '. ' + Dstr(full, cap, left));
+    pushCard(wrong1, seen1, s1, left + ' full, ' + full + ' left', 'swapped the two counts', 'The big count is the quotient. ' + fmt(total) + ' ÷ ' + cap + ' = ' + full + ' remainder ' + left + '.');
+    pushCard(wrong1, seen1, s1, full + ' full, ' + cap + ' left', 'used the box size as the leftover', 'A full box holds ' + cap + ', but the actual leftover is ' + left + ', which is smaller than ' + cap + '.');
+    pushCard(wrong1, seen1, s1, (full - 1) + ' full, ' + (left + cap) + ' left', 'broke open an extra box', fallback);
+    const step1Cards = finalize(card(s1, 'quotient and remainder', true, ''), wrong1, fallback, function (k, seen) {
+      const textValue = (full + k + 2) + ' full, ' + ((left + k - 1) % cap) + ' left';
+      if (seen[textValue]) return null;
+      return card(textValue, 'recount the boxes', false, fallback);
+    });
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, boxes, full, 'forgot the extra box', boxTip);
+    if (full + left !== boxes) {
+      pushCard(wrong2, seen2, boxes, full + left, 'added leftovers as boxes', 'The ' + left + ' loose ' + item.plural + ' need ONE extra box together, not ' + left + ' extra boxes. ' + full + ' + 1 = ' + boxes + '.');
+    }
+    pushCard(wrong2, seen2, boxes, full + cap, 'added the box size', boxTip);
+    pushCard(wrong2, seen2, boxes, boxes + 1, 'added a box twice', 'One extra box is enough for the ' + left + ' leftovers. ' + full + ' + 1 = ' + boxes + ', not ' + (boxes + 1) + '.');
+    pushCard(wrong2, seen2, boxes, total, 'reported the item count', 'The question asks for boxes, not ' + item.plural + '. ' + full + ' full boxes plus 1 more is ' + boxes + ' boxes.');
+    pushCard(wrong2, seen2, boxes, full - 1, 'dropped a full box', fallback);
+    const step2Cards = finalize(card(boxes, 'boxes needed', true, ''), wrong2, boxTip, numPad(boxes, boxTip));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'boxes',
+      key: 'box|' + cap + '|' + full + '|' + left,
+      story: story,
+      coach: fmt(total) + ' ÷ ' + cap + ' = ' + full + ' remainder ' + left + ', so ' + full + ' + 1 = ' + boxes + ' boxes.',
+      item: item,
+      plaque: fmt(total) + ' ' + item.plural.toUpperCase(),
+      scan1: fmt(total) + ' ÷ ' + cap + ' = ?',
+      scan1done: fmt(total) + ' ÷ ' + cap + ' = ' + full + ' R ' + left,
+      scan2: 'full boxes + box for leftovers = ?',
+      scan2done: full + ' + 1 = ' + boxes + ' boxes',
+      meta: { cap: cap, full: full, left: left, total: total, boxes: boxes, D: cap, Q: full, R: left },
+      steps: [
+        {
+          kicker: 'STEP 1 · FULL BOXES',
+          prompt: 'How many boxes are completely full, and how many ' + item.plural + ' are left over?',
+          hint: 'Divide first. Do not round up until every leftover has a home.',
+          locked: full + ' boxes are full and ' + left + ' ' + item.plural + ' are still loose.',
+          answer: s1,
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · ROUND UP',
+          prompt: 'How many boxes does ' + name + ' need so every ' + item.one + ' is packed?',
+          hint: 'Leftovers cannot stay on the tray. They need one more box.',
+          locked: 'All ' + item.plural + ' fit in ' + boxes + ' boxes.',
+          answer: String(boxes),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function Dstr(full, cap, left) {
+    return full + ' full boxes hold ' + fmt(full * cap) + ', and ' + left + ' are left over.';
+  }
+
+  function makeMax(spec) {
+    const D = spec.D;
+    const Q = spec.Q;
+    if (!(D > 1 && Q > 1)) return null;
+    const maxR = D - 1;
+    const answer = D * Q + maxR;
+    const illegal = D * Q + D;
+    const zero = D * Q;
+    const dropped = Q > 1 ? D * (Q - 1) + maxR : D * Q + 1;
+    const story = 'When a number is divided by ' + D + ', the quotient is ' + fmt(Q) + '. What is the largest possible number?';
+    const maxTip = tipMax(D, Q);
+    const fallback = maxTip;
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, maxR, D, 'used the whole divisor', maxTip);
+    pushCard(wrong1, seen1, maxR, Q - 1, 'used quotient − 1', 'Quotient − 1 is ' + (Q - 1) + '. The largest remainder depends on the divisor: ' + D + ' − 1 = ' + maxR + '.');
+    pushCard(wrong1, seen1, maxR, Q, 'used the quotient', 'The quotient is ' + fmt(Q) + '. The remainder is a different part of the division, and its largest legal value is ' + maxR + '.');
+    pushCard(wrong1, seen1, maxR, 0, 'chose remainder 0', 'Remainder 0 is the smallest leftover, not the largest. The largest allowed is ' + D + ' − 1 = ' + maxR + '.');
+    if (maxR > 1) pushCard(wrong1, seen1, maxR, maxR - 1, 'one less than the maximum', 'That remainder is allowed, but it is not the largest. ' + D + ' − 1 = ' + maxR + '.');
+    pushCard(wrong1, seen1, maxR, 1, 'chose remainder 1', maxTip);
+    const step1Cards = finalize(card(maxR, 'divisor − 1', true, ''), wrong1, fallback, numPad(maxR, fallback));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, answer, illegal, D + ' × ' + fmt(Q) + ' + ' + D, maxTip);
+    pushCard(wrong2, seen2, answer, zero, 'remainder 0', 'Remainder 0 gives the smallest number with quotient ' + fmt(Q) + ', which is ' + fmt(zero) + '. Add the largest remainder ' + maxR + ' instead.');
+    pushCard(wrong2, seen2, answer, dropped, 'used quotient − 1', 'Keep the quotient at ' + fmt(Q) + '. Change only the remainder to ' + maxR + ': ' + D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ' + fmt(answer) + '.');
+    const qAsR = D * Q + (Q - 1);
+    pushCard(wrong2, seen2, answer, qAsR, 'used quotient − 1 as the remainder', maxTip);
+    pushCard(wrong2, seen2, answer, D * Q + 1, 'added only 1', 'A remainder of 1 is allowed, but the largest remainder is ' + maxR + '. ' + D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ' + fmt(answer) + '.');
+    const step2Cards = finalize(card(answer, 'largest possible', true, ''), wrong2, fallback, numPad(answer, fallback));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'max',
+      key: 'max|' + D + '|' + Q,
+      story: story,
+      coach: 'Largest remainder = ' + D + ' − 1 = ' + maxR + '. Largest number = ' + D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ' + fmt(answer) + '.',
+      item: choice(CARGO),
+      plaque: 'QUOTIENT ' + fmt(Q),
+      scan1: 'largest remainder < ' + D + ' = ?',
+      scan1done: D + ' − 1 = ' + maxR,
+      scan2: D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ?',
+      scan2done: D + ' × ' + fmt(Q) + ' + ' + maxR + ' = ' + fmt(answer),
+      meta: { D: D, Q: Q, R: maxR, total: answer },
+      steps: [
+        {
+          kicker: 'STEP 1 · MAX LEFTOVER',
+          prompt: 'What is the largest remainder allowed when dividing by ' + D + '?',
+          hint: 'A remainder is always smaller than the divisor.',
+          locked: 'Max leftovers locked at ' + maxR + '. Now build ' + D + ' × ' + fmt(Q) + ' + ' + maxR + '.',
+          answer: String(maxR),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · LARGEST CARGO',
+          prompt: 'What is the largest possible number with quotient ' + fmt(Q) + '?',
+          hint: 'Add the max remainder to divisor × quotient.',
+          locked: 'The largest number is ' + fmt(answer) + '.',
+          answer: String(answer),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeRediv(spec) {
+    const D1 = spec.D1;
+    const Q = spec.Q;
+    const R = spec.R;
+    const D2 = spec.D2;
+    if (!(D1 > 1 && D2 > 1 && D1 !== D2 && Q > 2 && R > 0 && R < D1)) return null;
+    const packed = D1 * Q;
+    const total = packed + R;
+    if (total <= D2) return null;
+    const rem2 = total % D2;
+    const quot2 = Math.floor(total / D2);
+    const item = spec.item || choice(CARGO);
+    const name = spec.name || choice(NAMES);
+    const story = 'When a number is divided by ' + D1 + ', the quotient is ' + fmt(Q) + ' and the remainder is ' + R + '. What is the remainder when this number is divided by ' + D2 + '?';
+    const multiplyTip = tipMultiply(D1, Q, R, packed, total);
+    const fallback1 = 'Rebuild the hidden number first: ' + D1 + ' × ' + fmt(Q) + ' + ' + R + ' = ' + fmt(total) + '.';
+    const fallback2 = fmt(total) + ' ÷ ' + D2 + ' = ' + fmt(quot2) + ' remainder ' + rem2 + '. The remainder is what is left after the full groups.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, total, packed, 'forgot to add the remainder', fallback1);
+    pushCard(wrong1, seen1, total, D1 * Q * R, D1 + ' × ' + fmt(Q) + ' × ' + R, multiplyTip);
+    pushCard(wrong1, seen1, total, D1 * (Q + R), D1 + ' × (' + fmt(Q) + ' + ' + R + ')', multiplyTip);
+    pushCard(wrong1, seen1, total, Q * R + D1, 'mixed the factors', multiplyTip);
+    pushCard(wrong1, seen1, total, total + D2, 'added the new divisor', fallback1);
+    const step1Cards = finalize(card(total, 'hidden number', true, ''), wrong1, fallback1, numPad(total, fallback1));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, rem2, quot2, 'reported the new quotient', fmt(quot2) + ' is the quotient, the whole number of groups of ' + D2 + '. ' + D2 + ' × ' + fmt(quot2) + ' = ' + fmt(D2 * quot2) + ', so the remainder is ' + rem2 + '.');
+    pushCard(wrong2, seen2, rem2, R, 'kept the old remainder', 'The remainder ' + R + ' belongs to division by ' + D1 + '. After rebuilding ' + fmt(total) + ', divide by ' + D2 + ' again. The new remainder is ' + rem2 + '.');
+    pushCard(wrong2, seen2, rem2, D2, 'reported the new divisor', 'The divisor is ' + D2 + '. The remainder must be smaller than ' + D2 + '. Here it is ' + rem2 + '.');
+    pushCard(wrong2, seen2, rem2, (rem2 + 1) % D2 === rem2 ? (rem2 + 2) % D2 : (rem2 + 1) % D2, 'off by one', fallback2);
+    pushCard(wrong2, seen2, rem2, total, 'did not divide again', fallback2);
+    const step2Cards = finalize(card(rem2, 'remainder ÷ ' + D2, true, ''), wrong2, fallback2, numPad(rem2, fallback2));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'rediv',
+      key: 'rediv|' + D1 + '|' + Q + '|' + R + '|' + D2,
+      story: story,
+      coach: D1 + ' × ' + fmt(Q) + ' + ' + R + ' = ' + fmt(total) + '. Then ' + fmt(total) + ' ÷ ' + D2 + ' = ' + fmt(quot2) + ' remainder ' + rem2 + '.',
+      item: item,
+      plaque: 'THEN ÷ ' + D2,
+      scan1: D1 + ' × ' + fmt(Q) + ' + ' + R + ' = ?',
+      scan1done: 'hidden number = ' + fmt(total),
+      scan2: fmt(total) + ' ÷ ' + D2 + ' remainder = ?',
+      scan2done: fmt(total) + ' ÷ ' + D2 + ' = ' + fmt(quot2) + ' R ' + rem2,
+      meta: { D: D1, Q: Q, R: R, D2: D2, total: total, rem2: rem2, name: name },
+      steps: [
+        {
+          kicker: 'STEP 1 · REBUILD',
+          prompt: 'Rebuild the hidden number before you divide again.',
+          hint: 'Hidden number = divisor × quotient + remainder.',
+          locked: 'Hidden cargo is ' + fmt(total) + '. Now divide by ' + D2 + '.',
+          answer: String(total),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · NEW REMAINDER',
+          prompt: 'What remainder is left when ' + fmt(total) + ' is divided by ' + D2 + '?',
+          hint: 'The quotient is the full groups. The remainder is the leftover.',
+          locked: 'The new remainder is ' + rem2 + '.',
+          answer: String(rem2),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeShared(spec) {
+    const divs = spec.divs.slice().sort((a, b) => a - b);
+    const R = spec.R;
+    const smallest = Math.min.apply(null, divs);
+    if (divs.length < 2 || R <= 0 || R >= smallest) return null;
+    const L = lcmAll(divs);
+    if (!L) return null;
+    const answer = L + R;
+    for (let i = 0; i < divs.length; i++) {
+      if (answer % divs[i] !== R) return null;
+    }
+    const listText = divs.join(', ');
+    const story = 'A vault code leaves a remainder of ' + R + ' when divided by ' + listText + '. What is the smallest possible code greater than each of those divisors?';
+    const fallback1 = 'The LCM of ' + listText + ' is ' + L + ', the smallest positive number divisible by every divisor.';
+    const fallback2 = 'The number is the LCM plus the shared remainder, added once: ' + L + ' + ' + R + ' = ' + answer + '.';
+    const seen1 = {};
+    const wrong1 = [];
+    const sum = divs.reduce((a, b) => a + b, 0);
+    const product = divs.reduce((a, b) => a * b, 1);
+    pushCard(wrong1, seen1, L, answer, 'added the remainder too soon', 'Save the + ' + R + ' for Step 2. Step 1 is only the LCM, which is ' + L + '.');
+    pushCard(wrong1, seen1, L, product, 'multiplied the divisors', 'The product ' + product + ' is a common multiple, but the LCM is the smallest one: ' + L + '.');
+    pushCard(wrong1, seen1, L, sum, 'added the divisors', 'Adding ' + listText + ' does not build a common multiple. The LCM is ' + L + '.');
+    pushCard(wrong1, seen1, L, Math.max.apply(null, divs), 'used the largest divisor', 'The largest divisor is not enough unless it is a multiple of the others. The LCM is ' + L + '.');
+    pushCard(wrong1, seen1, L, gcdAll(divs), 'used the GCD', 'The GCD is what the divisors share as a factor. You need the LCM, ' + L + ', so one number works for every clue.');
+    const step1Cards = finalize(card(L, 'lowest common multiple', true, ''), wrong1, fallback1, numPad(L, fallback1));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, answer, L, 'forgot to add the remainder', 'A multiple of ' + L + ' leaves remainder 0. The clues ask for remainder ' + R + ', so add it once: ' + L + ' + ' + R + ' = ' + answer + '.');
+    pushCard(wrong2, seen2, answer, R, 'stopped at the remainder', R + ' does leave remainder ' + R + ', but the quotients are 0 and ' + R + ' is not greater than ' + listText + '. Add the remainder to the LCM: ' + L + ' + ' + R + ' = ' + answer + '.');
+    pushCard(wrong2, seen2, answer, L * 2 + R, 'next one, not the smallest', (L * 2 + R) + ' also works, but it is the next code. The smallest greater than each divisor is ' + L + ' + ' + R + ' = ' + answer + '.');
+    pushCard(wrong2, seen2, answer, L + R + R, 'added the remainder twice', 'Add the shared remainder once, not once per divisor: ' + L + ' + ' + R + ' = ' + answer + '.');
+    pushCard(wrong2, seen2, answer, sum + R, 'added divisors, then remainder', fallback2);
+    const step2Cards = finalize(card(answer, 'smallest code', true, ''), wrong2, fallback2, numPad(answer, fallback2));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: divs.length > 2 ? 'shared3' : 'shared2',
+      key: 'shared|' + divs.join('x') + '|' + R,
+      story: story,
+      coach: 'LCM(' + listText + ') = ' + L + '. Smallest code = ' + L + ' + ' + R + ' = ' + answer + '.',
+      item: choice(CARGO),
+      plaque: 'SHARED R ' + R,
+      scan1: 'LCM(' + listText + ') = ?',
+      scan1done: 'LCM(' + listText + ') = ' + L,
+      scan2: L + ' + shared remainder = ?',
+      scan2done: L + ' + ' + R + ' = ' + answer,
+      meta: { divs: divs, R: R, L: L, total: answer },
+      steps: [
+        {
+          kicker: 'STEP 1 · COMMON MULTIPLE',
+          prompt: 'What is the LCM of ' + listText + '?',
+          hint: 'The LCM is the smallest positive number that every divisor goes into exactly.',
+          locked: 'LCM locked at ' + L + '. The code is ' + R + ' more than a multiple of ' + L + '.',
+          answer: String(L),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · ADD THE REMAINDER',
+          prompt: 'What is the smallest possible code greater than each divisor?',
+          hint: 'Add the shared remainder once.',
+          locked: 'The vault code is ' + answer + '.',
+          answer: String(answer),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function deficitValue(L, K, three) {
+    if (!three) return L - K;
+    const t = Math.ceil((100 + K) / L);
+    let n = L * t - K;
+    if (n < 100) n += L;
+    return n;
+  }
+
+  function makeDeficit(spec) {
+    const D1 = spec.D1;
+    const D2 = spec.D2;
+    const K = spec.K;
+    const three = !!spec.three;
+    if (!(D1 > 1 && D2 > 1 && D1 !== D2 && K > 0 && K < D1 && K < D2)) return null;
+    const R1 = D1 - K;
+    const R2 = D2 - K;
+    const L = lcm(D1, D2);
+    const answer = deficitValue(L, K, three);
+    if (answer <= 0 || answer > 9999) return null;
+    if (three && (answer < 100 || answer > 999 || answer - L >= 100)) return null;
+    if (!three && answer !== L - K) return null;
+    if (answer % D1 !== R1 || answer % D2 !== R2) return null;
+    const multiple = answer + K;
+    const story = three
+      ? 'Find the smallest 3-digit number that leaves a remainder of ' + R1 + ' when divided by ' + D1 + ' and a remainder of ' + R2 + ' when divided by ' + D2 + '.'
+      : 'A number leaves a remainder of ' + R1 + ' when divided by ' + D1 + ', and a remainder of ' + R2 + ' when divided by ' + D2 + '. What is the smallest possible number?';
+    const deficitTip = tipDeficit(D1, R1, D2, R2, K, L, answer, three);
+    const fallback1 = 'The LCM of ' + D1 + ' and ' + D2 + ' is ' + L + '. Both clues are ' + K + ' short of a multiple of that LCM.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, L, D1 * D2, 'multiplied the divisors', 'The product is a common multiple, but the smallest one, the LCM, is ' + L + '.');
+    pushCard(wrong1, seen1, L, D1 + D2, 'added the divisors', fallback1);
+    pushCard(wrong1, seen1, L, Math.max(D1, D2), 'used the larger divisor', fallback1);
+    pushCard(wrong1, seen1, L, answer, 'jumped to the final number', 'Step 1 finds the ladder size, the LCM ' + L + '. Step 2 walks that ladder.');
+    pushCard(wrong1, seen1, L, K, 'stopped at the deficit', 'The shared deficit is ' + K + ', but Step 1 asks for the LCM of ' + D1 + ' and ' + D2 + ', which is ' + L + '.');
+    pushCard(wrong1, seen1, L, R1 + R2, 'added the remainders', deficitTip);
+    const step1Cards = finalize(card(L, 'LCM of the divisors', true, ''), wrong1, fallback1, numPad(L, fallback1));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, answer, multiple + R1 + R2, 'added the remainders', deficitTip);
+    pushCard(wrong2, seen2, answer, multiple, 'forgot to subtract ' + K, multiple + ' is a multiple of ' + L + ', so both remainders are 0. Subtract the shared deficit: ' + multiple + ' − ' + K + ' = ' + answer + '.');
+    pushCard(wrong2, seen2, answer, R1 + R2, 'added the remainders only', deficitTip);
+    pushCard(wrong2, seen2, answer, multiple + K, 'added the deficit instead', 'The clues are SHORT of the multiple, so subtract ' + K + '. ' + multiple + ' − ' + K + ' = ' + answer + '.');
+    const previous = answer - L;
+    if (three && previous > 0) {
+      pushCard(wrong2, seen2, answer, previous, 'not a 3-digit number', previous + ' fits the remainders, but it is not a 3-digit number. The smallest 3-digit value is ' + answer + '.');
+    }
+    pushCard(wrong2, seen2, answer, answer + L, 'next one, not the smallest', (answer + L) + ' also works. The smallest ' + (three ? '3-digit ' : '') + 'value is ' + answer + '.');
+    const step2Cards = finalize(card(answer, three ? 'smallest 3-digit' : 'smallest number', true, ''), wrong2, deficitTip, numPad(answer, deficitTip));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: three ? 'deficit3' : 'deficit',
+      key: 'def|' + D1 + '|' + R1 + '|' + D2 + '|' + R2 + '|' + (three ? 3 : 0),
+      story: story,
+      coach: 'Both clues are ' + K + ' short of a multiple of ' + L + '. ' + (three ? 'Smallest 3-digit' : 'Smallest') + ' number = ' + answer + '.',
+      item: choice(CARGO),
+      plaque: 'SHORT BY ' + K,
+      scan1: 'LCM(' + D1 + ', ' + D2 + ') = ?',
+      scan1done: 'LCM(' + D1 + ', ' + D2 + ') = ' + L,
+      scan2: three ? 'smallest 3-digit on the ' + L + '-ladder' : 'smallest positive number on the ladder',
+      scan2done: multiple + ' − ' + K + ' = ' + answer,
+      meta: { D1: D1, D2: D2, R1: R1, R2: R2, K: K, L: L, total: answer, three: three },
+      steps: [
+        {
+          kicker: 'STEP 1 · LCM LADDER',
+          prompt: 'What is the LCM of ' + D1 + ' and ' + D2 + '?',
+          hint: 'Look for the gap that is the same in both clues.',
+          locked: 'LCM is ' + L + '. Both remainders are ' + K + ' short of a multiple.',
+          answer: String(L),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · VAULT CODE',
+          prompt: three ? 'What is the smallest 3-digit number that fits both clues?' : 'What is the smallest possible number that fits both clues?',
+          hint: 'Subtract the shared deficit from a multiple of the LCM.',
+          locked: 'The vault code is ' + answer + '.',
+          answer: String(answer),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeNested(spec) {
+    const D1 = spec.D1;
+    const D2 = spec.D2;
+    const R1 = spec.R1;
+    const R2 = spec.R2;
+    if (!(D2 > D1 && D1 > 1 && D2 % D1 === 0 && R1 > 0 && R1 < D1 && R2 > 0 && R2 < D2)) return null;
+    if (R2 % D1 !== R1) return null;
+    const L = lcm(D1, D2);
+    if (L !== D2) return null;
+    const answer = R2;
+    const story = 'A number leaves a remainder of ' + R1 + ' when divided by ' + D1 + ', and a remainder of ' + R2 + ' when divided by ' + D2 + '. What is the smallest possible number?';
+    const fallback1 = 'Because ' + D2 + ' is a multiple of ' + D1 + ', the LCM is ' + D2 + '. The number is ' + R2 + ' more than a multiple of ' + D2 + '.';
+    const fallback2 = 'The smallest positive value in the family ' + D2 + 'k + ' + R2 + ' is ' + R2 + '. Check: ' + R2 + ' ÷ ' + D1 + ' leaves remainder ' + R1 + ', and ' + R2 + ' ÷ ' + D2 + ' leaves remainder ' + R2 + '.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, L, D1, 'used the smaller divisor', fallback1);
+    pushCard(wrong1, seen1, L, D1 * D2, 'multiplied the divisors', 'The product is larger than the LCM. Since ' + D2 + ' is already a multiple of ' + D1 + ', the LCM is ' + D2 + '.');
+    pushCard(wrong1, seen1, L, R2, 'jumped to the remainder', 'The remainder ' + R2 + ' is the final number. Step 1 asks for the LCM, which is ' + L + '.');
+    pushCard(wrong1, seen1, L, D1 + D2, 'added the divisors', fallback1);
+    pushCard(wrong1, seen1, L, D2 + R2, 'added the remainder too soon', fallback1);
+    const step1Cards = finalize(card(L, 'LCM is the larger divisor', true, ''), wrong1, fallback1, numPad(L, fallback1));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, answer, D2 + R2, D2 + ' + ' + R2 + ', the next one', D2 + ' + ' + R2 + ' = ' + (D2 + R2) + ' also works, but it is not the smallest. The smallest positive number in ' + D2 + 'k + ' + R2 + ' is ' + R2 + ' when k = 0.');
+    pushCard(wrong2, seen2, answer, R1, 'used only the first remainder', R1 + ' fits the first clue, but ' + R1 + ' ÷ ' + D2 + ' does not leave remainder ' + R2 + '. The smallest number that fits both is ' + answer + '.');
+    pushCard(wrong2, seen2, answer, R1 + R2, 'added the remainders', 'Do not add the two remainders. The number is ' + R2 + ' more than a multiple of ' + D2 + ', and ' + R2 + ' already leaves remainder ' + R1 + ' when divided by ' + D1 + '.');
+    pushCard(wrong2, seen2, answer, D1 * D2, 'multiplied the divisors', fallback2);
+    pushCard(wrong2, seen2, answer, L + R1, 'added the other remainder to the LCM', fallback2);
+    const step2Cards = finalize(card(answer, 'smallest positive', true, ''), wrong2, fallback2, numPad(answer, fallback2));
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'nested',
+      key: 'nest|' + D1 + '|' + R1 + '|' + D2 + '|' + R2,
+      story: story,
+      coach: 'Numbers of the form ' + D2 + 'k + ' + R2 + '. The smallest positive number is ' + answer + '.',
+      item: choice(CARGO),
+      plaque: D2 + 'k + ' + R2,
+      scan1: 'LCM(' + D1 + ', ' + D2 + ') = ?',
+      scan1done: 'LCM = ' + L + '  ·  family ' + D2 + 'k + ' + R2,
+      scan2: 'smallest positive in ' + D2 + 'k + ' + R2,
+      scan2done: 'smallest = ' + answer,
+      meta: { D1: D1, D2: D2, R1: R1, R2: R2, L: L, total: answer },
+      steps: [
+        {
+          kicker: 'STEP 1 · STRICTER CLUE',
+          prompt: 'What is the LCM of ' + D1 + ' and ' + D2 + '?',
+          hint: 'When one divisor is a multiple of the other, the LCM is the larger divisor.',
+          locked: 'The family is ' + D2 + 'k + ' + R2 + '. Now find the smallest positive value.',
+          answer: String(L),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · SMALLEST CODE',
+          prompt: 'What is the smallest positive number that fits both remainder clues?',
+          hint: 'Try k = 0 in the family before you jump to k = 1.',
+          locked: 'The smallest number is ' + answer + '.',
+          answer: String(answer),
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function makeConsec(spec) {
+    const n = spec.n;
+    if (!(n >= 20 && n <= 95)) return null;
+    const product = n * (n + 1);
+    const bench = Math.floor(n / 10) * 10;
+    if (bench < 10) return null;
+    const square = bench * bench;
+    const nextSq = (bench + 10) * (bench + 10);
+    if (!(square < product && nextSq > product)) return null;
+    const pair = n + ' & ' + (n + 1);
+    const story = 'The product of two consecutive whole numbers is ' + fmt(product) + '. Find the two numbers.';
+    const fallback1 = 'Use a friendly tens square. ' + bench + ' × ' + bench + ' = ' + fmt(square) + ' sits below ' + fmt(product) + ', and ' + (bench + 10) + ' × ' + (bench + 10) + ' = ' + fmt(nextSq) + ' is already too big.';
+    const fallback2 = bench + ' × ' + bench + ' = ' + fmt(square) + ' is a little low. Test the whole numbers just above ' + bench + '. ' + n + ' × ' + (n + 1) + ' = ' + fmt(product) + '.';
+    const seen1 = {};
+    const wrong1 = [];
+    pushCard(wrong1, seen1, square, n * n, n + ' × ' + n, n + ' × ' + n + ' = ' + fmt(n * n) + ' squares a factor. Step 1 wants the tens benchmark ' + bench + ' × ' + bench + ' = ' + fmt(square) + ', then you test the neighbours.');
+    pushCard(wrong1, seen1, square, nextSq, (bench + 10) + ' × ' + (bench + 10), (bench + 10) + ' × ' + (bench + 10) + ' = ' + fmt(nextSq) + ' is bigger than ' + fmt(product) + '. Step down a ten to ' + bench + ' × ' + bench + ' = ' + fmt(square) + '.');
+    const prev = bench - 10;
+    if (prev >= 10) pushCard(wrong1, seen1, square, prev * prev, prev + ' × ' + prev, prev + ' × ' + prev + ' = ' + fmt(prev * prev) + ' is below the product, but it is not the nearest tens square. ' + bench + ' × ' + bench + ' = ' + fmt(square) + ' is closer.');
+    pushCard(wrong1, seen1, square, (n + 1) * (n + 1), (n + 1) + ' × ' + (n + 1), fallback1);
+    pushCard(wrong1, seen1, square, product, 'the product itself', 'The product is the target, not the benchmark square. Find a tens square just below ' + fmt(product) + '.');
+    const step1Cards = finalize(card(square, bench + ' × ' + bench, true, ''), wrong1, fallback1, numPad(square, fallback1));
+    const seen2 = {};
+    const wrong2 = [];
+    pushCard(wrong2, seen2, pair, (n - 1) + ' & ' + n, 'one pair too low', (n - 1) + ' × ' + n + ' = ' + fmt((n - 1) * n) + ', which is not ' + fmt(product) + '.');
+    pushCard(wrong2, seen2, pair, (n + 1) + ' & ' + (n + 2), 'one pair too high', (n + 1) + ' × ' + (n + 2) + ' = ' + fmt((n + 1) * (n + 2)) + ', which is not ' + fmt(product) + '.');
+    pushCard(wrong2, seen2, pair, n + ' & ' + n, 'same number twice', n + ' × ' + n + ' = ' + fmt(n * n) + '. Consecutive numbers are neighbours, so the pair is ' + n + ' and ' + (n + 1) + '.');
+    if (n !== bench) pushCard(wrong2, seen2, pair, bench + ' & ' + (bench + 1), 'stopped at the benchmark', bench + ' × ' + (bench + 1) + ' = ' + fmt(bench * (bench + 1)) + '. Keep testing just above ' + bench + ' until the product is ' + fmt(product) + '.');
+    pushCard(wrong2, seen2, pair, (n - 2) + ' & ' + (n - 1), 'two pairs too low', fallback2);
+    const step2Cards = finalize(card(pair, 'consecutive factors', true, ''), wrong2, fallback2, function (k, seen) {
+      const a = n + k + 2;
+      const textValue = a + ' & ' + (a + 1);
+      if (seen[textValue] || a < 1) return null;
+      return card(textValue, 'test the product', false, fallback2);
+    });
+    if (!step1Cards || !step2Cards) return null;
+    return {
+      kind: 'consec',
+      key: 'con|' + n,
+      story: story,
+      coach: bench + ' × ' + bench + ' = ' + fmt(square) + ', and ' + n + ' × ' + (n + 1) + ' = ' + fmt(product) + '.',
+      item: { id: 'coin', plural: 'gold coins', one: 'gold coin', color: '#facc15', shape: 'coin' },
+      plaque: 'PRODUCT ' + fmt(product),
+      scan1: 'nearest lower tens square of ' + fmt(product),
+      scan1done: bench + ' × ' + bench + ' = ' + fmt(square),
+      scan2: 'which neighbours multiply to ' + fmt(product) + '?',
+      scan2done: n + ' × ' + (n + 1) + ' = ' + fmt(product),
+      meta: { n: n, product: product, bench: bench, square: square },
+      steps: [
+        {
+          kicker: 'STEP 1 · TENS BENCHMARK',
+          prompt: 'Which tens square just below ' + fmt(product) + ' is the best benchmark?',
+          hint: 'Square a multiple of 10. Pick the greatest one that is still below the product.',
+          locked: bench + ' × ' + bench + ' = ' + fmt(square) + '. Test whole numbers just above ' + bench + '.',
+          answer: String(square),
+          cards: step1Cards
+        },
+        {
+          kicker: 'STEP 2 · CRACK THE SAFE',
+          prompt: 'Which two consecutive whole numbers multiply to ' + fmt(product) + '?',
+          hint: 'The factors sit side by side, just above the tens benchmark.',
+          locked: 'The safe opens on ' + n + ' and ' + (n + 1) + '.',
+          answer: pair,
+          cards: step2Cards
+        }
+      ]
+    };
+  }
+
+  function validate(round) {
+    if (!round || !round.steps || round.steps.length !== 2) return false;
+    if (!round.story || !round.key || !round.meta) return false;
+    for (let i = 0; i < 2; i++) {
+      const s = round.steps[i];
+      if (!s.prompt || !s.cards || s.cards.length !== 4 || !s.answer) return false;
+      const seen = {};
+      let good = 0;
+      for (let c = 0; c < s.cards.length; c++) {
+        const cardItem = s.cards[c];
+        if (!cardItem.text || seen[cardItem.text]) return false;
+        seen[cardItem.text] = true;
+        if (cardItem.correct) {
+          good++;
+          if (cardItem.text !== String(s.answer)) return false;
+        } else if (!cardItem.tip || cardItem.tip.length < 24) return false;
+      }
+      if (good !== 1) return false;
+    }
+    const m = round.meta;
+    if (round.kind === 'reverse') {
+      if (m.packed !== m.D * m.Q || m.total !== m.packed + m.R) return false;
+      if (m.R <= 0 || m.R >= m.D) return false;
+      if (round.steps[0].answer !== String(m.packed) || round.steps[1].answer !== String(m.total)) return false;
+    } else if (round.kind === 'spot') {
+      if (m.total !== m.D * m.Q + m.R) return false;
+      if (round.steps[0].answer !== String(m.Q) || round.steps[1].answer !== String(m.R)) return false;
+    } else if (round.kind === 'boxes') {
+      if (m.total !== m.full * m.cap + m.left || m.boxes !== m.full + 1) return false;
+      if (round.steps[0].answer !== m.full + ' full, ' + m.left + ' left') return false;
+      if (round.steps[1].answer !== String(m.boxes)) return false;
+    } else if (round.kind === 'max') {
+      if (m.R !== m.D - 1 || m.total !== m.D * m.Q + m.R) return false;
+      if ((m.total % m.D) !== m.R) return false;
+      if (round.steps[0].answer !== String(m.R) || round.steps[1].answer !== String(m.total)) return false;
+    } else if (round.kind === 'rediv') {
+      if (m.total !== m.D * m.Q + m.R) return false;
+      if (round.steps[0].answer !== String(m.total) || round.steps[1].answer !== String(m.total % m.D2)) return false;
+    } else if (round.kind === 'shared2' || round.kind === 'shared3') {
+      if (lcmAll(m.divs) !== m.L || m.total !== m.L + m.R) return false;
+      for (let i = 0; i < m.divs.length; i++) if (m.total % m.divs[i] !== m.R) return false;
+      if (round.steps[0].answer !== String(m.L) || round.steps[1].answer !== String(m.total)) return false;
+    } else if (round.kind === 'deficit' || round.kind === 'deficit3') {
+      if (m.D1 - m.R1 !== m.K || m.D2 - m.R2 !== m.K) return false;
+      if (m.total % m.D1 !== m.R1 || m.total % m.D2 !== m.R2) return false;
+      if (lcm(m.D1, m.D2) !== m.L) return false;
+      if (round.steps[0].answer !== String(m.L) || round.steps[1].answer !== String(m.total)) return false;
+    } else if (round.kind === 'nested') {
+      if (m.R2 % m.D1 !== m.R1 || m.total !== m.R2 || m.L !== m.D2) return false;
+      if (round.steps[0].answer !== String(m.L) || round.steps[1].answer !== String(m.total)) return false;
+    } else if (round.kind === 'consec') {
+      if (m.n * (m.n + 1) !== m.product || m.square !== m.bench * m.bench) return false;
+      if (m.bench % 10 !== 0 || m.square >= m.product) return false;
+      if ((m.bench + 10) * (m.bench + 10) <= m.product) return false;
+      if (round.steps[0].answer !== String(m.square) || round.steps[1].answer !== (m.n + ' & ' + (m.n + 1))) return false;
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  function makeByKind(kind, tier, spec) {
+    if (kind === 'reverse') return makeReverse(spec);
+    if (kind === 'spot') return makeSpot(spec);
+    if (kind === 'boxes') return makeBoxes(spec);
+    if (kind === 'max') return makeMax(spec);
+    if (kind === 'rediv') return makeRediv(spec);
+    if (kind === 'shared2' || kind === 'shared3') return makeShared(spec);
+    if (kind === 'deficit' || kind === 'deficit3') return makeDeficit(spec);
+    if (kind === 'nested') return makeNested(spec);
+    if (kind === 'consec') return makeConsec(spec);
+    return null;
+  }
+
+  function randomSpec(kind, tier) {
+    if (kind === 'reverse') {
+      const big = Math.random() < 0.5;
+      const D = big ? choice([6, 7, 8, 9, 12, 15, 16, 24, 25]) : rand(6, 30);
+      const Q = big ? rand(80, 980) : rand(11, 46);
+      const R = rand(1, D - 1);
+      return { D: D, Q: Q, R: R, style: Math.random() < 0.55 ? 'bags' : 'number', item: choice(CARGO), name: choice(NAMES), container: choice(['bags', 'crates', 'pouches']) };
+    }
+    if (kind === 'spot') {
+      const D = choice([6, 7, 8, 9, 12, 15, 16, 25]);
+      const Q = rand(12, 240);
+      let R = rand(1, D - 1);
+      if (R === Q) R = R === 1 ? 2 : 1;
+      return { D: D, Q: Q, R: R, item: choice(CARGO), name: choice(NAMES), container: choice(['bundles', 'bags', 'crates']) };
+    }
+    if (kind === 'boxes') {
+      const cap = choice([6, 7, 8, 9, 12, 15, 16]);
+      return { cap: cap, full: rand(24, 420), left: rand(1, cap - 1), item: choice(BAKED), name: choice(NAMES) };
+    }
+    if (kind === 'max') {
+      return { D: choice([6, 7, 8, 9, 12]), Q: tier === 'EXTREME' ? rand(40, 999) : rand(3, 60) };
+    }
+    if (kind === 'rediv') {
+      const D1 = choice([6, 7, 8, 9, 12, 15]);
+      const Q = tier === 'EXTREME' ? rand(40, 360) : rand(18, 180);
+      const R = rand(1, D1 - 1);
+      const N = D1 * Q + R;
+      let D2 = choice([3, 4, 5, 6, 7, 8, 9, 11].filter(d => d !== D1));
+      if (Math.random() < 0.4) {
+        const factors = [3, 4, 5, 6, 7, 8, 9, 10, 12].filter(d => d !== D1 && N % d === 0);
+        if (factors.length) D2 = choice(factors);
+      }
+      return { D1: D1, Q: Q, R: R, D2: D2, item: choice(CARGO), name: choice(NAMES) };
+    }
+    if (kind === 'shared3') {
+      const divs = choice(TRIPLES).slice();
+      const R = rand(1, Math.min.apply(null, divs) - 1);
+      return { divs: divs, R: R };
+    }
+    if (kind === 'shared2') {
+      const divs = choice(PAIRS).slice();
+      const R = rand(1, Math.min.apply(null, divs) - 1);
+      return { divs: divs, R: R };
+    }
+    if (kind === 'deficit' || kind === 'deficit3') {
+      const pair = choice(DEFICIT_PAIRS);
+      const K = rand(1, Math.min(pair[0], pair[1]) - 1);
+      return { D1: pair[0], D2: pair[1], K: K, three: kind === 'deficit3' };
+    }
+    if (kind === 'nested') {
+      const D1 = rand(3, 7);
+      const mult = choice([2, 3]);
+      const D2 = D1 * mult;
+      const R1 = rand(1, D1 - 1);
+      const q = rand(1, mult - 1);
+      const R2 = D1 * q + R1;
+      return { D1: D1, D2: D2, R1: R1, R2: R2 };
+    }
+    if (kind === 'consec') {
+      const bench = choice([20, 30, 40, 50, 60, 70, 80]);
+      return { n: bench + rand(0, 3) };
+    }
+    return null;
+  }
+
+  function makeFallback(kind, tier, salt) {
+    const s = Math.abs(salt * 17 + 5);
+    if (kind === 'reverse') return makeReverse({ D: 8, Q: 120 + (s % 700), R: 1 + (s % 7), style: s % 2 ? 'bags' : 'number', item: CARGO[s % CARGO.length], name: NAMES[s % NAMES.length], container: 'bags' });
+    if (kind === 'spot') return makeSpot({ D: 6 + (s % 4), Q: 24 + (s % 180), R: 1 + (s % 4), item: CARGO[s % CARGO.length], name: NAMES[s % NAMES.length], container: 'bundles' });
+    if (kind === 'boxes') return makeBoxes({ cap: 9, full: 40 + (s % 280), left: 1 + (s % 8), item: BAKED[s % BAKED.length], name: NAMES[s % NAMES.length] });
+    if (kind === 'max') return makeMax({ D: [6, 7, 8, 9, 12][s % 5], Q: tier === 'EXTREME' ? 80 + (s % 800) : 4 + (s % 36) });
+    if (kind === 'rediv') return makeRediv({ D1: 7, Q: 36 + (s % 220), R: 1 + (s % 6), D2: 5, item: CARGO[0], name: NAMES[s % NAMES.length] });
+    if (kind === 'shared3') {
+      const divs = TRIPLES[s % TRIPLES.length];
+      return makeShared({ divs: divs, R: 1 + (s % (Math.min.apply(null, divs) - 1)) });
+    }
+    if (kind === 'shared2') {
+      const divs = PAIRS[s % PAIRS.length];
+      return makeShared({ divs: divs, R: 1 + (s % (Math.min.apply(null, divs) - 1)) });
+    }
+    if (kind === 'deficit') return makeDeficit({ D1: 4, D2: 3, K: 1, three: false });
+    if (kind === 'deficit3') return makeDeficit({ D1: 6, D2: 7, K: 1 + (s % 5), three: true });
+    if (kind === 'nested') {
+      const D1 = 3 + (s % 4);
+      const mult = 2 + (s % 2);
+      const D2 = D1 * mult;
+      const R1 = 1 + (s % (D1 - 1));
+      const R2 = D1 + R1;
+      return makeNested({ D1: D1, D2: D2, R1: R1, R2: R2 });
+    }
+    if (kind === 'consec') {
+      const bench = 20 + (s % 7) * 10;
+      return makeConsec({ n: bench + (s % 4) });
+    }
+    return null;
+  }
+
+  function makeRandom(kind, tier) {
+    for (let i = 0; i < 36; i++) {
+      const round = makeByKind(kind, tier, randomSpec(kind, tier));
+      if (round && validate(round)) return round;
+    }
+    const fallback = makeFallback(kind, tier, rand(1, 9000));
+    if (fallback && validate(fallback)) return fallback;
+    return null;
+  }
+
+  function buildRound(tier, index, history) {
+    const kind = kindFor(tier, index);
+    let last = null;
+    for (let i = 0; i < 28; i++) {
+      const round = makeRandom(kind, tier);
+      last = round;
+      if (!round || !validate(round)) continue;
+      if (history && history.indexOf(round.key) !== -1) continue;
+      return round;
+    }
+    if (last && validate(last)) return last;
+    const fallback = makeFallback(kind, tier, index + 3 + (history ? history.length * 9 : 0));
+    if (fallback && validate(fallback)) return fallback;
+    return last;
+  }
+
+  function selfTest() {
+    const errors = [];
+    function must(cond, msg) {
+      if (!cond) errors.push(msg);
+    }
+    must(lcmAll([2, 3, 4]) === 12, 'lcm 2,3,4');
+    must(lcm(6, 7) === 42, 'lcm 6,7');
+    must(lcm(4, 3) === 12, 'lcm 4,3');
+    must(lcm(9, 3) === 9, 'lcm 9,3');
+    const rev = makeReverse({ D: 8, Q: 792, R: 5, style: 'number', name: 'Faizal', item: CARGO[0] });
+    must(!!rev && validate(rev), 'reverse valid');
+    must(rev && rev.steps[0].answer === '6336' && rev.steps[1].answer === '6341', 'reverse 6341');
+    must(rev && rev.steps[1].cards.some(c => !c.correct && c.tip.indexOf('Multiply Divisor × Quotient FIRST') >= 0), 'reverse tip');
+    const bags = makeReverse({ D: 25, Q: 19, R: 15, style: 'bags', name: 'Faizal', item: CARGO[0], container: 'bags' });
+    must(bags && bags.steps[0].answer === '475' && bags.steps[1].answer === '490', 'bags 490');
+    const box = makeBoxes({ cap: 9, full: 264, left: 8, name: 'Mr Ali', item: BAKED[0] });
+    must(box && box.meta.total === 2384 && box.steps[0].answer === '264 full, 8 left' && box.steps[1].answer === '265', 'boxes 265');
+    must(box && box.steps[1].cards.some(c => c.text === '264' && c.tip.indexOf('264 + 1 = 265') >= 0), 'box tip');
+    const mx = makeMax({ D: 8, Q: 4 });
+    must(mx && mx.steps[0].answer === '7' && mx.steps[1].answer === '39', 'max 39');
+    must(mx && mx.steps[1].cards.some(c => c.text === '40' && c.tip.indexOf('8 - 1 = 7') >= 0), 'max tip');
+    must(makeMax({ D: 7, Q: 36 }).steps[1].answer === '258', 'max 258');
+    must(makeMax({ D: 8, Q: 999 }).steps[1].answer === '7999', 'max 7999');
+    const red = makeRediv({ D1: 7, Q: 163, R: 4, D2: 5, item: CARGO[1], name: 'Aisha' });
+    must(red && red.steps[0].answer === '1145' && red.steps[1].answer === '0', 'rediv 0');
+    const sh = makeShared({ divs: [2, 3, 4], R: 1 });
+    must(sh && sh.steps[0].answer === '12' && sh.steps[1].answer === '13', 'shared 13');
+    const nest = makeNested({ D1: 3, D2: 9, R1: 1, R2: 4 });
+    must(nest && nest.steps[0].answer === '9' && nest.steps[1].answer === '4', 'nested 4');
+    const def = makeDeficit({ D1: 4, D2: 3, K: 1, three: false });
+    must(def && def.steps[0].answer === '12' && def.steps[1].answer === '11', 'deficit 11');
+    const def3 = makeDeficit({ D1: 6, D2: 7, K: 3, three: true });
+    must(def3 && def3.steps[0].answer === '42' && def3.steps[1].answer === '123', 'deficit 123');
+    must(def3 && def3.steps[1].cards.some(c => !c.correct && c.tip.indexOf('SHORT of a multiple') >= 0), 'deficit tip');
+    const con = makeConsec({ n: 61 });
+    must(con && con.steps[0].answer === '3600' && con.steps[1].answer === '61 & 62', 'consec 61');
+    const indexes = [];
+    const kinds = ['reverse', 'spot', 'boxes', 'max', 'rediv', 'shared2', 'shared3', 'deficit', 'deficit3', 'nested', 'consec'];
+    for (let k = 0; k < kinds.length; k++) {
+      for (let n = 0; n < 10; n++) {
+        const round = makeRandom(kinds[k], kinds[k] === 'max' || kinds[k] === 'consec' || kinds[k] === 'deficit3' ? 'EXTREME' : 'HARD');
+        if (!round || !validate(round)) {
+          errors.push('random ' + kinds[k] + ' ' + n);
+          break;
+        }
+        for (let s = 0; s < round.steps[1].cards.length; s++) {
+          if (round.steps[1].cards[s].correct) indexes.push(s);
+        }
+      }
+    }
+    if (indexes.length > 8) {
+      const allZero = indexes.every(i => i === 0);
+      must(!allZero, 'shuffle stuck');
+    }
+    const first = buildRound('MEDIUM', 0, []);
+    let differed = false;
+    if (first) {
+      for (let i = 0; i < 6; i++) {
+        const other = buildRound('MEDIUM', 0, [first.key]);
+        if (other && other.key !== first.key) differed = true;
+      }
+    }
+    must(!!first && differed, 'anti-repeat');
+    for (let t = 0; t < 4; t++) {
+      const tier = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'][t];
+      const hist = [];
+      for (let i = 0; i < SHIPMENTS; i++) {
+        const round = buildRound(tier, i, hist);
+        if (!round || !validate(round) || round.kind !== kindFor(tier, i)) {
+          errors.push('shift ' + tier + ' ' + i);
+          break;
+        }
+        if (hist.indexOf(round.key) === -1) hist.push(round.key);
+        if (hist.length > 8) hist.shift();
+      }
+    }
+    return errors;
+  }
+
+  function cardsGeom() {
+    const n = 4;
+    const gap = UI.cardGap;
+    const w = (UI.sheetW - gap * (n - 1)) / n;
+    const rects = [];
+    for (let i = 0; i < n; i++) rects.push({ x: UI.sheetX + i * (w + gap), y: UI.cardY, w: w, h: UI.cardH });
+    return rects;
+  }
+
+  function rowSlots(n, w, h, y, gap) {
+    const total = n * w + (n - 1) * gap;
+    const x0 = (VW - total) / 2;
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ x: x0 + i * (w + gap), y: y, w: w, h: h });
+    return out;
+  }
+
+  function titleLayout() {
+    return {
+      counts: rowSlots(3, 180, 64, 268, 22),
+      tiers: rowSlots(4, 250, 78, 392, 16),
+      modes: rowSlots(3, 330, 70, 524, 18),
+      start: { x: (VW - 460) / 2, y: 618, w: 460, h: 58 }
+    };
+  }
+
+  function resultLayout() {
+    return {
+      again: { x: 390, y: 552, w: 230, h: 56 },
+      title: { x: 660, y: 552, w: 230, h: 56 }
+    };
+  }
+
+  function activePlayer() {
+    const n = game.playerCount;
+    const start = game.shipmentIndex % n;
+    const offset = game.step === 1 ? 0 : 1;
+    return (start + offset) % n;
+  }
+
+  function currentStep() {
+    if (!game.round || !game.round.steps) return null;
+    return game.round.steps[game.step - 1] || null;
+  }
+
+  function pointerPlayer() {
+    if (game.mode === 'DUEL') return 0;
+    if (game.mode === 'COOP') return activePlayer();
+    return 0;
+  }
+
+  function canControl(pi) {
+    if (game.screen !== 'PLAYING' || game.phase !== 'INPUT') return false;
+    if (pi < 0 || pi >= game.playerCount) return false;
+    if (game.players[pi].stun > performance.now()) return false;
+    if (game.mode !== 'DUEL' && game.missLock > performance.now()) return false;
+    if (game.mode === 'COOP' && pi !== activePlayer()) return false;
+    return true;
+  }
+
+  function comboValue(pi) {
+    if (game.tier !== 'EXTREME') return 0;
+    return game.mode === 'DUEL' ? game.players[pi].combo : game.combo;
+  }
+
+  function comboMult(pi) {
+    const c = comboValue(pi);
+    if (game.tier !== 'EXTREME' || c <= 0) return 1;
+    if (c === 1) return 2;
+    return 3;
+  }
+
+  function step1Shown() {
+    return game.step > 1 || game.phase === 'ROLL' || game.phase === 'VAULT' || ((game.phase === 'REVEAL' || game.phase === 'DEAD') && game.step >= 1);
+  }
+
+  function step2Shown() {
+    if (game.phase === 'VAULT') return true;
+    if ((game.phase === 'REVEAL' || game.phase === 'DEAD') && game.step === 2) return true;
+    return false;
+  }
+
+  function rollNow() {
+    if (game.step > 1 || game.phase === 'VAULT' || (game.phase === 'REVEAL' && game.step === 2)) return 1;
+    if (game.phase === 'ROLL') {
+      const left = Math.max(0, game.phaseUntil - performance.now());
+      return ease(1 - left / 900);
+    }
+    return 0;
+  }
+
+  function vaultNow() {
+    if (game.phase === 'VAULT') {
+      const left = Math.max(0, game.phaseUntil - performance.now());
+      return ease(1 - left / 1200);
+    }
+    if (step2Shown()) return 1;
+    return 0;
+  }
+
+  function familyOf(kind) {
+    if (kind === 'consec') return 'consec';
+    if (kind === 'shared2' || kind === 'shared3' || kind === 'deficit' || kind === 'deficit3' || kind === 'nested') return 'riddle';
+    return 'bay';
+  }
+
+  function spawnFloater(str, x, y, color, size) {
+    game.floaters.push({ text: str, x: x, y: y, vy: -34, life: 1.2, decay: 0.55, color: color, size: size || 22 });
+    if (game.floaters.length > 18) game.floaters.shift();
+  }
+
+  function burst(x, y, color, n, upward) {
+    for (let i = 0; i < n; i++) {
+      const angle = upward ? (-Math.PI / 2 + (Math.random() - 0.5) * 1.4) : Math.random() * Math.PI * 2;
+      const speed = upward ? 140 + Math.random() * 180 : 40 + Math.random() * 90;
+      game.particles.push({
+        x: x + (Math.random() - 0.5) * 20,
+        y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        g: upward ? 360 : 40,
+        life: 0.7 + Math.random() * 0.45,
+        decay: 0.85,
+        color: color,
+        size: 3 + Math.random() * 4,
+        star: Math.random() < 0.45
+      });
+    }
+    if (game.particles.length > 140) game.particles.splice(0, game.particles.length - 140);
+  }
+
+  function freshPlayers() {
+    for (let i = 0; i < game.players.length; i++) {
+      game.players[i].cursor = -1;
+      game.players[i].stun = 0;
+    }
+  }
+
+  function beginShipment() {
+    const round = buildRound(game.tier, game.shipmentIndex, game.history);
+    game.round = round;
+    if (round && game.history.indexOf(round.key) === -1) game.history.push(round.key);
+    while (game.history.length > 8) game.history.shift();
+    game.step = 1;
+    game.phase = 'INPUT';
+    game.phaseUntil = 0;
+    game.timeMax = TIME_LIMIT[game.tier];
+    game.timeLeft = game.timeMax;
+    game.dirty = false;
+    game.missLock = 0;
+    game.cardFlash = null;
+    game.tip = null;
+    freshPlayers();
+    if (round) speak('Shipment ' + (game.shipmentIndex + 1) + '. ' + round.story + ' ' + round.steps[0].prompt);
+  }
+
+  function normalizedMode() {
+    if (game.playerCount <= 1) return 'SOLO';
+    if (game.mode === 'SOLO') return 'COOP';
+    return game.mode;
+  }
+
+  function beginShift() {
+    sfx.unlock();
+    sfx.playStart();
+    game.mode = normalizedMode();
+    game.playerCount = game.playerCount < 1 ? 1 : Math.min(3, game.playerCount);
+    game.score = 0;
+    game.combo = 0;
+    game.bestCombo = 0;
+    game.shields = SHIELDS;
+    game.attempts = 0;
+    game.solves = 0;
+    game.unlocked = 0;
+    game.clean = 0;
+    game.shipmentIndex = 0;
+    game.particles = [];
+    game.floaters = [];
+    game.shake = 0;
+    game.flash = 0;
+    game.newRecord = false;
+    game.result = null;
+    game.history = [];
+    for (let i = 0; i < game.players.length; i++) {
+      game.players[i].stars = 0;
+      game.players[i].score = 0;
+      game.players[i].combo = 0;
+      game.players[i].stun = 0;
+      game.players[i].cursor = -1;
+    }
+    game.screen = 'PLAYING';
+    beginShipment();
+  }
+
+  function finishShift(ranOut) {
+    const stars = game.players.map(p => p.stars);
+    let winner = -1;
+    if (game.mode === 'DUEL') {
+      let best = -1;
+      let ties = 0;
+      for (let i = 0; i < game.playerCount; i++) {
+        const scoreKey = game.players[i].stars * 100000 + game.players[i].score;
+        if (scoreKey > best) {
+          best = scoreKey;
+          winner = i;
+          ties = 1;
+        } else if (scoreKey === best) {
+          ties++;
+        }
+      }
+      if (ties > 1) winner = -1;
+    }
+    if (game.mode === 'SOLO' && game.score > game.best) {
+      game.best = game.score;
+      game.newRecord = true;
+      saveBest(game.best);
+    }
+    game.result = {
+      ranOut: !!ranOut,
+      winner: winner,
+      stars: stars,
+      accuracy: game.attempts ? Math.round(100 * game.solves / game.attempts) : 0
+    };
+    game.screen = 'RESULTS';
+    game.phase = 'INPUT';
+    speak(ranOut ? 'Shields depleted. Shift over.' : 'Shift complete.');
+    if (!ranOut) {
+      burst(420, 220, '#fbbf24', 18, true);
+      burst(860, 220, '#22d3ee', 16, true);
+      sfx.playFanfare();
+    }
+  }
+
+  function award(pi, base) {
+    const mult = comboMult(pi);
+    const pts = base * mult;
+    const ratio = game.timeMax > 0 ? game.timeLeft / game.timeMax : 0;
+    let bonus = 0;
+    if (base >= 400) {
+      if (ratio > 0.62) bonus = 150;
+      else if (ratio > 0.35) bonus = 80;
+    }
+    if (game.mode === 'DUEL') game.players[pi].score += pts + bonus;
+    else game.score += pts + bonus;
+    return { pts: pts, bonus: bonus, mult: mult };
+  }
+
+  function bumpCombo(pi) {
+    if (game.tier !== 'EXTREME' || game.dirty) return;
+    if (game.mode === 'DUEL') game.players[pi].combo = Math.min(2, game.players[pi].combo + 1);
+    else game.combo = Math.min(2, game.combo + 1);
+    const shown = game.mode === 'DUEL' ? game.players[pi].combo : game.combo;
+    if (shown > game.bestCombo) game.bestCombo = shown;
+  }
+
+  function resetCombo(pi) {
+    if (game.mode === 'DUEL') game.players[pi].combo = 0;
+    else game.combo = 0;
+  }
+
+  function hurt() {
+    if (game.mode === 'DUEL') return false;
+    game.shields -= 1;
+    game.flash = 0.18;
+    game.flashColor = 'rgba(225, 29, 72, 0.28)';
+    if (game.shields <= 0) {
+      game.shields = 0;
+      game.phase = 'DEAD';
+      game.phaseUntil = performance.now() + 1000;
+      return true;
+    }
+    return false;
+  }
+
+  function enterStep2() {
+    game.step = 2;
+    game.phase = 'INPUT';
+    game.cardFlash = null;
+    for (let i = 0; i < game.players.length; i++) game.players[i].cursor = -1;
+    const step = currentStep();
+    if (step) speak(step.prompt);
+  }
+
+  function nextShipment() {
+    game.shipmentIndex += 1;
+    if (game.shipmentIndex >= SHIPMENTS) {
+      finishShift(false);
+      return;
+    }
+    beginShipment();
+  }
+
+  function onTimeout() {
+    if (game.phase !== 'INPUT' || !game.round) return;
+    game.timeLeft = 0;
+    game.dirty = true;
+    if (game.mode === 'DUEL') {
+      for (let i = 0; i < game.players.length; i++) game.players[i].combo = 0;
+    } else resetCombo(0);
+    sfx.playBuzz();
+    game.tip = { text: 'The cargo train left the bay. ' + game.round.coach, bad: true };
+    game.shake = 0.22;
+    const step = currentStep();
+    if (step) {
+      for (let i = 0; i < step.cards.length; i++) {
+        if (step.cards[i].correct) game.cardFlash = { index: i, bad: false, t: 1.4 };
+      }
+    }
+    const dead = hurt();
+    if (!dead) {
+      game.phase = 'REVEAL';
+      game.phaseUntil = performance.now() + 1300;
+    }
+  }
+
+  function onCorrect(pi) {
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step) return;
+    game.attempts += 1;
+    game.solves += 1;
+    let locked = 0;
+    for (let i = 0; i < step.cards.length; i++) if (step.cards[i].correct) locked = i;
+    game.cardFlash = { index: locked, bad: false, t: 0.45 };
+    const base = game.step === 1 ? 150 : 400;
+    const got = award(pi, base);
+    const px = game.mode === 'DUEL' ? 460 + pi * 150 : 640;
+    spawnFloater('+' + got.pts, px, 210, '#166534', 26);
+    if (got.mult > 1) spawnFloater('COMBO ×' + got.mult, px, 242, '#be185d', 16);
+    if (got.bonus) spawnFloater('SPEED +' + got.bonus, px, 268, '#b45309', 16);
+    game.tip = { text: step.locked, bad: false };
+    if (game.step === 1) {
+      sfx.playConveyor();
+      sfx.playBeep();
+      burst(430, 320, '#fbbf24', 12, false);
+      game.phase = 'ROLL';
+      game.phaseUntil = performance.now() + 900;
+      if (game.mode === 'DUEL') spawnFloater(game.players[pi].name + ' LOCKED THE CRATES', 640, 188, game.players[pi].color, 18);
+    } else {
+      if (!game.dirty) {
+        game.clean += 1;
+        bumpCombo(pi);
+      }
+      game.unlocked += 1;
+      if (game.mode === 'DUEL') {
+        game.players[pi].stars += 1;
+        spawnFloater(game.players[pi].name + ' OPENS THE VAULT', 700, 250, game.players[pi].color, 20);
+      } else {
+        spawnFloater('VAULT OPEN', 700, 250, '#b45309', 20);
+      }
+      sfx.playVault();
+      sfx.playFanfare();
+      burst(1090, 300, '#fbbf24', 22, true);
+      burst(1090, 280, '#22d3ee', 10, true);
+      game.flash = 0.16;
+      game.flashColor = 'rgba(250, 204, 21, 0.30)';
+      game.phase = 'VAULT';
+      game.phaseUntil = performance.now() + 1200;
+    }
+  }
+
+  function onWrong(pi, cardItem) {
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step) return;
+    game.attempts += 1;
+    game.dirty = true;
+    resetCombo(pi);
+    let idx = 0;
+    for (let i = 0; i < step.cards.length; i++) if (step.cards[i] === cardItem) idx = i;
+    game.cardFlash = { index: idx, bad: true, t: 0.5 };
+    game.shake = 0.24;
+    game.tip = { text: cardItem.tip || (game.round && game.round.coach) || 'Check the vault equation.', bad: true };
+    sfx.playBuzz();
+    if (game.mode === 'DUEL') {
+      game.players[pi].stun = performance.now() + 1500;
+      spawnFloater(game.players[pi].name + ' SCANNER JAM 1.5s', 640, 220, '#be123c', 20);
+    } else {
+      game.missLock = performance.now() + 280;
+      hurt();
+    }
+  }
+
+  function selectCard(pi, index) {
+    if (index < 0 || index > 3) return;
+    if (game.mode === 'COOP' && pi !== activePlayer() && game.phase === 'INPUT' && game.screen === 'PLAYING') {
+      const who = game.players[activePlayer()];
+      spawnFloater(who.name + ' ' + who.full + ' HAS THE SCANNER', 640, 230, who.color, 18);
+      return;
+    }
+    if (!canControl(pi)) return;
+    const step = currentStep();
+    if (!step || !step.cards[index]) return;
+    game.players[pi].cursor = index;
+    const chosen = step.cards[index];
+    if (chosen.correct) onCorrect(pi);
+    else onWrong(pi, chosen);
+  }
+
+  function nudge(pi, dir) {
+    if (!canControl(pi)) return;
+    const p = game.players[pi];
+    if (p.cursor < 0) p.cursor = dir < 0 ? 3 : 0;
+    else p.cursor = (p.cursor + dir + 4) % 4;
+    sfx.playTick();
+  }
+
+  function confirmCursor(pi) {
+    if (!canControl(pi)) return;
+    if (game.players[pi].cursor < 0) return;
+    selectCard(pi, game.players[pi].cursor);
+  }
+
+  function setPlayers(n) {
+    game.playerCount = n;
+    if (n <= 1) game.mode = 'SOLO';
+    else if (game.mode === 'SOLO') game.mode = 'COOP';
+  }
+
+  function setMode(id) {
+    if (game.playerCount <= 1 && id !== 'SOLO') return;
+    if (game.playerCount > 1 && id === 'SOLO') return;
+    game.mode = id;
+  }
+
+  function cycleTitle(dir) {
+    if (game.titleRow === 0) {
+      const next = game.playerCount + dir;
+      if (next >= 1 && next <= 3) setPlayers(next);
+    } else if (game.titleRow === 1) {
+      const keys = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+      let idx = keys.indexOf(game.tier) + dir;
+      if (idx < 0) idx = 0;
+      if (idx > 3) idx = 3;
+      game.tier = keys[idx];
+    } else if (game.titleRow === 2) {
+      const keys = ['SOLO', 'COOP', 'DUEL'];
+      let idx = keys.indexOf(game.mode);
+      for (let n = 0; n < 3; n++) {
+        idx = (idx + dir + 3) % 3;
+        if ((game.playerCount <= 1 && keys[idx] === 'SOLO') || (game.playerCount > 1 && keys[idx] !== 'SOLO')) {
+          game.mode = keys[idx];
+          break;
+        }
+      }
+    }
+    sfx.playTick();
+  }
+
+  function legendFor(index) {
+    if (game.mode === 'SOLO') return 'KEY ' + P1K[index];
+    if (game.mode === 'COOP') {
+      const pi = activePlayer();
+      return game.players[pi].name + '  ' + game.players[pi].keys[index];
+    }
+    const bits = [P1K[index]];
+    if (game.playerCount >= 2) bits.push(P2K[index]);
+    if (game.playerCount >= 3) bits.push(P3K[index]);
+    return bits.join(' · ');
+  }
+
+  function hit(id, x, y, w, h) {
+    game.hot.push({ id: id, x: x, y: y, w: w, h: h });
+  }
+
+  function starPath(cx, cy, r) {
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + i * Math.PI * 2 / 5;
+      const b = a + Math.PI / 5;
+      ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      ctx.lineTo(cx + Math.cos(b) * r * 0.42, cy + Math.sin(b) * r * 0.42);
+    }
+    ctx.closePath();
+  }
+
+  function drawHardHat(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(x, y, 16, 11, 0, Math.PI, 0);
+    ctx.fill();
+    roundRect(x - 20, y - 2, 40, 8, 3, color, '#0f172a', 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(x - 4, y - 6, 6, 3, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawLoot(shape, x, y, r, color) {
+    ctx.save();
+    if (shape === 'muffin' || shape === 'cookie') {
+      roundRect(x - r, y - r * 0.2, r * 2, r * 1.15, 3, '#f8fafc', '#334155', 1.5);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y - r * 0.15, r * 0.85, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = '#7c2d12';
+      ctx.stroke();
+    } else if (shape === 'gem') {
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#4c1d95';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else if (shape === 'sticker') {
+      roundRect(x - r, y - r, r * 2, r * 2, 4, color, '#9f1239', 1.5);
+    } else if (shape === 'coin') {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#a16207';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.55, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(15,23,42,0.35)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath();
+      ctx.arc(x - r * 0.28, y - r * 0.28, r * 0.28, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawCrate(x, y, w, h, caption, hot) {
+    const d = 12;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + d, y - d);
+    ctx.lineTo(x + w + d, y - d);
+    ctx.lineTo(x + w, y);
+    ctx.closePath();
+    ctx.fillStyle = hot ? '#fde68a' : '#fbbf24';
+    ctx.fill();
+    ctx.strokeStyle = '#92400e';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + w, y);
+    ctx.lineTo(x + w + d, y - d);
+    ctx.lineTo(x + w + d, y + h - d);
+    ctx.lineTo(x + w, y + h);
+    ctx.closePath();
+    ctx.fillStyle = '#b45309';
+    ctx.fill();
+    ctx.stroke();
+    roundRect(x, y, w, h, 6, hot ? '#f59e0b' : '#d97706', '#7c2d12', 3);
+    ctx.strokeStyle = 'rgba(120, 53, 15, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y + 8);
+    ctx.lineTo(x + w - 8, y + h - 8);
+    ctx.moveTo(x + w - 8, y + 8);
+    ctx.lineTo(x + 8, y + h - 8);
+    ctx.stroke();
+    roundRect(x + 8, y + h * 0.38, w - 16, 26, 4, '#0f172a', '#22d3ee', 2);
+    ctx.font = '800 12px "Segoe UI", system-ui, sans-serif';
+    const cap = String(caption);
+    let size = cap.length > 10 ? 11 : 13;
+    ctx.font = '800 ' + size + 'px "Segoe UI", system-ui, sans-serif';
+    text(cap, x + w / 2, y + h * 0.38 + 13, ctx.font, '#a5f3fc', 'center');
+  }
+
+  function drawVault(x, y, w, h, open, label) {
+    roundRect(x, y, w, h, 16, '#1e293b', '#fbbf24', 4);
+    roundRect(x + 10, y + 10, w - 20, h - 20, 12, '#0f172a', '#334155', 2);
+    const doorX = x + 18 - open * 28;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 12, y + 12, w - 24, h - 24);
+    ctx.clip();
+    roundRect(doorX, y + 16, w - 36, h - 32, 10, open > 0.55 ? '#14532d' : '#334155', '#e2e8f0', 3);
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(doorX + (w - 36) * 0.72, y + h * 0.48, 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(doorX + (w - 36) * 0.72 - 10, y + h * 0.48);
+    ctx.lineTo(doorX + (w - 36) * 0.72 + 10, y + h * 0.48);
+    ctx.moveTo(doorX + (w - 36) * 0.72, y + h * 0.48 - 10);
+    ctx.lineTo(doorX + (w - 36) * 0.72, y + h * 0.48 + 10);
+    ctx.stroke();
+    ctx.restore();
+    roundRect(x + 24, y + h - 52, w - 48, 32, 6, '#022c22', '#5eead4', 2);
+    const shown = String(label);
+    const size = shown.length > 12 ? 13 : shown.length > 7 ? 16 : 20;
+    text(shown, x + w / 2, y + h - 36, '800 ' + size + 'px ui-monospace, Menlo, Consolas, monospace', '#5eead4', 'center');
+    text('MYSTERY VAULT', x + w / 2, y + 28, '800 11px "Segoe UI", system-ui, sans-serif', '#fde68a', 'center');
+  }
+
+  function drawTray(x, y, w, h, count, item, known) {
+    roundRect(x, y, w, h, 14, '#fff7ed', '#0f172a', 3);
+    text('LEFTOVER TRAY', x + w / 2, y + 16, '800 11px "Segoe UI", system-ui, sans-serif', '#9a3412', 'center');
+    if (!known || count == null) {
+      text('+ ?', x + w / 2, y + h * 0.58, '800 36px "Segoe UI", system-ui, sans-serif', '#c2410c', 'center');
+      return;
+    }
+    const n = Math.min(10, Math.max(0, count));
+    for (let i = 0; i < n; i++) {
+      const col = i % 5;
+      const row = Math.floor(i / 5);
+      drawLoot(item.shape, x + 28 + col * 32, y + 48 + row * 32, 10, item.color);
+    }
+    text('+' + count, x + w / 2, y + h - 18, '800 16px "Segoe UI", system-ui, sans-serif', '#7c2d12', 'center');
+  }
+
+  function drawScale(x, y, w, h, label, armed) {
+    roundRect(x, y, w, h, 12, armed ? '#ecfeff' : '#e2e8f0', '#0891b2', 3);
+    text('HOLO SCAN', x + w / 2, y + 16, '800 11px "Segoe UI", system-ui, sans-serif', '#0e7490', 'center');
+    const shown = String(label);
+    const size = shown.length > 16 ? 16 : shown.length > 10 ? 20 : 28;
+    text(shown, x + w / 2, y + h * 0.58, '800 ' + size + 'px "Segoe UI", system-ui, sans-serif', '#155e75', 'center');
+  }
+
+  function drawTower(x, y, w, h, div, rem) {
+    roundRect(x, y + 24, w, h - 24, 12, '#1d4ed8', '#bfdbfe', 3);
+    roundRect(x + 12, y, w - 24, 36, 8, '#fbbf24', '#92400e', 2);
+    text('DIV ' + div, x + w / 2, y + 18, '800 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text('REMAINDER', x + w / 2, y + 64, '700 12px "Segoe UI", system-ui, sans-serif', '#dbeafe', 'center');
+    text(String(rem), x + w / 2, y + h * 0.68, '800 36px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+  }
+
+  function scannerLines() {
+    const r = game.round;
+    if (!r) return [];
+    if (!step1Shown()) return [r.scan1];
+    if (!step2Shown()) return [r.scan1done, r.scan2];
+    return [r.scan1done, r.scan2done];
+  }
+
+  function drawScanner() {
+    const x = UI.stageX + 18;
+    const y = UI.stageY + 10;
+    const w = UI.stageW - 36;
+    const h = 48;
+    roundRect(x, y, w, h, 10, 'rgba(8, 47, 73, 0.92)', '#22d3ee', 2);
+    const sweep = (game.belt * 0.8) % (w - 40);
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.18)';
+    ctx.fillRect(x + 12 + sweep, y + 6, 28, h - 12);
+    const lines = scannerLines();
+    for (let i = 0; i < lines.length; i++) {
+      text(lines[i], x + w / 2, y + (lines.length === 1 ? h / 2 : 16 + i * 20), '700 16px ui-monospace, Menlo, Consolas, monospace', '#a5f3fc', 'center');
+    }
+  }
+
+  function drawBay(round) {
+    const m = round.meta;
+    const item = round.item;
+    const roll = rollNow();
+    const shown1 = step1Shown();
+    const shown2 = step2Shown();
+    let caption = '?';
+    let trayKnown = false;
+    let trayCount = 0;
+    if (round.kind === 'reverse') {
+      caption = '× ' + fmt(m.Q);
+      trayKnown = true;
+      trayCount = m.R;
+    } else if (round.kind === 'max') {
+      caption = '× ' + fmt(m.Q);
+      trayKnown = shown1;
+      trayCount = m.R;
+    } else if (round.kind === 'spot') {
+      caption = shown1 ? ('× ' + fmt(m.Q)) : '?';
+      trayKnown = shown2;
+      trayCount = m.R;
+    } else if (round.kind === 'boxes') {
+      caption = shown1 ? ('× ' + fmt(m.full)) : '?';
+      trayKnown = shown1;
+      trayCount = m.left;
+    } else if (round.kind === 'rediv') {
+      caption = '× ' + fmt(m.Q);
+      trayKnown = true;
+      trayCount = m.R;
+    }
+    for (let i = 0; i < 4; i++) {
+      const x = 42 + i * 92 + roll * 28;
+      drawCrate(x, UI.stageY + 112, 76, 86, caption, shown1);
+    }
+    const scaleLabel = shown1 ? pretty(round.steps[0].answer) : 'WAITING';
+    drawScale(500, UI.stageY + 116, 248, 104, scaleLabel, shown1);
+    drawTray(764, UI.stageY + 112, 200, 112, trayCount, item, trayKnown);
+    const vaultLabel = shown2 ? pretty(round.steps[1].answer) : '[ ? ]';
+    drawVault(980, UI.stageY + 68, 252, 158, vaultNow(), vaultLabel);
+    roundRect(48, UI.stageY + 78, 280, 28, 8, '#0f172a', '#fbbf24', 2);
+    text(round.plaque, 188, UI.stageY + 92, '800 13px "Segoe UI", system-ui, sans-serif', '#fde68a', 'center');
+  }
+
+  function drawRiddle(round) {
+    const m = round.meta;
+    const towers = [];
+    if (m.divs) {
+      for (let i = 0; i < m.divs.length; i++) towers.push({ div: m.divs[i], rem: m.R });
+    } else if (round.kind === 'nested') {
+      towers.push({ div: m.D1, rem: m.R1 });
+      towers.push({ div: m.D2, rem: m.R2 });
+    } else {
+      towers.push({ div: m.D1, rem: m.R1 });
+      towers.push({ div: m.D2, rem: m.R2 });
+    }
+    const gap = towers.length === 3 ? 168 : 210;
+    const x0 = towers.length === 3 ? 48 : 70;
+    for (let i = 0; i < towers.length; i++) {
+      drawTower(x0 + i * gap, UI.stageY + 78, 150, 150, towers[i].div, towers[i].rem);
+    }
+    const shown1 = step1Shown();
+    drawScale(towers.length === 3 ? 560 : 520, UI.stageY + 108, 248, 108, shown1 ? pretty(round.steps[0].answer) : 'LCM ?', shown1);
+    drawVault(980, UI.stageY + 68, 252, 158, vaultNow(), step2Shown() ? pretty(round.steps[1].answer) : '[ ? ]');
+  }
+
+  function drawConsec(round) {
+    const m = round.meta;
+    const shown1 = step1Shown();
+    const shown2 = step2Shown();
+    roundRect(48, UI.stageY + 74, 420, 44, 10, '#0f172a', '#fbbf24', 2);
+    text('PRODUCT  ' + fmt(m.product), 258, UI.stageY + 96, '800 20px "Segoe UI", system-ui, sans-serif', '#fde68a', 'center');
+    drawCrate(70, UI.stageY + 132, 150, 90, shown2 ? String(m.n) : '?', shown2);
+    drawCrate(250, UI.stageY + 132, 150, 90, shown2 ? String(m.n + 1) : '? + 1', shown2);
+    text('×', 232, UI.stageY + 176, '800 28px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    drawScale(460, UI.stageY + 124, 280, 110, shown1 ? (m.bench + ' × ' + m.bench + ' = ' + fmt(m.square)) : 'TENS SQUARE ?', shown1);
+    drawVault(820, UI.stageY + 78, 400, 150, vaultNow(), shown2 ? (m.n + '  &  ' + (m.n + 1)) : '[ ? ]');
+  }
+
+  function drawWarehouse() {
+    const sky = ctx.createLinearGradient(0, 0, 0, 220);
+    sky.addColorStop(0, '#7dd3fc');
+    sky.addColorStop(1, '#fde68a');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, VW, 230);
+    ctx.fillStyle = '#f6d7a7';
+    ctx.fillRect(0, 180, VW, 280);
+    ctx.fillStyle = '#1e3a8a';
+    ctx.fillRect(0, 430, VW, 290);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    for (let i = 0; i < 8; i++) ctx.fillRect(40 + i * 160, 470, 70, 6);
+    for (let i = 0; i < 5; i++) {
+      const x = 120 + i * 250;
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.35)';
+      ctx.beginPath();
+      ctx.arc(x, 150, 28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fbbf24';
+      ctx.beginPath();
+      ctx.arc(x, 150, 14, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#fef3c7';
+    ctx.fillRect(0, 168, VW, 10);
+  }
+
+  function drawBelt() {
+    const y = UI.stageY + 188;
+    roundRect(36, y, 930, 22, 6, '#0369a1', '#082f49', 2);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(40, y + 3, 922, 16);
+    ctx.clip();
+    const offset = game.belt % 28;
+    for (let x = -28 + offset; x < 980; x += 28) {
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.beginPath();
+      ctx.moveTo(x, y + 16);
+      ctx.lineTo(x + 10, y + 6);
+      ctx.lineTo(x + 16, y + 6);
+      ctx.lineTo(x + 6, y + 16);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawStage() {
+    roundRect(UI.stageX, UI.stageY, UI.stageW, UI.stageH, 16, '#fff7ed', '#0f172a', 3);
+    const g = ctx.createLinearGradient(0, UI.stageY, 0, UI.stageY + UI.stageH);
+    g.addColorStop(0, '#e0f2fe');
+    g.addColorStop(0.45, '#ffedd5');
+    g.addColorStop(1, '#bae6fd');
+    roundRect(UI.stageX + 8, UI.stageY + 8, UI.stageW - 16, UI.stageH - 16, 12, g, null, 0);
+    for (let i = 0; i < 4; i++) {
+      roundRect(UI.stageX + 40 + i * 300, UI.stageY + 64, 90, 36, 4, '#7dd3fc', '#0369a1', 2);
+    }
+    if (game.round && familyOf(game.round.kind) !== 'consec') drawBelt();
+    drawScanner();
+    if (!game.round) return;
+    const fam = familyOf(game.round.kind);
+    if (fam === 'riddle') drawRiddle(game.round);
+    else if (fam === 'consec') drawConsec(game.round);
+    else drawBay(game.round);
+  }
+
+  function drawShields(x, y) {
+    for (let i = 0; i < SHIELDS; i++) {
+      const on = i < game.shields;
+      roundRect(x + i * 30, y, 24, 28, 6, on ? '#fbbf24' : '#1e293b', on ? '#fffbeb' : '#475569', 2);
+      text('▣', x + i * 30 + 12, y + 14, '700 12px "Segoe UI", system-ui, sans-serif', on ? '#0f172a' : '#64748b', 'center');
+    }
+  }
+
+  function drawTimer(x, y, w) {
+    const labelW = 38;
+    const trackW = w - labelW - 4;
+    const ratio = game.timeMax > 0 ? clamp(game.timeLeft / game.timeMax, 0, 1) : 0;
+    const hot = ratio < 0.28;
+    roundRect(x, y, trackW, 32, 8, '#082f49', '#67e8f9', 2);
+    roundRect(x + 4, y + 8, Math.max(8, (trackW - 8) * ratio), 16, 6, hot ? '#ef4444' : '#22d3ee', null, 0);
+    if (game.tier === 'EXTREME') {
+      const tx = x + 6 + (trackW - 34) * (1 - ratio);
+      roundRect(tx, y + 6, 20, 10, 3, '#fbbf24', '#0f172a', 1);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(tx + 18, y + 9, 7, 4);
+    }
+    roundRect(x + trackW + 4, y, labelW, 32, 8, '#082f49', '#67e8f9', 2);
+    text(Math.ceil(Math.max(0, game.timeLeft)) + 's', x + trackW + 4 + labelW / 2, y + 16, '800 12px "Segoe UI", system-ui, sans-serif', '#f8fafc', 'center');
+  }
+
+  function drawHUD() {
+    roundRect(UI.hudX, UI.hudY, UI.hudW, UI.hudH, 14, '#0b1f3a', '#fbbf24', 2);
+    const mode = MODE_META[game.mode];
+    const tier = TIER_META[game.tier];
+    roundRect(28, 16, 168, 36, 10, mode.tint, '#e2e8f0', 2);
+    text(mode.name, 112, 34, '800 14px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    roundRect(204, 16, 168, 36, 10, tier.tint, '#e2e8f0', 2);
+    text(tier.name, 288, 27, '800 13px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    text(tier.role, 288, 42, '600 10px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'center');
+    roundRect(380, 16, 118, 36, 10, '#172554', '#93c5fd', 2);
+    text('SHIP ' + Math.min(SHIPMENTS, game.shipmentIndex + 1) + '/' + SHIPMENTS, 439, 34, '800 14px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+
+    if (game.mode === 'DUEL') {
+      const n = game.playerCount;
+      const w = n === 3 ? 150 : 180;
+      for (let i = 0; i < n; i++) {
+        const p = game.players[i];
+        const x = 510 + i * (w + 10);
+        const stunned = p.stun > performance.now();
+        roundRect(x, 16, w, 36, 10, stunned ? '#7f1d1d' : p.color, '#ffffff', 2);
+        const combo = game.tier === 'EXTREME' && p.combo > 0 ? '  ×' + comboMult(i) : '';
+        text(p.name + '  ★ ' + p.stars + combo, x + w / 2, 28, '800 14px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+        text(fmt(p.score) + ' pts', x + w / 2, 43, '600 10px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'center');
+      }
+    } else {
+      roundRect(510, 16, 250, 36, 10, '#14532d', '#bbf7d0', 2);
+      text(game.mode === 'COOP' ? 'TEAM SCORE' : 'SCORE', 635, 27, '700 10px "Segoe UI", system-ui, sans-serif', '#dcfce7', 'center');
+      text(fmt(game.score), 635, 43, '800 16px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+      roundRect(770, 16, 132, 36, 10, '#9a3412', '#ffedd5', 2);
+      const chip = game.tier === 'EXTREME' ? ('COMBO ×' + (game.combo <= 0 ? 1 : game.combo === 1 ? 2 : 3)) : tier.chip;
+      text(chip, 836, 34, '800 13px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+      drawShields(912, 20);
+    }
+
+    if (game.screen === 'PLAYING') drawTimer(1064, 18, 124);
+    const mute = { x: 1196, y: 16, w: 56, h: 36 };
+    roundRect(mute.x, mute.y, mute.w, mute.h, 10, sfx.muted ? '#7f1d1d' : '#155e75', '#ffffff', 2);
+    text(sfx.muted ? 'OFF' : 'SND', mute.x + 28, mute.y + 18, '800 13px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    hit('mute', mute.x, mute.y, mute.w, mute.h);
+  }
+
+  function drawSheet() {
+    const round = game.round;
+    const border = game.mode === 'COOP' ? game.players[activePlayer()].color : '#0f172a';
+    roundRect(UI.sheetX, UI.sheetY, UI.sheetW, UI.sheetH, 16, '#fffaf3', border, 3);
+    roundRect(28, 80, 188, 84, 12, '#0f2744', null, 0);
+    const step = currentStep();
+    text(step ? step.kicker : 'MANIFEST', 122, 104, '800 12px "Segoe UI", system-ui, sans-serif', '#67e8f9', 'center');
+    if (game.mode === 'COOP') {
+      const p = game.players[activePlayer()];
+      drawHardHat(70, 132, p.color);
+      text(p.name + ' ' + p.full, 148, 136, '800 12px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    } else if (game.mode === 'DUEL') {
+      text('ALL RACE', 122, 136, '800 16px "Segoe UI", system-ui, sans-serif', '#fbbf24', 'center');
+    } else {
+      drawHardHat(122, 132, '#e11d48');
+      text('SOLO BAY', 122, 156, '800 11px "Segoe UI", system-ui, sans-serif', '#fde68a', 'center');
+    }
+    if (!round || !step) return;
+    ctx.font = '600 16px "Segoe UI", system-ui, sans-serif';
+    const lines = wrapLines(round.story, 1000, 2);
+    for (let i = 0; i < lines.length; i++) {
+      text(lines[i], 232, 96 + i * 22, '600 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'left');
+    }
+    text(step.prompt, 232, 148, '800 16px "Segoe UI", system-ui, sans-serif', '#9a3412', 'left');
+  }
+
+  function drawTip() {
+    const bad = game.tip && game.tip.bad;
+    const bg = bad ? '#fee2e2' : '#ecfeff';
+    const border = bad ? '#b91c1c' : '#0891b2';
+    const color = bad ? '#7f1d1d' : '#155e75';
+    roundRect(UI.tipX, UI.tipY, UI.tipW, UI.tipH, 12, bg, border, 3);
+    const step = currentStep();
+    const body = game.tip ? game.tip.text : (step ? step.hint : 'Lock the key property, then open the vault.');
+    const label = bad ? 'CHIEF TIP' : 'BAY GUIDE';
+    roundRect(28, UI.tipY + 8, 92, 18, 6, bad ? '#b91c1c' : '#0891b2', null, 0);
+    text(label, 74, UI.tipY + 17, '800 10px "Segoe UI", system-ui, sans-serif', '#ffffff', 'center');
+    ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
+    const lines = wrapLines(body, 1088, 2);
+    const y0 = lines.length > 1 ? UI.tipY + 22 : UI.tipY + 36;
+    for (let i = 0; i < lines.length; i++) {
+      text(lines[i], 132, y0 + i * 18, '600 15px "Segoe UI", system-ui, sans-serif', color, 'left');
+    }
+  }
+
+  function drawCards() {
+    const step = currentStep();
+    const rects = cardsGeom();
+    if (!step) return;
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const cardItem = step.cards[i];
+      let fill = '#fffaf3';
+      let border = '#0f172a';
+      let lw = 3;
+      if (game.cardFlash && game.cardFlash.index === i) {
+        fill = game.cardFlash.bad ? '#fecdd3' : '#bbf7d0';
+        border = game.cardFlash.bad ? '#be123c' : '#15803d';
+        lw = 5;
+      } else if (game.hover === i && canControl(pointerPlayer())) {
+        fill = '#e0f2fe';
+        border = '#0369a1';
+      }
+      if (game.phase !== 'INPUT') {
+        ctx.globalAlpha = cardItem.correct && (game.phase === 'REVEAL' || game.phase === 'VAULT' || game.phase === 'ROLL') ? 1 : 0.72;
+      }
+      roundRect(r.x, r.y, r.w, r.h, 16, fill, border, lw);
+      ctx.globalAlpha = 1;
+      roundRect(r.x + 12, r.y + 12, r.w - 24, 28, 8, '#0f172a', null, 0);
+      text(legendFor(i), r.x + r.w / 2, r.y + 26, '800 13px "Segoe UI", system-ui, sans-serif', '#f8fafc', 'center');
+      for (let p = 0; p < game.playerCount; p++) {
+        if (game.players[p].cursor === i && canControl(p)) {
+          ctx.strokeStyle = game.players[p].color;
+          ctx.lineWidth = 4;
+          ctx.strokeRect(r.x + 4, r.y + 4, r.w - 8, r.h - 8);
+        }
+      }
+      const shown = pretty(cardItem.text);
+      const size = shown.length > 16 ? 20 : shown.length > 11 ? 26 : shown.length > 7 ? 32 : 40;
+      text(shown, r.x + r.w / 2, r.y + 92, '800 ' + size + 'px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+      ctx.font = '600 14px "Segoe UI", system-ui, sans-serif';
+      const subs = wrapLines(cardItem.sub || '', r.w - 28, 2);
+      for (let s = 0; s < subs.length; s++) {
+        text(subs[s], r.x + r.w / 2, r.y + 138 + s * 18, '600 14px "Segoe UI", system-ui, sans-serif', '#9a3412', 'center');
+      }
+      if (game.mode === 'SOLO') text('MOUSE', r.x + r.w / 2, r.y + r.h - 22, '700 11px "Segoe UI", system-ui, sans-serif', '#475569', 'center');
+      hit('card-' + i, r.x, r.y, r.w, r.h);
+    }
+  }
+
+  function drawFX() {
+    for (let i = 0; i < game.particles.length; i++) {
+      const p = game.particles[i];
+      ctx.globalAlpha = clamp(p.life, 0, 1);
+      ctx.fillStyle = p.color;
+      if (p.star) {
+        starPath(p.x, p.y, p.size + 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < game.floaters.length; i++) {
+      const f = game.floaters[i];
+      ctx.globalAlpha = clamp(f.life, 0, 1);
+      text(f.text, f.x, f.y, '800 ' + f.size + 'px "Segoe UI", system-ui, sans-serif', f.color, 'center');
+    }
+    ctx.globalAlpha = 1;
+    if (game.flash > 0) {
+      ctx.fillStyle = game.flashColor;
+      ctx.fillRect(0, 0, VW, VH);
+    }
+  }
+
+  function drawTitle() {
+    text('CARGO VAULT', VW / 2, 78, '800 64px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text('REVERSE-PACKER FACTORY', VW / 2, 124, '800 22px "Segoe UI", system-ui, sans-serif', '#9a3412', 'center');
+    text('Primary 4–5   ·   Unknown dividends, leftovers, and remainder riddles', VW / 2, 156, '600 16px "Segoe UI", system-ui, sans-serif', '#1e3a8a', 'center');
+    if (game.best > 0) text('QUARTERMASTER RECORD  ' + fmt(game.best), VW / 2, 186, '800 14px "Segoe UI", system-ui, sans-serif', '#166534', 'center');
+    text('QUARTERMASTERS', VW / 2, 246, '800 13px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    const layout = titleLayout();
+    const countLabels = ['1 PLAYER', '2 PLAYERS', '3 PLAYERS'];
+    for (let i = 0; i < layout.counts.length; i++) {
+      const r = layout.counts[i];
+      const on = game.playerCount === i + 1;
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? '#e11d48' : '#fffaf3', on ? '#fff' : '#0f172a', on ? 4 : 3);
+      text(countLabels[i], r.x + r.w / 2, r.y + r.h / 2, '800 18px "Segoe UI", system-ui, sans-serif', on ? '#fff' : '#0f172a', 'center');
+      hit('count-' + (i + 1), r.x, r.y, r.w, r.h);
+    }
+    text('DIFFICULTY', VW / 2, 364, '800 13px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    const tiers = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+    for (let i = 0; i < layout.tiers.length; i++) {
+      const r = layout.tiers[i];
+      const id = tiers[i];
+      const meta = TIER_META[id];
+      const on = game.tier === id;
+      roundRect(r.x, r.y, r.w, r.h, 14, on ? meta.tint : '#fffaf3', on ? '#fff' : '#0f172a', on ? 4 : 3);
+      text(meta.name, r.x + r.w / 2, r.y + 24, '800 16px "Segoe UI", system-ui, sans-serif', on ? '#fff' : '#0f172a', 'center');
+      text(meta.role, r.x + r.w / 2, r.y + 46, '700 12px "Segoe UI", system-ui, sans-serif', on ? '#fef3c7' : '#9a3412', 'center');
+      text(meta.blurb, r.x + r.w / 2, r.y + 64, '600 11px "Segoe UI", system-ui, sans-serif', on ? '#ffffff' : '#334155', 'center');
+      hit('tier-' + id, r.x, r.y, r.w, r.h);
+    }
+    text('MODE', VW / 2, 498, '800 13px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    const modes = ['SOLO', 'COOP', 'DUEL'];
+    for (let i = 0; i < layout.modes.length; i++) {
+      const r = layout.modes[i];
+      const id = modes[i];
+      const meta = MODE_META[id];
+      const allowed = (game.playerCount <= 1 && id === 'SOLO') || (game.playerCount > 1 && id !== 'SOLO');
+      const on = game.mode === id && allowed;
+      roundRect(r.x, r.y, r.w, r.h, 14, !allowed ? '#e2e8f0' : on ? meta.tint : '#fffaf3', on ? '#fff' : '#0f172a', on ? 4 : 3);
+      text(meta.name, r.x + r.w / 2, r.y + 26, '800 16px "Segoe UI", system-ui, sans-serif', !allowed ? '#94a3b8' : on ? '#fff' : '#0f172a', 'center');
+      text(allowed ? meta.blurb : 'Pick 2 or 3 players', r.x + r.w / 2, r.y + 48, '600 12px "Segoe UI", system-ui, sans-serif', !allowed ? '#94a3b8' : on ? '#fef3c7' : '#334155', 'center');
+      if (allowed) hit('mode-' + id, r.x, r.y, r.w, r.h);
+    }
+    const start = layout.start;
+    const pulse = 0.5 + 0.5 * Math.sin(game.belt * 0.08);
+    roundRect(start.x, start.y, start.w, start.h, 16, '#fbbf24', '#0f172a', 4);
+    text('OPEN THE VAULT BAY', start.x + start.w / 2, start.y + 30, '800 22px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    hit('start', start.x, start.y, start.w, start.h);
+    text('Step 1 locks the crates or the key property. Step 2 opens the vault.  P2: Q W E R.  P3: U I O P.  M mutes.', VW / 2, 694, '600 13px "Segoe UI", system-ui, sans-serif', '#e0f2fe', 'center');
+    if (game.titleRow === 0) text('PLAYERS', 70, 300, '800 12px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'left');
+    if (game.audit && game.audit.length) {
+      roundRect(16, 640, 1248, 28, 8, '#fee2e2', '#b91c1c', 2);
+      text('AUDIT ' + game.audit[0], 32, 654, '700 12px "Segoe UI", system-ui, sans-serif', '#7f1d1d', 'left');
+    }
+    void pulse;
+  }
+
+  function drawResults() {
+    roundRect(180, 70, 920, 560, 24, '#fffaf3', '#0f172a', 4);
+    const res = game.result || { ranOut: false, winner: -1, stars: [0, 0, 0], accuracy: 0 };
+    text(res.ranOut ? 'VAULT SEALED' : 'SHIFT REPORT', VW / 2, 120, '800 36px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    text(TIER_META[game.tier].role + '   ·   ' + MODE_META[game.mode].name, VW / 2, 162, '700 16px "Segoe UI", system-ui, sans-serif', '#9a3412', 'center');
+    if (game.mode === 'DUEL') {
+      text(res.winner < 0 ? 'DEAD HEAT' : (game.players[res.winner].name + ' ' + game.players[res.winner].full + ' WINS'), VW / 2, 214, '800 24px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+      for (let i = 0; i < game.playerCount; i++) {
+        const p = game.players[i];
+        const x = 300 + i * 230;
+        roundRect(x, 250, 200, 120, 14, p.color, '#fff', 3);
+        text(p.name + ' ' + p.full, x + 100, 278, '800 16px "Segoe UI", system-ui, sans-serif', '#fff', 'center');
+        text('★ ' + p.stars, x + 100, 314, '800 28px "Segoe UI", system-ui, sans-serif', '#fff', 'center');
+        text(fmt(p.score) + ' pts', x + 100, 346, '700 14px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'center');
+      }
+    } else if (game.mode === 'COOP') {
+      text('TEAM SCORE', VW / 2, 230, '800 16px "Segoe UI", system-ui, sans-serif', '#166534', 'center');
+      text(fmt(game.score), VW / 2, 286, '800 54px "Segoe UI", system-ui, sans-serif', '#14532d', 'center');
+      text('Shared shields left: ' + game.shields, VW / 2, 336, '700 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    } else {
+      text('SCORE', VW / 2, 230, '800 16px "Segoe UI", system-ui, sans-serif', '#166534', 'center');
+      text(fmt(game.score), VW / 2, 286, '800 54px "Segoe UI", system-ui, sans-serif', '#14532d', 'center');
+      if (game.newRecord) text('NEW QUARTERMASTER RECORD', VW / 2, 336, '800 16px "Segoe UI", system-ui, sans-serif', '#b45309', 'center');
+      else text('Record: ' + fmt(game.best), VW / 2, 336, '700 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    }
+    const y0 = game.mode === 'DUEL' ? 400 : 380;
+    const stats = [
+      ['Vaults opened', game.unlocked + ' / ' + SHIPMENTS],
+      ['Clean shipments', String(game.clean)],
+      ['Accuracy', res.accuracy + '%'],
+      ['Best combo', game.tier === 'EXTREME' ? ('×' + (game.bestCombo <= 0 ? 1 : game.bestCombo === 1 ? 2 : 3)) : '—']
+    ];
+    for (let i = 0; i < stats.length; i++) {
+      text(stats[i][0], 360, y0 + i * 36, '700 16px "Segoe UI", system-ui, sans-serif', '#334155', 'left');
+      text(stats[i][1], 920, y0 + i * 36, '800 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'right');
+    }
+    const layout = resultLayout();
+    roundRect(layout.again.x, layout.again.y, layout.again.w, layout.again.h, 14, '#fbbf24', '#0f172a', 3);
+    text('RUN IT BACK', layout.again.x + layout.again.w / 2, layout.again.y + 28, '800 16px "Segoe UI", system-ui, sans-serif', '#0f172a', 'center');
+    roundRect(layout.title.x, layout.title.y, layout.title.w, layout.title.h, 14, '#0f2744', '#fbbf24', 3);
+    text('TITLE DOCK', layout.title.x + layout.title.w / 2, layout.title.y + 28, '800 16px "Segoe UI", system-ui, sans-serif', '#fef3c7', 'center');
+    hit('again', layout.again.x, layout.again.y, layout.again.w, layout.again.h);
+    hit('title', layout.title.x, layout.title.y, layout.title.w, layout.title.h);
+  }
+
+  function draw() {
+    game.hot = [];
+    ctx.clearRect(0, 0, VW, VH);
+    drawWarehouse();
+    if (game.screen === 'TITLE') {
+      drawTitle();
+      drawFX();
+      return;
+    }
+    if (game.screen === 'RESULTS') {
+      drawHUD();
+      drawResults();
+      drawFX();
+      return;
+    }
+    const sx = game.shake > 0 ? (Math.random() - 0.5) * 8 * game.shake : 0;
+    const sy = game.shake > 0 ? (Math.random() - 0.5) * 5 * game.shake : 0;
+    drawHUD();
+    ctx.save();
+    ctx.translate(sx, sy);
+    drawSheet();
+    drawStage();
+    drawTip();
+    drawCards();
+    ctx.restore();
+    drawFX();
+  }
+
+  function update(dt) {
+    game.belt += dt * 90;
+    game.shake = Math.max(0, game.shake - dt * 1.6);
+    game.flash = Math.max(0, game.flash - dt);
+    if (game.cardFlash) {
+      game.cardFlash.t -= dt;
+      if (game.cardFlash.t <= 0) game.cardFlash = null;
+    }
+    for (let i = game.particles.length - 1; i >= 0; i--) {
+      const p = game.particles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += p.g * dt;
+      p.life -= p.decay * dt;
+      if (p.life <= 0) game.particles.splice(i, 1);
+    }
+    for (let i = game.floaters.length - 1; i >= 0; i--) {
+      const f = game.floaters[i];
+      f.y += f.vy * dt;
+      f.life -= f.decay * dt;
+      if (f.life <= 0) game.floaters.splice(i, 1);
+    }
+    if (sfx.unlocked) sfx.applyHum();
+    if (game.screen !== 'PLAYING') return;
+    const now = performance.now();
+    if (game.phase === 'INPUT') {
+      game.timeLeft -= dt;
+      if (game.timeLeft <= 0) onTimeout();
+    } else if (now >= game.phaseUntil) {
+      if (game.phase === 'ROLL') enterStep2();
+      else if (game.phase === 'VAULT') nextShipment();
+      else if (game.phase === 'REVEAL') {
+        if (game.shields <= 0) finishShift(true);
+        else nextShipment();
+      } else if (game.phase === 'DEAD') finishShift(true);
+    }
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - lastNow) / 1000);
+    lastNow = now;
+    pollPads();
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function activateHot(id) {
+    if (!id) return;
+    sfx.unlock();
+    if (id === 'mute') {
+      sfx.toggleMute();
+      sfx.playTick();
+      return;
+    }
+    if (game.screen === 'TITLE') {
+      if (id.indexOf('count-') === 0) setPlayers(Number(id.slice(6)));
+      else if (id.indexOf('tier-') === 0) game.tier = id.slice(5);
+      else if (id.indexOf('mode-') === 0) setMode(id.slice(5));
+      else if (id === 'start') beginShift();
+      if (id !== 'start') sfx.playTick();
+      return;
+    }
+    if (game.screen === 'RESULTS') {
+      if (id === 'again') beginShift();
+      else if (id === 'title') {
+        game.screen = 'TITLE';
+        speak('Cargo Vault title dock.');
+      }
+      return;
+    }
+    if (game.screen === 'PLAYING' && id.indexOf('card-') === 0) {
+      selectCard(pointerPlayer(), Number(id.slice(5)));
+    }
+  }
+
+  function onPointer(evt) {
+    const pt = screenToVirtual(evt.clientX, evt.clientY);
+    game.hover = -1;
+    for (let i = 0; i < game.hot.length; i++) {
+      const h = game.hot[i];
+      if (!pointIn(pt.x, pt.y, h)) continue;
+      if (h.id.indexOf('card-') === 0) game.hover = Number(h.id.slice(5));
+      if (evt.type === 'pointerdown') activateHot(h.id);
+      return;
+    }
+  }
+
+  canvas.addEventListener('pointermove', onPointer);
+  canvas.addEventListener('pointerdown', onPointer);
+  canvas.addEventListener('contextmenu', function (evt) { evt.preventDefault(); });
+
+  function titleKey(key) {
+    if (key === 'ArrowUp') {
+      game.titleRow = Math.max(0, game.titleRow - 1);
+      sfx.playTick();
+    } else if (key === 'ArrowDown') {
+      game.titleRow = Math.min(3, game.titleRow + 1);
+      sfx.playTick();
+    } else if (key === 'ArrowLeft') cycleTitle(-1);
+    else if (key === 'ArrowRight') cycleTitle(1);
+    else if (key === 'Enter' || key === ' ') beginShift();
+  }
+
+  function playerFromKey(key) {
+    const up = key.length === 1 ? key.toUpperCase() : key;
+    for (let i = 0; i < 3; i++) {
+      const idx = game.players[i].keys.indexOf(up);
+      if (idx !== -1) return { pi: i, index: idx };
+    }
+    return null;
+  }
+
+  window.addEventListener('keydown', function (evt) {
+    const key = evt.key;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].indexOf(key) !== -1) evt.preventDefault();
+    if (evt.repeat) return;
+    sfx.unlock();
+    if (key === 'm' || key === 'M') {
+      sfx.toggleMute();
+      return;
+    }
+    if (game.screen === 'TITLE') {
+      titleKey(key);
+      return;
+    }
+    if (game.screen === 'RESULTS') {
+      if (key === 'Enter' || key === ' ') beginShift();
+      else if (key === 'Escape' || key === 'Backspace') game.screen = 'TITLE';
+      return;
+    }
+    const mapped = playerFromKey(key);
+    if (mapped) {
+      if (game.mode !== 'DUEL' && mapped.pi !== 0 && game.mode !== 'COOP') return;
+      if (game.mode === 'SOLO' && mapped.pi !== 0) return;
+      selectCard(mapped.pi, mapped.index);
+      return;
+    }
+    const arrowsOk = game.mode !== 'DUEL' ? (game.mode === 'SOLO' || activePlayer() === 0) : true;
+    if (!arrowsOk && (key === 'ArrowLeft' || key === 'ArrowRight' || key === ' ' || key === 'Enter')) return;
+    const pi = game.mode === 'DUEL' ? 0 : (game.mode === 'COOP' ? activePlayer() : 0);
+    if (key === 'ArrowLeft') nudge(game.mode === 'DUEL' ? 0 : pi, -1);
+    else if (key === 'ArrowRight') nudge(game.mode === 'DUEL' ? 0 : pi, 1);
+    else if (key === ' ' || key === 'Enter') confirmCursor(game.mode === 'DUEL' ? 0 : pi);
+  });
+
+  function padPressed(gp, index) {
+    return gp.buttons[index] && gp.buttons[index].pressed;
+  }
+  function readPad(gp) {
+    return {
+      a: padPressed(gp, 0),
+      b: padPressed(gp, 1),
+      u: padPressed(gp, 12) || gp.axes[1] < -0.55,
+      d: padPressed(gp, 13) || gp.axes[1] > 0.55,
+      l: padPressed(gp, 14) || gp.axes[0] < -0.55,
+      r: padPressed(gp, 15) || gp.axes[0] > 0.55
+    };
+  }
+
+  function pollPads() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    if (!pads) return;
+    if (game.screen !== 'PLAYING') {
+      const gp = pads[0];
+      if (!gp) return;
+      const now = readPad(gp);
+      const prev = game.nav;
+      if (game.screen === 'TITLE') {
+        if (now.u && !prev.u) titleKey('ArrowUp');
+        if (now.d && !prev.d) titleKey('ArrowDown');
+        if (now.l && !prev.l) titleKey('ArrowLeft');
+        if (now.r && !prev.r) titleKey('ArrowRight');
+      }
+      if (now.a && !prev.a) {
+        sfx.unlock();
+        if (game.screen === 'TITLE') beginShift();
+        else if (game.screen === 'RESULTS') beginShift();
+      }
+      if (now.b && !prev.b && game.screen === 'RESULTS') game.screen = 'TITLE';
+      game.nav = now;
+      return;
+    }
+    for (let i = 0; i < game.playerCount; i++) {
+      const gp = pads[i];
+      if (!gp) continue;
+      const now = readPad(gp);
+      const prev = game.players[i].pad;
+      if (now.l && !prev.l) nudge(i, -1);
+      if (now.r && !prev.r) nudge(i, 1);
+      if (now.a && !prev.a) {
+        sfx.unlock();
+        if (game.players[i].cursor < 0) nudge(i, 1);
+        else confirmCursor(i);
+      }
+      game.players[i].pad = now;
+    }
+  }
+
+  game.audit = selfTest();
+  globalThis.CARGO_AUDIT = game.audit;
+  if (game.audit.length && typeof console !== 'undefined') console.error('Cargo Vault audit failed', game.audit);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
