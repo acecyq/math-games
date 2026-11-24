@@ -1,0 +1,2262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Mecha Armory: Remainder &amp; Firepower Command</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #070b12;
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  noscript p { color: #e8f4ff; font-family: "Trebuchet MS", sans-serif; padding: 24px; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" tabindex="0" role="application" aria-label="Mecha Armory. Remainder and firepower command for Primary 5 fractions. Each wave breaks down one bay at a time, then you compare the three racks and pick the fullest. Player 1 uses the mouse, keys 1 to 4, arrows and space, or gamepad A. Player 2 uses Q W E R or the second gamepad. Player 3 uses U I O P or the third gamepad."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<noscript><p>Mecha Armory needs JavaScript turned on.</p></noscript>
+<script>
+(() => {
+  'use strict';
+
+  const VW = 1280;
+  const VH = 720;
+  const FONT = '"Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+  const HUD_H = 52;
+  const CMD_Y = 56;
+  const CMD_H = 72;
+  const BAY_Y = 136;
+  const BAY_H = 376;
+  const BAY_W = 400;
+  const BAY_X = [24, 440, 856];
+  const DECK_Y = 524;
+  const SOLO_TIME = { EASY: 110, MEDIUM: 120, HARD: 100, EXTREME: 80 };
+  const DUEL_TIME = { EASY: 48, MEDIUM: 40, HARD: 34, EXTREME: 28 };
+  const DUEL_WAVES = 6;
+  const TIERS = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  const MODES = ['SOLO', 'COOP', 'DUEL'];
+  const TIER_META = {
+    EASY: { name: 'EASY', role: 'Cadet Recon', tint: '#34d399', blurb: 'Two weapon types on each vehicle. Last wave fired a fraction of each type.' },
+    MEDIUM: { name: 'MEDIUM', role: 'Strike Sergeant', tint: '#38bdf8', blurb: 'Three weapon types. The next type is a fraction of what remains, not of the whole rack.' },
+    HARD: { name: 'HARD', role: 'Mech Commander', tint: '#fbbf24', blurb: 'One weapon type loses a fixed salvo, then a fraction of what is left of that type.' },
+    EXTREME: { name: 'EXTREME', role: 'Supreme Vanguard', tint: '#fb7185', blurb: 'Work backwards from one weapon type, then add what is left of the other.' }
+  };
+  const MODE_META = {
+    SOLO: { name: 'SOLO', blurb: 'Break down one bay at a time, then pick the fullest rack.' },
+    COOP: { name: 'TEAM CO-OP', blurb: 'One shared arsenal and shared shields. Pilots take turns on each bay.' },
+    DUEL: { name: 'ARSENAL DUEL', blurb: 'Race each breakdown. The first correct lock claims that rack.' }
+  };
+  const PILOTS = [
+    { id: 'P1', name: 'P1 RED', short: 'P1', color: '#ff3355', deep: '#9f1239', keys: ['1', '2', '3', '4'], codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4'] },
+    { id: 'P2', name: 'P2 BLUE', short: 'P2', color: '#3d8bff', deep: '#1d4ed8', keys: ['Q', 'W', 'E', 'R'], codes: ['KeyQ', 'KeyW', 'KeyE', 'KeyR'] },
+    { id: 'P3', name: 'P3 GREEN', short: 'P3', color: '#2ee59a', deep: '#047857', keys: ['U', 'I', 'O', 'P'], codes: ['KeyU', 'KeyI', 'KeyO', 'KeyP'] }
+  ];
+  const VEHICLES = [
+    { id: 'tank', accent: '#ffb020', names: ['TITAN TANK', 'RHINO TANK', 'BASTION TANK', 'IRONHIDE TANK', 'COLOSSUS TANK'] },
+    { id: 'jet', accent: '#3ee0ff', names: ['VIPER JET', 'SPECTRE JET', 'LANCER JET', 'PHANTOM JET', 'RAZOR JET'] },
+    { id: 'mech', accent: '#e879f9', names: ['AEGIS MECH', 'ASSAULT MECH', 'RONIN MECH', 'PALADIN MECH', 'WARDEN MECH'] },
+    { id: 'heli', accent: '#a3e635', names: ['APACHE HELI', 'HORNET HELI', 'RAPTOR HELI', 'CYCLONE HELI', 'FALCON HELI'] }
+  ];
+  const WEAPONS = [
+    { id: 'gun', name: 'machine-gun rounds', short: 'bullets', unit: 'rounds' },
+    { id: 'missile', name: 'homing missiles', short: 'missiles', unit: 'missiles' },
+    { id: 'laser', name: 'ion laser cells', short: 'cells', unit: 'cells' },
+    { id: 'shell', name: 'plasma shells', short: 'shells', unit: 'shells' },
+    { id: 'slug', name: 'rail slugs', short: 'slugs', unit: 'slugs' },
+    { id: 'rocket', name: 'micro-rockets', short: 'rockets', unit: 'rockets' }
+  ];
+  const LEAD = [293.66, 349.23, 392, 440, 392, 349.23, 329.63, 293.66, 220, 261.63, 293.66, 329.63, 349.23, 293.66, 261.63, 220];
+  const BASS = [73.42, 73.42, 98, 98, 87.31, 82.41, 73.42, 55];
+
+  const history = [];
+  const spots = [];
+  const particles = [];
+  const floaters = [];
+  const held = {};
+  const keyMap = {};
+  PILOTS.forEach((p, pi) => {
+    p.codes.forEach((code, slot) => { keyMap[code] = { player: pi, slot: slot }; });
+  });
+  const padMem = [0, 1, 2].map(() => ({ a: false, left: false, right: false }));
+  let padPrimed = false;
+  const pointer = { x: -2000, y: -2000, down: false };
+
+  let canvas = null;
+  let ctx = null;
+  let live = null;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dpr = 1;
+  let animT = 0;
+  let lastNow = 0;
+  let reduceMotion = false;
+  let soloBest = 0;
+  let teamBest = 0;
+  let lastWinnerSlot = -1;
+
+  const game = {
+    screen: 'title',
+    players: 1,
+    tier: 'EASY',
+    mode: 'SOLO',
+    score: 0,
+    best: 0,
+    shields: 4,
+    wave: 1,
+    wavesCleared: 0,
+    machines: [],
+    pilots: [],
+    phase: 'select',
+    focus: 0,
+    picked: -1,
+    clock: 0,
+    intro: 0,
+    hold: 0,
+    holdNext: '',
+    celeb: 0,
+    between: 0,
+    note: '',
+    noteTone: '',
+    toast: '',
+    toastT: 0,
+    alarm: 0,
+    shake: 0,
+    paused: false,
+    record: false,
+    badBay: -1,
+    bayStep: 0,
+    guideWait: 0
+  };
+
+  const sound = {
+    ctx: null,
+    master: null,
+    muted: false,
+    ready: false,
+    next: 0,
+    step: 0
+  };
+
+  function rand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function choice(arr) { return arr[rand(0, arr.length - 1)]; }
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function gcd(a, b) {
+    let x = Math.abs(a | 0);
+    let y = Math.abs(b | 0);
+    while (y) { const t = x % y; x = y; y = t; }
+    return x || 1;
+  }
+  function fs(n, d) {
+    const g = gcd(n, d);
+    n = Math.round(n / g);
+    d = Math.round(d / g);
+    if (d < 0) { n = -n; d = -d; }
+    if (d === 1) return String(n);
+    return n + '/' + d;
+  }
+  function isPosInt(n) {
+    return typeof n === 'number' && isFinite(n) && n > 0 && n < 5000 && n === Math.floor(n);
+  }
+  function announce(s) { if (live) live.textContent = s; }
+  function winnerIndex(list) {
+    let w = 0;
+    for (let i = 1; i < list.length; i++) if (list[i].rem > list[w].rem) w = i;
+    return w;
+  }
+  function startLeader(list) {
+    let w = 0;
+    for (let i = 1; i < list.length; i++) if (list[i].start > list[w].start) w = i;
+    return w;
+  }
+
+  function loadStore() {
+    try { soloBest = Number(localStorage.getItem('ma-armory-solo-best')) || 0; } catch (err) { soloBest = 0; }
+    try { teamBest = Number(localStorage.getItem('ma-armory-team-best')) || 0; } catch (err) { teamBest = 0; }
+    try { sound.muted = localStorage.getItem('ma-armory-mute') === '1'; } catch (err) { sound.muted = false; }
+  }
+  function storeBest(kind, value) {
+    try { localStorage.setItem(kind === 'COOP' ? 'ma-armory-team-best' : 'ma-armory-solo-best', String(value)); } catch (err) { /* ignore */ }
+  }
+
+  function pushTrap(list, value, id, tip) {
+    if (!isPosInt(value)) return;
+    if (list.some(t => t.value === value)) return;
+    list.push({ value: value, id: id, tip: tip });
+  }
+  function makeOptions(rem, traps) {
+    const opts = [{ value: rem, correct: true, id: 'ok', tip: '' }];
+    const used = { [rem]: true };
+    for (let i = 0; i < traps.length && opts.length < 4; i++) {
+      const t = traps[i];
+      if (!t || used[t.value]) continue;
+      used[t.value] = true;
+      opts.push({ value: t.value, correct: false, id: t.id, tip: t.tip });
+    }
+    let salt = 1;
+    while (opts.length < 4 && salt < 50) {
+      const v = rem + salt * 5;
+      if (!used[v]) {
+        used[v] = true;
+        opts.push({
+          value: v,
+          correct: false,
+          id: 'near',
+          tip: 'That count is off the model. Take each fraction of THAT weapon type, then add what is still aboard.'
+        });
+      }
+      salt += 1;
+    }
+    return shuffle(opts);
+  }
+
+  function lcm(a, b) { return (a / gcd(a, b)) * b; }
+  function pickShort(n) { return shuffle(WEAPONS.slice()).slice(0, n); }
+  function tipStart(start, rem, unit) {
+    return 'Check what the bay asks for! ' + start + ' ' + unit + ' was the STARTING loadout; only ' + rem + ' ' + unit + ' remain!';
+  }
+  function armOf(w, n, d, count, fireN, fireD, fired, left, extra, fixed, burst) {
+    return {
+      id: w.id,
+      short: w.short,
+      n: n,
+      d: d,
+      count: count,
+      fireN: fireN,
+      fireD: fireD,
+      fired: fired,
+      left: left,
+      extra: extra || 0,
+      fixed: fixed || 0,
+      burst: burst || 0
+    };
+  }
+
+  function genPair() {
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const d = rand(2, 6);
+      const n = rand(1, d - 1);
+      if (gcd(n, d) !== 1) continue;
+      const f1d = rand(2, 5);
+      const f1n = rand(1, f1d - 1);
+      if (gcd(f1n, f1d) !== 1) continue;
+      const f2d = rand(2, 5);
+      const f2n = rand(1, f2d - 1);
+      if (gcd(f2n, f2d) !== 1) continue;
+      const tStep = lcm(f1d / gcd(n, f1d), f2d / gcd(d - n, f2d));
+      const startUnit = d * tStep;
+      const countA = n * tStep;
+      const countB = startUnit - countA;
+      if (countA % f1d !== 0 || countB % f2d !== 0 || countA <= 0 || countB <= 0) continue;
+      const firedA = (f1n * countA) / f1d;
+      const firedB = (f2n * countB) / f2d;
+      const leftA = countA - firedA;
+      const leftB = countB - firedB;
+      if (firedA <= 0 || firedB <= 0 || leftA <= 0 || leftB <= 0) continue;
+      const remUnit = leftA + leftB;
+      if (remUnit >= startUnit) continue;
+      const ks = [];
+      for (let k = 1; k <= 18; k++) {
+        const start = startUnit * k;
+        const rem = remUnit * k;
+        if (start > 280) break;
+        if (rem >= 18 && rem <= 140 && start >= rem + 12) ks.push(k);
+      }
+      if (!ks.length) continue;
+      const k = choice(ks);
+      const w = pickShort(2);
+      const start = startUnit * k;
+      const rem = remUnit * k;
+      let whole = null;
+      if (start % f1d === 0) {
+        const guess = (f1n * start) / f1d;
+        if (guess !== rem && guess !== leftA * k && guess !== countA * k) whole = guess;
+      }
+      return {
+        type: 'pair',
+        start: start,
+        rem: rem,
+        whole: whole,
+        arms: [
+          armOf(w[0], n, d, countA * k, f1n, f1d, firedA * k, leftA * k),
+          armOf(w[1], d - n, d, countB * k, f2n, f2d, firedB * k, leftB * k)
+        ]
+      };
+    }
+    return null;
+  }
+
+  function genTrio() {
+    for (let attempt = 0; attempt < 180; attempt++) {
+      const d1 = rand(2, 5);
+      const n1 = rand(1, d1 - 1);
+      if (gcd(n1, d1) !== 1) continue;
+      const d2 = rand(2, 4);
+      const n2 = rand(1, d2 - 1);
+      if (gcd(n2, d2) !== 1) continue;
+      const fires = [];
+      let okF = true;
+      for (let i = 0; i < 3; i++) {
+        const fd = rand(2, 4);
+        const fn = rand(1, fd - 1);
+        if (gcd(fn, fd) !== 1) { okF = false; break; }
+        fires.push([fn, fd]);
+      }
+      if (!okF) continue;
+      const keep1 = d1 - n1;
+      const tStep = lcm(fires[0][1] / gcd(n1, fires[0][1]), d2 / gcd(keep1, d2));
+      let found = null;
+      for (let m = 1; m <= 16 && !found; m++) {
+        const t = tStep * m;
+        const start = d1 * t;
+        if (start > 96) break;
+        const countA = n1 * t;
+        const rem1 = start - countA;
+        if (rem1 % d2 !== 0) continue;
+        const countB = (n2 * rem1) / d2;
+        const countC = rem1 - countB;
+        if (countB <= 0 || countC <= 0) continue;
+        if (countA % fires[0][1] !== 0 || countB % fires[1][1] !== 0 || countC % fires[2][1] !== 0) continue;
+        const firedA = fires[0][0] * countA / fires[0][1];
+        const firedB = fires[1][0] * countB / fires[1][1];
+        const firedC = fires[2][0] * countC / fires[2][1];
+        const leftA = countA - firedA;
+        const leftB = countB - firedB;
+        const leftC = countC - firedC;
+        if (firedA <= 0 || firedB <= 0 || firedC <= 0 || leftA <= 0 || leftB <= 0 || leftC <= 0) continue;
+        const rem = leftA + leftB + leftC;
+        if (rem >= start) continue;
+        found = { start: start, rem1: rem1, countA: countA, countB: countB, countC: countC, firedA: firedA, firedB: firedB, firedC: firedC, leftA: leftA, leftB: leftB, leftC: leftC, rem: rem };
+      }
+      if (!found) continue;
+      const ks = [];
+      for (let k = 1; k <= 8; k++) {
+        const start = found.start * k;
+        const rem = found.rem * k;
+        if (start > 300) break;
+        if (rem >= 20 && rem <= 150 && start >= rem + 16) ks.push(k);
+      }
+      if (!ks.length) continue;
+      const k = choice(ks);
+      const w = pickShort(3);
+      const sc = function (v) { return v * k; };
+      return {
+        type: 'trio',
+        start: sc(found.start),
+        rem: sc(found.rem),
+        rem1: sc(found.rem1),
+        arms: [
+          armOf(w[0], n1, d1, sc(found.countA), fires[0][0], fires[0][1], sc(found.firedA), sc(found.leftA)),
+          armOf(w[1], n2, d2, sc(found.countB), fires[1][0], fires[1][1], sc(found.firedB), sc(found.leftB)),
+          armOf(w[2], 0, 1, sc(found.countC), fires[2][0], fires[2][1], sc(found.firedC), sc(found.leftC))
+        ]
+      };
+    }
+    return null;
+  }
+
+  function genFixedArms() {
+    for (let attempt = 0; attempt < 160; attempt++) {
+      const d = rand(2, 5);
+      const n = rand(1, d - 1);
+      if (gcd(n, d) !== 1) continue;
+      const fD = rand(2, 4);
+      const fN = rand(1, fD - 1);
+      if (gcd(fN, fD) !== 1) continue;
+      const gD = rand(2, 4);
+      const gN = rand(1, gD - 1);
+      if (gcd(gN, gD) !== 1) continue;
+      const hits = [];
+      for (let k = 1; k <= 48 && hits.length < 20; k++) {
+        const start = d * k;
+        if (start > 240) break;
+        const countA = n * k;
+        const countB = start - countA;
+        if (countB % gD !== 0 || countA < fD * 2 || countB <= 0) continue;
+        const firedB = (gN * countB) / gD;
+        const leftB = countB - firedB;
+        if (firedB <= 0 || leftB <= 0) continue;
+        for (let S = 4; S <= countA - fD && hits.length < 20; S++) {
+          if ((countA - S) % fD !== 0) continue;
+          const frac = (fN * (countA - S)) / fD;
+          const leftA = countA - S - frac;
+          if (frac <= 0 || leftA <= 0) continue;
+          const rem = leftA + leftB;
+          if (rem < 18 || rem > 150 || start < rem + 12) continue;
+          hits.push({ start: start, countA: countA, countB: countB, S: S, frac: frac, leftA: leftA, firedB: firedB, leftB: leftB, rem: rem });
+        }
+      }
+      if (!hits.length) continue;
+      const hit = choice(hits);
+      const w = pickShort(2);
+      const forgot = hit.countA - hit.S + hit.leftB;
+      return {
+        type: 'fixedarm',
+        start: hit.start,
+        rem: hit.rem,
+        forgot: forgot === hit.rem ? null : forgot,
+        arms: [
+          armOf(w[0], n, d, hit.countA, fN, fD, hit.S + hit.frac, hit.leftA, 0, hit.S, hit.frac),
+          armOf(w[1], d - n, d, hit.countB, gN, gD, hit.firedB, hit.leftB)
+        ]
+      };
+    }
+    return null;
+  }
+
+  function genBackArms() {
+    for (let attempt = 0; attempt < 240; attempt++) {
+      const dA = rand(2, 5);
+      const nA = rand(1, dA - 1);
+      if (gcd(nA, dA) !== 1) continue;
+      const fireD = rand(2, 5);
+      const fireN = rand(1, fireD - 1);
+      if (gcd(fireN, fireD) !== 1) continue;
+      const keep = fireD - fireN;
+      const shellD = rand(2, 5);
+      const shellN = rand(1, shellD - 1);
+      if (gcd(shellN, shellD) !== 1) continue;
+      const extra = Math.random() < 0.55 ? choice([2, 3, 4, 5, 6, 8]) : 0;
+      let picked = null;
+      for (let L = 12; L <= 72 && !picked; L++) {
+        const base = L + extra;
+        if ((base * fireD) % keep !== 0) continue;
+        const missiles = (base * fireD) / keep;
+        if (missiles % fireD !== 0 || missiles <= L) continue;
+        const firedFrac = (fireN * missiles) / fireD;
+        if (firedFrac + extra >= missiles || missiles - firedFrac - extra !== L) continue;
+        if ((missiles * dA) % nA !== 0) continue;
+        const start = (missiles * dA) / nA;
+        if (start > 320 || start <= missiles + 8) continue;
+        const shells = start - missiles;
+        if (shells % shellD !== 0 || shells <= 0) continue;
+        const shellFired = (shellN * shells) / shellD;
+        const shellLeft = shells - shellFired;
+        if (shellFired <= 0 || shellLeft <= 0) continue;
+        const rem = L + shellLeft;
+        if (rem >= start || rem < 18 || rem > 150) continue;
+        let bad = null;
+        if (extra > 0 && L > extra && ((L - extra) * fireD) % keep === 0) {
+          const wrongM = ((L - extra) * fireD) / keep;
+          if (isPosInt(wrongM) && wrongM !== missiles && wrongM !== rem && wrongM !== start) bad = wrongM;
+        }
+        picked = { L: L, extra: extra, missiles: missiles, start: start, shells: shells, shellFired: shellFired, shellLeft: shellLeft, rem: rem, firedFrac: firedFrac, bad: bad };
+      }
+      if (!picked) continue;
+      const w = pickShort(2);
+      return {
+        type: 'backarm',
+        start: picked.start,
+        rem: picked.rem,
+        bad: picked.bad,
+        arms: [
+          armOf(w[0], nA, dA, picked.missiles, fireN, fireD, picked.firedFrac + picked.extra, picked.L, picked.extra, 0, picked.firedFrac),
+          armOf(w[1], dA - nA, dA, picked.shells, shellN, shellD, picked.shellFired, picked.shellLeft)
+        ]
+      };
+    }
+    return null;
+  }
+
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  function buildSteps(raw) {
+    const a = raw.arms;
+    if (raw.type === 'pair') {
+      return [
+        cap(a[0].short) + ' = ' + fs(a[0].n, a[0].d) + ' of ' + raw.start + ' = ' + a[0].count + '. ' + cap(a[1].short) + ' = ' + raw.start + ' − ' + a[0].count + ' = ' + a[1].count + '.',
+        'Last wave fired ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].count + ' ' + a[0].short + ' (' + a[0].fired + ') and ' + fs(a[1].fireN, a[1].fireD) + ' of the ' + a[1].count + ' ' + a[1].short + ' (' + a[1].fired + ').',
+        'Still aboard = (' + a[0].count + ' − ' + a[0].fired + ') + (' + a[1].count + ' − ' + a[1].fired + ').'
+      ];
+    }
+    if (raw.type === 'trio') {
+      return [
+        cap(a[0].short) + ' = ' + fs(a[0].n, a[0].d) + ' of ' + raw.start + ' = ' + a[0].count + '. The remainder is ' + raw.rem1 + '.',
+        cap(a[1].short) + ' = ' + fs(a[1].n, a[1].d) + ' of those REMAINING ' + raw.rem1 + ' = ' + a[1].count + '. ' + cap(a[2].short) + ' = ' + a[2].count + '. Fired ' + a[0].fired + ' ' + a[0].short + ', ' + a[1].fired + ' ' + a[1].short + ', ' + a[2].fired + ' ' + a[2].short + '.',
+        'Still aboard = (' + a[0].count + ' − ' + a[0].fired + ') + (' + a[1].count + ' − ' + a[1].fired + ') + (' + a[2].count + ' − ' + a[2].fired + ').'
+      ];
+    }
+    if (raw.type === 'fixedarm') {
+      const after = a[0].count - a[0].fixed;
+      return [
+        cap(a[0].short) + ' = ' + fs(a[0].n, a[0].d) + ' of ' + raw.start + ' = ' + a[0].count + '. ' + cap(a[1].short) + ' = ' + a[1].count + '.',
+        'The fixed ' + a[0].fixed + ' ' + a[0].short + ' leave ' + after + ', then ' + fs(a[0].fireN, a[0].fireD) + ' of those is ' + a[0].burst + '. ' + cap(a[1].short) + ' fired = ' + a[1].fired + '.',
+        'Still aboard = (' + a[0].count + ' − ' + a[0].fixed + ' − ' + a[0].burst + ') + (' + a[1].count + ' − ' + a[1].fired + ').'
+      ];
+    }
+    const keep = fs(a[0].fireD - a[0].fireN, a[0].fireD);
+    const first = a[0].extra
+      ? 'Add the extra ' + a[0].extra + ' back first: ' + a[0].left + ' + ' + a[0].extra + ' = ' + (a[0].left + a[0].extra) + '. That is ' + keep + ' of the ' + a[0].short + ', so they started at ' + a[0].count + '.'
+      : a[0].left + ' is ' + keep + ' of the ' + a[0].short + ', so the ' + a[0].short + ' started at ' + a[0].count + '.';
+    return [
+      first,
+      cap(a[0].short) + ' were ' + fs(a[0].n, a[0].d) + ' of the rack, so the rack was ' + raw.start + '. ' + cap(a[1].short) + ' = ' + a[1].count + ', and ' + fs(a[1].fireN, a[1].fireD) + ' of them is ' + a[1].fired + '.',
+      'Still aboard = ' + a[0].left + ' + (' + a[1].count + ' − ' + a[1].fired + ').'
+    ];
+  }
+
+  function packageMachine(raw, flavor) {
+    if (!raw || !flavor || !raw.arms || raw.arms.length < 2) return null;
+    if (!isPosInt(raw.rem) || !isPosInt(raw.start) || raw.start <= raw.rem) return null;
+    const name = flavor.name;
+    const a = raw.arms;
+    const u = 'rounds';
+    let text = '';
+    let worked = '';
+    let unitCode = '2.1';
+    const traps = [];
+    const startTip = tipStart(raw.start, raw.rem, u);
+    let mainTip = 'Take the fraction of each weapon type on its own, then add what is left of every type.';
+    const firedTotal = raw.start - raw.rem;
+    const countSum = a.reduce(function (s, arm) { return s + arm.count; }, 0);
+    const leftSum = a.reduce(function (s, arm) { return s + arm.left; }, 0);
+    if (countSum !== raw.start || leftSum !== raw.rem) return null;
+    if (a.some(function (arm) { return arm.fired + arm.left !== arm.count; })) return null;
+
+    if (raw.type === 'pair') {
+      text = name + ' carries ' + raw.start + ' rounds. ' + fs(a[0].n, a[0].d) + ' are ' + a[0].short + ' and the rest are ' + a[1].short + '. Last wave fired ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ' and ' + fs(a[1].fireN, a[1].fireD) + ' of the ' + a[1].short + '. How many rounds are still aboard?';
+      worked = cap(a[0].short) + ' left ' + a[0].left + ', ' + a[1].short + ' left ' + a[1].left + '. Still aboard = ' + raw.rem + '.';
+      mainTip = fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ' is not ' + fs(a[0].fireN, a[0].fireD) + ' of the whole rack. Take it of the ' + a[0].count + ' ' + a[0].short + ' only.';
+      pushTrap(traps, raw.whole, 'whole', mainTip);
+      pushTrap(traps, a[0].left, 'onetype', a[0].left + ' is only the ' + a[0].short + ' still aboard. Add what is left of the ' + a[1].short + ' too.');
+      pushTrap(traps, a[0].count, 'stack', a[0].count + ' is only the ' + a[0].short + ' at the start. A fraction of each type was fired.');
+    } else if (raw.type === 'trio') {
+      text = name + ' carries ' + raw.start + ' rounds. ' + fs(a[0].n, a[0].d) + ' are ' + a[0].short + '. ' + fs(a[1].n, a[1].d) + ' of the REMAINING rounds are ' + a[1].short + ', and the rest are ' + a[2].short + '. Last wave fired ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ', ' + fs(a[1].fireN, a[1].fireD) + ' of the ' + a[1].short + ', and ' + fs(a[2].fireN, a[2].fireD) + ' of the ' + a[2].short + '. How many rounds are still aboard?';
+      worked = cap(a[0].short) + ' ' + a[0].left + ', ' + a[1].short + ' ' + a[1].left + ', ' + a[2].short + ' ' + a[2].left + '. Still aboard = ' + raw.rem + '.';
+      mainTip = fs(a[1].n, a[1].d) + ' of the ' + a[1].short + ' is a fraction of the REMAINING rounds, not of the whole rack.';
+      pushTrap(traps, a[0].count, 'stack', a[0].count + ' is only the ' + a[0].short + '. Two other weapon types are still on the rack.');
+      pushTrap(traps, a[0].left + a[1].left, 'skip', 'That leaves out the ' + a[2].short + '. Add every weapon type that is still aboard.');
+    } else if (raw.type === 'fixedarm') {
+      unitCode = '2.2';
+      if (a[0].fixed + a[0].burst + a[0].left !== a[0].count) return null;
+      text = name + ' carries ' + raw.start + ' rounds. ' + fs(a[0].n, a[0].d) + ' are ' + a[0].short + ' and the rest are ' + a[1].short + '. Last wave fired ' + a[0].fixed + ' ' + a[0].short + ', then ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ' still left, and ' + fs(a[1].fireN, a[1].fireD) + ' of the ' + a[1].short + '. How many rounds are still aboard?';
+      worked = 'After the fixed ' + a[0].fixed + ', ' + (a[0].count - a[0].fixed) + ' ' + a[0].short + ' remain, then ' + a[0].burst + ' more are fired. ' + cap(a[1].short) + ' left ' + a[1].left + '. Still aboard = ' + raw.rem + '.';
+      mainTip = 'The fixed ' + a[0].fixed + ' ' + a[0].short + ' fire first. Then ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ' STILL LEFT also fire.';
+      pushTrap(traps, raw.forgot, 'forgot', mainTip);
+    } else if (raw.type === 'backarm') {
+      unitCode = '2.3';
+      const extraWords = a[0].extra ? ' and ' + a[0].extra + ' extra ' + a[0].short : '';
+      text = a[0].left + ' ' + a[0].short + ' are still on ' + name + '. They remained after ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + extraWords + ' were fired. The ' + a[0].short + ' were ' + fs(a[0].n, a[0].d) + ' of the rack, and the rest were ' + a[1].short + '. ' + fs(a[1].fireN, a[1].fireD) + ' of the ' + a[1].short + ' were fired. How many rounds are still aboard?';
+      worked = cap(a[0].short) + ' left ' + a[0].left + '. ' + cap(a[1].short) + ' left ' + a[1].left + '. Still aboard = ' + raw.rem + '.';
+      mainTip = a[0].extra
+        ? 'Add the extra ' + a[0].extra + ' back before you divide. ' + a[0].left + ' + ' + a[0].extra + ' = ' + (a[0].left + a[0].extra) + ', and that is the kept fraction of the ' + a[0].short + '.'
+        : a[0].left + ' remained after ' + fs(a[0].fireN, a[0].fireD) + ' of the ' + a[0].short + ' were fired. Find the ' + a[1].short + ' too, then add both leftovers.';
+      pushTrap(traps, raw.bad, 'back', mainTip);
+      pushTrap(traps, a[0].left, 'onetype', a[0].left + ' is only the ' + a[0].short + ' still aboard. Add the ' + a[1].short + ' that remain.');
+      pushTrap(traps, a[0].count, 'stack', a[0].count + ' is how the ' + a[0].short + ' STARTED, not the rounds still aboard.');
+    } else {
+      return null;
+    }
+
+    pushTrap(traps, raw.start, 'start', startTip);
+    pushTrap(traps, firedTotal, 'fired', firedTotal + ' rounds were fired. The bay asks for the rounds still aboard.');
+    const options = makeOptions(raw.rem, traps);
+    if (options.length !== 4 || options.filter(function (o) { return o.correct; }).length !== 1) return null;
+    if (!options.some(function (o) { return o.correct && o.value === raw.rem; })) return null;
+    const fracKey = a.map(function (arm) {
+      return [arm.n, arm.d, arm.fireN, arm.fireD, arm.extra || 0, arm.fixed || 0].join('.');
+    }).join(';');
+    return {
+      type: raw.type,
+      unitCode: unitCode,
+      name: name,
+      vehicle: flavor.vehicle,
+      accent: flavor.accent,
+      weapon: a.map(function (arm) { return arm.short; }).join(' · '),
+      unit: u,
+      weaponId: a[0].id,
+      text: text,
+      steps: buildSteps(raw),
+      worked: worked,
+      start: raw.start,
+      rem: raw.rem,
+      decoyId: raw.type,
+      tipStart: startTip,
+      tipMain: mainTip,
+      options: options,
+      math: raw,
+      sig: raw.type + '|' + raw.start + '|' + raw.rem + '|' + fracKey,
+      claimed: -1
+    };
+  }
+
+  function assignFlavors() {
+    return shuffle(VEHICLES.slice()).slice(0, 3).map(v => ({
+      name: choice(v.names),
+      vehicle: v.id,
+      accent: v.accent
+    }));
+  }
+
+  function rollSet(tier) {
+    const maker = tier === 'EASY' ? genPair : tier === 'MEDIUM' ? genTrio : tier === 'HARD' ? genFixedArms : genBackArms;
+    const flavors = assignFlavors();
+    const machines = [];
+    for (let i = 0; i < 3; i++) {
+      const packed = packageMachine(maker(), flavors[i]);
+      if (!packed) return null;
+      machines.push(packed);
+    }
+    return machines;
+  }
+
+  function emergency(tier) {
+    const flavors = assignFlavors();
+    const W = {
+      missiles: { id: 'missile', short: 'missiles' },
+      shells: { id: 'shell', short: 'shells' },
+      cells: { id: 'laser', short: 'cells' },
+      bullets: { id: 'gun', short: 'bullets' },
+      slugs: { id: 'slug', short: 'slugs' },
+      rockets: { id: 'rocket', short: 'rockets' }
+    };
+    let raws;
+    if (tier === 'HARD') {
+      raws = [
+        { type: 'fixedarm', start: 96, rem: 60, forgot: 72, arms: [
+          armOf(W.missiles, 1, 2, 48, 1, 3, 24, 24, 0, 12, 12),
+          armOf(W.shells, 1, 2, 48, 1, 4, 12, 36)
+        ] },
+        { type: 'fixedarm', start: 160, rem: 54, forgot: 62, arms: [
+          armOf(W.rockets, 1, 4, 40, 1, 4, 16, 24, 0, 8, 8),
+          armOf(W.slugs, 3, 4, 120, 3, 4, 90, 30)
+        ] },
+        { type: 'fixedarm', start: 120, rem: 82, forgot: 98, arms: [
+          armOf(W.cells, 1, 2, 60, 1, 3, 28, 32, 0, 12, 16),
+          armOf(W.bullets, 1, 2, 60, 1, 6, 10, 50)
+        ] }
+      ];
+    } else if (tier === 'EXTREME') {
+      raws = [
+        { type: 'backarm', start: 60, rem: 42, bad: null, arms: [
+          armOf(W.missiles, 2, 5, 24, 1, 4, 6, 18),
+          armOf(W.shells, 3, 5, 36, 1, 3, 12, 24)
+        ] },
+        { type: 'backarm', start: 80, rem: 50, bad: null, arms: [
+          armOf(W.cells, 1, 2, 40, 1, 4, 10, 30),
+          armOf(W.rockets, 1, 2, 40, 1, 2, 20, 20)
+        ] },
+        { type: 'backarm', start: 72, rem: 54, bad: null, arms: [
+          armOf(W.slugs, 2, 3, 48, 1, 4, 12, 36),
+          armOf(W.bullets, 1, 3, 24, 1, 4, 6, 18)
+        ] }
+      ];
+    } else if (tier === 'MEDIUM') {
+      raws = [
+        { type: 'trio', start: 120, rem: 85, rem1: 60, arms: [
+          armOf(W.missiles, 1, 2, 60, 1, 4, 15, 45),
+          armOf(W.shells, 1, 3, 20, 1, 2, 10, 10),
+          armOf(W.cells, 0, 1, 40, 1, 4, 10, 30)
+        ] },
+        { type: 'trio', start: 180, rem: 80, rem1: 120, arms: [
+          armOf(W.rockets, 1, 3, 60, 1, 2, 30, 30),
+          armOf(W.slugs, 1, 2, 60, 1, 2, 30, 30),
+          armOf(W.bullets, 0, 1, 60, 2, 3, 40, 20)
+        ] },
+        { type: 'trio', start: 150, rem: 100, rem1: 90, arms: [
+          armOf(W.cells, 2, 5, 60, 1, 3, 20, 40),
+          armOf(W.missiles, 1, 3, 30, 1, 2, 15, 15),
+          armOf(W.shells, 0, 1, 60, 1, 4, 15, 45)
+        ] }
+      ];
+    } else {
+      raws = [
+        { type: 'pair', start: 96, rem: 66, whole: 32, arms: [
+          armOf(W.missiles, 3, 4, 72, 1, 3, 24, 48),
+          armOf(W.shells, 1, 4, 24, 1, 4, 6, 18)
+        ] },
+        { type: 'pair', start: 60, rem: 45, whole: null, arms: [
+          armOf(W.cells, 1, 2, 30, 1, 3, 10, 20),
+          armOf(W.bullets, 1, 2, 30, 1, 6, 5, 25)
+        ] },
+        { type: 'pair', start: 120, rem: 65, whole: 40, arms: [
+          armOf(W.rockets, 1, 4, 30, 1, 3, 10, 20),
+          armOf(W.slugs, 3, 4, 90, 1, 2, 45, 45)
+        ] }
+      ];
+    }
+    return raws.map((raw, i) => packageMachine(raw, flavors[i]));
+  }
+
+  function acceptable(machines, strict, hist, useHist) {
+    if (!machines || machines.length !== 3 || machines.some(m => !m)) return false;
+    const rems = machines.map(m => m.rem);
+    const starts = machines.map(m => m.start);
+    if (rems.some(n => !isPosInt(n)) || starts.some(n => !isPosInt(n))) return false;
+    if (new Set(rems).size !== 3 || new Set(starts).size !== 3) return false;
+    if (new Set(machines.map(m => m.sig)).size !== 3) return false;
+    if (machines.some(m => m.start <= m.rem)) return false;
+    if (machines.some(m => !m.options || m.options.length !== 4)) return false;
+    if (strict && winnerIndex(machines) === startLeader(machines)) return false;
+    if (useHist) {
+      const sig = machines.map(m => m.sig).sort().join('~');
+      if (hist.indexOf(sig) !== -1) return false;
+    }
+    return true;
+  }
+
+  function commitWave(machines, hist) {
+    const sig = machines.map(m => m.sig).sort().join('~');
+    if (hist.indexOf(sig) === -1) {
+      hist.push(sig);
+      if (hist.length > 8) hist.shift();
+    }
+    let placed = shuffle(machines);
+    let guard = 0;
+    while (winnerIndex(placed) === lastWinnerSlot && guard < 6) {
+      placed = shuffle(machines);
+      guard += 1;
+    }
+    lastWinnerSlot = winnerIndex(placed);
+    placed.forEach(m => { m.claimed = -1; m.solved = false; });
+    return placed;
+  }
+
+  function buildWave(tier, hist) {
+    const book = hist || history;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < 70; i++) {
+        const machines = rollSet(tier);
+        if (!acceptable(machines, pass === 0, book, true)) continue;
+        return commitWave(machines, book);
+      }
+    }
+    for (let i = 0; i < 12; i++) {
+      const machines = emergency(tier);
+      if (acceptable(machines, true, book, false)) return commitWave(machines, book);
+    }
+    return commitWave(emergency(tier), book);
+  }
+
+  function explainWrong(m) {
+    const machines = game.machines;
+    if (m === machines[startLeader(machines)] && m !== machines[winnerIndex(machines)]) return m.tipStart;
+    return m.tipMain;
+  }
+
+  function bayRect(i) { return { x: BAY_X[i], y: BAY_Y, w: BAY_W, h: BAY_H }; }
+  function cardRect(i) {
+    const w = 292;
+    const gap = 16;
+    const total = w * 4 + gap * 3;
+    const x0 = (VW - total) / 2;
+    return { x: x0 + i * (w + gap), y: 558, w: w, h: 112 };
+  }
+  function duelPanelRect(i, n) {
+    const gap = 16;
+    const w = (VW - 48 - gap * (n - 1)) / n;
+    return { x: 24 + i * (w + gap), y: 536, w: w, h: 150 };
+  }
+
+  function activePilot() {
+    if (game.mode !== 'COOP') return 0;
+    const n = game.players;
+    if (game.phase === 'guide') return (game.wave - 1 + game.bayStep) % n;
+    if (game.phase === 'select') return (game.wave + 2) % n;
+    return (game.wave - 1) % n;
+  }
+  function allowed(pi) {
+    if (game.screen !== 'play' || game.paused) return false;
+    if (game.mode === 'DUEL') return pi >= 0 && pi < game.players;
+    return pi === activePilot();
+  }
+  function toast(msg) {
+    game.toast = msg;
+    game.toastT = 1.35;
+  }
+  function bestKey() { return game.mode === 'COOP' ? 'ma-armory-team-best' : 'ma-armory-solo-best'; }
+
+  function makePilots(n) {
+    const list = [];
+    for (let i = 0; i < n; i++) {
+      list.push({ index: i, bay: -1, locked: false, jam: 0, score: 0, focus: 0, card: 0, jamTip: '' });
+    }
+    return list;
+  }
+
+  function beginWave() {
+    game.machines = buildWave(game.tier, history);
+    game.phase = 'guide';
+    game.bayStep = 0;
+    game.guideWait = 0;
+    game.clock = (game.mode === 'DUEL' ? DUEL_TIME : SOLO_TIME)[game.tier];
+    game.focus = 0;
+    game.picked = -1;
+    game.hold = 0;
+    game.holdNext = '';
+    game.celeb = 0;
+    game.between = 0;
+    game.note = '';
+    game.noteTone = '';
+    game.badBay = -1;
+    game.intro = 0.45;
+    game.pilots.forEach(p => {
+      p.bay = -1;
+      p.locked = false;
+      p.jam = 0;
+      p.focus = 0;
+      p.card = 0;
+      p.jamTip = '';
+    });
+    const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
+    announce(who + 'Wave ' + game.wave + '. Break down Bay 1. A fraction of each weapon type was fired. Lock the rounds still aboard.');
+    sound.scan();
+  }
+
+  function startGame() {
+    if (game.mode === 'SOLO') game.players = 1;
+    if ((game.mode === 'COOP' || game.mode === 'DUEL') && game.players < 2) game.players = 2;
+    game.screen = 'play';
+    game.score = 0;
+    game.shields = 4;
+    game.wave = 1;
+    game.wavesCleared = 0;
+    game.paused = false;
+    game.record = false;
+    game.alarm = 0;
+    game.shake = 0;
+    game.best = game.mode === 'DUEL' ? 0 : (game.mode === 'COOP' ? teamBest : soloBest);
+    game.pilots = makePilots(game.players);
+    particles.length = 0;
+    floaters.length = 0;
+    beginWave();
+  }
+
+  function bankScore(amount) {
+    if (game.mode === 'DUEL') return;
+    game.score += amount;
+    if (game.score > game.best) {
+      game.best = game.score;
+      game.record = true;
+      if (game.mode === 'COOP') teamBest = game.score;
+      else soloBest = game.score;
+      storeBest(game.mode, game.score);
+      sound.fanfare();
+    }
+  }
+
+  function punish(note) {
+    game.shields -= 1;
+    game.note = note;
+    game.noteTone = 'bad';
+    game.alarm = 0.7;
+    game.shake = reduceMotion ? 0 : 0.28;
+    game.hold = 2.55;
+    sound.alarm();
+    if (game.shields <= 0) game.holdNext = 'over';
+  }
+
+  function chooseBay(index) {
+    if (game.phase !== 'select' || game.intro > 0 || game.hold > 0) return;
+    const machines = game.machines;
+    const winner = machines[winnerIndex(machines)];
+    const picked = machines[index];
+    game.focus = index;
+    if (picked !== winner) {
+      game.badBay = index;
+      game.holdNext = 'select';
+      punish(explainWrong(picked));
+      announce(picked.name + ' is not the fullest rack. ' + game.note);
+      return;
+    }
+    game.picked = index;
+    game.badBay = -1;
+    bankScore(picked.rem);
+    game.phase = 'celebrate';
+    game.celeb = 2.05;
+    game.note = picked.worked;
+    game.noteTone = 'good';
+    game.wavesCleared += 1;
+    sound.barrage(picked.weaponId);
+    spawnBurst(index, picked.weaponId, picked.accent);
+    floaters.push({ text: '+' + picked.rem + ' ' + picked.unit.toUpperCase(), x: bayRect(index).x + 200, y: BAY_Y + 150, life: 1.6, max: 1.6 });
+    announce(picked.name + ' is the fullest rack. ' + picked.rem + ' ' + picked.unit + ' added to the arsenal.');
+  }
+
+  function chooseGuideCard(index, pi) {
+    if (game.phase !== 'guide' || game.intro > 0 || game.hold > 0 || game.guideWait > 0) return;
+    const m = game.machines[game.bayStep];
+    if (!m || m.solved) return;
+    const opt = m.options[index];
+    if (!opt) return;
+    if (game.mode === 'DUEL') {
+      const p = game.pilots[pi];
+      if (!p || p.jam > 0) return;
+      p.card = index;
+      if (!opt.correct) {
+        jamPilot(pi, opt.tip || m.tipMain);
+        return;
+      }
+      m.solved = true;
+      m.claimed = pi;
+      p.score += m.rem;
+      sound.barrage(m.weaponId);
+      spawnBurst(game.bayStep, m.weaponId, m.accent);
+      floaters.push({ text: '+' + m.rem, x: bayRect(game.bayStep).x + 200, y: BAY_Y + 160, life: 1.3, max: 1.3, color: PILOTS[pi].color });
+      game.guideWait = 0.7;
+      announce(PILOTS[pi].name + ' locked Bay ' + (game.bayStep + 1) + '. ' + m.rem + ' ' + m.unit + ' still aboard.');
+      return;
+    }
+    game.focus = index;
+    if (!opt.correct) {
+      game.holdNext = 'guide';
+      punish(opt.tip || m.tipMain);
+      announce(game.note);
+      return;
+    }
+    m.solved = true;
+    sound.lock();
+    game.guideWait = 0.45;
+    announce('Bay ' + (game.bayStep + 1) + ' locked. ' + m.rem + ' ' + m.unit + ' still aboard.');
+  }
+
+  function duelLockBay(pi, index) {
+    const p = game.pilots[pi];
+    if (!p || p.locked || p.jam > 0 || game.phase !== 'draft' || game.intro > 0) return;
+    const m = game.machines[index];
+    if (!m || m.claimed >= 0) {
+      jamPilot(pi, 'Another soldier already locked that bay. Claim a different war machine.');
+      return;
+    }
+    p.bay = index;
+    p.focus = index;
+    p.card = 0;
+    sound.lock();
+  }
+
+  function duelPickCard(pi, cardIndex) {
+    const p = game.pilots[pi];
+    if (!p || p.locked || p.jam > 0 || game.phase !== 'draft' || p.bay < 0) return;
+    const m = game.machines[p.bay];
+    if (!m || m.claimed >= 0) {
+      p.bay = -1;
+      jamPilot(pi, 'Another soldier already locked that bay. Claim a different war machine.');
+      return;
+    }
+    const opt = m.options[cardIndex];
+    if (!opt) return;
+    if (!opt.correct) {
+      const tip = opt.tip || m.tipMain;
+      p.bay = -1;
+      jamPilot(pi, tip);
+      return;
+    }
+    m.claimed = pi;
+    p.locked = true;
+    p.score += m.rem;
+    sound.barrage(m.weaponId);
+    spawnBurst(p.bay, m.weaponId, m.accent);
+    floaters.push({ text: '+' + m.rem, x: bayRect(p.bay).x + 200, y: BAY_Y + 120, life: 1.3, max: 1.3, color: PILOTS[pi].color });
+    if (duelShouldEnd()) finishDuelWave();
+  }
+
+  function jamPilot(pi, tip) {
+    const p = game.pilots[pi];
+    p.jam = 1.5;
+    p.jamTip = tip;
+    game.alarm = 0.35;
+    sound.jam();
+    toast(PILOTS[pi].name + ': ' + tip);
+    game.toastT = 1.5;
+  }
+
+  function advanceFromGuide() {
+    game.guideWait = 0;
+    game.focus = 0;
+    game.pilots.forEach(p => { p.card = 0; p.jam = 0; p.jamTip = ''; });
+    if (game.bayStep < 2) {
+      game.bayStep += 1;
+      game.phase = 'guide';
+      const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
+      announce(who + 'Bay ' + (game.bayStep + 1) + '. Follow the breakdown, then lock the rounds still aboard.');
+      return;
+    }
+    if (game.mode === 'DUEL') {
+      finishDuelWave();
+      return;
+    }
+    game.phase = 'select';
+    const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
+    announce(who + 'All three racks are solved. Choose the bay with the most still aboard.');
+  }
+
+  function duelShouldEnd() {
+    if (game.pilots.every(p => p.locked)) return true;
+    if (game.machines.every(m => m.claimed >= 0)) return true;
+    return false;
+  }
+
+  function finishDuelWave() {
+    if (game.phase === 'between') return;
+    game.phase = 'between';
+    game.between = 1.6;
+    game.guideWait = 0;
+    game.wavesCleared += 1;
+    announce('Wave ' + game.wave + ' draft closed.');
+  }
+
+  function endDuel() {
+    game.screen = 'result';
+    game.resultKind = 'duel';
+    sound.fanfare();
+    const top = game.pilots.reduce((a, p) => Math.max(a, p.score), 0);
+    const names = game.pilots.filter(p => p.score === top).map(p => PILOTS[p.index].name);
+    announce(names.join(' and ') + ' finished with ' + top + ' rounds.');
+  }
+
+  function endRun() {
+    game.screen = 'result';
+    game.resultKind = 'run';
+    if (game.record) sound.fanfare();
+    else sound.down();
+    announce('Mission down. Arsenal ' + game.score + '.');
+  }
+
+  function finishHold() {
+    const next = game.holdNext;
+    game.hold = 0;
+    game.noteTone = '';
+    game.badBay = -1;
+    if (next === 'over') endRun();
+    else if (next === 'wave') advanceWave();
+    else if (next === 'guide-next') advanceFromGuide();
+    else if (next === 'select') game.phase = 'select';
+    else game.phase = 'guide';
+  }
+
+  function advanceWave() {
+    game.wave += 1;
+    game.record = false;
+    beginWave();
+  }
+
+  function onTimeout() {
+    if (game.mode === 'DUEL') {
+      game.machines.forEach(m => { m.solved = true; });
+      finishDuelWave();
+      announce('Scan window closed. Unclaimed racks stay in the hangar.');
+      return;
+    }
+    if (game.phase === 'guide') {
+      const m = game.machines[game.bayStep];
+      if (m) m.solved = true;
+      const last = game.bayStep >= 2;
+      const note = last
+        ? 'Time is up on Bay ' + (game.bayStep + 1) + '. ' + m.rem + ' ' + m.unit + ' are still aboard. Compare the three racks. ' + m.worked
+        : 'Time is up on Bay ' + (game.bayStep + 1) + '. ' + m.rem + ' ' + m.unit + ' are still aboard. ' + m.worked;
+      punish(note);
+      if (game.shields > 0) game.holdNext = last ? 'select' : 'guide-next';
+      return;
+    }
+    if (game.phase !== 'select') return;
+    const winner = game.machines[winnerIndex(game.machines)];
+    game.picked = winnerIndex(game.machines);
+    punish('Scan window closed. ' + winner.name + ' still had the fullest rack: ' + winner.rem + ' ' + winner.unit + '. ' + winner.worked);
+    if (game.shields > 0) game.holdNext = 'wave';
+  }
+
+  function spawnBurst(bay, weaponId, accent) {
+    const b = bayRect(bay);
+    const cx = b.x + b.w * 0.62;
+    const cy = b.y + 110;
+    const count = reduceMotion ? 10 : 32;
+    const color = weaponId === 'laser' ? '#7ef7ff' : (weaponId === 'missile' || weaponId === 'rocket' ? '#ffb020' : (accent || '#ffe27a'));
+    for (let i = 0; i < count; i++) {
+      const ang = -Math.PI * (0.15 + Math.random() * 0.7);
+      const sp = 90 + Math.random() * 280;
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      particles.push({
+        x: cx + rand(-20, 20),
+        y: cy + rand(-10, 16),
+        vx: Math.cos(ang) * sp * dir,
+        vy: -Math.abs(Math.sin(ang)) * sp - 30,
+        life: 0.35 + Math.random() * 0.55,
+        max: 0.9,
+        color: color,
+        w: weaponId === 'laser' ? 18 : (weaponId === 'missile' ? 8 : 3)
+      });
+    }
+  }
+
+  function update(dt) {
+    animT += dt;
+    if (game.alarm > 0) game.alarm = Math.max(0, game.alarm - dt);
+    if (game.shake > 0) game.shake = Math.max(0, game.shake - dt);
+    if (game.toastT > 0) game.toastT = Math.max(0, game.toastT - dt);
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 280 * dt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].life -= dt;
+      floaters[i].y -= 28 * dt;
+      if (floaters[i].life <= 0) floaters.splice(i, 1);
+    }
+    if (game.screen !== 'play' || game.paused) {
+      sound.pump();
+      return;
+    }
+    if (game.intro > 0) game.intro = Math.max(0, game.intro - dt);
+    game.pilots.forEach(p => { if (p.jam > 0) p.jam = Math.max(0, p.jam - dt); });
+    if (game.hold > 0) {
+      game.hold -= dt;
+      if (game.hold <= 0) finishHold();
+    } else if (game.phase === 'celebrate') {
+      game.celeb -= dt;
+      if (game.celeb <= 0) advanceWave();
+    } else if (game.phase === 'between') {
+      game.between -= dt;
+      if (game.between <= 0) {
+        if (game.wave >= DUEL_WAVES) endDuel();
+        else advanceWave();
+      }
+    } else if (game.guideWait > 0) {
+      game.guideWait -= dt;
+      if (game.guideWait <= 0) advanceFromGuide();
+    } else if (game.intro <= 0 && (game.phase === 'guide' || game.phase === 'select')) {
+      game.clock -= dt;
+      if (game.clock <= 0) {
+        game.clock = 0;
+        onTimeout();
+      }
+    }
+    pollPads();
+    sound.pump();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  function fillRound(x, y, w, h, r, fill) {
+    roundRect(x, y, w, h, r);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  function strokeRound(x, y, w, h, r, stroke, lw) {
+    roundRect(x, y, w, h, r);
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+  function text(s, x, y, size, color, align, weight) {
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(s, x, y);
+    ctx.textAlign = 'left';
+  }
+  function fitText(s, x, y, size, color, align, weight, maxW) {
+    let sz = size;
+    const min = 10;
+    do {
+      ctx.font = (weight || 700) + ' ' + sz + 'px ' + FONT;
+      if (ctx.measureText(s).width <= maxW || sz <= min) break;
+      sz -= 1;
+    } while (sz > min);
+    text(s, x, y, sz, color, align, weight);
+  }
+  function wrapText(s, maxW, size, weight) {
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+    const words = String(s).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const trial = line ? line + ' ' + words[i] : words[i];
+      if (line && ctx.measureText(trial).width > maxW) {
+        lines.push(line);
+        line = words[i];
+      } else line = trial;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+  function wrapFit(s, maxW, maxLines, start, minSize) {
+    let size = start;
+    while (size > minSize) {
+      const lines = wrapText(s, maxW, size, 700);
+      if (lines.length <= maxLines) return { lines: lines, size: size };
+      size -= 1;
+    }
+    return { lines: wrapText(s, maxW, minSize, 700).slice(0, maxLines), size: minSize };
+  }
+  function hitSpot(x, y) {
+    for (let i = spots.length - 1; i >= 0; i--) {
+      const s = spots[i];
+      if (x >= s.x && y >= s.y && x <= s.x + s.w && y <= s.y + s.h) return s;
+    }
+    return null;
+  }
+  function addSpot(x, y, w, h, act, extra) {
+    const spot = { x: x, y: y, w: w, h: h, act: act };
+    if (extra) {
+      Object.keys(extra).forEach(k => { spot[k] = extra[k]; });
+    }
+    spots.push(spot);
+  }
+  function clockText(t) {
+    const s = Math.max(0, Math.ceil(t));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }
+
+  function drawHangar() {
+    const sky = ctx.createLinearGradient(0, 0, 0, VH);
+    sky.addColorStop(0, '#182445');
+    sky.addColorStop(0.42, '#0d1528');
+    sky.addColorStop(1, '#070b12');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.strokeStyle = 'rgba(150, 190, 255, 0.09)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 9; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0, 8 + i * 14);
+      ctx.lineTo(VW, 8 + i * 14);
+      ctx.stroke();
+      if (i % 2 === 0) {
+        ctx.beginPath();
+        ctx.moveTo(80 + i * 140, 0);
+        ctx.lineTo(80 + i * 140, 130);
+        ctx.stroke();
+      }
+    }
+    for (let i = 0; i < 3; i++) {
+      const x = BAY_X[i] + BAY_W / 2;
+      const glow = ctx.createRadialGradient(x, 150, 10, x, 250, 210);
+      glow.addColorStop(0, 'rgba(255, 206, 120, 0.16)');
+      glow.addColorStop(1, 'rgba(255, 206, 120, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(x - 210, 120, 420, 280);
+    }
+    const floor = ctx.createLinearGradient(0, 500, 0, VH);
+    floor.addColorStop(0, '#172033');
+    floor.addColorStop(1, '#090d16');
+    ctx.fillStyle = floor;
+    ctx.fillRect(0, 500, VW, 220);
+    ctx.strokeStyle = 'rgba(90, 210, 255, 0.14)';
+    ctx.lineWidth = 2;
+    for (let i = -4; i <= 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(640 + i * 70, 512);
+      ctx.lineTo(640 + i * 280, 720);
+      ctx.stroke();
+    }
+  }
+
+  function plate(x, y, w, h, r, fill, stroke, lw) {
+    fillRound(x, y, w, h, r, fill);
+    if (stroke) strokeRound(x, y, w, h, r, stroke, lw || 2);
+  }
+
+  function drawSoldier(x, y, h, color, t) {
+    const s = h / 78;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(s, s);
+    fillRound(8, 28, 46, 40, 8, '#243044');
+    fillRound(4, 34, 16, 22, 5, color);
+    fillRound(46, 32, 18, 14, 4, '#94a3b8');
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(62, 36, 16, 5);
+    fillRound(16, 36, 36, 34, 8, '#334155');
+    ctx.fillStyle = color;
+    ctx.fillRect(18, 40, 32, 6);
+    fillRound(20, 4, 30, 28, 10, '#1e293b');
+    const visor = ctx.createLinearGradient(22, 12, 48, 24);
+    visor.addColorStop(0, '#041018');
+    visor.addColorStop(0.5, color);
+    visor.addColorStop(1, '#ffffff');
+    fillRound(24, 12, 24, 10, 4, visor);
+    ctx.globalAlpha = 0.35 + 0.25 * Math.sin(t * 6);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(27, 15, 8, 3);
+    ctx.globalAlpha = 1;
+    fillRound(18, 66, 14, 10, 3, '#0f172a');
+    fillRound(38, 66, 14, 10, 3, '#0f172a');
+    ctx.restore();
+  }
+
+  function drawVehicle(id, x, y, w, h, accent) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    const g = ctx.createLinearGradient(x, y, x, y + h);
+    g.addColorStop(0, '#1b2838');
+    g.addColorStop(1, '#101820');
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, w, h);
+    const t = reduceMotion ? animT * 0.25 : animT;
+    if (id === 'tank') drawTank(x, y, w, h, accent, t);
+    else if (id === 'jet') drawJet(x, y, w, h, accent, t);
+    else if (id === 'mech') drawMech(x, y, w, h, accent, t);
+    else drawHeli(x, y, w, h, accent, t);
+    ctx.restore();
+  }
+
+  function drawTank(x, y, w, h, accent, t) {
+    const u = Math.min(w / 320, h / 120);
+    ctx.save();
+    ctx.translate(x + 16 * u, y + h - 112 * u);
+    ctx.scale(u, u);
+    fillRound(18, 62, 250, 34, 12, '#111827');
+    for (let i = 0; i < 6; i++) {
+      ctx.beginPath();
+      ctx.arc(42 + i * 40, 80, 12, 0, Math.PI * 2);
+      ctx.fillStyle = '#94a3b8';
+      ctx.fill();
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(42 + i * 40, 70);
+      ctx.lineTo(42 + i * 40, 90);
+      ctx.stroke();
+    }
+    fillRound(36, 40, 210, 36, 8, '#64748b');
+    fillRound(48, 46, 170, 10, 4, accent);
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash([10, 7]);
+    ctx.lineDashOffset = -t * 28;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(56, 62);
+    ctx.lineTo(200, 62);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.ellipse(150, 36, 38, 22, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#475569';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#0f172a';
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(168, 34);
+    ctx.rotate(Math.sin(t * 1.4) * 0.08);
+    fillRound(0, -6, 92, 12, 4, '#1f2937');
+    ctx.fillStyle = accent;
+    ctx.fillRect(78, -3, 14, 6);
+    ctx.restore();
+    ctx.restore();
+  }
+
+  function drawJet(x, y, w, h, accent, t) {
+    const u = Math.min(w / 320, h / 120);
+    ctx.save();
+    ctx.translate(x + 10 * u, y + 8 * u);
+    ctx.scale(u, u);
+    ctx.beginPath();
+    ctx.moveTo(40, 58);
+    ctx.lineTo(250, 46);
+    ctx.lineTo(292, 58);
+    ctx.lineTo(250, 70);
+    ctx.closePath();
+    ctx.fillStyle = '#64748b';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#0f172a';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(120, 54);
+    ctx.lineTo(40, 18);
+    ctx.lineTo(70, 54);
+    ctx.closePath();
+    ctx.fillStyle = '#334155';
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(120, 64);
+    ctx.lineTo(36, 102);
+    ctx.lineTo(78, 64);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    fillRound(188, 40, 28, 12, 4, '#0ea5e9');
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(t * 8));
+    ctx.beginPath();
+    ctx.moveTo(36, 52);
+    ctx.lineTo(8, 46);
+    ctx.lineTo(36, 64);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 3; i++) {
+      fillRound(150 + i * 16, 72, 10, 18, 3, accent);
+    }
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(210, 52, 46, 4);
+    ctx.restore();
+  }
+
+  function drawMech(x, y, w, h, accent, t) {
+    const u = Math.min(w / 300, h / 120);
+    const step = Math.sin(t * 3) * 4;
+    ctx.save();
+    ctx.translate(x + (w - 220 * u) / 2, y + h - 114 * u);
+    ctx.scale(u, u);
+    fillRound(58, 78 + step, 22, 28, 5, '#334155');
+    fillRound(128, 78 - step, 22, 28, 5, '#334155');
+    fillRound(70, 28, 78, 58, 10, '#475569');
+    ctx.fillStyle = accent;
+    ctx.fillRect(78, 40, 62, 8);
+    fillRound(86, 6, 46, 28, 8, '#1e293b');
+    fillRound(94, 14, 30, 8, 3, accent);
+    fillRound(28, 36, 36, 14, 4, '#1f2937');
+    fillRound(154, 34, 48, 12, 4, '#1f2937');
+    ctx.fillStyle = accent;
+    ctx.fillRect(198, 36, 18, 6);
+    ctx.globalAlpha = 0.8;
+    ctx.fillRect(18, 40, 12, 5);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(40, 64, 18, 8);
+    ctx.fillRect(160, 62, 22, 8);
+    ctx.restore();
+  }
+
+  function drawHeli(x, y, w, h, accent, t) {
+    const u = Math.min(w / 320, h / 120);
+    ctx.save();
+    ctx.translate(x + 16 * u, y + 6 * u);
+    ctx.scale(u, u);
+    fillRound(70, 48, 130, 36, 16, '#64748b');
+    fillRound(188, 56, 70, 12, 4, '#334155');
+    fillRound(250, 40, 8, 28, 2, '#334155');
+    ctx.fillStyle = '#7dd3fc';
+    ctx.fillRect(92, 56, 28, 12);
+    fillRound(86, 86, 16, 8, 2, '#0f172a');
+    fillRound(160, 86, 16, 8, 2, '#0f172a');
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(78, 78, 10, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(130, 42);
+    ctx.rotate(t * (reduceMotion ? 1.2 : 10));
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(-70, -3, 140, 6);
+    ctx.fillRect(-3, -46, 6, 92);
+    ctx.restore();
+    ctx.fillStyle = accent;
+    for (let i = 0; i < 3; i++) ctx.fillRect(108 + i * 14, 70, 8, 14);
+    ctx.globalAlpha = 0.45 + 0.4 * Math.abs(Math.sin(t * 12));
+    ctx.fillRect(186, 58, 18, 4);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function drawReticle(x, y, w, h, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    const a = 18;
+    ctx.beginPath();
+    ctx.moveTo(x + 8, y + 8 + a); ctx.lineTo(x + 8, y + 8); ctx.lineTo(x + 8 + a, y + 8);
+    ctx.moveTo(x + w - 8 - a, y + 8); ctx.lineTo(x + w - 8, y + 8); ctx.lineTo(x + w - 8, y + 8 + a);
+    ctx.moveTo(x + 8, y + h - 8 - a); ctx.lineTo(x + 8, y + h - 8); ctx.lineTo(x + 8 + a, y + h - 8);
+    ctx.moveTo(x + w - 8 - a, y + h - 8); ctx.lineTo(x + w - 8, y + h - 8); ctx.lineTo(x + w - 8, y + h - 8 - a);
+    ctx.stroke();
+  }
+
+  function drawGuideCard(m, r, cardY) {
+    let y = cardY + 18;
+    const problem = wrapFit(m.text, r.w - 52, 5, 13, 11);
+    const plh = problem.size + 3;
+    for (let li = 0; li < problem.lines.length; li++) {
+      text(problem.lines[li], r.x + 24, y, problem.size, '#102033', 'left', 700);
+      y += plh;
+    }
+    y += 8;
+    const steps = m.steps || [];
+    for (let s = 0; s < steps.length; s++) {
+      const wrapped = wrapFit((s + 1) + '  ' + steps[s], r.w - 52, 2, 12, 10);
+      const lh = wrapped.size + 2;
+      for (let li = 0; li < wrapped.lines.length; li++) {
+        if (y > cardY + 210) return;
+        text(wrapped.lines[li], r.x + 24, y, wrapped.size, s === steps.length - 1 ? '#9a3412' : '#1e3a5f', 'left', 700);
+        y += lh;
+      }
+      y += 4;
+    }
+  }
+
+  function drawBay(i) {
+    const m = game.machines[i];
+    const r = bayRect(i);
+    const hovered = pointer.x >= r.x && pointer.y >= r.y && pointer.x <= r.x + r.w && pointer.y <= r.y + r.h;
+    const guideOn = game.phase === 'guide' && i === game.bayStep;
+    const waiting = game.phase === 'guide' && i !== game.bayStep && !m.solved;
+    const showAnswer = m.solved || game.phase === 'select' || game.phase === 'celebrate' || game.phase === 'between';
+    const focused = game.mode !== 'DUEL' && game.phase === 'select' && game.focus === i;
+    const picked = game.mode !== 'DUEL' && game.picked === i && game.phase === 'celebrate';
+    const border = guideOn ? '#7dd3fc' : 'rgba(226,232,240,0.16)';
+    plate(r.x, r.y, r.w, r.h, 16, '#121a2b', border, guideOn ? 3 : 2);
+    ctx.fillStyle = m.accent;
+    ctx.fillRect(r.x + 12, r.y + 10, r.w - 24, 5);
+    text('BAY ' + (i + 1), r.x + 18, r.y + 32, 13, m.accent, 'left', 800);
+    fitText(m.name, r.x + 78, r.y + 32, 18, '#f8fafc', 'left', 800, 210);
+    fillRound(r.x + r.w - 78, r.y + 20, 60, 22, 8, '#0b1220');
+    text(m.unitCode, r.x + r.w - 48, r.y + 31, 12, m.accent, 'center', 800);
+    drawVehicle(m.vehicle, r.x + 12, r.y + 42, r.w - 24, 78, m.accent);
+    fitText(m.weapon.toUpperCase(), r.x + r.w / 2, r.y + 128, 12, '#dbe7ff', 'center', 800, r.w - 36);
+    const cardY = r.y + 136;
+    const cardH = 226;
+    plate(r.x + 12, cardY, r.w - 24, cardH, 12, '#f4f8ff', null, 0);
+    if (showAnswer) {
+      text('STILL ABOARD', r.x + r.w / 2, cardY + 36, 13, '#9a3412', 'center', 800);
+      text(String(m.rem), r.x + r.w / 2, cardY + 108, 56, '#102033', 'center', 800);
+      text(m.unit.toUpperCase(), r.x + r.w / 2, cardY + 148, 14, '#334155', 'center', 700);
+      if (game.mode === 'DUEL' && m.claimed >= 0) {
+        text(PILOTS[m.claimed].name, r.x + r.w / 2, cardY + 178, 14, PILOTS[m.claimed].color, 'center', 800);
+      }
+    } else if (waiting) {
+      text('WAITING', r.x + r.w / 2, cardY + 90, 22, '#64748b', 'center', 800);
+      text('One bay at a time.', r.x + r.w / 2, cardY + 122, 14, '#94a3b8', 'center', 700);
+    } else {
+      drawGuideCard(m, r, cardY);
+    }
+    if (waiting) {
+      ctx.fillStyle = 'rgba(7, 11, 18, 0.55)';
+      ctx.fillRect(r.x + 8, r.y + 42, r.w - 16, r.h - 54);
+      text('NEXT', r.x + r.w / 2, r.y + 188, 22, '#cbd5e1', 'center', 800);
+    }
+    if (game.mode !== 'DUEL') {
+      if ((hovered && game.phase === 'select') || focused || picked || guideOn) {
+        drawReticle(r.x + 4, r.y + 4, r.w - 8, r.h - 8, picked ? '#34d399' : '#7dd3fc');
+      }
+      if (game.badBay === i && game.hold > 0) drawReticle(r.x + 4, r.y + 4, r.w - 8, r.h - 8, '#fb7185');
+    } else if (guideOn) {
+      drawReticle(r.x + 4, r.y + 4, r.w - 8, r.h - 8, '#7dd3fc');
+    }
+    if (game.screen === 'play' && game.intro <= 0 && game.hold <= 0 && !game.paused && game.phase === 'select' && game.mode !== 'DUEL') {
+      addSpot(r.x, r.y, r.w, r.h, 'bay', { i: i });
+    }
+  }
+
+  function drawHUD() {
+    plate(0, 0, VW, HUD_H, 0, '#0b1222', null, 0);
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, HUD_H - 2, VW, 2);
+    const modeLabel = game.mode === 'DUEL' ? 'DUEL' : game.mode === 'COOP' ? 'TEAM CO-OP' : 'SOLO';
+    const modeColor = game.mode === 'DUEL' ? '#9f1239' : game.mode === 'COOP' ? '#5b21b6' : '#0f766e';
+    fillRound(12, 10, 118, 32, 8, modeColor);
+    text(modeLabel, 71, 26, 13, '#ffffff', 'center', 800);
+    fillRound(138, 10, 230, 32, 8, '#111827');
+    text(game.tier, 150, 26, 13, TIER_META[game.tier].tint, 'left', 800);
+    fitText(TIER_META[game.tier].role.toUpperCase(), 230, 26, 11, '#e2e8f0', 'left', 700, 124);
+    const waveLabel = game.mode === 'DUEL' ? 'WAVE ' + game.wave + '/' + DUEL_WAVES : 'WAVE ' + game.wave;
+    text(waveLabel, 384, 26, 16, '#f8fafc', 'left', 800);
+    if (game.mode === 'DUEL') {
+      const n = game.players;
+      for (let i = 0; i < n; i++) {
+        const x = 508 + i * 156;
+        text(PILOTS[i].short, x, 26, 13, PILOTS[i].color, 'left', 800);
+        text(String(game.pilots[i] ? game.pilots[i].score : 0), x + 32, 26, 16, '#f8fafc', 'left', 800);
+      }
+    } else {
+      const scoreName = game.mode === 'COOP' ? 'TEAM ARSENAL' : 'ARSENAL';
+      const bestName = game.mode === 'COOP' ? 'TEAM BEST' : 'BEST RECORD';
+      text(scoreName, 470, 18, 10, '#93c5fd', 'left', 700);
+      text(String(game.score), 470, 34, 16, '#f8fafc', 'left', 800);
+      text(bestName, 640, 18, 10, '#fcd34d', 'left', 700);
+      text(String(game.best), 640, 34, 16, '#fef3c7', 'left', 800);
+      if (game.record) text('NEW', 760, 26, 12, '#fb7185', 'left', 800);
+      for (let i = 0; i < 4; i++) {
+        const on = i < game.shields;
+        fillRound(900 + i * 36, 12, 28, 28, 6, on ? '#38bdf8' : '#1e293b');
+        text(on ? '▮' : '·', 914 + i * 36, 26, 14, on ? '#082f49' : '#475569', 'center', 800);
+      }
+    }
+    drawMute(1198, 9);
+  }
+
+  function drawMute(x, y) {
+    const on = !sound.muted;
+    plate(x, y, 70, 34, 8, on ? '#134e4a' : '#3f1d2e', on ? '#5eead4' : '#fb7185', 2);
+    text(on ? 'SOUND' : 'MUTED', x + 35, y + 17, 12, '#ffffff', 'center', 800);
+    if (game.screen === 'title' || game.screen === 'play' || game.screen === 'result') addSpot(x, y, 70, 34, 'mute');
+  }
+
+  function drawCommand() {
+    plate(12, CMD_Y, VW - 24, CMD_H, 12, 'rgba(10, 16, 32, 0.94)', 'rgba(125, 211, 252, 0.25)', 2);
+    const color = game.mode === 'DUEL' ? '#e2e8f0' : PILOTS[game.mode === 'COOP' ? activePilot() : 0].color;
+    drawSoldier(22, CMD_Y + 4, 64, game.mode === 'DUEL' ? '#ff3355' : color, animT);
+    if (game.mode === 'DUEL' && game.players > 1) {
+      drawSoldier(78, CMD_Y + 18, 42, '#3d8bff', animT + 1);
+      if (game.players > 2) drawSoldier(112, CMD_Y + 26, 34, '#2ee59a', animT + 2);
+    }
+    const textX = game.mode === 'DUEL' ? (game.players > 2 ? 160 : 130) : 96;
+    let title = 'BREAK DOWN BAY ' + (game.bayStep + 1);
+    if (game.phase === 'select') title = 'PICK THE BAY WITH THE MOST STILL ABOARD';
+    if (game.phase === 'celebrate') title = 'FIREPOWER LOADED INTO THE ARMORY';
+    if (game.phase === 'between') title = 'WAVE DRAFT CLOSED';
+    if (game.mode === 'DUEL' && game.phase === 'guide') title = 'RACE BAY ' + (game.bayStep + 1) + ' — FIRST CORRECT LOCK CLAIMS IT';
+    fitText(title, textX, CMD_Y + 26, 18, '#f8fafc', 'left', 800, 760);
+    let sub = 'Take each fraction of that weapon type, then choose the readout.';
+    if (game.phase === 'select') sub = 'Compare the three numbers still aboard.';
+    if (game.phase === 'celebrate') sub = 'The fullest rack is in the armory.';
+    if (game.phase === 'between') sub = 'The next hangar is rolling in.';
+    if (game.mode === 'COOP') {
+      const who = PILOTS[activePilot()];
+      if (game.phase === 'guide') sub = who.name + ' breaks down Bay ' + (game.bayStep + 1);
+      else if (game.phase === 'select') sub = who.name + ' picks the fullest rack';
+    }
+    if (game.mode === 'DUEL' && game.toastT <= 0) {
+      const jammed = game.pilots.filter(p => p.jam > 0);
+      if (jammed.length) sub = jammed.map(p => PILOTS[p.index].short + ' jam ' + p.jam.toFixed(1) + 's').join('   ·   ');
+    }
+    if (game.toastT > 0) sub = game.toast;
+    fitText(sub, textX, CMD_Y + 52, 14, game.toastT > 0 ? '#fcd34d' : '#93c5fd', 'left', 700, 760);
+    const urgent = game.clock < 8;
+    text(clockText(game.clock), VW - 118, CMD_Y + 28, 22, urgent ? '#fb7185' : '#e2e8f0', 'left', 800);
+    const bw = 150;
+    fillRound(VW - 186, CMD_Y + 48, bw, 8, 4, '#1e293b');
+    const maxT = (game.mode === 'DUEL' ? DUEL_TIME : SOLO_TIME)[game.tier];
+    const frac = clamp(game.clock / maxT, 0, 1);
+    fillRound(VW - 186, CMD_Y + 48, Math.max(6, bw * frac), 8, 4, urgent ? '#fb7185' : TIER_META[game.tier].tint);
+  }
+
+  function drawCards() {
+    const m = game.machines[game.bayStep];
+    if (!m) return;
+    text('BAY ' + (game.bayStep + 1) + '  —  HOW MANY ARE STILL ABOARD?', 40, 542, 14, '#fde68a', 'left', 800);
+    for (let i = 0; i < 4; i++) {
+      const r = cardRect(i);
+      const opt = m.options[i];
+      const hover = pointer.x >= r.x && pointer.y >= r.y && pointer.x <= r.x + r.w && pointer.y <= r.y + r.h;
+      let hot = hover;
+      let edge = 'rgba(226,232,240,0.2)';
+      if (game.mode === 'DUEL') {
+        game.pilots.forEach(p => {
+          if (p.card === i) edge = PILOTS[p.index].color;
+        });
+        hot = edge !== 'rgba(226,232,240,0.2)' || hover;
+      } else if (game.focus === i) {
+        hot = true;
+        edge = '#7dd3fc';
+      }
+      if (hover) edge = '#7dd3fc';
+      plate(r.x, r.y, r.w, r.h, 12, hot ? '#16324a' : '#10192c', edge, hot ? 3 : 2);
+      text('READOUT ' + (i + 1), r.x + r.w / 2, r.y + 24, 12, '#93c5fd', 'center', 800);
+      text(String(opt.value), r.x + r.w / 2, r.y + 62, 36, '#f8fafc', 'center', 800);
+      text(m.unit.toUpperCase(), r.x + r.w / 2, r.y + 92, 12, m.accent, 'center', 700);
+      if (game.mode === 'DUEL') {
+        let tick = 0;
+        game.pilots.forEach(p => {
+          if (p.card !== i) return;
+          fillRound(r.x + 10 + tick * 18, r.y + 8, 12, 12, 3, PILOTS[p.index].color);
+          tick += 1;
+        });
+      }
+      if (game.hold <= 0 && game.intro <= 0 && game.guideWait <= 0 && !game.paused && !m.solved) {
+        addSpot(r.x, r.y, r.w, r.h, 'card', { i: i });
+      }
+    }
+  }
+
+  function drawDuelDeck() {
+    const n = game.players;
+    for (let pi = 0; pi < n; pi++) {
+      const p = game.pilots[pi];
+      const r = duelPanelRect(pi, n);
+      plate(r.x, r.y, r.w, r.h, 12, '#10182b', PILOTS[pi].color, 2);
+      text(PILOTS[pi].name, r.x + 12, r.y + 18, 14, PILOTS[pi].color, 'left', 800);
+      text(PILOTS[pi].keys.join(' '), r.x + r.w - 12, r.y + 18, 12, '#94a3b8', 'right', 700);
+      if (p.jam > 0) {
+        const tip = wrapFit(p.jamTip || 'Scanner jam.', r.w - 24, 4, 13, 11);
+        for (let i = 0; i < tip.lines.length; i++) text(tip.lines[i], r.x + 12, r.y + 48 + i * (tip.size + 3), tip.size, '#fecdd3', 'left', 700);
+        text('JAM ' + p.jam.toFixed(1) + 's', r.x + 12, r.y + r.h - 16, 12, '#fb7185', 'left', 800);
+      } else if (p.locked) {
+        const m = game.machines[p.bay];
+        text('+' + (m ? m.rem : p.score) + ' LOCKED', r.x + 12, r.y + 52, 20, '#86efac', 'left', 800);
+        if (m) {
+          const worked = wrapFit(m.worked, r.w - 24, 3, 13, 11);
+          for (let i = 0; i < worked.lines.length; i++) text(worked.lines[i], r.x + 12, r.y + 80 + i * (worked.size + 2), worked.size, '#d1fae5', 'left', 700);
+        }
+      } else if (p.bay < 0) {
+        text('Choose Bay 1, 2, or 3', r.x + 12, r.y + 58, 16, '#e2e8f0', 'left', 700);
+        text('Focus bay ' + (p.focus + 1), r.x + 12, r.y + 86, 13, '#93c5fd', 'left', 700);
+      } else {
+        const m = game.machines[p.bay];
+        text(m.name + ' readout', r.x + 12, r.y + 40, 12, '#fde68a', 'left', 800);
+        const gap = 8;
+        const bw = (r.w - 24 - gap * 3) / 4;
+        for (let c = 0; c < 4; c++) {
+          const x = r.x + 12 + c * (bw + gap);
+          const y = r.y + 54;
+          const hot = p.card === c;
+          plate(x, y, bw, 78, 8, hot ? '#16324a' : '#0b1220', hot ? PILOTS[pi].color : 'rgba(226,232,240,0.18)', 2);
+          text(String(c + 1), x + bw / 2, y + 16, 11, '#94a3b8', 'center', 700);
+          fitText(String(m.options[c].value), x + bw / 2, y + 44, 22, '#f8fafc', 'center', 800, bw - 8);
+          if (pi === 0 && game.hold <= 0 && game.intro <= 0 && !game.paused && game.phase === 'draft') {
+            addSpot(x, y, bw, 78, 'dcard', { i: c });
+          }
+        }
+      }
+    }
+  }
+
+  function drawDeck() {
+    plate(12, DECK_Y, VW - 24, VH - DECK_Y - 8, 12, 'rgba(8, 12, 24, 0.94)', 'rgba(148, 163, 184, 0.18)', 2);
+    if (game.mode !== 'DUEL' && game.hold > 0 && game.note) {
+      const bad = game.noteTone === 'bad';
+      plate(28, 544, VW - 56, 132, 12, bad ? '#3f121c' : '#052e2b', bad ? '#fb7185' : '#5eead4', 2);
+      text(bad ? 'TACTICAL AI DIAGNOSTIC' : 'MODEL CHECK', 44, 566, 13, bad ? '#fecdd3' : '#99f6e4', 'left', 800);
+      const wrapped = wrapFit(game.note, VW - 100, 4, 16, 13);
+      for (let i = 0; i < wrapped.lines.length; i++) {
+        text(wrapped.lines[i], 44, 594 + i * (wrapped.size + 6), wrapped.size, '#fff7ed', 'left', 700);
+      }
+    } else if (game.phase === 'guide' && game.guideWait > 0) {
+      const m = game.machines[game.bayStep];
+      text('BAY ' + (game.bayStep + 1) + ' LOCKED', 40, 568, 16, '#86efac', 'left', 800);
+      if (m) text(m.rem + '  ' + m.unit.toUpperCase() + ' STILL ABOARD', 40, 620, 28, '#f8fafc', 'left', 800);
+      if (game.mode === 'DUEL' && m && m.claimed >= 0) {
+        text(PILOTS[m.claimed].name + ' claims this rack', 40, 656, 16, PILOTS[m.claimed].color, 'left', 800);
+      }
+    } else if (game.phase === 'guide') {
+      drawCards();
+    } else if (game.phase === 'celebrate') {
+      const m = game.machines[game.picked];
+      const gain = '+' + (m ? m.rem : 0) + ' ' + (m ? m.unit.toUpperCase() : '') + ' TRANSFERRED';
+      text(gain, 40, 550, 20, '#86efac', 'left', 800);
+      if (game.record) text('NEW RECORD', 40, 574, 14, '#fcd34d', 'left', 800);
+      if (m) {
+        const wrapped = wrapFit(m.worked, VW - 90, 3, 15, 12);
+        const top = game.record ? 598 : 580;
+        for (let i = 0; i < wrapped.lines.length; i++) text(wrapped.lines[i], 40, top + i * (wrapped.size + 5), wrapped.size, '#d1fae5', 'left', 700);
+      }
+    } else if (game.phase === 'between') {
+      text('Draft closed. The next hangar is rolling in.', 40, 600, 20, '#f8fafc', 'left', 800);
+    } else {
+      const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + ': ' : '';
+      text(who + 'Compare the three numbers. Lock the bay with the MOST still aboard.', 40, 590, 18, '#f8fafc', 'left', 800);
+      text('Add what is left of every weapon type. The fullest start can finish with the least.', 40, 626, 15, '#cbd5e1', 'left', 700);
+    }
+    const legend = game.mode === 'DUEL'
+      ? 'P1 mouse / 1 2 3 4 / pad    ·    P2 Q W E R / pad    ·    P3 U I O P / pad    ·    M mute'
+      : (game.mode === 'COOP'
+        ? 'Turns rotate. P1: mouse, 1 2 3 4, pad.   P2: Q W E R, pad.   P3: U I O P, pad.   M mute'
+        : 'Mouse  ·  1 2 3 4  ·  Arrows + Space  ·  Gamepad A  ·  M mute  ·  Esc pause');
+    fitText(legend, VW / 2, 700, 13, '#94a3b8', 'center', 700, VW - 40);
+  }
+
+  function drawParticles() {
+    particles.forEach(p => {
+      ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.w, 3);
+      ctx.globalAlpha = 1;
+    });
+    floaters.forEach(f => {
+      ctx.globalAlpha = clamp(f.life / (f.max || 1), 0, 1);
+      text(f.text, f.x, f.y, 22, f.color || '#fef08a', 'center', 800);
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function drawPlay() {
+    const sx = game.shake > 0 && !reduceMotion ? (Math.random() - 0.5) * 8 * game.shake : 0;
+    ctx.save();
+    ctx.translate(sx, 0);
+    drawHangar();
+    if (game.machines.length === 3) {
+      for (let i = 0; i < 3; i++) drawBay(i);
+    }
+    drawParticles();
+    ctx.restore();
+    drawHUD();
+    drawCommand();
+    drawDeck();
+    if (game.alarm > 0) {
+      ctx.fillStyle = 'rgba(255, 30, 70, ' + (0.22 * Math.min(1, game.alarm)) + ')';
+      ctx.fillRect(0, 0, VW, VH);
+    }
+    if (game.paused) {
+      ctx.fillStyle = 'rgba(2, 6, 16, 0.62)';
+      ctx.fillRect(0, 0, VW, VH);
+      plate(390, 250, 500, 180, 16, '#0f172a', '#7dd3fc', 2);
+      text('HANGAR PAUSED', 640, 310, 28, '#f8fafc', 'center', 800);
+      text('Esc returns to the scan', 640, 352, 16, '#cbd5e1', 'center', 700);
+    }
+  }
+
+  function drawButton(act, x, y, w, h, label, sub, on, extra, subColor) {
+    const hot = pointer.x >= x && pointer.y >= y && pointer.x <= x + w && pointer.y <= y + h;
+    plate(x, y, w, h, 10, on ? '#123048' : (hot ? '#162033' : '#10182a'), on ? '#7dd3fc' : 'rgba(226,232,240,0.2)', on ? 3 : 2);
+    if (sub) {
+      text(label, x + w / 2, y + 18, 16, on ? '#e0f2fe' : '#f8fafc', 'center', 800);
+      fitText(sub, x + w / 2, y + h - 16, 12, subColor || '#94a3b8', 'center', 700, w - 20);
+    } else {
+      text(label, x + w / 2, y + h / 2, 16, on ? '#e0f2fe' : '#f8fafc', 'center', 800);
+    }
+    addSpot(x, y, w, h, act, extra || {});
+  }
+
+  function drawTitle() {
+    drawHangar();
+    drawVehicle('tank', 28, 250, 230, 150, '#ffb020');
+    drawVehicle('jet', 20, 430, 240, 140, '#3ee0ff');
+    drawVehicle('mech', 1020, 240, 220, 140, '#e879f9');
+    drawVehicle('heli', 1010, 420, 240, 150, '#a3e635');
+    plate(250, 24, 780, 672, 18, 'rgba(8, 12, 24, 0.94)', 'rgba(125, 211, 252, 0.35)', 2);
+    text('PRIMARY 5  ·  UNITS 2.1 – 2.3', 640, 52, 13, '#67e8f9', 'center', 800);
+    text('MECHA ARMORY', 640, 96, 46, '#f8fafc', 'center', 800);
+    text('REMAINDER & FIREPOWER COMMAND', 640, 136, 16, '#fcd34d', 'center', 800);
+    text('PILOTS', 280, 184, 12, '#94a3b8', 'left', 800);
+    for (let i = 0; i < 3; i++) {
+      drawButton('players', 400 + i * 150, 154, 136, 60, (i + 1) + 'P', PILOTS[i].name, game.players === i + 1, { n: i + 1 }, PILOTS[i].color);
+    }
+    text('DIFFICULTY', 280, 230, 12, '#94a3b8', 'left', 800);
+    TIERS.forEach((id, i) => {
+      const meta = TIER_META[id];
+      drawButton('tier', 280 + (i % 4) * 180, 248, 170, 78, meta.name, meta.role, game.tier === id, { id: id });
+    });
+    text('MODE', 280, 348, 12, '#94a3b8', 'left', 800);
+    MODES.forEach((id, i) => {
+      drawButton('mode', 280 + i * 240, 366, 228, 64, MODE_META[id].name, '', game.mode === id, { id: id });
+    });
+    plate(280, 448, 720, 78, 10, '#0c1424', null, 0);
+    const blurb = TIER_META[game.tier].blurb + '  ' + MODE_META[game.mode].blurb;
+    const lines = wrapFit(blurb, 690, 3, 14, 12);
+    for (let i = 0; i < lines.lines.length; i++) text(lines.lines[i], 296, 470 + i * 20, lines.size, '#e2e8f0', 'left', 700);
+    text('SOLO BEST  ' + soloBest, 300, 556, 15, '#fcd34d', 'left', 800);
+    text('TEAM BEST  ' + teamBest, 560, 556, 15, '#c4b5fd', 'left', 800);
+    drawButton('launch', 430, 586, 420, 56, 'LAUNCH ARMORY', '', true, {});
+    fitText('Keys 1 2 3 set pilots   ·   Left/Right tier   ·   Up/Down mode   ·   Enter launches   ·   M mute', 640, 666, 12, '#94a3b8', 'center', 700, 720);
+    drawMute(930, 36);
+  }
+
+  function drawCrown(x, y) {
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath();
+    ctx.moveTo(x - 16, y + 10);
+    ctx.lineTo(x - 12, y - 8);
+    ctx.lineTo(x - 4, y + 2);
+    ctx.lineTo(x, y - 14);
+    ctx.lineTo(x + 4, y + 2);
+    ctx.lineTo(x + 12, y - 8);
+    ctx.lineTo(x + 16, y + 10);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawResult() {
+    drawHangar();
+    plate(180, 48, 920, 624, 18, 'rgba(8, 12, 24, 0.94)', 'rgba(250, 204, 21, 0.4)', 2);
+    if (game.resultKind === 'duel') {
+      const top = game.pilots.reduce((a, p) => Math.max(a, p.score), 0);
+      const tied = game.pilots.filter(p => p.score === top).length > 1;
+      text(tied ? 'SHARED COMMAND' : 'SUPREME ARMORY CHAMPION', 640, 100, 28, '#fef3c7', 'center', 800);
+      text('Most total weaponry after ' + DUEL_WAVES + ' waves', 640, 136, 16, '#cbd5e1', 'center', 700);
+      const n = game.pilots.length;
+      for (let i = 0; i < n; i++) {
+        const p = game.pilots[i];
+        const x = 640 + (i - (n - 1) / 2) * 240;
+        const champ = p.score === top;
+        if (champ) drawCrown(x, 180);
+        drawSoldier(x - 36, 210, 110, PILOTS[i].color, animT + i);
+        text(PILOTS[i].name, x, 360, 16, PILOTS[i].color, 'center', 800);
+        text(String(p.score), x, 396, 32, '#f8fafc', 'center', 800);
+        text('ROUNDS', x, 426, 12, '#94a3b8', 'center', 700);
+      }
+    } else {
+      text(game.shields <= 0 ? 'SHIELDS DEPLETED' : 'MISSION DOWN', 640, 120, 32, '#fecdd3', 'center', 800);
+      text('Rounds secured in the armory', 640, 168, 16, '#cbd5e1', 'center', 700);
+      text(String(game.score), 640, 240, 64, '#f8fafc', 'center', 800);
+      const bestName = game.mode === 'COOP' ? 'TEAM BEST' : 'BEST RECORD';
+      text(bestName + '  ' + game.best, 640, 300, 20, '#fcd34d', 'center', 800);
+      if (game.record) text('NEW RECORD', 640, 336, 18, '#fb7185', 'center', 800);
+      text('Waves cleared  ' + game.wavesCleared, 640, 378, 16, '#93c5fd', 'center', 700);
+      drawSoldier(600, 410, 90, game.mode === 'COOP' ? '#c4b5fd' : '#ff3355', animT);
+    }
+    drawButton('retry', 300, 560, 300, 56, 'REDEPLOY', '', true, {});
+    drawButton('title', 680, 560, 300, 56, 'HANGAR', '', false, {});
+    drawMute(990, 64);
+  }
+
+  function render() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#070b12';
+    ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+    if (game.screen === 'title') drawTitle();
+    else if (game.screen === 'result') drawResult();
+    else drawPlay();
+    const hover = hitSpot(pointer.x, pointer.y);
+    canvas.style.cursor = hover ? 'pointer' : 'default';
+  }
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(winW * dpr));
+    canvas.height = Math.max(1, Math.floor(winH * dpr));
+    scale = Math.min(winW / VW, winH / VH);
+    offsetX = (winW - VW * scale) / 2;
+    offsetY = (winH - VH * scale) / 2;
+  }
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+
+  function setPlayers(n) {
+    game.players = n;
+    if (n === 1) game.mode = 'SOLO';
+    else if (game.mode === 'SOLO') game.mode = 'COOP';
+    sound.click();
+  }
+  function setTier(id) {
+    game.tier = id;
+    sound.click();
+  }
+  function setMode(id) {
+    game.mode = id;
+    if (id === 'SOLO') game.players = 1;
+    if ((id === 'COOP' || id === 'DUEL') && game.players < 2) game.players = 2;
+    sound.click();
+  }
+  function cycleTier(dir) {
+    const i = TIERS.indexOf(game.tier);
+    setTier(TIERS[(i + dir + TIERS.length) % TIERS.length]);
+  }
+  function cycleMode(dir) {
+    const i = MODES.indexOf(game.mode);
+    setMode(MODES[(i + dir + MODES.length) % MODES.length]);
+  }
+
+  function pressSlot(pi, slot) {
+    if (game.screen !== 'play' || game.paused || game.intro > 0) return;
+    if (!allowed(pi)) {
+      if (game.mode !== 'DUEL') toast(PILOTS[activePilot()].name + ' has the controls for this step.');
+      return;
+    }
+    if (game.hold > 0) {
+      game.hold = Math.min(game.hold, 0.05);
+      return;
+    }
+    if (game.phase === 'guide') {
+      if (game.guideWait > 0) return;
+      if (game.mode === 'DUEL') {
+        const p = game.pilots[pi];
+        if (!p || p.jam > 0) return;
+      }
+      chooseGuideCard(slot, pi);
+      return;
+    }
+    if (game.phase === 'select' && game.mode !== 'DUEL') chooseBay(slot <= 2 ? slot : game.focus);
+  }
+
+  function nudge(pi, dir) {
+    if (game.screen === 'title' && pi === 0) {
+      cycleTier(dir);
+      return;
+    }
+    if (game.screen !== 'play' || game.paused || game.intro > 0 || game.hold > 0) return;
+    if (!allowed(pi)) return;
+    if (game.phase === 'guide') {
+      if (game.mode === 'DUEL') {
+        const p = game.pilots[pi];
+        if (!p || p.jam > 0) return;
+        p.card = (p.card + dir + 4) % 4;
+      } else game.focus = (game.focus + dir + 4) % 4;
+      sound.click();
+      return;
+    }
+    if (game.phase === 'select') game.focus = (game.focus + dir + 3) % 3;
+    sound.click();
+  }
+
+  function confirmFocus(pi) {
+    if (game.screen === 'title' && pi === 0) { startGame(); return; }
+    if (game.screen === 'result' && pi === 0) { startGame(); return; }
+    if (game.screen !== 'play' || !allowed(pi) || game.paused || game.intro > 0) return;
+    if (game.hold > 0) { game.hold = Math.min(game.hold, 0.05); return; }
+    if (game.phase === 'guide') {
+      if (game.guideWait > 0) return;
+      if (game.mode === 'DUEL') {
+        const p = game.pilots[pi];
+        if (!p || p.jam > 0) return;
+        chooseGuideCard(p.card, pi);
+      } else chooseGuideCard(game.focus, pi);
+      return;
+    }
+    if (game.phase === 'select' && game.mode !== 'DUEL') chooseBay(game.focus);
+  }
+
+  function onPad(i, kind) {
+    sound.unlock();
+    if (kind === 'left') nudge(i, -1);
+    else if (kind === 'right') nudge(i, 1);
+    else if (kind === 'a') confirmFocus(i);
+  }
+
+  function pollPads() {
+    if (!navigator.getGamepads) return;
+    let pads;
+    try { pads = navigator.getGamepads(); } catch (err) { return; }
+    if (!pads) return;
+    for (let i = 0; i < 3; i++) {
+      const gp = pads[i];
+      if (!gp) continue;
+      const mem = padMem[i];
+      const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+      const left = ax < -0.55 || !!(gp.buttons[14] && gp.buttons[14].pressed);
+      const right = ax > 0.55 || !!(gp.buttons[15] && gp.buttons[15].pressed);
+      const a = !!(gp.buttons[0] && gp.buttons[0].pressed);
+      if (padPrimed) {
+        if (left && !mem.left) onPad(i, 'left');
+        if (right && !mem.right) onPad(i, 'right');
+        if (a && !mem.a) onPad(i, 'a');
+      }
+      mem.left = left;
+      mem.right = right;
+      mem.a = a;
+    }
+    padPrimed = true;
+  }
+
+  function activate(spot) {
+    if (!spot) return;
+    if (spot.act === 'mute') { sound.toggle(); return; }
+    if (game.screen === 'title') {
+      if (spot.act === 'players') setPlayers(spot.n);
+      else if (spot.act === 'tier') setTier(spot.id);
+      else if (spot.act === 'mode') setMode(spot.id);
+      else if (spot.act === 'launch') startGame();
+      return;
+    }
+    if (game.screen === 'result') {
+      if (spot.act === 'retry') startGame();
+      else if (spot.act === 'title') game.screen = 'title';
+      return;
+    }
+    if (game.paused || game.intro > 0) return;
+    if (game.hold > 0) { game.hold = Math.min(game.hold, 0.05); return; }
+    if (!allowed(0)) {
+      toast(PILOTS[activePilot()].name + ' has the controls for this step.');
+      return;
+    }
+    if (spot.act === 'bay') {
+      if (game.phase === 'select') chooseBay(spot.i);
+      else toast('Finish this bay on the readout cards.');
+    } else if (spot.act === 'card') {
+      if (game.mode === 'DUEL') chooseGuideCard(spot.i, 0);
+      else chooseGuideCard(spot.i, activePilot());
+    }
+  }
+
+  function onKeyDown(e) {
+    if (held[e.code]) return;
+    held[e.code] = true;
+    sound.unlock();
+    const block = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'Enter'];
+    if (block.indexOf(e.code) !== -1) e.preventDefault();
+    if (e.code === 'KeyM') { sound.toggle(); return; }
+    if (game.screen === 'title') {
+      if (e.code === 'Digit1') setPlayers(1);
+      else if (e.code === 'Digit2') setPlayers(2);
+      else if (e.code === 'Digit3') setPlayers(3);
+      else if (e.code === 'ArrowLeft') cycleTier(-1);
+      else if (e.code === 'ArrowRight') cycleTier(1);
+      else if (e.code === 'ArrowUp') cycleMode(-1);
+      else if (e.code === 'ArrowDown') cycleMode(1);
+      else if (e.code === 'Enter' || e.code === 'Space') startGame();
+      return;
+    }
+    if (game.screen === 'result') {
+      if (e.code === 'Enter' || e.code === 'Space') startGame();
+      else if (e.code === 'Escape') game.screen = 'title';
+      return;
+    }
+    if (e.code === 'Escape') {
+      game.paused = !game.paused;
+      return;
+    }
+    if (e.code === 'ArrowLeft') { nudge(0, -1); return; }
+    if (e.code === 'ArrowRight') { nudge(0, 1); return; }
+    if (e.code === 'Enter' || e.code === 'Space') { confirmFocus(0); return; }
+    const mapped = keyMap[e.code];
+    if (mapped) pressSlot(mapped.player, mapped.slot);
+  }
+  function onKeyUp(e) { held[e.code] = false; }
+
+  function onPointer(e) {
+    sound.unlock();
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    if (canvas) canvas.focus();
+    activate(hitSpot(p.x, p.y));
+  }
+  function onMove(e) {
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+  }
+
+  function frame(now) {
+    if (!lastNow) lastNow = now;
+    const dt = Math.min(0.05, (now - lastNow) / 1000);
+    lastNow = now;
+    spots.length = 0;
+    try {
+      update(dt);
+      render();
+    } catch (err) {
+      console.error(err);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  sound.unlock = function () {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!sound.ctx) {
+      sound.ctx = new AC();
+      sound.master = sound.ctx.createGain();
+      sound.master.gain.value = sound.muted ? 0 : 0.8;
+      sound.master.connect(sound.ctx.destination);
+    }
+    if (sound.ctx.state === 'suspended') sound.ctx.resume();
+    if (!sound.ready) {
+      sound.ready = true;
+      sound.next = sound.ctx.currentTime + 0.05;
+    }
+  };
+  function tone(freq, type, dur, vol, delay, slide) {
+    if (!sound.ctx || !sound.master) return;
+    const t0 = sound.ctx.currentTime + (delay || 0);
+    const osc = sound.ctx.createOscillator();
+    const gain = sound.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(40, freq), t0);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t0 + dur);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(vol, t0 + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(sound.master);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, vol, freq) {
+    if (!sound.ctx || !sound.master) return;
+    const rate = sound.ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * dur));
+    const buffer = sound.ctx.createBuffer(1, len, rate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = sound.ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = sound.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = freq || 900;
+    const gain = sound.ctx.createGain();
+    gain.gain.setValueAtTime(vol, sound.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, sound.ctx.currentTime + dur);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(sound.master);
+    src.start();
+  }
+  sound.toggle = function () {
+    sound.unlock();
+    sound.muted = !sound.muted;
+    if (sound.master && sound.ctx) sound.master.gain.setTargetAtTime(sound.muted ? 0 : 0.8, sound.ctx.currentTime, 0.03);
+    if (!sound.muted && sound.ctx) sound.next = sound.ctx.currentTime + 0.05;
+    try { localStorage.setItem('ma-armory-mute', sound.muted ? '1' : '0'); } catch (err) { /* ignore */ }
+  };
+  sound.click = function () { tone(740, 'square', 0.04, 0.03); };
+  sound.scan = function () { tone(880, 'square', 0.06, 0.04); tone(1180, 'square', 0.08, 0.035, 0.07); };
+  sound.lock = function () { tone(180, 'sawtooth', 0.12, 0.05, 0, 90); tone(420, 'square', 0.08, 0.04, 0.08); };
+  sound.alarm = function () { tone(140, 'sawtooth', 0.22, 0.06, 0, 70); tone(90, 'square', 0.26, 0.04, 0.06); };
+  sound.jam = function () { tone(80, 'sawtooth', 0.28, 0.06, 0, 48); noise(0.12, 0.04, 240); };
+  sound.fanfare = function () { [523, 659, 784, 1046].forEach((f, i) => tone(f, 'square', 0.18, 0.05, i * 0.09)); };
+  sound.down = function () { tone(196, 'sawtooth', 0.28, 0.05, 0, 70); tone(98, 'square', 0.36, 0.04, 0.08); };
+  sound.barrage = function (id) {
+    if (id === 'laser') { tone(480, 'sawtooth', 0.16, 0.045, 0, 1400); tone(860, 'square', 0.1, 0.03, 0.05); }
+    else if (id === 'missile' || id === 'rocket') { tone(240, 'square', 0.18, 0.05, 0, 80); noise(0.16, 0.05, 480); }
+    else if (id === 'shell' || id === 'slug') { noise(0.12, 0.06, 280); tone(130, 'square', 0.14, 0.05, 0, 60); }
+    else { noise(0.07, 0.045, 1700); tone(640, 'square', 0.05, 0.04, 0, 220); tone(760, 'square', 0.05, 0.03, 0.06, 260); }
+  };
+  sound.pump = function () {
+    if (!sound.ready || !sound.ctx || sound.muted || !sound.master) return;
+    const now = sound.ctx.currentTime;
+    if (sound.next < now - 0.02) sound.next = now + 0.02;
+    const step = game.screen === 'play' && game.tier === 'EXTREME' ? 0.13 : 0.16;
+    let guard = 0;
+    while (sound.next < now + 0.25 && guard < 6) {
+      const i = sound.step;
+      tone(LEAD[i % LEAD.length], 'square', 0.12, 0.028, sound.next - now);
+      if (i % 2 === 0) tone(BASS[(i / 2) % BASS.length], 'triangle', 0.22, 0.04, sound.next - now);
+      if (i % 4 === 0) noise(0.03, 0.012, 2000);
+      sound.next += step;
+      sound.step += 1;
+      guard += 1;
+    }
+  };
+
+  function boot() {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    live = document.getElementById('live');
+    loadStore();
+    try { reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (err) { reduceMotion = false; }
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', () => { Object.keys(held).forEach(k => { held[k] = false; }); });
+    canvas.addEventListener('pointerdown', onPointer);
+    canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    requestAnimationFrame(frame);
+    canvas.focus();
+    announce('Mecha Armory. Choose pilots, difficulty, and mode, then launch.');
+  }
+
+  if (typeof globalThis !== 'undefined' && globalThis.__MECHA_TEST__) {
+    globalThis.__MECHA_API__ = { buildWave: buildWave, history: history };
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>

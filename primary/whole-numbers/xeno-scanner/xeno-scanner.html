@@ -1,0 +1,2646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#07091a" />
+<title>Xeno-Scanner: Simultaneous Alien Detective</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307091a'/%3E%3Ccircle cx='32' cy='34' r='16' fill='%233ecbff'/%3E%3Ccircle cx='26' cy='32' r='3' fill='%2307091a'/%3E%3Ccircle cx='38' cy='32' r='3' fill='%2307091a'/%3E%3Cpath d='M24 18 L32 8 L40 18' fill='none' stroke='%23ffd76a' stroke-width='3'/%3E%3C/svg%3E" />
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #07091a;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<p class="sr" id="about">Xeno-Scanner: Simultaneous Alien Detective. A Primary 5 and 6 game about forming two picture equations and eliminating one alien species. Solo uses the mouse, keys 1 to 4, A and D with Space, or gamepad 1. Co-op shares one team score and one life pool. Player 1 uses 1 to 4, A and D, and Space. Player 2 uses Q W E R, J and L, and Enter. Player 3 uses U I O P, the arrow keys, and Shift. In Precinct Duel each detective has a separate case, score, and three lives. Press M to mute. Press Escape to pause.</p>
+<p class="sr" id="live" aria-live="polite"></p>
+<canvas id="c" width="1600" height="900"></canvas>
+<script>
+'use strict';
+
+const VW = 1600;
+const VH = 900;
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+
+const COL = {
+  bg0: '#07091a',
+  bg1: '#16143a',
+  ink: '#f5f8ff',
+  dim: '#a9b7d6',
+  cyan: '#3ee0ff',
+  gold: '#ffd76a',
+  amber: '#ffb020',
+  good: '#5dffb0',
+  red: '#ff5b6e',
+  line: 'rgba(150, 186, 240, 0.32)',
+  panel: 'rgba(9, 14, 36, 0.92)',
+  panel2: 'rgba(18, 26, 62, 0.96)',
+  white: '#ffffff'
+};
+
+const P_NAME = ['Crimson Detective', 'Azure Detective', 'Emerald Detective'];
+const P_SHORT = ['P1 CRIMSON', 'P2 AZURE', 'P3 EMERALD'];
+const P_COLOR = ['#ff4d5e', '#3aa0ff', '#2ee59d'];
+const KEYS = [['1', '2', '3', '4'], ['Q', 'W', 'E', 'R'], ['U', 'I', 'O', 'P']];
+const DIRECT = [
+  ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Numpad1', 'Numpad2', 'Numpad3', 'Numpad4'],
+  ['KeyQ', 'KeyW', 'KeyE', 'KeyR'],
+  ['KeyU', 'KeyI', 'KeyO', 'KeyP']
+];
+
+const FEAT = {
+  heads: { label: 'Heads', unit: 'head', units: 'heads', min: 1, max: 1 },
+  eyes: { label: 'Eyes', unit: 'eye', units: 'eyes', min: 1, max: 5 },
+  legs: { label: 'Legs', unit: 'leg', units: 'legs', min: 2, max: 6 },
+  horns: { label: 'Antennae', unit: 'antenna', units: 'antennae', min: 1, max: 4 }
+};
+
+const ROSTER = [
+  { id: 'zorg', name: 'Zorg', shape: 'blob', body: '#ff8a3d', accent: '#ffe3cc', limb: '#c85a18', ink: '#2a1408', eyes: 3, legs: 2, horns: 2 },
+  { id: 'bloop', name: 'Bloop', shape: 'jelly', body: '#3ecbff', accent: '#e7fbff', limb: '#1288b4', ink: '#062033', eyes: 1, legs: 4, horns: 1 },
+  { id: 'kryll', name: 'Kryll', shape: 'bug', body: '#8dff57', accent: '#f3ffe8', limb: '#3c9a20', ink: '#102008', eyes: 2, legs: 6, horns: 2 },
+  { id: 'mib', name: 'Mib', shape: 'tri', body: '#ff5ad8', accent: '#ffe4f8', limb: '#c41898', ink: '#2a0822', eyes: 5, legs: 3, horns: 3 },
+  { id: 'vex', name: 'Vex', shape: 'gem', body: '#ffd34d', accent: '#fff6d2', limb: '#c89614', ink: '#2a2208', eyes: 4, legs: 4, horns: 2 },
+  { id: 'pip', name: 'Pip', shape: 'star', body: '#c9a6ff', accent: '#f7f0ff', limb: '#8a62d8', ink: '#1c1030', eyes: 2, legs: 2, horns: 4 }
+];
+
+const SCENES = [
+  { place: 'the star-vault', sensor: 'Security cameras' },
+  { place: 'Docking Bay 7', sensor: 'Floor sensors' },
+  { place: 'the moon greenhouse', sensor: 'Pollen scanners' },
+  { place: 'the precinct airlock', sensor: 'Holo-gates' },
+  { place: 'the comet canteen', sensor: 'Snack-bot cameras' },
+  { place: 'Cargo Ring C', sensor: 'Crate sensors' },
+  { place: 'the nebula library', sensor: 'Quiet-room sensors' },
+  { place: 'Launch Pad 12', sensor: 'Pad cameras' }
+];
+
+const DIFFS = [
+  { id: 'easy', name: 'EASY', title: 'Cadet Inspector', blurb: 'Heads are ×1. Double, triple, or subtract to clear one alien.' },
+  { id: 'medium', name: 'MEDIUM', title: 'Galactic Detective', blurb: 'Multiply one equation by 2, 3, or 4 so one alien matches.' },
+  { id: 'hard', name: 'HARD', title: 'Chief Xeno-Profiler', blurb: 'Scale both equations to a common multiple, then subtract.' },
+  { id: 'extreme', name: 'EXTREME', title: 'Arch-Detective', blurb: 'Three sensor logs, a fast clock, and ×2 / ×3 perfect-case combos.' }
+];
+
+const MATCH_TIME = { easy: 300, medium: 260, hard: 240, extreme: 150 };
+const CASE_BUDGET = { easy: 48, medium: 42, hard: 46, extreme: 30 };
+const STEP_POINTS = [0, 100, 150, 400];
+
+const history = [];
+const queue = [];
+const sparks = [];
+const cardHits = [];
+const stars = [];
+const padsPrev = [
+  { left: false, right: false, up: false, down: false, a: false },
+  { left: false, right: false, up: false, down: false, a: false },
+  { left: false, right: false, up: false, down: false, a: false }
+];
+const pointer = { x: -9999, y: -9999, inside: false };
+const view = { scale: 1, ox: 0, oy: 0 };
+
+let canvas, ctx;
+let reduceMotion = false;
+let hoverKey = '';
+let bests = {};
+
+const G = {
+  screen: 'title',
+  players: 1,
+  diff: 'easy',
+  mode: 'solo',
+  focusRow: 3,
+  overFocus: 0,
+  pause: false,
+  timeLeft: 0,
+  timeMax: 0,
+  lanes: [],
+  t: 0,
+  shake: 0,
+  overReason: '',
+  best: 0
+};
+
+for (let i = 0; i < 70; i++) {
+  stars.push({
+    x: Math.random() * VW,
+    y: Math.random() * VH,
+    r: Math.random() * 1.4 + 0.3,
+    p: Math.random() * Math.PI * 2,
+    s: 0.4 + Math.random() * 1.4
+  });
+}
+
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
+function shuffle(list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+function gcd(a, b) {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y) {
+    const t = x % y;
+    x = y;
+    y = t;
+  }
+  return x || 1;
+}
+function twoCounts(lo, hi) {
+  const a = randInt(lo, hi);
+  let b = randInt(lo, hi);
+  if (a === b) b = a === hi ? a - 1 : a + 1;
+  return [a, b];
+}
+function pluralName(name) {
+  if (name === 'Vex') return 'Vexes';
+  if (name === 'Kryll') return 'Krylls';
+  return name + 's';
+}
+function phrase(n, f) {
+  return n + ' ' + (n === 1 ? f.unit : f.units);
+}
+function spawn(t) {
+  return {
+    id: t.id, name: t.name, shape: t.shape,
+    body: t.body, accent: t.accent, limb: t.limb, ink: t.ink,
+    eyes: t.eyes, legs: t.legs, horns: t.horns
+  };
+}
+function pickTwoSpecies() {
+  const i = randInt(0, ROSTER.length - 1);
+  let j = randInt(0, ROSTER.length - 2);
+  if (j >= i) j += 1;
+  return [spawn(ROSTER[i]), spawn(ROSTER[j])];
+}
+function feat(key, perA, perB, countA, countB) {
+  const meta = FEAT[key];
+  return {
+    key: key,
+    label: meta.label,
+    unit: meta.unit,
+    units: meta.units,
+    perA: perA,
+    perB: perB,
+    total: perA * countA + perB * countB
+  };
+}
+function applyAnatomy(A, B, assigned) {
+  ['eyes', 'legs', 'horns'].forEach((k) => {
+    if (assigned[k]) {
+      A[k] = assigned[k].perA;
+      B[k] = assigned[k].perB;
+    } else {
+      A[k] = randInt(FEAT[k].min, FEAT[k].max);
+      B[k] = randInt(FEAT[k].min, FEAT[k].max);
+    }
+  });
+}
+function solveElim(f1, f2, wipe) {
+  const c1 = wipe === 'A' ? f1.perA : f1.perB;
+  const c2 = wipe === 'A' ? f2.perA : f2.perB;
+  if (c1 <= 0 || c2 <= 0) return null;
+  const g = gcd(c1, c2);
+  const L = (c1 / g) * c2;
+  const m1 = Math.round(L / c1);
+  const m2 = Math.round(L / c2);
+  if (m1 * c1 !== L || m2 * c2 !== L) return null;
+  const s1 = { perA: f1.perA * m1, perB: f1.perB * m1, total: f1.total * m1 };
+  const s2 = { perA: f2.perA * m2, perB: f2.perB * m2, total: f2.total * m2 };
+  const other = wipe === 'A' ? 'B' : 'A';
+  let coef = (other === 'A' ? s1.perA : s1.perB) - (other === 'A' ? s2.perA : s2.perB);
+  let tot = s1.total - s2.total;
+  if (coef < 0) {
+    coef = -coef;
+    tot = -tot;
+  }
+  if (coef <= 0 || tot <= 0 || tot % coef !== 0) return null;
+  const remainCount = tot / coef;
+  if (remainCount < 1) return null;
+  return {
+    wipe: wipe,
+    m1: m1,
+    m2: m2,
+    s1: s1,
+    s2: s2,
+    remain: other,
+    remainCoef: coef,
+    remainTotal: tot,
+    remainCount: remainCount,
+    matched: L
+  };
+}
+function tagScale(elim) {
+  if (elim.m1 === 1 && elim.m2 === 1) return 'direct';
+  if (elim.m1 === 1 || elim.m2 === 1) return 'single';
+  return 'dual';
+}
+function signature(c) {
+  const parts = [
+    c.A.id, c.B.id, c.countA, c.countB,
+    c.f1.key, c.f1.perA, c.f1.perB, c.f1.total,
+    c.f2.key, c.f2.perA, c.f2.perB, c.f2.total,
+    c.elim.wipe, c.elim.m1, c.elim.m2
+  ];
+  if (c.extra) parts.push(c.extra.key, c.extra.perA, c.extra.perB, c.extra.total);
+  return parts.join(':');
+}
+function packCase(A, B, countA, countB, f1, f2, elim, extra, fallback) {
+  const c = {
+    A: A,
+    B: B,
+    countA: countA,
+    countB: countB,
+    f1: f1,
+    f2: f2,
+    extra: extra || null,
+    elim: elim,
+    scene: SCENES[randInt(0, SCENES.length - 1)],
+    fallback: !!fallback,
+    scale: tagScale(elim),
+    file: randInt(140, 960)
+  };
+  const d1 = Math.abs(f1.perA - f1.perB);
+  const d2 = Math.abs(f2.perA - f2.perB);
+  c.swapFeat = d2 >= d1 ? f2 : f1;
+  c.sig = signature(c);
+  return c;
+}
+function acceptElim(elim, countA, countB, caps) {
+  if (!elim) return false;
+  const expect = elim.remain === 'A' ? countA : countB;
+  if (elim.remainCount !== expect) return false;
+  if (elim.s1.total > caps || elim.s2.total > caps) return false;
+  return true;
+}
+
+function makeEasy() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const pair = pickTwoSpecies();
+    const counts = twoCounts(2, 7);
+    const countA = counts[0];
+    const countB = counts[1];
+    const bk = pick(['eyes', 'legs', 'horns']);
+    const min = FEAT[bk].min;
+    const max = FEAT[bk].max;
+    const matchedOpts = [];
+    for (let v = min; v <= Math.min(4, max); v++) matchedOpts.push(v);
+    const matched = pick(matchedOpts);
+    const otherOpts = [];
+    for (let v = min; v <= max; v++) {
+      const gap = Math.abs(matched - v);
+      if (v !== matched && gap >= 1 && gap <= 4) otherOpts.push(v);
+    }
+    if (!otherOpts.length) continue;
+    const other = pick(otherOpts);
+    const wipeA = Math.random() < 0.5;
+    const perA = wipeA ? matched : other;
+    const perB = wipeA ? other : matched;
+    const wipe = wipeA ? 'A' : 'B';
+    const f1 = feat('heads', 1, 1, countA, countB);
+    const f2 = feat(bk, perA, perB, countA, countB);
+    const elim = solveElim(f1, f2, wipe);
+    if (!acceptElim(elim, countA, countB, 80)) continue;
+    if (Math.max(elim.m1, elim.m2) > 4) continue;
+    if (Math.min(elim.m1, elim.m2) !== 1) continue;
+    const assigned = {};
+    assigned[bk] = { perA: perA, perB: perB };
+    applyAnatomy(pair[0], pair[1], assigned);
+    return packCase(pair[0], pair[1], countA, countB, f1, f2, elim, null, false);
+  }
+  return fallbackEasy();
+}
+function fallbackEasy() {
+  const pair = pickTwoSpecies();
+  const counts = twoCounts(2, 7);
+  const patterns = [
+    { perA: 2, perB: 4, wipe: 'A', key: 'legs' },
+    { perA: 1, perB: 3, wipe: 'A', key: 'eyes' },
+    { perA: 4, perB: 2, wipe: 'B', key: 'legs' },
+    { perA: 3, perB: 1, wipe: 'B', key: 'eyes' }
+  ];
+  const p = pick(patterns);
+  const f1 = feat('heads', 1, 1, counts[0], counts[1]);
+  const f2 = feat(p.key, p.perA, p.perB, counts[0], counts[1]);
+  const elim = solveElim(f1, f2, p.wipe);
+  const assigned = {};
+  assigned[p.key] = { perA: p.perA, perB: p.perB };
+  applyAnatomy(pair[0], pair[1], assigned);
+  return packCase(pair[0], pair[1], counts[0], counts[1], f1, f2, elim, null, true);
+}
+
+function makeMedium() {
+  const keys = ['eyes', 'legs', 'horns'];
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const pair = pickTwoSpecies();
+    const counts = twoCounts(2, 9);
+    const countA = counts[0];
+    const countB = counts[1];
+    const i1 = randInt(0, 2);
+    let i2 = randInt(0, 1);
+    if (i2 >= i1) i2 += 1;
+    const k1 = keys[i1];
+    const k2 = keys[i2];
+    const k = pick([2, 3, 4]);
+    const bases = [];
+    for (let b = FEAT[k1].min; b <= FEAT[k1].max; b++) {
+      const big = b * k;
+      if (big >= FEAT[k2].min && big <= FEAT[k2].max) bases.push(b);
+    }
+    if (!bases.length) continue;
+    const base = pick(bases);
+    const big = base * k;
+    const o1 = randInt(FEAT[k1].min, FEAT[k1].max);
+    const o2opts = [];
+    for (let v = FEAT[k2].min; v <= FEAT[k2].max; v++) {
+      if (v !== o1 * k) o2opts.push(v);
+    }
+    if (!o2opts.length) continue;
+    const o2 = pick(o2opts);
+    const wipeA = Math.random() < 0.5;
+    const perA1 = wipeA ? base : o1;
+    const perB1 = wipeA ? o1 : base;
+    const perA2 = wipeA ? big : o2;
+    const perB2 = wipeA ? o2 : big;
+    const wipe = wipeA ? 'A' : 'B';
+    const f1 = feat(k1, perA1, perB1, countA, countB);
+    const f2 = feat(k2, perA2, perB2, countA, countB);
+    if (f1.total > 72 || f2.total > 72) continue;
+    const elim = solveElim(f1, f2, wipe);
+    if (!acceptElim(elim, countA, countB, 110)) continue;
+    if (Math.min(elim.m1, elim.m2) !== 1) continue;
+    if (Math.max(elim.m1, elim.m2) !== k) continue;
+    const assigned = {};
+    assigned[k1] = { perA: perA1, perB: perB1 };
+    assigned[k2] = { perA: perA2, perB: perB2 };
+    applyAnatomy(pair[0], pair[1], assigned);
+    return packCase(pair[0], pair[1], countA, countB, f1, f2, elim, null, false);
+  }
+  return fallbackMedium();
+}
+function fallbackMedium() {
+  const pair = pickTwoSpecies();
+  const counts = twoCounts(2, 8);
+  const usable = [
+    { k1: 'eyes', a1: 1, b1: 3, k2: 'legs', a2: 4, b2: 2, wipe: 'A' },
+    { k1: 'horns', a1: 1, b1: 3, k2: 'legs', a2: 2, b2: 4, wipe: 'A' },
+    { k1: 'eyes', a1: 2, b1: 1, k2: 'legs', a2: 6, b2: 2, wipe: 'B' },
+    { k1: 'eyes', a1: 4, b1: 1, k2: 'horns', a2: 2, b2: 4, wipe: 'B' }
+  ];
+  const p = pick(usable);
+  const f1 = feat(p.k1, p.a1, p.b1, counts[0], counts[1]);
+  const f2 = feat(p.k2, p.a2, p.b2, counts[0], counts[1]);
+  const elim = solveElim(f1, f2, p.wipe);
+  const assigned = {};
+  assigned[p.k1] = { perA: p.a1, perB: p.b1 };
+  assigned[p.k2] = { perA: p.a2, perB: p.b2 };
+  applyAnatomy(pair[0], pair[1], assigned);
+  return packCase(pair[0], pair[1], counts[0], counts[1], f1, f2, elim, null, true);
+}
+
+function dualList(k1, k2) {
+  const list = [];
+  for (let c1 = FEAT[k1].min; c1 <= FEAT[k1].max; c1++) {
+    for (let c2 = FEAT[k2].min; c2 <= FEAT[k2].max; c2++) {
+      const g = gcd(c1, c2);
+      const L = (c1 / g) * c2;
+      const m1 = L / c1;
+      const m2 = L / c2;
+      if (m1 > 1 && m2 > 1 && m1 <= 4 && m2 <= 4) list.push([c1, c2, m1, m2]);
+    }
+  }
+  return list;
+}
+function makeHard() {
+  const keys = ['eyes', 'legs', 'horns'];
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const pair = pickTwoSpecies();
+    const counts = twoCounts(2, 8);
+    const countA = counts[0];
+    const countB = counts[1];
+    const i1 = randInt(0, 2);
+    let i2 = randInt(0, 1);
+    if (i2 >= i1) i2 += 1;
+    const k1 = keys[i1];
+    const k2 = keys[i2];
+    const pairs = dualList(k1, k2);
+    if (pairs.length < 2) continue;
+    const pA = pick(pairs);
+    const pB = pick(pairs);
+    const wipeA = Math.random() < 0.5;
+    if (wipeA && pA[2] * pB[0] === pA[3] * pB[1]) continue;
+    if (!wipeA && pB[2] * pA[0] === pB[3] * pA[1]) continue;
+    const f1 = feat(k1, pA[0], pB[0], countA, countB);
+    const f2 = feat(k2, pA[1], pB[1], countA, countB);
+    if (f1.total > 64 || f2.total > 64) continue;
+    const wipe = wipeA ? 'A' : 'B';
+    const elim = solveElim(f1, f2, wipe);
+    if (!acceptElim(elim, countA, countB, 100)) continue;
+    if (elim.m1 <= 1 || elim.m2 <= 1 || elim.m1 > 4 || elim.m2 > 4) continue;
+    const other = solveElim(f1, f2, wipe === 'A' ? 'B' : 'A');
+    if (other && (other.m1 === 1 || other.m2 === 1)) continue;
+    const assigned = {};
+    assigned[k1] = { perA: pA[0], perB: pB[0] };
+    assigned[k2] = { perA: pA[1], perB: pB[1] };
+    applyAnatomy(pair[0], pair[1], assigned);
+    return packCase(pair[0], pair[1], countA, countB, f1, f2, elim, null, false);
+  }
+  return fallbackHard();
+}
+function fallbackHard() {
+  const pair = pickTwoSpecies();
+  const counts = twoCounts(2, 7);
+  const patterns = [
+    { a1: 2, b1: 3, a2: 3, b2: 4, wipe: 'A' },
+    { a1: 3, b1: 2, a2: 4, b2: 3, wipe: 'A' },
+    { a1: 4, b1: 3, a2: 3, b2: 2, wipe: 'B' },
+    { a1: 3, b1: 4, a2: 2, b2: 3, wipe: 'A' }
+  ];
+  const p = pick(patterns);
+  const f1 = feat('eyes', p.a1, p.b1, counts[0], counts[1]);
+  const f2 = feat('legs', p.a2, p.b2, counts[0], counts[1]);
+  const elim = solveElim(f1, f2, p.wipe);
+  applyAnatomy(pair[0], pair[1], {
+    eyes: { perA: p.a1, perB: p.b1 },
+    legs: { perA: p.a2, perB: p.b2 }
+  });
+  return packCase(pair[0], pair[1], counts[0], counts[1], f1, f2, elim, null, true);
+}
+
+function attachExtra(base) {
+  const used = {};
+  used[base.f1.key] = true;
+  used[base.f2.key] = true;
+  const leftover = ['eyes', 'legs', 'horns'].filter((k) => !used[k]);
+  const ek = leftover[0] || 'horns';
+  let perA = randInt(FEAT[ek].min, FEAT[ek].max);
+  let perB = perA;
+  if (Math.random() >= 0.6) {
+    perB = randInt(FEAT[ek].min, FEAT[ek].max);
+    if (perB === perA) perB = perA === FEAT[ek].max ? perA - 1 : perA + 1;
+  }
+  base.extra = feat(ek, perA, perB, base.countA, base.countB);
+  base.extra.same = perA === perB;
+  base.A[ek] = perA;
+  base.B[ek] = perB;
+  base.sig = signature(base);
+  return base;
+}
+function makeExtreme() {
+  const base = Math.random() < 0.7 ? makeHard() : makeMedium();
+  return attachExtra(base);
+}
+function makeCase(diff) {
+  if (diff === 'easy') return makeEasy();
+  if (diff === 'medium') return makeMedium();
+  if (diff === 'hard') return makeHard();
+  return makeExtreme();
+}
+function generateCase(diff, avoid) {
+  const block = avoid || [];
+  let last = null;
+  for (let i = 0; i < 28; i++) {
+    last = makeCase(diff);
+    if (block.indexOf(last.sig) === -1) return last;
+  }
+  return last;
+}
+
+function sideAlien(c, side) { return side === 'A' ? c.A : c.B; }
+function sideCount(c, side) { return side === 'A' ? c.countA : c.countB; }
+function eqLine(label, perA, perB, total, A, B) {
+  return [
+    { k: 't', v: label },
+    { k: 'n', v: perA },
+    { k: 'a', sp: A },
+    { k: 't', v: '+' },
+    { k: 'n', v: perB },
+    { k: 'a', sp: B },
+    { k: 't', v: '=' },
+    { k: 'n', v: total }
+  ];
+}
+function resultLines(species, coef, total, count) {
+  const lines = [];
+  if (coef !== 1) {
+    lines.push([
+      { k: 'n', v: coef },
+      { k: 'a', sp: species },
+      { k: 't', v: '=' },
+      { k: 'n', v: total }
+    ]);
+  }
+  lines.push([
+    { k: 'n', v: 1 },
+    { k: 'a', sp: species },
+    { k: 't', v: '=' },
+    { k: 'n', v: count }
+  ]);
+  return lines;
+}
+function partsLive(parts) {
+  return parts.map((p) => (p.k === 'a' ? p.sp.name : String(p.v))).join(' ');
+}
+function cardKey(card) {
+  const body = card.lines.map((line) => line.map((p) => (p.k === 'a' ? p.sp.id : p.k + String(p.v))).join(',')).join('|');
+  return (card.caption || '') + '>' + body;
+}
+function cardLive(card) {
+  const bits = [];
+  if (card.caption) bits.push(card.caption);
+  card.lines.forEach((line) => bits.push(partsLive(line)));
+  return bits.join('. ');
+}
+function finishCard(card) {
+  card.key = cardKey(card);
+  card.live = cardLive(card);
+  return card;
+}
+function methodCaption(c) {
+  const e = c.elim;
+  const w = sideAlien(c, e.wipe).name;
+  if (e.m1 === 1 && e.m2 === 1) return 'Same ' + w + ' count on both lines — subtract';
+  if (e.m2 === 1) return c.f1.label + ' × ' + e.m1 + ', then subtract ' + c.f2.label;
+  if (e.m1 === 1) return c.f2.label + ' × ' + e.m2 + ', then subtract ' + c.f1.label;
+  return c.f1.label + ' × ' + e.m1 + ' and ' + c.f2.label + ' × ' + e.m2 + ', then subtract';
+}
+function offsetCount(base, ban) {
+  for (let d = 2; d <= 9; d++) {
+    const n = base + d;
+    if (n >= 1 && n <= 12 && ban.indexOf(n) === -1) return n;
+    const m = base - d;
+    if (m >= 1 && m <= 12 && ban.indexOf(m) === -1) return m;
+  }
+  for (let n = 1; n <= 12; n++) if (ban.indexOf(n) === -1) return n;
+  return 12;
+}
+function pairLine(nA, nB, A, B) {
+  return [
+    { k: 'n', v: nA },
+    { k: 'a', sp: A },
+    { k: 't', v: A.name },
+    { k: 't', v: '&' },
+    { k: 'n', v: nB },
+    { k: 'a', sp: B },
+    { k: 't', v: B.name }
+  ];
+}
+
+function buildStep1(c) {
+  const A = c.A;
+  const B = c.B;
+  const cards = [];
+  cards.push(finishCard({
+    correct: true,
+    trap: null,
+    caption: 'Both sensors',
+    lines: [
+      eqLine(c.f1.label, c.f1.perA, c.f1.perB, c.f1.total, A, B),
+      eqLine(c.f2.label, c.f2.perA, c.f2.perB, c.f2.total, A, B)
+    ]
+  }));
+  cards.push(finishCard({
+    correct: false,
+    trap: 'swap',
+    caption: 'Both sensors',
+    lines: [
+      eqLine(c.f1.label, c.f1.perB, c.f1.perA, c.f1.total, A, B),
+      eqLine(c.f2.label, c.f2.perB, c.f2.perA, c.f2.total, A, B)
+    ]
+  }));
+  let tA = c.f2.total;
+  let tB = c.f1.total;
+  if (tA === c.f1.total && tB === c.f2.total) {
+    tA = c.f1.total + c.countA;
+    tB = c.f2.total + c.countB;
+  }
+  cards.push(finishCard({
+    correct: false,
+    trap: 'sensors',
+    caption: 'Both sensors',
+    lines: [
+      eqLine(c.f1.label, c.f1.perA, c.f1.perB, tA, A, B),
+      eqLine(c.f2.label, c.f2.perA, c.f2.perB, tB, A, B)
+    ]
+  }));
+  if (c.extra) {
+    cards.push(finishCard({
+      correct: false,
+      trap: 'distractor',
+      caption: 'Both sensors',
+      lines: [
+        eqLine(c.f1.label, c.f1.perA, c.f1.perB, c.f1.total, A, B),
+        eqLine(c.extra.label, c.extra.perA, c.extra.perB, c.extra.total, A, B)
+      ]
+    }));
+  } else {
+    let drift = c.f2.perA + 1;
+    const ceiling = FEAT[c.f2.key] ? FEAT[c.f2.key].max + 1 : 8;
+    if (drift > ceiling) drift = c.f2.perA - 1;
+    if (drift === c.f2.perA) drift = c.f2.perB === c.f2.perA ? c.f2.perA + 2 : c.f2.perB;
+    const trap = drift === c.f2.perB && drift !== c.f2.perA ? 'swap' : 'mismatch';
+    cards.push(finishCard({
+      correct: false,
+      trap: trap,
+      caption: 'Both sensors',
+      lines: [
+        eqLine(c.f1.label, c.f1.perA, c.f1.perB, c.f1.total, A, B),
+        eqLine(c.f2.label, drift, c.f2.perB, c.f2.total, A, B)
+      ]
+    }));
+  }
+  return dedupeCards(cards);
+}
+function buildStep2(c) {
+  const e = c.elim;
+  const remainSp = sideAlien(c, e.remain);
+  const wipeSp = sideAlien(c, e.wipe);
+  const otherCount = sideCount(c, e.wipe);
+  const caption = methodCaption(c);
+  const cards = [];
+  cards.push(finishCard({
+    correct: true,
+    trap: null,
+    caption: caption,
+    finalSide: e.remain,
+    finalCount: e.remainCount,
+    lines: resultLines(remainSp, e.remainCoef, e.remainTotal, e.remainCount)
+  }));
+  const addCoef = e.matched * 2;
+  const addTotal = e.s1.total + e.s2.total;
+  let addCount = Math.max(1, Math.round(addTotal / addCoef));
+  if (addCount === c.countA || addCount === c.countB) addCount += 3;
+  if (addCount > 14) addCount = 8;
+  cards.push(finishCard({
+    correct: false,
+    trap: 'add',
+    caption: 'Add the +' + e.matched + ' ' + pluralName(wipeSp.name),
+    finalSide: e.wipe,
+    finalCount: addCount,
+    lines: resultLines(wipeSp, addCoef, addTotal, addCount)
+  }));
+  cards.push(finishCard({
+    correct: false,
+    trap: 'slip',
+    caption: caption,
+    finalSide: e.remain,
+    finalCount: otherCount,
+    lines: resultLines(remainSp, e.remainCoef, e.remainTotal, otherCount)
+  }));
+  if (e.m1 > 1 || e.m2 > 1) {
+    const useFirst = e.m1 > 1;
+    const label = useFirst ? c.f1.label : c.f2.label;
+    const m = useFirst ? e.m1 : e.m2;
+    const scaled = useFirst ? e.s1 : e.s2;
+    const oldTotal = useFirst ? c.f1.total : c.f2.total;
+    const bad = offsetCount(e.remainCount, [e.remainCount, otherCount, addCount]);
+    cards.push(finishCard({
+      correct: false,
+      trap: 'partial',
+      caption: label + ' × ' + m + ', but the total stays ' + oldTotal,
+      finalSide: e.remain,
+      finalCount: bad,
+      lines: [
+        eqLine(label, scaled.perA, scaled.perB, oldTotal, c.A, c.B),
+        [
+          { k: 'n', v: 1 },
+          { k: 'a', sp: remainSp },
+          { k: 't', v: '=' },
+          { k: 'n', v: bad }
+        ]
+      ]
+    }));
+  } else {
+    const diff = Math.abs(c.f1.total - c.f2.total);
+    const bad = offsetCount(e.remainCount, [e.remainCount, otherCount]);
+    cards.push(finishCard({
+      correct: false,
+      trap: 'bare',
+      caption: 'Subtract only the two sensor totals',
+      finalSide: e.remain,
+      finalCount: bad,
+      lines: [
+        [
+          { k: 'n', v: c.f1.total },
+          { k: 't', v: '−' },
+          { k: 'n', v: c.f2.total },
+          { k: 't', v: '=' },
+          { k: 'n', v: diff }
+        ],
+        [
+          { k: 'n', v: 1 },
+          { k: 'a', sp: remainSp },
+          { k: 't', v: '=' },
+          { k: 'n', v: bad }
+        ]
+      ]
+    }));
+  }
+  return dedupeCards(cards);
+}
+function buildStep3(c) {
+  const A = c.A;
+  const B = c.B;
+  const pairs = [
+    { a: c.countA, b: c.countB, correct: true, trap: null },
+    { a: c.countB, b: c.countA, correct: false, trap: 'reverse' },
+    { a: c.countA + 1, b: c.countB, correct: false, trap: 'off' },
+    { a: c.countA, b: Math.max(1, c.countB - 1), correct: false, trap: 'off' }
+  ];
+  if (c.countB - 1 === c.countA) pairs[3] = { a: c.countA, b: c.countB + 1, correct: false, trap: 'off' };
+  if (pairs[2].a === pairs[1].a && pairs[2].b === pairs[1].b) pairs[2] = { a: Math.max(1, c.countA - 1), b: c.countB + 1, correct: false, trap: 'off' };
+  const seen = {};
+  pairs.forEach((p, idx) => {
+    let key = p.a + ':' + p.b;
+    let guard = 0;
+    while (seen[key] && guard < 6) {
+      guard += 1;
+      if (p.correct) break;
+      p.a += 1;
+      if (p.a > 12) p.a = 1;
+      key = p.a + ':' + p.b;
+    }
+    seen[key] = true;
+    p.key = key;
+    p.idx = idx;
+  });
+  return pairs.map((p) => finishCard({
+    correct: p.correct,
+    trap: p.trap,
+    caption: 'Containment order',
+    emphasis: true,
+    pair: [p.a, p.b],
+    lines: [pairLine(p.a, p.b, A, B)]
+  }));
+}
+function dedupeCards(cards) {
+  const seen = {};
+  cards.forEach((card) => {
+    let guard = 0;
+    while (seen[card.key] && guard < 6 && !card.correct) {
+      guard += 1;
+      const line = card.lines[card.lines.length - 1];
+      for (let i = line.length - 1; i >= 0; i--) {
+        if (line[i].k === 'n') {
+          let next = Number(line[i].v) + 2;
+          if (next > 14) next = 1;
+          line[i].v = next;
+          if (card.finalCount != null) card.finalCount = next;
+          break;
+        }
+      }
+      card.caption = card.caption.replace(/ ·\d+$/, '') + ' ·' + guard;
+      finishCard(card);
+    }
+    seen[card.key] = true;
+  });
+  return cards;
+}
+function buildCards(c, step) {
+  let cards;
+  if (step === 1) cards = buildStep1(c);
+  else if (step === 2) cards = buildStep2(c);
+  else cards = buildStep3(c);
+  return shuffle(cards);
+}
+
+function tipFor(c, trap) {
+  if (trap === 'swap' || trap === 'mismatch') {
+    const f = c.swapFeat;
+    return 'Check the alien mugshots! ' + c.A.name + ' has ' + phrase(f.perA, f) + ' and ' + c.B.name + ' has ' + phrase(f.perB, f) + ' — match each number to the right alien!';
+  }
+  if (trap === 'partial') {
+    const e = c.elim;
+    if (e.m1 > 1 && e.m2 > 1) {
+      return 'When you multiply an equation, you must multiply EVERY part — including the totals (' + c.f1.total + ' × ' + e.m1 + ' = ' + (c.f1.total * e.m1) + ' and ' + c.f2.total + ' × ' + e.m2 + ' = ' + (c.f2.total * e.m2) + ')!';
+    }
+    const m = Math.max(e.m1, e.m2);
+    const src = e.m1 > 1 ? c.f1 : c.f2;
+    return 'When you multiply an equation by ' + m + ', you must multiply EVERY part — including the total on the right (' + src.total + ' × ' + m + ' = ' + (src.total * m) + ')!';
+  }
+  if (trap === 'add') {
+    const name = sideAlien(c, c.elim.wipe).name;
+    return 'Both equations now have +' + c.elim.matched + ' ' + pluralName(name) + '! SUBTRACT the two equations to eliminate the ' + pluralName(name) + ' completely!';
+  }
+  if (trap === 'reverse' || trap === 'off') {
+    return 'Double-check which alien is which! Substitute your first answer back into Equation 1 to verify both totals!';
+  }
+  if (trap === 'slip') {
+    const name = sideAlien(c, c.elim.remain).name;
+    return 'Divide the leftover total. ' + c.elim.remainTotal + ' ÷ ' + c.elim.remainCoef + ' = ' + c.elim.remainCount + ' ' + pluralName(name) + '.';
+  }
+  if (trap === 'distractor' && c.extra) {
+    return 'The chief asked for ' + c.f1.label + ' and ' + c.f2.label + '. The ' + c.extra.label + ' log is extra — leave it off the board!';
+  }
+  if (trap === 'sensors') {
+    return 'The aliens on the left are right, but a sensor total changed. Copy the exact number from the crime-scene log!';
+  }
+  if (trap === 'bare') {
+    return 'Subtract the whole equations, alien by alien. Do not just subtract the two sensor totals!';
+  }
+  return 'Read both mugshots again and rebuild each equation from the scan card.';
+}
+function storyText(c) {
+  if (c.extra) {
+    return c.scene.sensor + ' logged ' + c.f1.total + ' ' + c.f1.units + ', ' + c.f2.total + ' ' + c.f2.units + ', and ' + c.extra.total + ' ' + c.extra.units + ' at ' + c.scene.place + '. Build the ' + c.f1.label + ' equation and the ' + c.f2.label + ' equation.';
+  }
+  return c.scene.sensor + ' detected ' + c.f1.total + ' ' + c.f1.units + ' and ' + c.f2.total + ' ' + c.f2.units + ' at ' + c.scene.place + '!';
+}
+function promptFor(c, step) {
+  if (step === 1) {
+    if (c.extra) return 'Which pair matches the mugshots? Use ' + c.f1.label + ' and ' + c.f2.label + ' only.';
+    return 'Which picture equations match the mugshots and the sensors?';
+  }
+  if (step === 2) {
+    const w = sideAlien(c, c.elim.wipe).name;
+    if (c.elim.m1 === 1 && c.elim.m2 === 1) return 'The ' + w + ' numbers already match. Which subtraction wipes them out?';
+    if (c.elim.m1 === 1 || c.elim.m2 === 1) {
+      const m = Math.max(c.elim.m1, c.elim.m2);
+      const lab = c.elim.m1 > 1 ? c.f1.label : c.f2.label;
+      return 'Multiply ' + lab + ' by ' + m + ', then subtract to wipe out every ' + w + '.';
+    }
+    return 'Scale both equations so the ' + w + ' numbers match, then subtract.';
+  }
+  const name = sideAlien(c, c.elim.remain).name;
+  return name + ' = ' + c.elim.remainCount + '. Substitute back and arrest both species.';
+}
+function checkText(c) {
+  const a = c.f1.perA + '×' + c.countA + ' + ' + c.f1.perB + '×' + c.countB + ' = ' + c.f1.total + ' ' + c.f1.units;
+  const b = c.f2.perA + '×' + c.countA + ' + ' + c.f2.perB + '×' + c.countB + ' = ' + c.f2.total + ' ' + c.f2.units;
+  return a + '.   ' + b + '.';
+}
+function nextMult(streak) {
+  const n = streak + 1;
+  if (n >= 3) return 3;
+  if (n >= 2) return 2;
+  return 1;
+}
+function streakLabel(lane) {
+  if (G.diff !== 'extreme') return '';
+  const m = nextMult(lane.cleanStreak);
+  if (m === 1) return 'STREAK 0';
+  return 'PERFECT ×' + m;
+}
+
+function auditCase(c, diff) {
+  if (!c || !c.elim) throw new Error('missing case');
+  if (c.A.id === c.B.id) throw new Error('same species');
+  if (c.countA === c.countB) throw new Error('equal counts');
+  if (c.countA < 2 || c.countB < 2 || c.countA > 9 || c.countB > 9) throw new Error('count range');
+  if (diff === 'easy' && (c.countA > 7 || c.countB > 7)) throw new Error('easy range');
+  if (c.f1.perA * c.countA + c.f1.perB * c.countB !== c.f1.total) throw new Error('total 1');
+  if (c.f2.perA * c.countA + c.f2.perB * c.countB !== c.f2.total) throw new Error('total 2');
+  const e = c.elim;
+  if (e.remainCount * e.remainCoef !== e.remainTotal) throw new Error('division');
+  const expect = e.remain === 'A' ? c.countA : c.countB;
+  if (e.remainCount !== expect) throw new Error('remain count');
+  const w1 = e.wipe === 'A' ? e.s1.perA : e.s1.perB;
+  const w2 = e.wipe === 'A' ? e.s2.perA : e.s2.perB;
+  if (w1 !== w2) throw new Error('not aligned');
+  if (diff === 'easy') {
+    if (c.f1.key !== 'heads') throw new Error('easy heads');
+    if (Math.min(e.m1, e.m2) !== 1 || Math.max(e.m1, e.m2) > 4) throw new Error('easy scale');
+  } else if (diff === 'medium') {
+    if (!(Math.min(e.m1, e.m2) === 1 && Math.max(e.m1, e.m2) >= 2 && Math.max(e.m1, e.m2) <= 4)) throw new Error('medium scale');
+  } else if (diff === 'hard') {
+    if (e.m1 <= 1 || e.m2 <= 1 || e.m1 > 4 || e.m2 > 4) throw new Error('hard scale');
+  } else if (diff === 'extreme') {
+    if (!c.extra) throw new Error('extreme extra');
+    if (c.extra.perA * c.countA + c.extra.perB * c.countB !== c.extra.total) throw new Error('extra total');
+    if (c.scale === 'direct') throw new Error('extreme too easy');
+  }
+  ['f1', 'f2', 'extra'].forEach((slot) => {
+    const f = c[slot];
+    if (!f || f.key === 'heads') return;
+    if (c.A[f.key] !== f.perA || c.B[f.key] !== f.perB) throw new Error('mugshot ' + f.key);
+  });
+  const known = e.remainCount;
+  let subA;
+  let subB;
+  if (e.remain === 'B') {
+    const rem = c.f1.total - c.f1.perB * known;
+    if (rem % c.f1.perA !== 0) throw new Error('plug A');
+    subA = rem / c.f1.perA;
+    subB = known;
+  } else {
+    const rem = c.f1.total - c.f1.perA * known;
+    if (rem % c.f1.perB !== 0) throw new Error('plug B');
+    subA = known;
+    subB = rem / c.f1.perB;
+  }
+  if (subA !== c.countA || subB !== c.countB) throw new Error('substitution');
+  if (c.f2.perA * subA + c.f2.perB * subB !== c.f2.total) throw new Error('second equation');
+  for (let step = 1; step <= 3; step++) {
+    const cards = buildCards(c, step);
+    if (cards.length !== 4) throw new Error('need 4');
+    const goods = cards.filter((card) => card.correct);
+    if (goods.length !== 1) throw new Error(diff + ' step ' + step + ' goods ' + goods.length);
+    const keys = {};
+    cards.forEach((card) => {
+      if (keys[card.key]) throw new Error(diff + ' dup step ' + step);
+      keys[card.key] = true;
+    });
+    if (step === 2) {
+      const ok = goods[0];
+      if (ok.finalSide !== e.remain || ok.finalCount !== e.remainCount) throw new Error('step2 final');
+      cards.forEach((card) => {
+        if (!card.correct && card.finalSide === ok.finalSide && card.finalCount === ok.finalCount) throw new Error('echo answer');
+      });
+    }
+    if (step === 3) {
+      const ok = goods[0];
+      if (!ok.pair || ok.pair[0] !== c.countA || ok.pair[1] !== c.countB) throw new Error('step3 pair');
+    }
+  }
+}
+function selfTest() {
+  const diffs = ['easy', 'medium', 'hard', 'extreme'];
+  const pos = [0, 0, 0, 0];
+  let fallbacks = 0;
+  let total = 0;
+  const avoid = [];
+  diffs.forEach((d) => {
+    for (let i = 0; i < 36; i++) {
+      const c = generateCase(d, avoid);
+      auditCase(c, d);
+      if (avoid.indexOf(c.sig) !== -1) throw new Error('repeat in window ' + d);
+      avoid.push(c.sig);
+      if (avoid.length > 8) avoid.shift();
+      if (c.fallback) fallbacks += 1;
+      total += 1;
+      const cards = buildCards(c, 1);
+      pos[cards.findIndex((card) => card.correct)] += 1;
+    }
+  });
+  for (let n = 0; n < 20; n++) {
+    const batch = [];
+    const local = [];
+    for (let p = 0; p < 3; p++) {
+      const c = generateCase('hard', local);
+      if (local.indexOf(c.sig) !== -1) throw new Error('duel duplicate');
+      local.push(c.sig);
+      batch.push(c.sig);
+    }
+    if (new Set(batch).size !== 3) throw new Error('duel set');
+  }
+  if (Math.min.apply(null, pos) === 0) throw new Error('shuffle stuck ' + pos.join(','));
+  return { cases: total, fallbacks: fallbacks, slots: pos };
+}
+
+const audio = {
+  ctx: null,
+  master: null,
+  musicGain: null,
+  sfxGain: null,
+  muted: false,
+  musicOn: false,
+  nextNote: 0,
+  step: 0,
+  noiseBuf: null,
+  ensure() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : 0.9;
+    this.master.connect(this.ctx.destination);
+    this.musicGain = this.ctx.createGain();
+    this.musicGain.gain.value = 0.16;
+    this.musicGain.connect(this.master);
+    this.sfxGain = this.ctx.createGain();
+    this.sfxGain.gain.value = 0.55;
+    this.sfxGain.connect(this.master);
+    const len = Math.floor(this.ctx.sampleRate * 0.4);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this.noiseBuf = buf;
+  },
+  resume() {
+    this.ensure();
+    if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.musicOn) {
+      this.musicOn = true;
+      this.nextNote = this.ctx.currentTime + 0.05;
+    }
+  },
+  toggle() {
+    this.ensure();
+    this.muted = !this.muted;
+    if (this.master) this.master.gain.value = this.muted ? 0 : 0.9;
+    try { localStorage.setItem('xeno-scanner-muted', this.muted ? '1' : '0'); } catch (err) { /* ignore */ }
+    if (!this.muted) this.resume();
+  },
+  tone(dest, time, freq, dur, type, gain, slide) {
+    if (!this.ctx || this.muted) return;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(Math.max(40, freq), time);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, slide), time + dur);
+    g.gain.setValueAtTime(0.0001, time);
+    g.gain.exponentialRampToValueAtTime(gain, time + Math.min(0.02, dur * 0.25));
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    o.connect(g);
+    g.connect(dest);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+  },
+  noise(time, dur, gain, freq, type) {
+    if (!this.ctx || this.muted || !this.noiseBuf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = type || 'highpass';
+    filter.frequency.value = freq || 1200;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(gain, time);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.sfxGain);
+    src.start(time);
+    src.stop(time + dur + 0.02);
+  },
+  tick() {
+    if (!this.ctx || !this.musicOn || this.muted) return;
+    const eighth = 60 / 104 / 2;
+    const lead = [0, 3, 7, 10, 12, 10, 7, 3, 0, -2, 3, 7, 10, 7, 3, 0];
+    const bass = [0, 0, -5, -5, -7, -7, -5, 0];
+    while (this.nextNote < this.ctx.currentTime + 0.25) {
+      const t = this.nextNote;
+      const s = this.step % 16;
+      const root = 98 * Math.pow(2, bass[s >> 1] / 12);
+      if (s % 2 === 0) this.tone(this.musicGain, t, root, eighth * 1.7, 'triangle', 0.08);
+      const f = 392 * Math.pow(2, lead[s] / 12);
+      this.tone(this.musicGain, t, f, eighth * 0.85, 'square', 0.03);
+      if (s % 2 === 0) this.noise(t, 0.04, s % 4 === 0 ? 0.03 : 0.016, 2000, 'highpass');
+      this.step = (this.step + 1) % 16;
+      this.nextNote += eighth;
+    }
+  },
+  blip() { if (!this.ctx || this.muted) return; this.tone(this.sfxGain, this.ctx.currentTime, 740, 0.06, 'sine', 0.04, 980); },
+  chime() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 523, 0.18, 'triangle', 0.07);
+    this.tone(this.sfxGain, t + 0.08, 659, 0.22, 'triangle', 0.06);
+    this.tone(this.sfxGain, t + 0.16, 784, 0.28, 'sine', 0.05);
+  },
+  zap() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 880, 0.22, 'sawtooth', 0.05, 140);
+    this.tone(this.sfxGain, t, 660, 0.18, 'square', 0.03, 180);
+    this.noise(t, 0.16, 0.08, 900, 'bandpass');
+  },
+  whoosh() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.noise(t, 0.45, 0.1, 500, 'bandpass');
+    this.tone(this.sfxGain, t, 180, 0.4, 'sine', 0.06, 720);
+  },
+  buzz() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    this.tone(this.sfxGain, t, 150, 0.22, 'sawtooth', 0.05);
+    this.tone(this.sfxGain, t, 138, 0.22, 'square', 0.04);
+  },
+  thud() {
+    if (!this.ctx || this.muted) return;
+    this.tone(this.sfxGain, this.ctx.currentTime, 160, 0.28, 'sine', 0.1, 48);
+  },
+  fanfare() {
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    [523, 659, 784, 1046].forEach((f, i) => this.tone(this.sfxGain, t + i * 0.09, f, 0.24, 'triangle', 0.07));
+  }
+};
+
+function freshLane(player, goal) {
+  return {
+    player: player,
+    lives: 3,
+    score: 0,
+    cleanStreak: 0,
+    casePoints: 0,
+    mistakes: 0,
+    solved: 0,
+    goal: goal,
+    step: 1,
+    cards: [],
+    tried: [false, false, false, false],
+    focus: 0,
+    lock: 0,
+    phase: 'choose',
+    elapsed: 0,
+    tip: '',
+    shake: 0,
+    flash: 0,
+    wrongI: -1,
+    goodI: -1,
+    floaters: [],
+    celeT: 0,
+    celeSkip: 0,
+    found: null,
+    down: false,
+    downT: 0,
+    done: false,
+    holdDir: 0,
+    holdT: 0,
+    zapT: 0,
+    case: null
+  };
+}
+function activeIndex(lane) {
+  if (G.mode !== 'coop') return lane.player;
+  return (lane.solved + lane.step - 1) % G.players;
+}
+function speedBonus(elapsed, diff) {
+  return Math.round(Math.max(0, CASE_BUDGET[diff] - elapsed) * 2);
+}
+function spawnFloater(lane, text, color) {
+  lane.floaters.push({ text: text, oy: 210 + lane.floaters.length * 16, life: 1.05, color: color });
+}
+function burst(x, y, color, n) {
+  if (reduceMotion) return;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 50 + Math.random() * 160;
+    sparks.push({
+      x: x, y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 20,
+      life: 0.35 + Math.random() * 0.35,
+      max: 0.7,
+      color: color
+    });
+  }
+  if (sparks.length > 120) sparks.splice(0, sparks.length - 120);
+}
+function cardCenter(laneIndex, cardIndex) {
+  for (let i = 0; i < cardHits.length; i++) {
+    const h = cardHits[i];
+    if (h.kind === 'card' && h.lane === laneIndex && h.index === cardIndex) {
+      return { x: h.x + h.w / 2, y: h.y + h.h / 2 };
+    }
+  }
+  return { x: VW / 2, y: VH / 2 };
+}
+function syncLive() {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('live');
+  if (!el) return;
+  if (G.screen !== 'play') {
+    el.textContent = G.screen === 'title' ? 'Title screen. Choose players, difficulty, and mode.' : 'Mission complete.';
+    return;
+  }
+  const bits = G.lanes.map((lane, i) => {
+    if (!lane.case) return '';
+    const who = G.mode === 'duel' ? (P_NAME[i] + '. ') : '';
+    const opts = (lane.cards || []).map((card, n) => 'Option ' + (n + 1) + ': ' + card.live).join(' ');
+    return who + promptFor(lane.case, lane.step) + ' ' + opts + (lane.tip ? ' Tip: ' + lane.tip : '');
+  });
+  el.textContent = bits.join(' ');
+}
+function award(lane, points) {
+  lane.score += points;
+  lane.casePoints += points;
+  spawnFloater(lane, '+' + points, COL.gold);
+}
+function openStep(lane, step) {
+  lane.step = step;
+  lane.cards = buildCards(lane.case, step);
+  lane.tried = [false, false, false, false];
+  lane.focus = 0;
+  lane.tip = '';
+  lane.wrongI = -1;
+  lane.goodI = -1;
+  lane.lock = 0.28;
+  lane.phase = 'choose';
+  if (step === 3) {
+    lane.found = { side: lane.case.elim.remain, count: lane.case.elim.remainCount };
+    lane.zapT = 0.75;
+  }
+}
+function choose(lane, index) {
+  if (!lane || lane.phase !== 'choose' || lane.lock > 0 || lane.down || lane.done) return;
+  if (index < 0 || index > 3) return;
+  if (lane.tried[index]) return;
+  const card = lane.cards[index];
+  if (!card) return;
+  lane.focus = index;
+  const laneIndex = G.lanes.indexOf(lane);
+  const at = cardCenter(laneIndex, index);
+  if (card.correct) {
+    lane.goodI = index;
+    if (lane.step === 1) {
+      award(lane, STEP_POINTS[1]);
+      audio.chime();
+      burst(at.x, at.y, COL.cyan, 16);
+      openStep(lane, 2);
+    } else if (lane.step === 2) {
+      award(lane, STEP_POINTS[2]);
+      audio.zap();
+      burst(at.x, at.y, COL.gold, 18);
+      openStep(lane, 3);
+    } else {
+      const speed = speedBonus(lane.elapsed, G.diff);
+      const raw = STEP_POINTS[3] + speed;
+      lane.casePoints += raw;
+      let extra = 0;
+      let mult = 1;
+      if (G.diff === 'extreme' && lane.mistakes === 0) {
+        lane.cleanStreak += 1;
+        mult = lane.cleanStreak >= 3 ? 3 : lane.cleanStreak >= 2 ? 2 : 1;
+        extra = lane.casePoints * (mult - 1);
+      } else if (G.diff === 'extreme') {
+        lane.cleanStreak = 0;
+      }
+      lane.score += raw + extra;
+      spawnFloater(lane, '+' + raw, COL.gold);
+      if (extra) spawnFloater(lane, 'COMBO ×' + mult + ' +' + extra, COL.cyan);
+      lane.phase = 'celebrate';
+      lane.celeT = G.diff === 'extreme' ? 1.45 : 2.2;
+      lane.celeSkip = 0.4;
+      lane.tip = '';
+      audio.whoosh();
+      audio.fanfare();
+      burst(at.x, at.y, COL.good, 26);
+    }
+  } else {
+    lane.tried[index] = true;
+    lane.lives -= 1;
+    lane.mistakes += 1;
+    lane.cleanStreak = 0;
+    lane.tip = tipFor(lane.case, card.trap);
+    lane.shake = 14;
+    lane.flash = 0.5;
+    if (G.mode !== 'duel') G.shake = 16;
+    lane.wrongI = index;
+    lane.lock = 0.5;
+    audio.buzz();
+    audio.thud();
+    spawnFloater(lane, '−1 LIFE', COL.red);
+    if (lane.lives <= 0) {
+      lane.lives = 0;
+      lane.down = true;
+      lane.phase = 'down';
+      lane.downT = G.mode === 'duel' ? 0 : 1.15;
+    }
+  }
+  syncLive();
+}
+function nudge(lane, dir) {
+  if (!lane || lane.phase !== 'choose' || lane.lock > 0 || lane.down || lane.done) return;
+  let i = lane.focus;
+  for (let n = 0; n < 4; n++) {
+    i = (i + dir + 4) % 4;
+    if (!lane.tried[i]) break;
+  }
+  if (i !== lane.focus) {
+    lane.focus = i;
+    audio.blip();
+  }
+}
+function onConfirm(lane) {
+  if (!lane) return;
+  if (lane.phase === 'celebrate' && lane.celeSkip <= 0) {
+    finishCelebrate(lane);
+    return;
+  }
+  if (lane.phase === 'choose') choose(lane, lane.focus);
+}
+function finishCelebrate(lane) {
+  if (lane.phase !== 'celebrate') return;
+  lane.phase = 'transition';
+  lane.solved += 1;
+  lane.casePoints = 0;
+  lane.mistakes = 0;
+  lane.elapsed = 0;
+  lane.found = null;
+  lane.tip = '';
+  lane.zapT = 0;
+  if (lane.solved >= lane.goal) {
+    lane.done = true;
+    lane.phase = 'done';
+    syncLive();
+    return;
+  }
+  const avoid = history.slice();
+  G.lanes.forEach((other) => {
+    if (other !== lane && other.case) avoid.push(other.case.sig);
+  });
+  lane.case = generateCase(G.diff, avoid);
+  history.push(lane.case.sig);
+  while (history.length > 8) history.shift();
+  lane.step = 1;
+  lane.cards = buildCards(lane.case, 1);
+  lane.tried = [false, false, false, false];
+  lane.focus = 0;
+  lane.phase = 'choose';
+  lane.lock = 0.18;
+  syncLive();
+}
+function setPlayers(n) {
+  G.players = n;
+  if (n === 1) G.mode = 'solo';
+  else if (G.mode === 'solo') G.mode = 'coop';
+}
+function startMatch() {
+  audio.resume();
+  if (G.players === 1) G.mode = 'solo';
+  if (G.players > 1 && G.mode === 'solo') G.mode = 'coop';
+  G.screen = 'play';
+  G.pause = false;
+  G.timeMax = MATCH_TIME[G.diff];
+  G.timeLeft = G.timeMax;
+  G.shake = 0;
+  const n = G.mode === 'duel' ? G.players : 1;
+  const goal = G.mode === 'duel' ? 6 : 5;
+  G.lanes = [];
+  const avoid = history.slice();
+  for (let i = 0; i < n; i++) {
+    const lane = freshLane(i, goal);
+    lane.case = generateCase(G.diff, avoid);
+    avoid.push(lane.case.sig);
+    history.push(lane.case.sig);
+    while (history.length > 8) history.shift();
+    lane.cards = buildCards(lane.case, 1);
+    G.lanes.push(lane);
+  }
+  syncLive();
+}
+function bestId() { return G.mode + ':' + G.players + ':' + G.diff; }
+function saveBest() {
+  const score = G.mode === 'duel'
+    ? Math.max.apply(null, G.lanes.map((lane) => lane.score))
+    : (G.lanes[0] ? G.lanes[0].score : 0);
+  G.best = score;
+  if (!bests[bestId()] || score > bests[bestId()]) bests[bestId()] = score;
+  try { localStorage.setItem('xeno-scanner-best', JSON.stringify(bests)); } catch (err) { /* ignore */ }
+}
+function finishMatch(why) {
+  if (G.screen !== 'play') return;
+  G.screen = 'over';
+  G.pause = false;
+  G.overReason = why;
+  G.overFocus = 0;
+  saveBest();
+  if (why === 'lives') audio.thud();
+  else audio.fanfare();
+  syncLive();
+}
+function matchEndReason() {
+  if (G.timeLeft <= 0) return 'time';
+  if (!G.lanes.length) return '';
+  if (G.mode === 'duel') {
+    if (G.lanes.every((lane) => lane.done || lane.down)) return 'clear';
+    return '';
+  }
+  const lane = G.lanes[0];
+  if (lane.down && lane.downT <= 0) return 'lives';
+  if (lane.done) return 'clear';
+  return '';
+}
+function updateLane(lane, dt) {
+  if (lane.shake > 0) lane.shake = Math.max(0, lane.shake - dt * 32);
+  if (lane.flash > 0) lane.flash = Math.max(0, lane.flash - dt);
+  if (lane.lock > 0) lane.lock = Math.max(0, lane.lock - dt);
+  if (lane.zapT > 0) lane.zapT = Math.max(0, lane.zapT - dt);
+  for (let i = lane.floaters.length - 1; i >= 0; i--) {
+    lane.floaters[i].life -= dt;
+    lane.floaters[i].oy -= dt * 36;
+    if (lane.floaters[i].life <= 0) lane.floaters.splice(i, 1);
+  }
+  if (lane.phase === 'celebrate') {
+    lane.celeT -= dt;
+    lane.celeSkip -= dt;
+    if (lane.celeT <= 0) finishCelebrate(lane);
+    return;
+  }
+  if (lane.phase === 'down') {
+    if (G.mode !== 'duel') lane.downT -= dt;
+    return;
+  }
+  if (lane.phase === 'choose') lane.elapsed += dt;
+}
+
+function directIndex(player, code) {
+  const list = DIRECT[player];
+  const i = list.indexOf(code);
+  if (i < 0) return -1;
+  return i % 4;
+}
+function navFor(player, code) {
+  if (G.mode === 'duel') {
+    if (player === 0) {
+      if (code === 'KeyA') return -1;
+      if (code === 'KeyD') return 1;
+      if (code === 'Space') return 'ok';
+    } else if (player === 1) {
+      if (code === 'KeyJ') return -1;
+      if (code === 'KeyL') return 1;
+      if (code === 'Enter') return 'ok';
+      if (G.players < 3 && code === 'KeyI') return 'ok';
+    } else if (player === 2) {
+      if (code === 'ArrowLeft') return -1;
+      if (code === 'ArrowRight') return 1;
+      if (code === 'ArrowUp' || code === 'ShiftLeft' || code === 'ShiftRight') return 'ok';
+    }
+    return null;
+  }
+  if (player === 0) {
+    if (code === 'KeyA' || code === 'ArrowLeft') return -1;
+    if (code === 'KeyD' || code === 'ArrowRight') return 1;
+    if (code === 'Space' || code === 'Enter' || code === 'KeyW' || code === 'ArrowUp') return 'ok';
+  } else if (player === 1) {
+    if (code === 'KeyJ') return -1;
+    if (code === 'KeyL') return 1;
+    if (code === 'Enter' || code === 'KeyI') return 'ok';
+  } else if (player === 2) {
+    if (code === 'ArrowLeft') return -1;
+    if (code === 'ArrowRight') return 1;
+    if (code === 'ArrowUp' || code === 'ShiftLeft' || code === 'ShiftRight') return 'ok';
+  }
+  return null;
+}
+function changeRow(dir) {
+  if (G.focusRow === 0) {
+    const next = G.players + dir;
+    if (next >= 1 && next <= 3) setPlayers(next);
+  } else if (G.focusRow === 1) {
+    const order = ['easy', 'medium', 'hard', 'extreme'];
+    let i = order.indexOf(G.diff) + dir;
+    if (i < 0) i = 0;
+    if (i > 3) i = 3;
+    G.diff = order[i];
+  } else if (G.focusRow === 2) {
+    if (G.players === 1) return;
+    G.mode = G.mode === 'coop' ? 'duel' : 'coop';
+  } else if (dir) startMatch();
+}
+function handleTitleKey(code) {
+  if (code === 'ArrowUp' || code === 'KeyW') G.focusRow = (G.focusRow + 3) % 4;
+  else if (code === 'ArrowDown' || code === 'KeyS') G.focusRow = (G.focusRow + 1) % 4;
+  else if (code === 'ArrowLeft' || code === 'KeyA') changeRow(-1);
+  else if (code === 'ArrowRight' || code === 'KeyD') changeRow(1);
+  else if (code === 'Enter' || code === 'Space') {
+    if (G.focusRow === 3) startMatch();
+    else changeRow(1);
+  }
+}
+function handleOverKey(code) {
+  if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'KeyA' || code === 'KeyD') G.overFocus = G.overFocus ? 0 : 1;
+  else if (code === 'Enter' || code === 'Space') {
+    if (G.overFocus === 0) startMatch();
+    else G.screen = 'title';
+  }
+}
+function handlePlayKey(code) {
+  if (G.mode === 'duel') {
+    for (let p = 0; p < G.players; p++) {
+      const lane = G.lanes[p];
+      const d = directIndex(p, code);
+      if (d >= 0) {
+        if (lane.phase === 'celebrate' && lane.celeSkip <= 0) finishCelebrate(lane);
+        else choose(lane, d);
+        return;
+      }
+      const nav = navFor(p, code);
+      if (nav === -1 || nav === 1) { nudge(lane, nav); return; }
+      if (nav === 'ok') { onConfirm(lane); return; }
+    }
+    return;
+  }
+  const lane = G.lanes[0];
+  const p = G.mode === 'coop' ? activeIndex(lane) : 0;
+  const d = directIndex(p, code);
+  if (d >= 0) {
+    if (lane.phase === 'celebrate' && lane.celeSkip <= 0) finishCelebrate(lane);
+    else choose(lane, d);
+    return;
+  }
+  const nav = navFor(p, code);
+  if (nav === -1 || nav === 1) nudge(lane, nav);
+  else if (nav === 'ok') onConfirm(lane);
+}
+function handleKey(code) {
+  if (code === 'KeyM') { audio.toggle(); return; }
+  if (code === 'Escape') {
+    if (G.screen === 'play') G.pause = !G.pause;
+    else if (G.screen === 'over') G.screen = 'title';
+    return;
+  }
+  if (G.pause) return;
+  if (G.screen === 'title') handleTitleKey(code);
+  else if (G.screen === 'over') handleOverKey(code);
+  else if (G.screen === 'play') handlePlayKey(code);
+}
+function handleClick(x, y) {
+  const h = hitAt(x, y);
+  if (!h) return;
+  if (h.kind === 'mute') { audio.toggle(); return; }
+  if (G.screen === 'title') {
+    if (h.id === 'p1') setPlayers(1);
+    if (h.id === 'p2') setPlayers(2);
+    if (h.id === 'p3') setPlayers(3);
+    if (h.id === 'easy' || h.id === 'medium' || h.id === 'hard' || h.id === 'extreme') G.diff = h.id;
+    if (h.id === 'solo') setPlayers(1);
+    if (h.id === 'coop') { if (G.players < 2) G.players = 2; G.mode = 'coop'; }
+    if (h.id === 'duel') { if (G.players < 2) G.players = 2; G.mode = 'duel'; }
+    if (h.id === 'start') startMatch();
+    G.focusRow = h.row != null ? h.row : G.focusRow;
+    return;
+  }
+  if (G.screen === 'over') {
+    if (h.id === 'again') startMatch();
+    if (h.id === 'title') G.screen = 'title';
+    return;
+  }
+  if (G.pause) {
+    if (h.id === 'resume') G.pause = false;
+    if (h.id === 'quit') G.screen = 'title';
+    return;
+  }
+  if (h.kind === 'skip') {
+    const lane = G.lanes[h.lane];
+    if (lane && lane.phase === 'celebrate' && lane.celeSkip <= 0) finishCelebrate(lane);
+    return;
+  }
+  if (h.kind === 'card') {
+    const lane = G.lanes[h.lane];
+    if (!lane) return;
+    if (lane.phase === 'celebrate' && lane.celeSkip <= 0) finishCelebrate(lane);
+    else choose(lane, h.index);
+  }
+}
+function readPad(i) {
+  const list = navigator.getGamepads ? navigator.getGamepads() : null;
+  if (!list) return null;
+  const p = list[i];
+  if (!p) return null;
+  const b = p.buttons || [];
+  const ax = p.axes || [];
+  const on = (idx) => !!(b[idx] && (b[idx].pressed || b[idx].value > 0.5));
+  return {
+    left: on(14) || (ax[0] || 0) < -0.55,
+    right: on(15) || (ax[0] || 0) > 0.55,
+    up: on(12) || (ax[1] || 0) < -0.55,
+    down: on(13) || (ax[1] || 0) > 0.55,
+    a: on(0)
+  };
+}
+function pollPads(dt) {
+  for (let i = 0; i < 3; i++) {
+    const now = readPad(i);
+    const prev = padsPrev[i];
+    const cur = now || { left: false, right: false, up: false, down: false, a: false };
+    const edge = {
+      left: cur.left && !prev.left,
+      right: cur.right && !prev.right,
+      up: cur.up && !prev.up,
+      down: cur.down && !prev.down,
+      a: cur.a && !prev.a
+    };
+    padsPrev[i] = cur;
+    if (!(edge.left || edge.right || edge.up || edge.down || edge.a)) {
+      if (G.screen === 'play' && cur.left !== cur.right) holdPad(i, cur, dt);
+      continue;
+    }
+    audio.resume();
+    if (G.screen === 'title' && i === 0) {
+      if (edge.up) G.focusRow = (G.focusRow + 3) % 4;
+      if (edge.down) G.focusRow = (G.focusRow + 1) % 4;
+      if (edge.left) changeRow(-1);
+      if (edge.right) changeRow(1);
+      if (edge.a) { if (G.focusRow === 3) startMatch(); else changeRow(1); }
+    } else if (G.screen === 'over' && i === 0) {
+      if (edge.left || edge.right) G.overFocus = G.overFocus ? 0 : 1;
+      if (edge.a) { if (G.overFocus === 0) startMatch(); else G.screen = 'title'; }
+    } else if (G.screen === 'play' && !G.pause) {
+      applyPadEdge(i, edge);
+      if (cur.left !== cur.right) {
+        const lane = laneForPad(i);
+        if (lane) { lane.holdDir = cur.right ? 1 : -1; lane.holdT = 0.34; }
+      }
+    }
+  }
+}
+function laneForPad(i) {
+  if (G.screen !== 'play' || !G.lanes.length) return null;
+  if (G.mode === 'duel') return i < G.players ? G.lanes[i] : null;
+  if (G.mode === 'coop') return i === activeIndex(G.lanes[0]) ? G.lanes[0] : null;
+  return i === 0 ? G.lanes[0] : null;
+}
+function applyPadEdge(i, edge) {
+  const lane = laneForPad(i);
+  if (!lane) return;
+  if (edge.left) nudge(lane, -1);
+  if (edge.right) nudge(lane, 1);
+  if (edge.a) onConfirm(lane);
+}
+function holdPad(i, cur, dt) {
+  if (G.screen !== 'play' || G.pause) return;
+  const lane = laneForPad(i);
+  if (!lane) return;
+  const dir = cur.right ? 1 : -1;
+  if (lane.holdDir !== dir) { lane.holdDir = dir; lane.holdT = 0.34; return; }
+  lane.holdT -= dt;
+  if (lane.holdT <= 0) { nudge(lane, dir); lane.holdT = 0.18; }
+}
+function hoverBlip() {
+  if (!pointer.inside || G.screen !== 'play' || G.pause) return;
+  const h = hitAt(pointer.x, pointer.y);
+  const key = h && h.kind === 'card' ? h.lane + ':' + h.index : '';
+  if (key && key !== hoverKey) audio.blip();
+  hoverKey = key;
+}
+function update(dt) {
+  audio.tick();
+  G.t += dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 30);
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i];
+    s.life -= dt;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.vy += 20 * dt;
+    if (s.life <= 0) sparks.splice(i, 1);
+  }
+  pollPads(dt);
+  const events = queue.splice(0, queue.length);
+  for (let i = 0; i < events.length; i++) {
+    if (events[i].type === 'key') handleKey(events[i].code);
+    else handleClick(events[i].x, events[i].y);
+  }
+  if (G.screen === 'play' && !G.pause) {
+    G.timeLeft -= dt;
+    if (G.timeLeft < 0) G.timeLeft = 0;
+    G.lanes.forEach((lane) => updateLane(lane, dt));
+    const why = matchEndReason();
+    if (why) finishMatch(why);
+  }
+  hoverBlip();
+}
+
+function roundRect(x, y, w, h, r) {
+  const rad = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rad, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rad);
+  ctx.arcTo(x + w, y + h, x, y + h, rad);
+  ctx.arcTo(x, y + h, x, y, rad);
+  ctx.arcTo(x, y, x + w, y, rad);
+  ctx.closePath();
+}
+function panel(x, y, w, h, fill, stroke, rad) {
+  roundRect(x, y, w, h, rad == null ? 16 : rad);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+function text(str, x, y, size, color, align, weight) {
+  ctx.fillStyle = color;
+  ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+function wrapText(str, maxW, size, weight) {
+  ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+  const words = String(str).split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (cur && ctx.measureText(next).width > maxW) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function pointerIn(r) {
+  return pointer.inside && pointer.x >= r.x && pointer.y >= r.y && pointer.x <= r.x + r.w && pointer.y <= r.y + r.h;
+}
+function hitAt(x, y) {
+  for (let i = cardHits.length - 1; i >= 0; i--) {
+    const h = cardHits[i];
+    if (x >= h.x && y >= h.y && x <= h.x + h.w && y <= h.y + h.h) return h;
+  }
+  return null;
+}
+function addHit(r, extra) {
+  const h = { x: r.x, y: r.y, w: r.w, h: r.h };
+  if (extra) {
+    const keys = Object.keys(extra);
+    for (let i = 0; i < keys.length; i++) h[keys[i]] = extra[keys[i]];
+  }
+  cardHits.push(h);
+}
+function contentRect() {
+  return { x: 16, y: 66, w: VW - 32, h: VH - 78 };
+}
+function laneRects() {
+  const area = contentRect();
+  if (G.mode !== 'duel') return [area];
+  const n = G.players;
+  const gap = 12;
+  const w = (area.w - gap * (n - 1)) / n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push({ x: area.x + i * (w + gap), y: area.y, w: w, h: area.h });
+  return out;
+}
+function layoutLane(rect, duel) {
+  const gap = 8;
+  const headerH = duel ? 38 : 0;
+  const mugH = duel ? (rect.w < 560 ? 78 : 100) : 118;
+  const promptH = duel ? 72 : 64;
+  const footH = 26;
+  const x = rect.x;
+  const w = rect.w;
+  let y = rect.y;
+  const header = { x: x, y: y, w: w, h: headerH };
+  y += headerH + (headerH ? gap : 0);
+  const mug = { x: x, y: y, w: w, h: mugH };
+  y += mugH + gap;
+  const foot = { x: x, y: rect.y + rect.h - footH, w: w, h: footH };
+  const bottom = foot.y - gap;
+  const mid = bottom - y;
+  const rest = mid - promptH - gap;
+  const cardShare = Math.max(duel ? 250 : 200, Math.floor(rest * (duel ? 0.58 : 0.46)));
+  const boardH = Math.max(120, rest - cardShare - gap);
+  const board = { x: x, y: y, w: w, h: boardH };
+  y += boardH + gap;
+  const prompt = { x: x, y: y, w: w, h: promptH };
+  y += promptH + gap;
+  const cardsH = Math.max(40, bottom - y);
+  const cols = duel ? 2 : 4;
+  const rows = duel ? 2 : 1;
+  const cg = 8;
+  const cardW = (w - cg * (cols - 1)) / cols;
+  const cardH = (cardsH - cg * (rows - 1)) / rows;
+  const cards = [];
+  for (let i = 0; i < 4; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    cards.push({ x: x + col * (cardW + cg), y: y + row * (cardH + cg), w: cardW, h: cardH });
+  }
+  return { header: header, mug: mug, board: board, prompt: prompt, cards: cards, foot: foot };
+}
+
+function eyeSpots(n) {
+  const map = {
+    1: [[0, 0]],
+    2: [[-0.24, 0.02], [0.24, 0.02]],
+    3: [[-0.28, 0.1], [0.28, 0.1], [0, -0.16]],
+    4: [[-0.24, -0.12], [0.24, -0.12], [-0.24, 0.16], [0.24, 0.16]],
+    5: [[-0.3, -0.12], [0, -0.18], [0.3, -0.12], [-0.16, 0.16], [0.16, 0.16]]
+  };
+  return map[n] || map[2];
+}
+function drawAlien(cx, cy, sp, s) {
+  if (!sp || s <= 0) return;
+  ctx.save();
+  const legs = sp.legs || 2;
+  const span = s * Math.min(1.7, 0.55 + legs * 0.16);
+  ctx.strokeStyle = sp.limb;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1.4, s * 0.09);
+  for (let i = 0; i < legs; i++) {
+    const x = legs === 1 ? cx : cx - span / 2 + span * i / (legs - 1);
+    const hipX = cx + (x - cx) * 0.28;
+    ctx.beginPath();
+    ctx.moveTo(hipX, cy + s * 0.35);
+    ctx.lineTo(x, cy + s * 0.95);
+    ctx.stroke();
+    ctx.fillStyle = sp.limb;
+    ctx.beginPath();
+    ctx.ellipse(x, cy + s * 1.02, Math.max(1.4, s * 0.1), Math.max(1, s * 0.06), 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const horns = sp.horns || 1;
+  const antenna = sp.shape === 'jelly' || sp.shape === 'bug' || sp.shape === 'star';
+  const hSpan = s * Math.min(1.35, 0.2 + horns * 0.22);
+  for (let i = 0; i < horns; i++) {
+    const x = horns === 1 ? cx : cx - hSpan / 2 + hSpan * i / (horns - 1);
+    if (antenna) {
+      ctx.strokeStyle = sp.limb;
+      ctx.lineWidth = Math.max(1.2, s * 0.06);
+      ctx.beginPath();
+      ctx.moveTo(x, cy - s * 0.45);
+      ctx.quadraticCurveTo(x + (x < cx ? -s * 0.15 : s * 0.15), cy - s * 0.85, x, cy - s * 1.05);
+      ctx.stroke();
+      ctx.fillStyle = sp.accent;
+      ctx.beginPath();
+      ctx.arc(x, cy - s * 1.1, Math.max(1.5, s * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = sp.limb;
+      ctx.beginPath();
+      ctx.moveTo(x - s * 0.08, cy - s * 0.42);
+      ctx.lineTo(x + s * 0.08, cy - s * 0.42);
+      ctx.lineTo(x, cy - s * 1.05);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = sp.body;
+  ctx.strokeStyle = sp.limb;
+  ctx.lineWidth = Math.max(1.5, s * 0.07);
+  if (sp.shape === 'jelly') {
+    ctx.beginPath();
+    ctx.arc(cx, cy, s * 0.78, Math.PI, 0);
+    ctx.bezierCurveTo(cx + s * 0.78, cy + s * 0.35, cx + s * 0.45, cy + s * 0.95, cx, cy + s * 0.72);
+    ctx.bezierCurveTo(cx - s * 0.45, cy + s * 0.95, cx - s * 0.78, cy + s * 0.35, cx - s * 0.78, cy);
+    ctx.closePath();
+  } else if (sp.shape === 'bug') {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + s * 0.05, s * 0.95, s * 0.62, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = sp.limb;
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.2, cy + s * 0.15);
+    ctx.lineTo(cx - s * 0.7, cy + s * 0.45);
+    ctx.lineTo(cx - s * 0.15, cy + s * 0.32);
+    ctx.closePath();
+    ctx.moveTo(cx + s * 0.2, cy + s * 0.15);
+    ctx.lineTo(cx + s * 0.7, cy + s * 0.45);
+    ctx.lineTo(cx + s * 0.15, cy + s * 0.32);
+    ctx.fill();
+    ctx.fillStyle = sp.body;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + s * 0.05, s * 0.95, s * 0.62, 0, 0, Math.PI * 2);
+  } else if (sp.shape === 'tri') {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - s * 0.95);
+    ctx.lineTo(cx + s * 0.92, cy + s * 0.72);
+    ctx.lineTo(cx - s * 0.92, cy + s * 0.72);
+    ctx.closePath();
+  } else if (sp.shape === 'gem') {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 3;
+      const x = cx + Math.cos(a) * s * 0.9;
+      const y = cy + Math.sin(a) * s * 0.78;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  } else if (sp.shape === 'star') {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rad = i % 2 === 0 ? s * 0.95 : s * 0.48;
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const x = cx + Math.cos(a) * rad;
+      const y = cy + Math.sin(a) * rad * 0.9;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  } else {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, s * 1.05, s * 0.78, 0, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.28)';
+  ctx.beginPath();
+  ctx.ellipse(cx - s * 0.28, cy - s * 0.28, s * 0.28, s * 0.16, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+  const n = Math.max(1, Math.min(5, sp.eyes || 1));
+  const spots = eyeSpots(n);
+  const er = Math.max(1.7, s * (n >= 5 ? 0.09 : n >= 4 ? 0.11 : n === 3 ? 0.13 : 0.15));
+  const faceY = sp.shape === 'tri' ? cy + s * 0.05 : cy;
+  spots.forEach((pt) => {
+    const ex = cx + pt[0] * s;
+    const ey = faceY + pt[1] * s;
+    ctx.fillStyle = COL.white;
+    ctx.beginPath();
+    ctx.arc(ex, ey, er, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = sp.ink;
+    ctx.beginPath();
+    ctx.arc(ex, ey, er * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COL.white;
+    ctx.beginPath();
+    ctx.arc(ex - er * 0.2, ey - er * 0.2, Math.max(0.7, er * 0.18), 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.strokeStyle = sp.ink;
+  ctx.lineWidth = Math.max(1, s * 0.05);
+  ctx.beginPath();
+  ctx.arc(cx, faceY + s * 0.28, s * 0.16, 0.15, Math.PI - 0.15);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, '#101433');
+  g.addColorStop(1, COL.bg0);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.045)';
+  for (let x = 40; x < VW; x += 48) {
+    ctx.fillRect(x, 0, 1, VH);
+  }
+  stars.forEach((s) => {
+    const tw = 0.45 + Math.sin(G.t * s.s + s.p) * 0.35;
+    ctx.globalAlpha = Math.max(0.15, tw);
+    ctx.fillStyle = COL.white;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+function drawHearts(x, y, lives, color) {
+  for (let i = 0; i < 3; i++) {
+    const on = i < lives;
+    ctx.save();
+    ctx.translate(x + i * 18, y);
+    ctx.fillStyle = on ? color : 'rgba(255,255,255,0.16)';
+    ctx.beginPath();
+    ctx.moveTo(0, 3.2);
+    ctx.bezierCurveTo(-6.2, -1.5, -3.2, -7.5, 0, -3);
+    ctx.bezierCurveTo(3.2, -7.5, 6.2, -1.5, 0, 3.2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+function drawMuteButton(x, y) {
+  const mute = { x: x, y: y, w: 88, h: 34 };
+  panel(mute.x, mute.y, mute.w, mute.h, pointerIn(mute) ? '#1a3050' : '#12182e', COL.cyan, 12);
+  text(audio.muted ? 'MUTED' : 'SOUND', mute.x + 44, mute.y + 17, 13, COL.cyan, 'center', 800);
+  addHit(mute, { kind: 'mute' });
+}
+function chip(x, y, label, fill, stroke, color) {
+  ctx.font = '800 14px ' + FONT;
+  const w = Math.ceil(ctx.measureText(label).width) + 22;
+  panel(x, y, w, 32, fill || 'rgba(16,24,52,0.95)', stroke || COL.line, 16);
+  text(label, x + 11, y + 16, 14, color || COL.ink, 'left', 800);
+  return w;
+}
+function fmtTime(s) {
+  const t = Math.max(0, Math.ceil(s));
+  const m = Math.floor(t / 60);
+  const r = t % 60;
+  return m + ':' + (r < 10 ? '0' : '') + r;
+}
+function drawHud() {
+  if (G.screen === 'title') {
+    drawMuteButton(1456, 48);
+    return;
+  }
+  if (G.screen !== 'play') {
+    drawMuteButton(1496, 16);
+    return;
+  }
+  panel(16, 10, VW - 32, 46, 'rgba(6, 10, 28, 0.94)', COL.line, 16);
+  let x = 28;
+  const y = 17;
+  const modeLabel = G.mode === 'solo' ? 'SOLO' : G.mode === 'coop' ? 'TEAM CO-OP' : 'PRECINCT DUEL';
+  x += chip(x, y, modeLabel, 'rgba(16,24,52,0.95)', COL.cyan, COL.cyan) + 8;
+  const diff = DIFFS.filter((d) => d.id === G.diff)[0];
+  x += chip(x, y, diff.name, 'rgba(48, 36, 12, 0.95)', COL.gold, COL.gold) + 8;
+  if (G.screen === 'play' && G.mode !== 'duel' && G.lanes[0]) {
+    const lane = G.lanes[0];
+    const n = Math.min(lane.goal, lane.solved + (lane.done ? 0 : 1));
+    x += chip(x, y, 'CASE ' + n + '/' + lane.goal) + 8;
+    if (G.mode === 'coop') {
+      const p = activeIndex(lane);
+      x += chip(x, y, P_SHORT[p], P_COLOR[p], P_COLOR[p], '#1a1208') + 8;
+    }
+  }
+  const clock = G.screen === 'play' ? fmtTime(G.timeLeft) : 'READY';
+  const clockColor = G.screen === 'play' && G.timeLeft < 20 ? COL.red : COL.ink;
+  text(clock, 800, 33, 22, clockColor, 'center', 800);
+  drawMuteButton(1496, 16);
+  if (G.screen !== 'play' || !G.lanes.length || G.mode === 'duel') return;
+  const lane = G.lanes[0];
+  let rx = 1486;
+  const bits = [];
+  if (G.diff === 'extreme') bits.push(streakLabel(lane));
+  bits.push(G.mode === 'coop' ? 'TEAM ' + lane.score : lane.score + ' PTS');
+  for (let i = bits.length - 1; i >= 0; i--) {
+    ctx.font = '800 14px ' + FONT;
+    const w = Math.ceil(ctx.measureText(bits[i]).width) + 22;
+    rx -= w;
+    const fill = bits[i].indexOf('TEAM') === 0 || bits[i].indexOf('PTS') > 0 ? '#123528' : '#2a2410';
+    const stroke = bits[i].indexOf('PERFECT') === 0 ? COL.gold : COL.good;
+    panel(rx, y, w, 32, fill, stroke, 16);
+    text(bits[i], rx + 11, y + 16, 14, COL.gold, 'left', 800);
+    rx -= 8;
+  }
+  rx -= 62;
+  panel(rx, y, 62, 32, '#1a1230', COL.red, 16);
+  drawHearts(rx + 8, y + 16, lane.lives, COL.red);
+}
+function drawMug(rect, sp, c, heads) {
+  panel(rect.x, rect.y, rect.w, rect.h, COL.panel2, COL.line, 14);
+  ctx.save();
+  roundRect(rect.x, rect.y, rect.w, rect.h, 14);
+  ctx.clip();
+  if (!reduceMotion) {
+    const sweep = ((G.t * 90) % (rect.w + 30)) - 20;
+    ctx.fillStyle = 'rgba(62, 224, 255, 0.16)';
+    ctx.fillRect(rect.x + sweep, rect.y, 12, rect.h);
+  }
+  ctx.restore();
+  ctx.save();
+  roundRect(rect.x, rect.y, rect.w, rect.h, 14);
+  ctx.clip();
+  const s = Math.min(rect.h * 0.32, rect.w * 0.16, 36);
+  drawAlien(rect.x + s + 16, rect.y + rect.h * 0.56, sp, s);
+  const tx = rect.x + s * 2 + 26;
+  text(sp.name, tx, rect.y + (rect.h > 100 ? 28 : 16), rect.h > 100 ? 20 : 14, sp.body, 'left', 800);
+  const stats = [
+    sp.eyes + ' ' + (sp.eyes === 1 ? 'eye' : 'eyes'),
+    sp.legs + ' ' + (sp.legs === 1 ? 'leg' : 'legs'),
+    sp.horns + ' ' + (sp.horns === 1 ? 'antenna' : 'antennae')
+  ];
+  if (heads) stats.push('1 head');
+  const size = rect.h > 100 ? 15 : 11;
+  const gap = rect.h > 100 ? 18 : 13;
+  const start = rect.h > 100 ? 52 : 32;
+  stats.forEach((line, i) => {
+    if (start + i * gap < rect.h - 6) text(line, tx, rect.y + start + i * gap, size, i === 3 ? COL.gold : COL.ink, 'left', 700);
+  });
+  ctx.restore();
+}
+function drawMugStrip(rect, lane) {
+  const c = lane.case;
+  if (!c) return;
+  const gap = 8;
+  const w = (rect.w - gap) / 2;
+  const heads = c.f1.key === 'heads' || c.f2.key === 'heads';
+  drawMug({ x: rect.x, y: rect.y, w: w, h: rect.h }, c.A, c, heads);
+  drawMug({ x: rect.x + w + gap, y: rect.y, w: w, h: rect.h }, c.B, c, heads);
+}
+function drawSensors(x, y, w, h, c) {
+  const list = [c.f1, c.f2];
+  if (c.extra) list.push(c.extra);
+  const gap = 8;
+  const cw = (w - gap * (list.length - 1)) / list.length;
+  list.forEach((f, i) => {
+    const sx = x + i * (cw + gap);
+    panel(sx, y, cw, h, 'rgba(10, 28, 48, 0.9)', i === 2 ? 'rgba(255, 176, 32, 0.7)' : COL.cyan, 12);
+    text(String(f.total), sx + cw / 2, y + h * 0.38, h > 54 ? 28 : 20, COL.gold, 'center', 800);
+    text(f.label.toUpperCase(), sx + cw / 2, y + h * 0.78, h > 54 ? 13 : 11, COL.dim, 'center', 800);
+  });
+}
+function walkParts(parts, font, icon, draw, x, cy) {
+  let cursor = x;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.k === 'a') {
+      const slot = icon * 2;
+      if (draw) drawAlien(cursor + slot / 2, cy, p.sp, icon * 0.78);
+      cursor += slot + 2;
+    } else {
+      const weight = p.k === 'n' ? 800 : 700;
+      const str = String(p.v);
+      ctx.font = weight + ' ' + font + 'px ' + FONT;
+      const tw = ctx.measureText(str).width;
+      if (draw) {
+        ctx.fillStyle = p.k === 'n' ? COL.gold : (str === '=' ? COL.cyan : COL.ink);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(str, cursor, cy);
+      }
+      cursor += tw + (str === '+' || str === '=' || str === '&' || str === '−' ? 8 : 5);
+    }
+  }
+  return cursor - x;
+}
+function drawPartsLine(parts, cx, cy, maxW, icon, font) {
+  let size = font;
+  let ic = icon;
+  let w = walkParts(parts, size, ic, false, 0, 0);
+  while (w > maxW && size > 10) {
+    size -= 1;
+    ic = Math.max(7, ic - 0.45);
+    w = walkParts(parts, size, ic, false, 0, 0);
+  }
+  walkParts(parts, size, ic, true, cx - w / 2, cy);
+}
+function drawBoard(rect, lane) {
+  panel(rect.x, rect.y, rect.w, rect.h, COL.panel, COL.cyan, 16);
+  ctx.save();
+  roundRect(rect.x, rect.y, rect.w, rect.h, 16);
+  ctx.clip();
+  const c = lane.case;
+  if (!c) { ctx.restore(); return; }
+  const compact = rect.w < 620 || rect.h < 230;
+  let y = rect.y + 12;
+  const steps = ['1 FORM', '2 ELIMINATE', '3 ARREST'];
+  const sw = compact ? 86 : 110;
+  steps.forEach((label, i) => {
+    const on = lane.step === i + 1 || (lane.phase === 'celebrate' && i === 2);
+    const sx = rect.x + 12 + i * (sw + 6);
+    panel(sx, y, sw, 20, on ? 'rgba(62,224,255,0.2)' : 'rgba(255,255,255,0.04)', on ? COL.cyan : COL.line, 8);
+    text(label, sx + sw / 2, y + 10, 11, on ? COL.cyan : COL.dim, 'center', 800);
+  });
+  text('FILE ' + c.file, rect.x + rect.w - 12, y + 10, 12, COL.gold, 'right', 800);
+  y += 28;
+  if (G.diff === 'extreme') {
+    const frac = Math.max(0, Math.min(1, lane.elapsed / CASE_BUDGET.extreme));
+    panel(rect.x + 12, y, rect.w - 24, 8, 'rgba(255,255,255,0.06)', null, 4);
+    ctx.fillStyle = frac > 0.75 ? COL.amber : COL.cyan;
+    roundRect(rect.x + 12, y, Math.max(6, (rect.w - 24) * frac), 8, 4);
+    ctx.fill();
+    y += 14;
+  }
+  const storySize = compact ? 13 : 16;
+  const lines = wrapText(storyText(c), rect.w - 28, storySize, 700);
+  lines.slice(0, compact ? 3 : 3).forEach((line) => {
+    text(line, rect.x + 14, y + storySize * 0.6, storySize, COL.ink, 'left', 700);
+    y += storySize + 3;
+  });
+  y += 6;
+  const sensorH = compact ? 48 : 62;
+  if (y + sensorH < rect.y + rect.h - 8) {
+    drawSensors(rect.x + 12, y, rect.w - 24, sensorH, c);
+    y += sensorH + 8;
+  }
+  if ((lane.step >= 2 || lane.phase === 'celebrate') && y + 36 < rect.y + rect.h) {
+    [c.f1, c.f2].forEach((f) => {
+      if (y + 34 > rect.y + rect.h - 4) return;
+      panel(rect.x + 12, y, rect.w - 24, compact ? 32 : 38, 'rgba(20, 50, 70, 0.55)', 'rgba(62,224,255,0.45)', 10);
+      drawPartsLine(eqLine(f.label, f.perA, f.perB, f.total, c.A, c.B), rect.x + rect.w / 2, y + (compact ? 16 : 19), rect.w - 40, compact ? 11 : 14, compact ? 13 : 16);
+      y += (compact ? 36 : 44);
+    });
+    if (lane.zapT > 0 && !reduceMotion) {
+      const sweep = (1 - lane.zapT / 0.75) * (rect.w - 20);
+      ctx.fillStyle = 'rgba(62, 224, 255, 0.28)';
+      ctx.fillRect(rect.x + 12 + sweep * 0.2, y - (compact ? 72 : 84), 18, compact ? 68 : 80);
+    }
+  } else if (lane.step === 1) {
+    for (let i = 0; i < 2; i++) {
+      if (y + 32 > rect.y + rect.h - 6) break;
+      ctx.setLineDash([5, 5]);
+      roundRect(rect.x + 12, y, rect.w - 24, 30, 10);
+      ctx.strokeStyle = 'rgba(62,224,255,0.35)';
+      ctx.stroke();
+      ctx.setLineDash([]);
+      text(i === 0 ? c.f1.label + ' equation locks here' : c.f2.label + ' equation locks here', rect.x + rect.w / 2, y + 15, 13, COL.dim, 'center', 700);
+      y += 36;
+    }
+  }
+  if (lane.step >= 3 && lane.phase !== 'celebrate' && y + 18 < rect.y + rect.h) {
+    const name = sideAlien(c, c.elim.remain).name;
+    const msg = name + ' = ' + c.elim.remainCount + '. Put that into the ' + c.f1.label + ' equation.';
+    const found = wrapText(msg, rect.w - 28, 14, 800);
+    found.slice(0, 2).forEach((line) => {
+      text(line, rect.x + 14, y + 8, 14, COL.gold, 'left', 800);
+      y += 18;
+    });
+  }
+  if (lane.phase === 'celebrate' && y + 20 < rect.y + rect.h) {
+    text(c.countA + ' ' + pluralName(c.A.name) + '  and  ' + c.countB + ' ' + pluralName(c.B.name) + ' beamed in.', rect.x + 14, y + 10, compact ? 13 : 16, COL.good, 'left', 800);
+    y += 22;
+    const checks = wrapText(checkText(c), rect.w - 28, 12, 700);
+    checks.slice(0, 2).forEach((line) => {
+      text(line, rect.x + 14, y + 8, 12, COL.dim, 'left', 700);
+      y += 16;
+    });
+    if (y + 36 < rect.y + rect.h) {
+      const pw = Math.min(rect.w - 24, 360);
+      panel(rect.x + 12, y, pw, 34, 'rgba(62,224,255,0.12)', COL.cyan, 10);
+      text('POD  ' + c.A.name + ' × ' + c.countA + '    ' + c.B.name + ' × ' + c.countB, rect.x + 22, y + 17, 13, COL.cyan, 'left', 800);
+      if (!reduceMotion) {
+        ctx.fillStyle = 'rgba(94, 255, 176, 0.35)';
+        ctx.fillRect(rect.x + 12, y - 8, 8, 42);
+      }
+    }
+  }
+  ctx.restore();
+}
+function drawOption(rect, lane, index, laneIndex, hint) {
+  const card = lane.cards[index];
+  if (!rect || !card) return;
+  const focus = lane.focus === index && lane.phase === 'choose';
+  const hot = pointerIn(rect) && lane.phase === 'choose';
+  const tried = lane.tried[index];
+  let stroke = focus ? P_COLOR[G.mode === 'duel' ? lane.player : (G.mode === 'coop' ? activeIndex(lane) : 0)] : COL.line;
+  if (hot) stroke = COL.cyan;
+  if (lane.wrongI === index && lane.flash > 0) stroke = COL.red;
+  if (lane.goodI === index && lane.lock > 0) stroke = COL.good;
+  ctx.save();
+  ctx.globalAlpha = tried ? 0.4 : 1;
+  panel(rect.x, rect.y, rect.w, rect.h, hot ? '#1a2d4e' : '#10182f', stroke, 14);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = tried ? 0.4 : 1;
+  roundRect(rect.x, rect.y, rect.w, rect.h, 14);
+  ctx.clip();
+  const pad = 10;
+  const innerW = rect.w - pad * 2 - 28;
+  let capSize = rect.w < 320 ? 12 : 14;
+  let captionLines = card.caption ? wrapText(card.caption, innerW, capSize, 800) : [];
+  if (captionLines.length > 2) {
+    capSize = 11;
+    captionLines = wrapText(card.caption, innerW, capSize, 800).slice(0, 2);
+  }
+  let y = rect.y + 12;
+  captionLines.forEach((line) => {
+    text(line, rect.x + pad, y + capSize * 0.5, capSize, COL.cyan, 'left', 800);
+    y += capSize + 3;
+  });
+  const n = Math.max(1, card.lines.length);
+  const avail = rect.y + rect.h - 12 - y;
+  const slot = avail / n;
+  const iconCap = rect.w < 320 ? 16 : (card.emphasis ? 28 : 24);
+  const icon = Math.max(11, Math.min(iconCap, slot * 0.46));
+  const font = card.emphasis ? (rect.w < 320 ? 16 : 26) : (rect.w < 320 ? 13 : 18);
+  for (let i = 0; i < card.lines.length; i++) {
+    const cy = y + slot * i + slot / 2;
+    drawPartsLine(card.lines[i], rect.x + rect.w / 2, cy, rect.w - 20, icon, font);
+  }
+  panel(rect.x + rect.w - 28, rect.y + 8, 20, 18, '#0c1428', stroke, 6);
+  text(hint, rect.x + rect.w - 18, rect.y + 17, 11, COL.gold, 'center', 800);
+  ctx.restore();
+  if (tried) text('USED', rect.x + 12, rect.y + rect.h - 14, 12, COL.red, 'left', 800);
+  if (lane.phase === 'choose' && !lane.down && !lane.done && !tried) {
+    addHit(rect, { kind: 'card', lane: laneIndex, index: index });
+  }
+}
+function drawPrompt(rect, lane) {
+  const tip = lane.tip && lane.phase !== 'celebrate';
+  panel(rect.x, rect.y, rect.w, rect.h, tip ? 'rgba(64, 16, 28, 0.94)' : 'rgba(12, 24, 48, 0.94)', tip ? COL.red : COL.gold, 12);
+  const msg = tip ? lane.tip : (lane.case ? promptFor(lane.case, lane.step) : '');
+  const size = rect.w < 560 ? 13 : 16;
+  const lines = wrapText(msg, rect.w - 20, size, 700).slice(0, 3);
+  const block = lines.length * (size + 3);
+  let y = rect.y + (rect.h - block) / 2 + size * 0.45;
+  lines.forEach((line) => {
+    text(line, rect.x + 10, y, size, tip ? '#ffd0d6' : COL.ink, 'left', 700);
+    y += size + 3;
+  });
+}
+function drawFoot(rect, player) {
+  const label = footText(player);
+  text(label, rect.x + rect.w / 2, rect.y + rect.h / 2, rect.w < 560 ? 11 : 13, COL.dim, 'center', 700);
+}
+function footText(player) {
+  if (G.mode === 'duel') {
+    if (player === 0) return '1 2 3 4    A/D    Space    Pad 1';
+    if (player === 1) return 'Q W E R    J/L    Enter    Pad 2';
+    return 'U I O P    Arrows    Shift    Pad 3';
+  }
+  if (G.mode === 'coop') {
+    const p = activeIndex(G.lanes[0]);
+    if (p === 0) return 'P1 turn · 1 2 3 4 · A/D or arrows · Space · mouse shares the console';
+    if (p === 1) return 'P2 turn · Q W E R · J/L · Enter · mouse shares the console';
+    return 'P3 turn · U I O P · arrows · Shift · mouse shares the console';
+  }
+  return '1–4 pick    A/D or arrows    Space locks    Mouse    Gamepad A    M mute    Esc pause';
+}
+function drawLaneHeader(rect, lane, index) {
+  panel(rect.x, rect.y, rect.w, rect.h, 'rgba(8,12,28,0.92)', P_COLOR[index], 12);
+  ctx.fillStyle = P_COLOR[index];
+  ctx.fillRect(rect.x, rect.y, 6, rect.h);
+  let x = rect.x + 14;
+  text(P_SHORT[index], x, rect.y + rect.h / 2, rect.w < 560 ? 12 : 14, P_COLOR[index], 'left', 800);
+  x += rect.w < 560 ? 108 : 150;
+  text(lane.score + ' PTS', x, rect.y + rect.h / 2, 13, COL.gold, 'left', 800);
+  x += 78;
+  drawHearts(x, rect.y + rect.h / 2, lane.lives, P_COLOR[index]);
+  const caseN = Math.min(lane.goal, lane.solved + (lane.done ? 0 : 1));
+  text(caseN + '/' + lane.goal, rect.x + rect.w - 12, rect.y + rect.h / 2, 13, COL.ink, 'right', 800);
+  if (G.diff === 'extreme' && rect.w > 500) {
+    text(streakLabel(lane), rect.x + rect.w - 70, rect.y + rect.h / 2, 12, COL.gold, 'right', 800);
+  }
+}
+function drawFloaters(rect, lane) {
+  lane.floaters.forEach((f) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, f.life));
+    text(f.text, rect.x + rect.w / 2, rect.y + f.oy, 22, f.color, 'center', 800);
+    ctx.restore();
+  });
+}
+function drawLane(lane, rect, index) {
+  const duel = G.mode === 'duel';
+  const box = layoutLane(rect, duel);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4);
+  ctx.clip();
+  const mag = reduceMotion ? 0 : lane.shake;
+  if (mag > 0) ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+  if (duel) {
+    panel(rect.x, rect.y, rect.w, rect.h, 'rgba(8, 12, 30, 0.35)', P_COLOR[index], 18);
+    drawLaneHeader(box.header, lane, index);
+  }
+  drawMugStrip(box.mug, lane);
+  drawBoard(box.board, lane);
+  drawPrompt(box.prompt, lane);
+  const hintPlayer = duel ? index : (G.mode === 'coop' ? activeIndex(lane) : 0);
+  if (lane.done) {
+    panel(box.cards[0].x, box.cards[0].y, rect.w, box.foot.y - box.cards[0].y - 8, 'rgba(10, 24, 32, 0.92)', COL.good, 14);
+    text('FILES CLOSED', rect.x + rect.w / 2, box.cards[0].y + 48, 22, COL.good, 'center', 800);
+    text('Waiting for the precinct result', rect.x + rect.w / 2, box.cards[0].y + 80, 14, COL.dim, 'center', 700);
+  } else if (!lane.down) {
+    for (let i = 0; i < 4; i++) drawOption(box.cards[i], lane, i, index, KEYS[hintPlayer][i]);
+  }
+  drawFoot(box.foot, hintPlayer);
+  drawFloaters(rect, lane);
+  if (lane.flash > 0) {
+    ctx.fillStyle = 'rgba(255, 50, 70, ' + (0.22 * lane.flash) + ')';
+    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  }
+  if (lane.down) {
+    panel(rect.x + 18, rect.y + rect.h * 0.42, rect.w - 36, rect.h * 0.28, 'rgba(40, 8, 16, 0.94)', COL.red, 16);
+    text('SCANNER OFFLINE', rect.x + rect.w / 2, rect.y + rect.h * 0.5, duel ? 18 : 28, COL.red, 'center', 800);
+    const tipLines = wrapText(lane.tip || 'No badges left.', rect.w - 70, 14, 700).slice(0, 3);
+    tipLines.forEach((line, i) => text(line, rect.x + rect.w / 2, rect.y + rect.h * 0.56 + i * 18, 14, COL.ink, 'center', 700));
+  }
+  if (lane.phase === 'celebrate') addHit(rect, { kind: 'skip', lane: index });
+  ctx.restore();
+}
+function drawSparks() {
+  sparks.forEach((s) => {
+    ctx.globalAlpha = Math.max(0, s.life / s.max);
+    ctx.fillStyle = s.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.72)';
+  ctx.fillRect(0, 0, VW, VH);
+  panel(500, 300, 600, 280, COL.panel2, COL.cyan, 20);
+  text('PAUSED', 800, 360, 42, COL.gold, 'center', 800);
+  text('The crime scene is frozen.', 800, 410, 18, COL.dim, 'center', 700);
+  const resume = { x: 560, y: 460, w: 220, h: 56 };
+  const quit = { x: 820, y: 460, w: 220, h: 56 };
+  const hotR = pointerIn(resume);
+  const hotQ = pointerIn(quit);
+  panel(resume.x, resume.y, resume.w, resume.h, hotR ? '#ffe7a4' : COL.gold, null, 12);
+  text('RESUME', resume.x + 110, resume.y + 28, 18, '#1c1404', 'center', 800);
+  panel(quit.x, quit.y, quit.w, quit.h, hotQ ? '#24365a' : '#16243f', COL.line, 12);
+  text('TITLE', quit.x + 110, quit.y + 28, 18, COL.ink, 'center', 800);
+  addHit(resume, { kind: 'menu', id: 'resume' });
+  addHit(quit, { kind: 'menu', id: 'quit' });
+}
+function menuButton(r, title, sub, on, id, row) {
+  const hot = pointerIn(r);
+  const focus = G.focusRow === row;
+  panel(r.x, r.y, r.w, r.h, on ? '#16344f' : (hot ? '#182848' : '#10182e'), on || focus ? COL.cyan : COL.line, 12);
+  text(title, r.x + r.w / 2, r.y + (sub ? r.h * 0.38 : r.h / 2), r.h > 70 ? 16 : 18, on ? COL.gold : COL.ink, 'center', 800);
+  if (sub) text(sub, r.x + r.w / 2, r.y + r.h * 0.72, 12, COL.dim, 'center', 700);
+  addHit(r, { kind: 'menu', id: id, row: row });
+}
+function drawTitle() {
+  text('GALACTIC DETECTIVE PRECINCT', 56, 48, 13, COL.cyan, 'left', 800);
+  text('XENO-SCANNER', 56, 108, 64, COL.ink, 'left', 800);
+  text('Simultaneous Alien Detective', 56, 162, 28, COL.gold, 'left', 800);
+  const sub = wrapText('Primary 5–6. Turn alien body-part clues into two picture equations, scale to eliminate one species, then arrest both counts.', 740, 16, 700);
+  sub.forEach((line, i) => text(line, 56, 206 + i * 22, 16, COL.dim, 'left', 700));
+  const lessons = [
+    ['1  Form the equations', 'Match each sensor total to the mugshot counts. No x or y — the aliens are the unknowns.'],
+    ['2  Scale and subtract', 'Multiply so one alien matches on both lines, then subtract to wipe that species out.'],
+    ['3  Arrest both species', 'Substitute the first count back into an equation and lock both whole-number answers.']
+  ];
+  lessons.forEach((item, i) => {
+    const y = 268 + i * 108;
+    panel(56, y, 760, 96, COL.panel, COL.line, 16);
+    text(item[0], 76, y + 30, 20, COL.gold, 'left', 800);
+    const lines = wrapText(item[1], 720, 15, 700);
+    lines.forEach((line, n) => text(line, 76, y + 58 + n * 18, 15, COL.ink, 'left', 700));
+  });
+  text('Suspect lineup', 56, 608, 13, COL.cyan, 'left', 800);
+  ROSTER.forEach((sp, i) => {
+    const x = 56 + i * 126;
+    panel(x, 626, 116, 150, COL.panel2, sp.body, 14);
+    const alien = spawn(sp);
+    drawAlien(x + 58, 688, alien, 28);
+    text(sp.name, x + 58, 748, 16, sp.body, 'center', 800);
+  });
+  const help = 'Enter launches. Arrows change the mission. M mutes. Esc pauses.';
+  text(help, 56, 810, 14, COL.dim, 'left', 700);
+  text('Sample aliens above are a lineup only. Every case prints its own eye, leg, and antenna counts on the scan card.', 56, 836, 13, COL.dim, 'left', 700);
+
+  panel(860, 36, 688, 828, 'rgba(8, 12, 30, 0.9)', COL.line, 22);
+  text('MISSION SETUP', 1204, 68, 14, COL.cyan, 'center', 800);
+  text('Detectives', 884, 108, 13, COL.gold, 'left', 800);
+  for (let i = 0; i < 3; i++) {
+    menuButton({ x: 884 + i * 212, y: 126, w: 200, h: 64 }, (i + 1) + 'P', P_NAME[i].split(' ')[0], G.players === i + 1, 'p' + (i + 1), 0);
+  }
+  text('Difficulty', 884, 214, 13, COL.gold, 'left', 800);
+  DIFFS.forEach((d, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    menuButton({ x: 884 + col * 324, y: 232 + row * 86, w: 312, h: 76 }, d.name, d.title, G.diff === d.id, d.id, 1);
+  });
+  text('Mode', 884, 420, 13, COL.gold, 'left', 800);
+  menuButton({ x: 884, y: 440, w: 208, h: 72 }, 'SOLO', 'One score, 3 lives', G.mode === 'solo', 'solo', 2);
+  menuButton({ x: 1104, y: 440, w: 208, h: 72 }, 'CO-OP', 'Shared team score', G.mode === 'coop', 'coop', 2);
+  menuButton({ x: 1324, y: 440, w: 200, h: 72 }, 'DUEL', 'Separate lanes', G.mode === 'duel', 'duel', 2);
+  const blurb = modeBlurb();
+  const wrapped = wrapText(blurb, 640, 15, 700).slice(0, 4);
+  wrapped.forEach((line, i) => text(line, 884, 540 + i * 20, 15, COL.ink, 'left', 700));
+  const diffBlurb = DIFFS.filter((d) => d.id === G.diff)[0].blurb;
+  const dLines = wrapText(diffBlurb, 640, 15, 700);
+  dLines.forEach((line, i) => text(line, 884, 620 + i * 20, 15, COL.gold, 'left', 700));
+  const start = { x: 884, y: 700, w: 640, h: 64 };
+  const pulse = 0.55 + Math.sin(G.t * 3) * 0.15;
+  panel(start.x, start.y, start.w, start.h, G.focusRow === 3 ? '#ffe3a0' : '#ffd76a', 'rgba(255,255,255,' + pulse + ')', 14);
+  text('LAUNCH SCANNER', 1204, 732, 24, '#1c1404', 'center', 800);
+  addHit(start, { kind: 'menu', id: 'start', row: 3 });
+  const best = bests[bestId()] || 0;
+  text('Best for this mission: ' + best, 1204, 792, 15, COL.dim, 'center', 700);
+  text('Co-op shows one team score only. Duel deals a different case to every lane.', 1204, 824, 13, COL.dim, 'center', 700);
+}
+function modeBlurb() {
+  if (G.mode === 'solo') return 'One detective. Three badges. Mouse, keys 1–4, A/D + Space, or gamepad A.';
+  if (G.mode === 'coop') return 'Two or three detectives share ONE team score and ONE set of lives. Roles rotate: form, eliminate, arrest. ' + G.players + ' on the team.';
+  return G.players + ' detectives. Separate cases, separate scores, separate lives. Highest score becomes Chief Galactic Detective.';
+}
+function rankFor(score) {
+  if (score >= 3800) return 'Interstellar Arch-Detective';
+  if (score >= 2400) return 'Chief Xeno-Profiler';
+  if (score >= 1400) return 'Galactic Detective';
+  return 'Cadet Inspector';
+}
+function drawOver() {
+  const why = G.overReason === 'lives'
+    ? 'The last detective badge went dark.'
+    : G.overReason === 'time'
+      ? 'The precinct clock ran out.'
+      : 'The case files are closed.';
+  text(G.mode === 'duel' ? 'PRECINCT RESULT' : 'CASE CLOSED', 800, 70, 18, COL.cyan, 'center', 800);
+  text(why, 800, 108, 20, COL.dim, 'center', 700);
+  if (G.mode === 'duel') {
+    const scores = G.lanes.map((lane) => lane.score);
+    const top = Math.max.apply(null, scores);
+    const winners = [];
+    scores.forEach((s, i) => { if (s === top) winners.push(i); });
+    const title = winners.length === 1 ? P_NAME[winners[0]] + ' is Chief Galactic Detective' : 'Joint chiefs — the scores are tied';
+    text(title, 800, 156, 28, COL.gold, 'center', 800);
+    const n = G.lanes.length;
+    const w = n === 2 ? 460 : 360;
+    const gap = 24;
+    const total = n * w + (n - 1) * gap;
+    const x0 = (VW - total) / 2;
+    G.lanes.forEach((lane, i) => {
+      const x = x0 + i * (w + gap);
+      const win = winners.indexOf(i) !== -1;
+      panel(x, 210, w, 360, COL.panel, win ? COL.gold : P_COLOR[i], 18);
+      text(P_SHORT[i], x + w / 2, 250, 16, P_COLOR[i], 'center', 800);
+      text(String(lane.score), x + w / 2, 330, 64, COL.gold, 'center', 800);
+      text('POINTS', x + w / 2, 380, 14, COL.dim, 'center', 800);
+      text(lane.solved + ' cases closed', x + w / 2, 430, 18, COL.ink, 'center', 700);
+      text(lane.lives + ' badges left', x + w / 2, 462, 16, COL.dim, 'center', 700);
+      if (win) text('CHIEF', x + w / 2, 510, 18, COL.gold, 'center', 800);
+    });
+  } else {
+    const lane = G.lanes[0];
+    const team = G.mode === 'coop';
+    text(team ? 'TEAM SCORE' : 'DETECTIVE SCORE', 800, 170, 16, COL.cyan, 'center', 800);
+    text(String(lane.score), 800, 260, 84, COL.gold, 'center', 800);
+    text(rankFor(lane.score), 800, 330, 28, COL.ink, 'center', 800);
+    text(lane.solved + ' of ' + lane.goal + ' cases closed', 800, 380, 20, COL.dim, 'center', 700);
+    if (team) {
+      const names = [];
+      for (let i = 0; i < G.players; i++) names.push(P_NAME[i]);
+      text(names.join('  ·  ') + ' investigated as one precinct.', 800, 430, 18, COL.ink, 'center', 700);
+      text('Shared badges left: ' + lane.lives, 800, 464, 16, COL.dim, 'center', 700);
+    } else {
+      text('Badges left: ' + lane.lives, 800, 430, 18, COL.dim, 'center', 700);
+    }
+    text('Best for this mission: ' + (bests[bestId()] || lane.score), 800, 510, 16, COL.gold, 'center', 700);
+  }
+  const again = { x: 500, y: 760, w: 280, h: 60 };
+  const title = { x: 820, y: 760, w: 280, h: 60 };
+  panel(again.x, again.y, again.w, again.h, G.overFocus === 0 ? '#ffe3a0' : COL.gold, null, 14);
+  text('PLAY AGAIN', again.x + 140, again.y + 30, 18, '#1c1404', 'center', 800);
+  panel(title.x, title.y, title.w, title.h, pointerIn(title) ? '#24365a' : '#16243f', G.overFocus === 1 ? COL.cyan : COL.line, 14);
+  text('CHANGE MISSION', title.x + 140, title.y + 30, 18, COL.ink, 'center', 800);
+  addHit(again, { kind: 'menu', id: 'again' });
+  addHit(title, { kind: 'menu', id: 'title' });
+}
+function render() {
+  cardHits.length = 0;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = COL.bg0;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const mag = reduceMotion || G.mode === 'duel' ? 0 : G.shake;
+  const sx = mag ? (Math.random() - 0.5) * mag : 0;
+  const sy = mag ? (Math.random() - 0.5) * mag : 0;
+  ctx.setTransform(view.scale, 0, 0, view.scale, view.ox + sx, view.oy + sy);
+  drawBackground();
+  drawHud();
+  if (G.screen === 'title') drawTitle();
+  else if (G.screen === 'over') drawOver();
+  else if (G.pause) {
+    const rects = laneRects();
+    G.lanes.forEach((lane, i) => { if (rects[i]) drawLane(lane, rects[i], i); });
+    drawPause();
+  } else {
+    const rects = laneRects();
+    G.lanes.forEach((lane, i) => { if (rects[i]) drawLane(lane, rects[i], i); });
+    drawSparks();
+  }
+  let hot = false;
+  if (pointer.inside && hitAt(pointer.x, pointer.y)) hot = true;
+  canvas.style.cursor = hot ? 'pointer' : 'default';
+}
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  view.scale = Math.min(canvas.width / VW, canvas.height / VH);
+  view.ox = (canvas.width - VW * view.scale) / 2;
+  view.oy = (canvas.height - VH * view.scale) / 2;
+}
+function worldPoint(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (canvas.width / rect.width);
+  const y = (clientY - rect.top) * (canvas.height / rect.height);
+  return { x: (x - view.ox) / view.scale, y: (y - view.oy) / view.scale };
+}
+function frame(now) {
+  if (!frame.last) frame.last = now;
+  const dt = Math.min(0.05, (now - frame.last) / 1000);
+  frame.last = now;
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+function boot() {
+  canvas = document.getElementById('c');
+  ctx = canvas.getContext('2d', { alpha: false });
+  reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  try { bests = JSON.parse(localStorage.getItem('xeno-scanner-best') || '{}') || {}; } catch (err) { bests = {}; }
+  try { audio.muted = localStorage.getItem('xeno-scanner-muted') === '1'; } catch (err) { audio.muted = false; }
+  resize();
+  window.addEventListener('resize', resize);
+  canvas.addEventListener('pointermove', (e) => {
+    const p = worldPoint(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+  });
+  canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+  canvas.addEventListener('pointerdown', (e) => {
+    audio.resume();
+    const p = worldPoint(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.inside = true;
+    queue.push({ type: 'click', x: p.x, y: p.y });
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Tab'].indexOf(e.code) !== -1) e.preventDefault();
+    queue.push({ type: 'key', code: e.code });
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  requestAnimationFrame(frame);
+}
+
+const api = { generateCase: generateCase, buildCards: buildCards, selfTest: selfTest, auditCase: auditCase };
+if (typeof globalThis !== 'undefined') globalThis.__XENO = api;
+if (typeof document !== 'undefined') boot();
+</script>
+</body>
+</html>
