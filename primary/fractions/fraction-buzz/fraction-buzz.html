@@ -54,11 +54,6 @@
     12: { one: 'twelfth', many: 'twelfths' }
   };
 
-  const SPELL = {
-    2: 'halfs', 3: 'threes', 4: 'fours', 5: 'fives', 6: 'sixes',
-    7: 'sevens', 8: 'eights', 9: 'nines', 10: 'tens', 11: 'elevens', 12: 'twelves'
-  };
-
   const EASY_DENS = [
     { v: 2, w: 5 }, { v: 3, w: 5 }, { v: 4, w: 5 }, { v: 5, w: 4 }, { v: 6, w: 4 },
     { v: 8, w: 4 }, { v: 10, w: 3 }, { v: 7, w: 2 }, { v: 9, w: 2 }
@@ -91,7 +86,7 @@
 
   const TIER_META = {
     EASY: { label: 'EASY P2-3', short: 'EASY', tint: '#34d399', blurb: 'Denominators 2 to 10. Fraction to words, and words to fraction.' },
-    MEDIUM: { label: 'MEDIUM P3', short: 'MEDIUM', tint: '#38bdf8', blurb: 'Denominators up to 12, with plural and spelling traps.' },
+    MEDIUM: { label: 'MEDIUM P3', short: 'MEDIUM', tint: '#38bdf8', blurb: 'Denominators up to 12, including elevenths and twelfths.' },
     HARD: { label: 'HARD P3-4', short: 'HARD', tint: '#fbbf24', blurb: 'How many halves, thirds, quarters, or fifths are in a whole or mixed number?' },
     EXTREME: { label: 'EXTREME P4-5', short: 'EXTREME', tint: '#fb7185', blurb: 'Convert the mixed number, then count the unit fractions. 10-second clock.' }
   };
@@ -252,7 +247,6 @@
   }
 
   function sliceWord(den, plural, family) {
-    if (family === 'spell') return SPELL[den];
     if (den === 4 && family === 'fourth') return plural ? 'fourths' : 'fourth';
     return plural ? DENOM[den].many : DENOM[den].one;
   }
@@ -261,11 +255,14 @@
     return numberToWords(num) + '-' + sliceWord(den, plural, family);
   }
 
-  function countPhrase(count, den, form) {
-    let unit;
-    if (form === 'plural') unit = DENOM[den].many;
-    else if (form === 'singular') unit = DENOM[den].one;
-    else unit = count === 1 ? DENOM[den].one : DENOM[den].many;
+  function fractionName(num, den, family) {
+    if (!DENOM[den] || num < 1 || num > den) return null;
+    const fam = den === 4 && family === 'fourth' ? 'fourth' : 'normal';
+    return hyphenFraction(num, den, num !== 1, fam);
+  }
+
+  function countPhrase(count, den) {
+    const unit = count === 1 ? DENOM[den].one : DENOM[den].many;
     return numberToWords(count) + ' ' + unit;
   }
 
@@ -290,12 +287,6 @@
       correct: !!correct,
       trap: correct ? null : trap
     };
-  }
-
-  function swapText(num, den) {
-    const head = numberToWords(den);
-    if (num >= 2 && num <= 12) return head + '-' + sliceWord(num, true, 'normal');
-    return head + '-ones';
   }
 
   function takeOptions(correct, candidates, forbidden) {
@@ -337,7 +328,7 @@
     }
     const den = 2 + ((salt - 1) % 11);
     const count = 3 + (salt % 20);
-    const text = countPhrase(count, den, 'auto');
+    const text = countPhrase(count, den);
     if (used.has(text)) return null;
     return wordOpt(text, 'near', count, den);
   }
@@ -349,28 +340,24 @@
     return groups;
   }
 
-  function pluralMessage(q) {
-    const family = q.family === 'fourth' ? 'fourth' : 'normal';
-    const one = sliceWord(q.den, false, family);
-    const many = sliceWord(q.den, true, family);
-    const singularEx = 'one-' + one;
-    const pluralEx = numberToWords(Math.max(2, q.num)) + '-' + many;
-    if (many === one + 's') {
-      return 'Use singular (\'' + one + '\') ONLY when the numerator is 1 (\'' + singularEx + '\'); for 2 or more, add \'-s\' (\'' + pluralEx + '\')!';
-    }
-    return 'Use singular (\'' + one + '\') ONLY when the numerator is 1 (\'' + singularEx + '\'); for 2 or more, use \'' + many + '\' (\'' + pluralEx + '\')!';
-  }
-
   function trapMessage(q, opt) {
     if (!opt) return q.because;
     if (opt.trap === 'swap') {
-      const many = DENOM[q.den].many;
-      return 'Read the TOP number (numerator = ' + q.num + ') as a normal counting number, and the BOTTOM number (denominator = ' + q.den + ') as the slice size (\'' + many + '\') -> ' + q.words + '!';
+      const slice = unitName(q.den, q.num);
+      return 'Read the TOP number (numerator = ' + q.num + ') as a normal counting number, and the BOTTOM number (denominator = ' + q.den + ') as the slice size (\'' + slice + '\') -> ' + q.words + '!';
     }
-    if (opt.trap === 'plural') return pluralMessage(q);
-    if (opt.trap === 'spell') {
+    if (opt.trap === 'top') {
+      if (opt.num === opt.den) {
+        return '"' + opt.text + '" is one whole. The top number here is ' + q.num + ', so ' + q.num + '/' + q.den + ' is ' + q.words + '.';
+      }
+      return 'The top number is ' + q.num + ', so the name starts with "' + numberToWords(q.num) + '", not "' + numberToWords(opt.num) + '". ' + q.num + '/' + q.den + ' is ' + q.words + '.';
+    }
+    if (opt.trap === 'bottom') {
       const said = sliceWord(q.den, q.num !== 1, q.family === 'fourth' ? 'fourth' : 'normal');
-      return 'Look at the denominator spelling. ' + q.den + ' is written "' + said + '", not "' + SPELL[q.den] + '". The fraction is ' + q.words + '.';
+      return 'The bottom number is ' + q.den + ', so these slices are called "' + said + '". ' + q.num + '/' + q.den + ' is ' + q.words + ', not ' + opt.text + '.';
+    }
+    if (opt.trap === 'unit') {
+      return 'The top number is ' + q.num + ', not 1. ' + q.num + '/' + q.den + ' is ' + q.words + ', not ' + opt.text + '.';
     }
     if (opt.trap === 'add') return q.addLine || q.because;
     if (opt.trap === 'convert') return q.convertLine || q.because;
@@ -385,7 +372,7 @@
   function chooseFeedback(q, locks) {
     const anyCorrect = locks.some((l) => l.correct);
     if (anyCorrect || locks.length === 0) return q.because;
-    const order = ['convert', 'add', 'plural', 'swap', 'scale', 'forget', 'spell', 'near'];
+    const order = ['convert', 'add', 'swap', 'scale', 'forget', 'top', 'bottom', 'unit', 'near'];
     let best = null;
     let bestI = 99;
     for (let i = 0; i < locks.length; i++) {
@@ -399,29 +386,25 @@
     return best ? (trapMessage(q, best) || q.because) : q.because;
   }
 
-  function makeF2W(num, den, family, tier) {
+  function makeF2W(num, den, family) {
     const fam = family === 'fourth' ? 'fourth' : 'normal';
     const words = hyphenFraction(num, den, num !== 1, fam);
     const said = sliceWord(den, num !== 1, fam);
-    let because = 'The top number ' + num + ' is read as "' + numberToWords(num) + '". The bottom number ' + den + ' names the slice: "' + said + '". Together: ' + words + '.';
-    if (den === 4) because += ' Quarters and fourths are both correct names for this denominator.';
-    const pluralFlag = num === 1;
-    const candidates = [
-      wordOpt(hyphenFraction(num, den, pluralFlag, fam), 'plural', num, den),
-      wordOpt(swapText(num, den), 'swap', den, num),
-      wordOpt(hyphenFraction(num + 1, den, true, fam), 'near', num + 1, den),
-      wordOpt(hyphenFraction(Math.max(1, num - 1), den, Math.max(1, num - 1) !== 1, fam), 'near', Math.max(1, num - 1), den)
-    ];
-    if (tier === 'MEDIUM') {
-      candidates.splice(2, 0, wordOpt(hyphenFraction(num, den, num !== 1, 'spell'), 'spell', num, den));
+    const because = 'The top number ' + num + ' is read as "' + numberToWords(num) + '". The bottom number ' + den + ' names the slice: "' + said + '". Together: ' + words + '.';
+    const candidates = [];
+    function addName(n, d, trap, familyName) {
+      const text = fractionName(n, d, familyName);
+      if (!text || text === words) return;
+      candidates.push(wordOpt(text, trap, n, d));
     }
-    if (DENOM[den + 1] && num < den + 1) {
-      candidates.push(wordOpt(hyphenFraction(num, den + 1, num !== 1, 'normal'), 'near', num, den + 1));
-    }
-    if (DENOM[den - 1] && den - 1 >= 2) {
-      const n2 = Math.min(num, den - 2);
-      if (n2 >= 1) candidates.push(wordOpt(hyphenFraction(n2, den - 1, n2 !== 1, den - 1 === 4 ? fam : 'normal'), 'near', n2, den - 1));
-    }
+    addName(num + 1, den, 'top', fam);
+    addName(num - 1, den, 'top', fam);
+    addName(num, den + 1, 'bottom', fam);
+    addName(num, den - 1, 'bottom', fam);
+    if (num > 1) addName(1, den, 'unit', fam);
+    if (DENOM[num]) candidates.push(wordOpt(hyphenFraction(den, num, true, 'normal'), 'swap', den, num));
+    addName(num, den + 2, 'bottom', fam);
+    addName(num, den - 2, 'bottom', fam);
     const correct = { kind: 'words', text: words, num: num, den: den, correct: true, trap: null };
     const options = takeOptions(correct, candidates, equivalentSpellings(num, den));
     return {
@@ -452,8 +435,7 @@
   function makeW2F(num, den, family) {
     const fam = family === 'fourth' ? 'fourth' : 'normal';
     const words = hyphenFraction(num, den, num !== 1, fam);
-    let because = '"' + words + '" means ' + num + ' out of ' + den + ' equal parts.';
-    if (den === 4) because += ' Quarters and fourths are both correct names for this denominator.';
+    const because = '"' + words + '" means ' + num + ' out of ' + den + ' equal parts.';
     const candidates = [
       fracOpt(den, num, 'swap', false),
       fracOpt(num + 1, den + (num + 1 >= den ? 2 : 0), 'near', false),
@@ -495,18 +477,19 @@
 
   function makeWhole(whole, den) {
     const count = whole * den;
-    const words = countPhrase(count, den, 'auto');
+    const words = countPhrase(count, den);
     const many = unitName(den, den);
     const totalName = unitName(den, count);
     const because = 'Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' × ' + den + ' = ' + count + ' ' + totalName + '.';
     const addLine = 'Don\'t add ' + whole + ' + ' + den + '. Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' × ' + den + ' = ' + count + ' ' + totalName + '.';
+    const forgetLine = 'That counts the wholes only. Each whole has ' + den + ' ' + many + ', so ' + whole + ' × ' + den + ' = ' + count + ' ' + totalName + '.';
     const neighbor = den === 12 ? 10 : (DENOM[den + 1] ? den + 1 : den - 1);
     const candidates = [
-      wordOpt(countPhrase(whole + den, den, 'auto'), 'add', whole + den, den),
-      wordOpt(countPhrase(count - 1, den, 'auto'), 'near', count - 1, den),
-      wordOpt(countPhrase(count + 1, den, 'auto'), 'near', count + 1, den),
-      wordOpt(countPhrase(count, neighbor, 'auto'), 'near', count, neighbor),
-      wordOpt(countPhrase(count, den, 'singular'), 'plural', count, den)
+      wordOpt(countPhrase(whole + den, den), 'add', whole + den, den),
+      wordOpt(countPhrase(count - 1, den), 'near', count - 1, den),
+      wordOpt(countPhrase(count + 1, den), 'near', count + 1, den),
+      wordOpt(countPhrase(count, neighbor), 'near', count, neighbor),
+      wordOpt(countPhrase(whole, den), 'forget', whole, den)
     ];
     const correct = { kind: 'words', text: words, num: count, den: den, correct: true, trap: null };
     return {
@@ -528,6 +511,7 @@
       note: 'each whole is split into ' + den + ' ' + many,
       because: because,
       addLine: addLine,
+      forgetLine: forgetLine,
       pie: false,
       groups: barsFor(whole, den, 0),
       options: takeOptions(correct, candidates, []),
@@ -537,18 +521,19 @@
 
   function makeMixed(whole, fracNum, den) {
     const count = whole * den + fracNum;
-    const words = countPhrase(count, den, 'auto');
+    const words = countPhrase(count, den);
     const many = DENOM[den].many;
     const extraName = unitName(den, fracNum);
     const wholePart = whole * den;
     const because = 'Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' wholes × ' + den + ' ' + many + ' = ' + wholePart + ' ' + unitName(den, wholePart) + ', then add the extra ' + fracNum + ' ' + extraName + ' -> ' + count + ' ' + unitName(den, count) + '!';
     const forgetLine = 'You counted the wholes, then stopped. Add the extra ' + fracNum + ' ' + extraName + ': ' + whole + ' × ' + den + ' + ' + fracNum + ' = ' + count + '.';
+    const neighbor = den === 12 ? 10 : (DENOM[den + 1] ? den + 1 : den - 1);
     const candidates = [
-      wordOpt(countPhrase(whole + fracNum, den, 'auto'), 'add', whole + fracNum, den),
-      wordOpt(countPhrase(wholePart, den, 'auto'), 'forget', wholePart, den),
-      wordOpt(countPhrase(count - 1, den, 'auto'), 'near', count - 1, den),
-      wordOpt(countPhrase(count + 1, den, 'auto'), 'near', count + 1, den),
-      wordOpt(countPhrase(count, den, 'singular'), 'plural', count, den)
+      wordOpt(countPhrase(whole + fracNum, den), 'add', whole + fracNum, den),
+      wordOpt(countPhrase(wholePart, den), 'forget', wholePart, den),
+      wordOpt(countPhrase(count - 1, den), 'near', count - 1, den),
+      wordOpt(countPhrase(count + 1, den), 'near', count + 1, den),
+      wordOpt(countPhrase(count, neighbor), 'near', count, neighbor)
     ];
     const correct = { kind: 'words', text: words, num: count, den: den, correct: true, trap: null };
     return {
@@ -582,7 +567,7 @@
     const scale = unitDen / fracDen;
     const extra = fracNum * scale;
     const count = whole * unitDen + extra;
-    const words = countPhrase(count, unitDen, 'auto');
+    const words = countPhrase(count, unitDen);
     const many = DENOM[unitDen].many;
     const extraName = unitName(unitDen, extra);
     const convertLine = '1 whole = ' + unitDen + ' ' + unitName(unitDen, unitDen) + ' and ' + fracNum + '/' + fracDen + ' = ' + extra + ' ' + extraName + '! So ' + whole + ' ' + fracNum + '/' + fracDen + ' = (' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + words + '!';
@@ -593,12 +578,12 @@
     const unscaled = whole * unitDen + fracNum;
     const wholesOnly = whole * unitDen;
     const candidates = [
-      wordOpt(countPhrase(originalCount, unitDen, 'auto'), 'convert', originalCount, unitDen),
-      wordOpt(countPhrase(unscaled, unitDen, 'auto'), 'scale', unscaled, unitDen),
-      wordOpt(countPhrase(wholesOnly, unitDen, 'auto'), 'forget', wholesOnly, unitDen),
-      wordOpt(countPhrase(whole + fracNum, unitDen, 'auto'), 'add', whole + fracNum, unitDen),
-      wordOpt(countPhrase(count - 1, unitDen, 'auto'), 'near', count - 1, unitDen),
-      wordOpt(countPhrase(count + 1, unitDen, 'auto'), 'near', count + 1, unitDen)
+      wordOpt(countPhrase(originalCount, unitDen), 'convert', originalCount, unitDen),
+      wordOpt(countPhrase(unscaled, unitDen), 'scale', unscaled, unitDen),
+      wordOpt(countPhrase(wholesOnly, unitDen), 'forget', wholesOnly, unitDen),
+      wordOpt(countPhrase(whole + fracNum, unitDen), 'add', whole + fracNum, unitDen),
+      wordOpt(countPhrase(count - 1, unitDen), 'near', count - 1, unitDen),
+      wordOpt(countPhrase(count + 1, unitDen), 'near', count + 1, unitDen)
     ];
     const correct = { kind: 'words', text: words, num: count, den: unitDen, correct: true, trap: null };
     return {
@@ -656,8 +641,8 @@
     if (kind === 'f2w' || kind === 'w2f') {
       const den = pickWeighted(tier === 'MEDIUM' ? MED_DENS : EASY_DENS);
       const num = pickNum(den);
-      const family = (den === 4 && tier !== 'EASY' && Math.random() < 0.45) ? 'fourth' : 'normal';
-      return kind === 'f2w' ? makeF2W(num, den, family, tier) : makeW2F(num, den, family);
+      const family = 'normal';
+      return kind === 'f2w' ? makeF2W(num, den, family) : makeW2F(num, den, family);
     }
     if (kind === 'whole') {
       const den = HARD_UNITS[randInt(0, HARD_UNITS.length - 1)];
