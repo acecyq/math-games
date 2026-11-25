@@ -38,8 +38,8 @@
   const BAY_W = 400;
   const BAY_X = [24, 440, 856];
   const DECK_Y = 524;
-  const SOLO_TIME = { EASY: 110, MEDIUM: 120, HARD: 100, EXTREME: 80 };
-  const DUEL_TIME = { EASY: 48, MEDIUM: 40, HARD: 34, EXTREME: 28 };
+  const SOLO_TIME = { EASY: 140, MEDIUM: 160, HARD: 140, EXTREME: 150 };
+  const DUEL_TIME = { EASY: 70, MEDIUM: 64, HARD: 56, EXTREME: 52 };
   const DUEL_WAVES = 6;
   const TIERS = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
   const MODES = ['SOLO', 'COOP', 'DUEL'];
@@ -134,6 +134,7 @@
     record: false,
     badBay: -1,
     bayStep: 0,
+    promptStep: 0,
     guideWait: 0
   };
 
@@ -513,6 +514,206 @@
     ];
   }
 
+  function choiceList(correct, traps) {
+    const opts = [{ label: String(correct), value: String(correct), correct: true, tip: '' }];
+    const used = {};
+    used[String(correct)] = true;
+    for (let i = 0; i < traps.length && opts.length < 4; i++) {
+      const lab = String(traps[i].label);
+      if (!lab || lab === '0' || used[lab]) continue;
+      used[lab] = true;
+      opts.push({ label: lab, value: lab, correct: false, tip: traps[i].tip });
+    }
+    let salt = 1;
+    while (opts.length < 4 && salt < 16) {
+      if (String(correct).indexOf('/') === -1) {
+        const v = Number(correct) + salt * 4;
+        const lab = String(v);
+        if (!used[lab]) {
+          used[lab] = true;
+          opts.push({ label: lab, value: lab, correct: false, tip: 'Use only the shaded part of this bar.' });
+        }
+      }
+      salt += 1;
+    }
+    if (opts.length < 4) return null;
+    return shuffle(opts);
+  }
+
+  function fracChoices(n, d, knownN, knownD) {
+    const correct = fs(n, d);
+    const pool = [];
+    const add = (nn, dd, tip) => {
+      if (nn <= 0 || dd <= 1 || nn >= dd) return;
+      const lab = fs(nn, dd);
+      if (lab === correct || pool.some(p => p.label === lab)) return;
+      pool.push({ label: lab, tip: tip });
+    };
+    const marked = 'That part is already marked on the bar.';
+    const countTip = 'Count the unmarked equal parts on the bar.';
+    add(knownN, knownD, marked);
+    add(1, d, countTip);
+    add(n - 1, d, countTip);
+    add(n + 1, d, countTip);
+    add(knownN, n, marked);
+    for (let dd = 2; dd <= d + 4 && pool.length < 8; dd++) {
+      for (let k = 1; k < dd && pool.length < 8; k++) {
+        add(k, dd, dd === d ? countTip : 'The bar is split into ' + d + ' equal parts.');
+      }
+    }
+    return choiceList(correct, pool);
+  }
+
+  function numChoices(correct, traps) {
+    const pool = [];
+    traps.forEach(t => {
+      if (!isPosInt(t.label) || t.label === correct) return;
+      if (pool.some(p => p.label === t.label)) return;
+      pool.push(t);
+    });
+    return choiceList(correct, pool);
+  }
+
+  function wholeOf(total, arm) {
+    if (!arm || arm.fireD <= 0 || total % arm.fireD !== 0) return null;
+    const v = (arm.fireN * total) / arm.fireD;
+    return v > 0 && v !== arm.fired ? v : null;
+  }
+
+  function expendPrompt(arm, total) {
+    return {
+      ask: 'How many ' + arm.short + ' were expended?',
+      view: 'zoom',
+      denom: arm.fireD,
+      hatch: arm.fireN,
+      name: arm.short,
+      chips: [cap(arm.short) + ' expended {a}'],
+      facts: [{ key: arm.short, field: 'spent', value: '{a}' }],
+      options: numChoices(arm.fired, [
+        { label: arm.count, tip: 'That is the whole stack of ' + arm.short + '. Only the shaded part was expended.' },
+        { label: arm.left, tip: 'The clear part is still aboard. The shaded part was expended.' },
+        { label: wholeOf(total, arm), tip: 'Take that fraction of the ' + arm.short + ', not of the whole rack.' }
+      ])
+    };
+  }
+
+  function splitPrompt(raw, denom, cut, leftName, leftFrac, rightName, askN, askD, knownN, knownD, head, countLeft, countRight) {
+    const rightLabel = rightName === 'rest' ? 'The rest' : cap(rightName);
+    return {
+      ask: 'What fraction are the ' + rightName + '?',
+      view: 'split',
+      head: head,
+      denom: denom,
+      cut: cut,
+      left: leftName,
+      leftFrac: leftFrac,
+      right: rightName,
+      chips: [
+        leftName + ' ' + leftFrac + (countLeft == null ? '' : ' · ' + countLeft),
+        rightLabel + ' {a}' + (countRight == null ? '' : ' · ' + countRight)
+      ],
+      facts: [
+        { key: leftName.toLowerCase(), field: 'share', value: leftFrac },
+        countLeft == null ? null : { key: leftName.toLowerCase(), field: 'count', value: String(countLeft) },
+        { key: rightName.toLowerCase(), field: 'share', value: '{a}' },
+        countRight == null ? null : { key: rightName.toLowerCase(), field: 'count', value: String(countRight) }
+      ].filter(Boolean),
+      options: fracChoices(askN, askD, knownN, knownD)
+    };
+  }
+
+  function sumPrompt(raw, options) {
+    return {
+      ask: 'How many rounds are still aboard?',
+      view: 'sum',
+      bars: raw.arms.map(function (arm) {
+        return { name: arm.short, denom: arm.fireD, hatch: arm.fireN };
+      }),
+      options: options.map(function (o) {
+        return { label: String(o.value), value: o.value, correct: o.correct, tip: o.tip };
+      })
+    };
+  }
+
+  function buildPrompts(raw, options) {
+    const a = raw.arms;
+    const prompts = [];
+    if (raw.type === 'pair' || raw.type === 'fixedarm') {
+      prompts.push(splitPrompt(raw, a[0].d, a[0].n, cap(a[0].short), fs(a[0].n, a[0].d), a[1].short, a[0].d - a[0].n, a[0].d, a[0].n, a[0].d, raw.start + ' ROUNDS', a[0].count, a[1].count));
+    } else if (raw.type === 'backarm') {
+      prompts.push(splitPrompt(raw, a[0].d, a[0].n, cap(a[0].short), fs(a[0].n, a[0].d), a[1].short, a[0].d - a[0].n, a[0].d, a[0].n, a[0].d, raw.start + ' ROUNDS', null, a[1].count));
+    }
+    if (raw.type === 'pair') {
+      prompts.push(expendPrompt(a[0], raw.start));
+      prompts.push(expendPrompt(a[1], raw.start));
+    } else if (raw.type === 'trio') {
+      prompts.push(splitPrompt(raw, a[0].d, a[0].n, cap(a[0].short), fs(a[0].n, a[0].d), 'rest', a[0].d - a[0].n, a[0].d, a[0].n, a[0].d, raw.start + ' ROUNDS', a[0].count, raw.start - a[0].count));
+      prompts.push({
+        ask: 'What fraction of the remaining rounds are the ' + a[2].short + '?',
+        view: 'split',
+        head: 'REMAINING ROUNDS',
+        denom: a[1].d,
+        cut: a[1].n,
+        left: cap(a[1].short),
+        leftFrac: fs(a[1].n, a[1].d),
+        right: a[2].short,
+        chips: [cap(a[1].short) + ' ' + fs(a[1].n, a[1].d) + ' of the rest · ' + a[1].count, cap(a[2].short) + ' {a} of the rest · ' + a[2].count],
+        facts: [
+          { key: a[1].short, field: 'share', value: fs(a[1].n, a[1].d) + ' of the rest' },
+          { key: a[1].short, field: 'count', value: String(a[1].count) },
+          { key: a[2].short, field: 'share', value: '{a} of the rest' },
+          { key: a[2].short, field: 'count', value: String(a[2].count) }
+        ],
+        options: fracChoices(a[1].d - a[1].n, a[1].d, a[1].n, a[1].d)
+      });
+      a.forEach(function (arm) { prompts.push(expendPrompt(arm, raw.start)); });
+    } else if (raw.type === 'fixedarm') {
+      prompts.push({
+        ask: 'How many more ' + a[0].short + ' were expended?',
+        view: 'fixedzoom',
+        fixed: a[0].fixed,
+        denom: a[0].fireD,
+        hatch: a[0].fireN,
+        name: a[0].short,
+        chips: [cap(a[0].short) + ' fixed ' + a[0].fixed, cap(a[0].short) + ' more {a}'],
+        facts: [
+          { key: a[0].short, field: 'fixed', value: String(a[0].fixed) },
+          { key: a[0].short, field: 'spent', value: '{a}' }
+        ],
+        options: numChoices(a[0].burst, [
+          { label: a[0].fixed, tip: 'That fixed salvo is already marked. A fraction of what is left was expended too.' },
+          { label: a[0].count, tip: 'That is the whole stack of ' + a[0].short + '.' },
+          { label: a[0].left, tip: 'The clear part is still aboard. Count the shaded part after the fixed salvo.' }
+        ])
+      });
+      prompts.push(expendPrompt(a[1], raw.start));
+    } else if (raw.type === 'backarm') {
+      prompts.push({
+        ask: 'How many ' + a[0].short + ' were on the rack at the start?',
+        view: 'back',
+        denom: a[0].fireD,
+        keep: a[0].fireD - a[0].fireN,
+        known: a[0].left,
+        extra: a[0].extra,
+        name: a[0].short,
+        chips: [cap(a[0].short) + ' still ' + a[0].left, cap(a[0].short) + ' started {a}'],
+        facts: [
+          { key: a[0].short, field: 'left', value: String(a[0].left) },
+          { key: a[0].short, field: 'count', value: '{a}' }
+        ],
+        options: numChoices(a[0].count, [
+          { label: a[0].left, tip: 'That is what is still here. Work backwards through the expended part.' },
+          { label: a[0].left + a[0].extra, tip: a[0].extra ? 'Add the extra back, then divide by the kept fraction.' : 'Work backwards from the part that is still here.' },
+          { label: raw.bad, tip: 'Add the extra back before you divide. Do not subtract it.' }
+        ])
+      });
+      prompts.push(expendPrompt(a[1], raw.start));
+    }
+    prompts.push(sumPrompt(raw, options));
+    if (prompts.some(function (p) { return !p || !p.options || p.options.length !== 4 || p.options.filter(function (o) { return o.correct; }).length !== 1; })) return null;
+    return prompts;
+  }
+
   function packageMachine(raw, flavor) {
     if (!raw || !flavor || !raw.arms || raw.arms.length < 2) return null;
     if (!isPosInt(raw.rem) || !isPosInt(raw.start) || raw.start <= raw.rem) return null;
@@ -571,6 +772,8 @@
     const options = makeOptions(raw.rem, traps);
     if (options.length !== 4 || options.filter(function (o) { return o.correct; }).length !== 1) return null;
     if (!options.some(function (o) { return o.correct && o.value === raw.rem; })) return null;
+    const prompts = buildPrompts(raw, options);
+    if (!prompts) return null;
     const fracKey = a.map(function (arm) {
       return [arm.n, arm.d, arm.fireN, arm.fireD, arm.extra || 0, arm.fixed || 0].join('.');
     }).join(';');
@@ -585,6 +788,7 @@
       weaponId: a[0].id,
       text: text,
       steps: buildSteps(raw),
+      prompts: prompts,
       worked: worked,
       start: raw.start,
       rem: raw.rem,
@@ -796,6 +1000,7 @@
     game.machines = buildWave(game.tier, history);
     game.phase = 'guide';
     game.bayStep = 0;
+    game.promptStep = 0;
     game.guideWait = 0;
     game.clock = (game.mode === 'DUEL' ? DUEL_TIME : SOLO_TIME)[game.tier];
     game.focus = 0;
@@ -817,7 +1022,8 @@
       p.jamTip = '';
     });
     const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
-    announce(who + 'Wave ' + game.wave + '. Break down Bay 1. A fraction of each weapon type was fired. Lock the rounds still aboard.');
+    const firstAsk = game.machines[0] && game.machines[0].prompts ? game.machines[0].prompts[0].ask : 'Read the bar.';
+    announce(who + 'Bay 1. ' + firstAsk);
     sound.scan();
   }
 
@@ -891,18 +1097,31 @@
     announce(picked.name + ' is the fullest rack. ' + picked.rem + ' ' + picked.unit + ' added to the arsenal.');
   }
 
+  function currentPrompt(m) {
+    if (!m || !m.prompts || !m.prompts.length) return null;
+    return m.prompts[Math.min(game.promptStep, m.prompts.length - 1)];
+  }
+
   function chooseGuideCard(index, pi) {
     if (game.phase !== 'guide' || game.intro > 0 || game.hold > 0 || game.guideWait > 0) return;
     const m = game.machines[game.bayStep];
     if (!m || m.solved) return;
-    const opt = m.options[index];
+    const prompt = currentPrompt(m);
+    const opt = prompt && prompt.options[index];
     if (!opt) return;
+    const last = game.promptStep >= m.prompts.length - 1;
     if (game.mode === 'DUEL') {
       const p = game.pilots[pi];
       if (!p || p.jam > 0) return;
       p.card = index;
       if (!opt.correct) {
         jamPilot(pi, opt.tip || m.tipMain);
+        return;
+      }
+      if (!last) {
+        sound.lock();
+        game.guideWait = 0.4;
+        announce('Marked. Next part of the bar.');
         return;
       }
       m.solved = true;
@@ -920,6 +1139,12 @@
       game.holdNext = 'guide';
       punish(opt.tip || m.tipMain);
       announce(game.note);
+      return;
+    }
+    if (!last) {
+      sound.lock();
+      game.guideWait = 0.35;
+      announce('Marked. Next part of the bar.');
       return;
     }
     m.solved = true;
@@ -982,11 +1207,22 @@
     game.guideWait = 0;
     game.focus = 0;
     game.pilots.forEach(p => { p.card = 0; p.jam = 0; p.jamTip = ''; });
+    const current = game.machines[game.bayStep];
+    if (current && !current.solved && game.promptStep < current.prompts.length - 1) {
+      game.promptStep += 1;
+      const ask = current.prompts[game.promptStep].ask;
+      const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
+      announce(who + ask);
+      return;
+    }
+    game.promptStep = 0;
     if (game.bayStep < 2) {
       game.bayStep += 1;
       game.phase = 'guide';
+      const next = game.machines[game.bayStep];
+      const ask = next && next.prompts ? next.prompts[0].ask : 'Read the bar.';
       const who = game.mode === 'COOP' ? PILOTS[activePilot()].name + '. ' : '';
-      announce(who + 'Bay ' + (game.bayStep + 1) + '. Follow the breakdown, then lock the rounds still aboard.');
+      announce(who + 'Bay ' + (game.bayStep + 1) + '. ' + ask);
       return;
     }
     if (game.mode === 'DUEL') {
@@ -1492,25 +1728,189 @@
     ctx.stroke();
   }
 
-  function drawGuideCard(m, r, cardY) {
-    let y = cardY + 18;
-    const problem = wrapFit(m.text, r.w - 52, 5, 13, 11);
-    const plh = problem.size + 3;
-    for (let li = 0; li < problem.lines.length; li++) {
-      text(problem.lines[li], r.x + 24, y, problem.size, '#102033', 'left', 700);
-      y += plh;
+  function hatchRect(x, y, w, h) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+    ctx.lineWidth = 2;
+    for (let i = -h; i < w; i += 7) {
+      ctx.beginPath();
+      ctx.moveTo(x + i, y + h);
+      ctx.lineTo(x + i + h, y);
+      ctx.stroke();
     }
-    y += 8;
-    const steps = m.steps || [];
-    for (let s = 0; s < steps.length; s++) {
-      const wrapped = wrapFit((s + 1) + '  ' + steps[s], r.w - 52, 2, 12, 10);
-      const lh = wrapped.size + 2;
-      for (let li = 0; li < wrapped.lines.length; li++) {
-        if (y > cardY + 210) return;
-        text(wrapped.lines[li], r.x + 24, y, wrapped.size, s === steps.length - 1 ? '#9a3412' : '#1e3a5f', 'left', 700);
-        y += lh;
+    ctx.restore();
+  }
+
+  function partGeom(w, d) {
+    const gap = d > 8 ? 3 : 8;
+    const seg = (w - gap * Math.max(0, d - 1)) / Math.max(1, d);
+    return { gap: gap, seg: seg, step: seg + gap };
+  }
+
+  function groupMid(x, w, d, start, count) {
+    const g = partGeom(w, d);
+    const left = x + start * g.step;
+    const right = left + Math.max(1, count) * g.seg + Math.max(0, count - 1) * g.gap;
+    return { mid: (left + right) / 2, width: Math.max(24, right - left) };
+  }
+
+  function drawParts(x, y, w, h, d, markN, colorOpen, colorMark, stripe) {
+    const g = partGeom(w, d);
+    for (let i = 0; i < d; i++) {
+      const px = x + i * g.step;
+      ctx.fillStyle = i < markN ? colorMark : colorOpen;
+      ctx.fillRect(px, y, g.seg, h);
+      if (stripe && i < markN) hatchRect(px, y, g.seg, h);
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px, y, g.seg, h);
+    }
+  }
+
+  function priorRecord(m) {
+    const step = Math.min(game.promptStep, m.prompts.length - 1);
+    const chips = [];
+    const facts = {};
+    for (let i = 0; i < step; i++) {
+      const p = m.prompts[i];
+      const ans = (p.options.find(function (o) { return o.correct; }) || {}).label || '';
+      (p.chips || []).forEach(function (chip) { chips.push(chip.replace('{a}', ans)); });
+      (p.facts || []).forEach(function (f) {
+        if (!facts[f.key]) facts[f.key] = {};
+        facts[f.key][f.field] = String(f.value || '{a}').replace('{a}', ans);
+      });
+    }
+    return { chips: chips, facts: facts };
+  }
+
+  function drawLedger(x, y, w, lines) {
+    if (!lines.length) return 0;
+    const rh = 16;
+    const head = 14;
+    const boxH = head + lines.length * rh + 8;
+    fillRound(x, y, w, boxH, 6, '#e0f2fe');
+    text('FOUND', x + 8, y + 9, 10, '#0369a1', 'left', 800);
+    lines.forEach(function (line, i) {
+      fitText(line, x + 8, y + head + 6 + i * rh + rh / 2, 12, '#0c4a6e', 'left', 800, w - 16);
+    });
+    return boxH + 6;
+  }
+
+  function factLine(fact) {
+    if (!fact) return '';
+    const bits = [];
+    if (fact.share) bits.push(fact.share);
+    if (fact.count) bits.push(fact.count + ' rounds');
+    if (fact.fixed) bits.push('fixed ' + fact.fixed);
+    if (fact.fixed && fact.spent) bits.push('more expended ' + fact.spent);
+    else if (fact.spent) bits.push('expended ' + fact.spent);
+    if (fact.left) bits.push('still ' + fact.left);
+    return bits.join(' · ');
+  }
+
+  function foundLines(record) {
+    const keys = Object.keys(record.facts);
+    return keys.filter(function (key) {
+      return key !== 'rest' || keys.length < 3;
+    }).map(function (key) {
+      const line = factLine(record.facts[key]);
+      if (!line) return '';
+      return (key === 'rest' ? 'The rest' : cap(key)) + '   ' + line;
+    }).filter(Boolean);
+  }
+
+  function drawGuideCard(m, r, cardY) {
+    const prompt = currentPrompt(m);
+    if (!prompt) return;
+    const x = r.x + 22;
+    const w = r.w - 44;
+    const record = priorRecord(m);
+    const stepNo = Math.min(game.promptStep, m.prompts.length - 1) + 1;
+    text('STEP ' + stepNo + ' OF ' + m.prompts.length, r.x + r.w - 28, cardY + 14, 11, '#64748b', 'right', 700);
+    fitText(prompt.head || (m.start + ' ROUNDS'), x, cardY + 14, 13, '#334155', 'left', 800, w - 96);
+    const ledgerH = drawLedger(x, cardY + 24, w, foundLines(record));
+    const top = cardY + 28 + ledgerH;
+    const bottom = cardY + 214;
+    if (prompt.view === 'split') {
+      const barH = Math.max(44, Math.min(78, bottom - top - 28));
+      drawParts(x, top, w, barH, prompt.denom, prompt.cut, '#fde68a', '#7dd3fc', false);
+      const known = groupMid(x, w, prompt.denom, 0, prompt.cut);
+      const rest = groupMid(x, w, prompt.denom, prompt.cut, prompt.denom - prompt.cut);
+      fitText(prompt.leftFrac, known.mid, top + barH / 2, prompt.cut === 1 ? 16 : 22, '#082f49', 'center', 800, known.width - 8);
+      text('?', rest.mid, top + barH / 2, prompt.denom - prompt.cut === 1 ? 22 : 28, '#78350f', 'center', 800);
+      fitText(prompt.left, known.mid, top + barH + 16, 13, '#0c4a6e', 'center', 800, Math.max(48, known.width));
+      fitText(prompt.right, rest.mid, top + barH + 16, 13, '#92400e', 'center', 800, Math.max(48, rest.width));
+    } else if (prompt.view === 'zoom') {
+      const fact = record.facts[prompt.name] || {};
+      const titleBits = [prompt.name.toUpperCase()];
+      if (fact.share) titleBits.push(fact.share.toUpperCase());
+      if (fact.count) titleBits.push(fact.count + ' ROUNDS');
+      fitText(titleBits.join('  ·  '), x + w / 2, top + 8, 13, '#334155', 'center', 800, w);
+      const barY = top + 20;
+      const barH = Math.max(36, Math.min(70, bottom - barY - 20));
+      drawParts(x, barY, w, barH, prompt.denom, prompt.hatch, '#86efac', '#fb7185', true);
+      if (prompt.hatch > 0) {
+        const spent = groupMid(x, w, prompt.denom, 0, prompt.hatch);
+        fitText('EXPENDED', spent.mid, barY + barH + 14, 12, '#9f1239', 'center', 800, spent.width);
       }
-      y += 4;
+      if (prompt.hatch < prompt.denom) {
+        const kept = groupMid(x, w, prompt.denom, prompt.hatch, prompt.denom - prompt.hatch);
+        fitText('STILL HERE', kept.mid, barY + barH + 14, 12, '#166534', 'center', 800, kept.width);
+      }
+    } else if (prompt.view === 'fixedzoom') {
+      const fact = record.facts[prompt.name] || {};
+      const titleBits = [prompt.name.toUpperCase()];
+      if (fact.share) titleBits.push(fact.share.toUpperCase());
+      if (fact.count) titleBits.push(fact.count + ' ROUNDS');
+      fitText(titleBits.join('  ·  '), x + w / 2, top + 8, 13, '#334155', 'center', 800, w);
+      const barY = top + 20;
+      const barH = Math.max(40, Math.min(64, bottom - barY - 18));
+      const slab = Math.min(84, w * 0.26);
+      ctx.fillStyle = '#fb7185';
+      ctx.fillRect(x, barY, slab, barH);
+      hatchRect(x, barY, slab, barH);
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, barY, slab, barH);
+      text(String(prompt.fixed), x + slab / 2, barY + barH / 2 - 8, 18, '#fff1f2', 'center', 800);
+      text('FIXED', x + slab / 2, barY + barH / 2 + 12, 10, '#fff1f2', 'center', 800);
+      drawParts(x + slab + 8, barY, w - slab - 8, barH, prompt.denom, prompt.hatch, '#86efac', '#fb7185', true);
+      text('THEN THIS PART', x + slab + 8 + (w - slab - 8) / 2, barY + barH + 14, 12, '#9f1239', 'center', 800);
+    } else if (prompt.view === 'back') {
+      const fact = record.facts[prompt.name] || {};
+      const titleBits = [prompt.name.toUpperCase()];
+      if (fact.share) titleBits.push(fact.share.toUpperCase());
+      if (fact.count) titleBits.push(fact.count + ' ROUNDS');
+      fitText(titleBits.join('  ·  '), x + w / 2, top + 8, 13, '#334155', 'center', 800, w);
+      const barY = top + 20;
+      const barH = Math.max(40, Math.min(64, bottom - barY - 18));
+      drawParts(x, barY, w, barH, prompt.denom, prompt.denom - prompt.keep, '#86efac', '#fecdd3', true);
+      const fired = groupMid(x, w, prompt.denom, 0, prompt.denom - prompt.keep);
+      const kept = groupMid(x, w, prompt.denom, prompt.denom - prompt.keep, prompt.keep);
+      fitText(prompt.extra ? 'FIRED + ' + prompt.extra + ' EXTRA' : 'FIRED', fired.mid, barY + barH + 14, 12, '#9f1239', 'center', 800, fired.width);
+      text(String(prompt.known), kept.mid, barY + barH / 2, 22, '#14532d', 'center', 800);
+      fitText('STILL HERE', kept.mid, barY + barH + 14, 12, '#166534', 'center', 800, kept.width);
+    } else {
+      const bars = prompt.bars || [];
+      const slot = (bottom - top) / Math.max(1, bars.length);
+      bars.forEach(function (bar, i) {
+        const y = top + i * slot;
+        const fact = record.facts[bar.name] || {};
+        const line = factLine(fact);
+        fitText(bar.name.toUpperCase() + (line ? '  ·  ' + line : ''), x, y + 8, 12, '#334155', 'left', 800, w);
+        const barH = Math.max(16, Math.min(26, slot - 20));
+        drawParts(x, y + 16, w, barH, bar.denom, bar.hatch, '#86efac', '#fb7185', true);
+        if (fact.spent && bar.hatch > 0) {
+          const spent = groupMid(x, w, bar.denom, 0, bar.hatch);
+          ctx.font = '800 13px ' + FONT;
+          const tw = Math.min(Math.max(18, spent.width - 6), ctx.measureText(fact.spent).width + 10);
+          fillRound(spent.mid - tw / 2, y + 16 + barH / 2 - 8, tw, 16, 4, '#9f1239');
+          fitText(fact.spent, spent.mid, y + 16 + barH / 2, 13, '#fff1f2', 'center', 800, tw - 4);
+        }
+      });
     }
   }
 
@@ -1620,13 +2020,14 @@
       if (game.players > 2) drawSoldier(112, CMD_Y + 26, 34, '#2ee59a', animT + 2);
     }
     const textX = game.mode === 'DUEL' ? (game.players > 2 ? 160 : 130) : 96;
-    let title = 'BREAK DOWN BAY ' + (game.bayStep + 1);
+    const guidePrompt = game.phase === 'guide' && game.machines[game.bayStep] ? currentPrompt(game.machines[game.bayStep]) : null;
+    let title = guidePrompt ? guidePrompt.ask.toUpperCase() : 'BREAK DOWN BAY ' + (game.bayStep + 1);
     if (game.phase === 'select') title = 'PICK THE BAY WITH THE MOST STILL ABOARD';
     if (game.phase === 'celebrate') title = 'FIREPOWER LOADED INTO THE ARMORY';
     if (game.phase === 'between') title = 'WAVE DRAFT CLOSED';
     if (game.mode === 'DUEL' && game.phase === 'guide') title = 'RACE BAY ' + (game.bayStep + 1) + ' — FIRST CORRECT LOCK CLAIMS IT';
     fitText(title, textX, CMD_Y + 26, 18, '#f8fafc', 'left', 800, 760);
-    let sub = 'Take each fraction of that weapon type, then choose the readout.';
+    let sub = 'Read the bar, then choose the readout.';
     if (game.phase === 'select') sub = 'Compare the three numbers still aboard.';
     if (game.phase === 'celebrate') sub = 'The fullest rack is in the armory.';
     if (game.phase === 'between') sub = 'The next hangar is rolling in.';
@@ -1652,11 +2053,12 @@
 
   function drawCards() {
     const m = game.machines[game.bayStep];
-    if (!m) return;
-    text('BAY ' + (game.bayStep + 1) + '  —  HOW MANY ARE STILL ABOARD?', 40, 542, 14, '#fde68a', 'left', 800);
+    const prompt = currentPrompt(m);
+    if (!m || !prompt) return;
+    fitText('BAY ' + (game.bayStep + 1) + '  —  ' + prompt.ask.toUpperCase(), 40, 542, 14, '#fde68a', 'left', 800, 1180);
     for (let i = 0; i < 4; i++) {
       const r = cardRect(i);
-      const opt = m.options[i];
+      const opt = prompt.options[i];
       const hover = pointer.x >= r.x && pointer.y >= r.y && pointer.x <= r.x + r.w && pointer.y <= r.y + r.h;
       let hot = hover;
       let edge = 'rgba(226,232,240,0.2)';
@@ -1672,8 +2074,8 @@
       if (hover) edge = '#7dd3fc';
       plate(r.x, r.y, r.w, r.h, 12, hot ? '#16324a' : '#10192c', edge, hot ? 3 : 2);
       text('READOUT ' + (i + 1), r.x + r.w / 2, r.y + 24, 12, '#93c5fd', 'center', 800);
-      text(String(opt.value), r.x + r.w / 2, r.y + 62, 36, '#f8fafc', 'center', 800);
-      text(m.unit.toUpperCase(), r.x + r.w / 2, r.y + 92, 12, m.accent, 'center', 700);
+      text(String(opt.label), r.x + r.w / 2, r.y + 62, 36, '#f8fafc', 'center', 800);
+      text(String(opt.label).indexOf('/') === -1 ? m.unit.toUpperCase() : 'OF THE BAR', r.x + r.w / 2, r.y + 92, 12, m.accent, 'center', 700);
       if (game.mode === 'DUEL') {
         let tick = 0;
         game.pilots.forEach(p => {
@@ -1742,10 +2144,14 @@
       }
     } else if (game.phase === 'guide' && game.guideWait > 0) {
       const m = game.machines[game.bayStep];
-      text('BAY ' + (game.bayStep + 1) + ' LOCKED', 40, 568, 16, '#86efac', 'left', 800);
-      if (m) text(m.rem + '  ' + m.unit.toUpperCase() + ' STILL ABOARD', 40, 620, 28, '#f8fafc', 'left', 800);
-      if (game.mode === 'DUEL' && m && m.claimed >= 0) {
-        text(PILOTS[m.claimed].name + ' claims this rack', 40, 656, 16, PILOTS[m.claimed].color, 'left', 800);
+      if (m && m.solved) {
+        text('BAY ' + (game.bayStep + 1) + ' LOCKED', 40, 568, 16, '#86efac', 'left', 800);
+        text(m.rem + '  ' + m.unit.toUpperCase() + ' STILL ABOARD', 40, 620, 28, '#f8fafc', 'left', 800);
+        if (game.mode === 'DUEL' && m.claimed >= 0) {
+          text(PILOTS[m.claimed].name + ' claims this rack', 40, 656, 16, PILOTS[m.claimed].color, 'left', 800);
+        }
+      } else {
+        text('MARKED ON THE BAR', 40, 600, 22, '#86efac', 'left', 800);
       }
     } else if (game.phase === 'guide') {
       drawCards();
