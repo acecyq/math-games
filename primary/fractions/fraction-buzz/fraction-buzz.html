@@ -1,0 +1,2343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Fraction Buzz: Fast-Hands Showdown</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #12082c;
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  noscript p { color: #f8f1ff; font-family: "Trebuchet MS", sans-serif; padding: 24px; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" tabindex="0" role="application" aria-label="Fraction Buzz. Fast-hands showdown for Primary 2 to 4 fraction names. Name fractions in words, match words to fractions, and count unit fractions in whole and mixed numbers. Player 1 uses the mouse, keys 1 to 4, arrows and space, or gamepad Y X A B. Player 2 uses Q W E R or the second gamepad. Player 3 uses U I O P or the third gamepad."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<noscript><p>Fraction Buzz needs JavaScript turned on.</p></noscript>
+<script>
+(() => {
+  'use strict';
+
+  const VW = 1280;
+  const VH = 720;
+  const FONT = '"Trebuchet MS", "Segoe UI", system-ui, sans-serif';
+  const HUD_H = 54;
+  const STAGE = { x: 16, y: 64, w: 1248, h: 332 };
+  const GRID_Y = 408;
+  const GRID_X = 14;
+  const GRID_GAP = 12;
+  const GRID_BOTTOM = 14;
+
+  const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+  const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+  const DENOM = {
+    2: { one: 'half', many: 'halves' },
+    3: { one: 'third', many: 'thirds' },
+    4: { one: 'quarter', many: 'quarters' },
+    5: { one: 'fifth', many: 'fifths' },
+    6: { one: 'sixth', many: 'sixths' },
+    7: { one: 'seventh', many: 'sevenths' },
+    8: { one: 'eighth', many: 'eighths' },
+    9: { one: 'ninth', many: 'ninths' },
+    10: { one: 'tenth', many: 'tenths' },
+    11: { one: 'eleventh', many: 'elevenths' },
+    12: { one: 'twelfth', many: 'twelfths' }
+  };
+
+  const SPELL = {
+    2: 'halfs', 3: 'threes', 4: 'fours', 5: 'fives', 6: 'sixes',
+    7: 'sevens', 8: 'eights', 9: 'nines', 10: 'tens', 11: 'elevens', 12: 'twelves'
+  };
+
+  const EASY_DENS = [
+    { v: 2, w: 5 }, { v: 3, w: 5 }, { v: 4, w: 5 }, { v: 5, w: 4 }, { v: 6, w: 4 },
+    { v: 8, w: 4 }, { v: 10, w: 3 }, { v: 7, w: 2 }, { v: 9, w: 2 }
+  ];
+  const MED_DENS = [
+    { v: 2, w: 4 }, { v: 3, w: 4 }, { v: 4, w: 5 }, { v: 5, w: 3 }, { v: 6, w: 3 },
+    { v: 8, w: 5 }, { v: 9, w: 4 }, { v: 10, w: 3 }, { v: 12, w: 5 }, { v: 7, w: 2 }, { v: 11, w: 3 }
+  ];
+  const HARD_UNITS = [2, 3, 4, 5, 6, 8];
+  const CONVS = [
+    { from: 2, to: 4 }, { from: 2, to: 6 }, { from: 2, to: 8 }, { from: 2, to: 10 },
+    { from: 3, to: 6 }, { from: 3, to: 9 }, { from: 3, to: 12 },
+    { from: 4, to: 8 }, { from: 4, to: 12 },
+    { from: 5, to: 10 },
+    { from: 6, to: 12 }
+  ];
+
+  const SHAPES = [
+    { name: 'triangle', glyph: '▲', color: '#ef3b45', deep: '#9f1239', ink: '#ffffff', soft: '#ffd0d4', k1: '1', k2: 'Q', k3: 'U' },
+    { name: 'diamond', glyph: '◆', color: '#2f6bff', deep: '#1e3a8a', ink: '#ffffff', soft: '#d6e4ff', k1: '2', k2: 'W', k3: 'I' },
+    { name: 'circle', glyph: '●', color: '#ffcc00', deep: '#a16207', ink: '#2a1600', soft: '#fff3b0', k1: '3', k2: 'E', k3: 'O' },
+    { name: 'square', glyph: '■', color: '#22c55e', deep: '#166534', ink: '#052e16', soft: '#d1fae5', k1: '4', k2: 'R', k3: 'P' }
+  ];
+
+  const PILOTS = [
+    { id: 'P1', badge: 'P1 RED', duel: 'P1 CRIMSON', color: '#ff3355', ink: '#ffffff' },
+    { id: 'P2', badge: 'P2 BLUE', duel: 'P2 AZURE', color: '#3b82f6', ink: '#ffffff' },
+    { id: 'P3', badge: 'P3 GREEN', duel: 'P3 EMERALD', color: '#22c55e', ink: '#052e16' }
+  ];
+
+  const TIER_META = {
+    EASY: { label: 'EASY P2-3', short: 'EASY', tint: '#34d399', blurb: 'Denominators 2 to 10. Fraction to words, and words to fraction.' },
+    MEDIUM: { label: 'MEDIUM P3', short: 'MEDIUM', tint: '#38bdf8', blurb: 'Denominators up to 12, with plural and spelling traps.' },
+    HARD: { label: 'HARD P3-4', short: 'HARD', tint: '#fbbf24', blurb: 'How many halves, thirds, quarters, or fifths are in a whole or mixed number?' },
+    EXTREME: { label: 'EXTREME P4-5', short: 'EXTREME', tint: '#fb7185', blurb: 'Convert the mixed number, then count the unit fractions. 10-second clock.' }
+  };
+  const MODE_META = {
+    SOLO: { label: 'SOLO', blurb: 'One player. 500 points plus up to 500 speed bonus, then a streak multiplier.' },
+    COOP: { label: 'TEAM CO-OP', blurb: 'One team score and one team streak. Pilots take turns on the buzzers.' },
+    DUEL: { label: 'FASTEST HANDS DUEL', blurb: 'Everyone buzzes in. 1st correct about 950, 2nd about 750, 3rd about 600.' }
+  };
+  const TIER_OPTS = ['EASY', 'MEDIUM', 'HARD', 'EXTREME'];
+  const MODE_OPTS = ['SOLO', 'COOP', 'DUEL'];
+  const ROUND_OPTS = [8, 10, 12];
+  const PLAYER_OPTS = [1, 2, 3];
+
+  const KEY_SHAPE = {
+    Digit1: { p: 0, s: 0 }, Numpad1: { p: 0, s: 0 },
+    Digit2: { p: 0, s: 1 }, Numpad2: { p: 0, s: 1 },
+    Digit3: { p: 0, s: 2 }, Numpad3: { p: 0, s: 2 },
+    Digit4: { p: 0, s: 3 }, Numpad4: { p: 0, s: 3 },
+    KeyQ: { p: 1, s: 0 }, KeyW: { p: 1, s: 1 }, KeyE: { p: 1, s: 2 }, KeyR: { p: 1, s: 3 },
+    KeyU: { p: 2, s: 0 }, KeyI: { p: 2, s: 1 }, KeyO: { p: 2, s: 2 }, KeyP: { p: 2, s: 3 }
+  };
+
+  const MELODY = [523.25, 659.25, 783.99, 659.25, 587.33, 523.25, 698.46, 783.99];
+  const BASS = [130.81, 130.81, 174.61, 174.61, 196.0, 146.83, 164.81, 174.61];
+
+  const history = [];
+  let easyWantWords = true;
+  const hotspots = [];
+  const particles = [];
+  const floaters = [];
+  const padState = [{}, {}, {}];
+
+  let canvas = null;
+  let ctx = null;
+  let live = null;
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let dpr = 1;
+  let animT = 0;
+  let lastNow = 0;
+  let reduceMotion = false;
+  let titleRow = 0;
+
+  const pointer = { x: -2000, y: -2000, down: false };
+
+  const game = {
+    screen: 'title',
+    players: 1,
+    tier: 'EASY',
+    rounds: 10,
+    mode: 'SOLO',
+    phase: 'intro',
+    round: 0,
+    score: 0,
+    streak: 0,
+    bestStreak: 0,
+    correct: 0,
+    bestSolo: 0,
+    bestCoop: 0,
+    newBest: false,
+    question: null,
+    pads: [],
+    locks: [],
+    timeMax: 12,
+    timeLeft: 12,
+    focus: [0, 0, 0],
+    focusOn: [true, false, false],
+    stickUsed: [false, false, false],
+    revealT: 0,
+    introT: 0,
+    resultT: 0,
+    inputLock: 0,
+    popped: 0,
+    lastCeil: 12,
+    banner: '',
+    bannerSub: '',
+    feedback: '',
+    feedbackTone: 'good',
+    paused: false,
+    shake: 0,
+    toast: '',
+    toastT: 0,
+    pilots: [
+      { score: 0, streak: 0, bestStreak: 0, correct: 0 },
+      { score: 0, streak: 0, bestStreak: 0, correct: 0 },
+      { score: 0, streak: 0, bestStreak: 0, correct: 0 }
+    ]
+  };
+
+  const sound = {
+    ctx: null,
+    master: null,
+    muted: false,
+    ready: false,
+    acc: 0,
+    step: 0,
+    noise: null
+  };
+
+  function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function shuffle(list) {
+    const a = list.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+  function pickWeighted(items) {
+    let total = 0;
+    for (let i = 0; i < items.length; i++) total += items[i].w;
+    let r = Math.random() * total;
+    for (let i = 0; i < items.length; i++) {
+      r -= items[i].w;
+      if (r <= 0) return items[i].v;
+    }
+    return items[items.length - 1].v;
+  }
+  function comma(n) {
+    const v = Math.round(n);
+    const s = String(Math.abs(v));
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 === 0) out += ',';
+      out += s[i];
+    }
+    return (v < 0 ? '-' : '') + out;
+  }
+  function storageGet(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return fallback;
+      return JSON.parse(raw);
+    } catch (err) {
+      return fallback;
+    }
+  }
+  function storageSet(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { /* ignore quota */ }
+  }
+
+  function numberToWords(n) {
+    const v = Math.round(n);
+    if (v < 0 || v > 99) return String(v);
+    if (v < 20) return ONES[v];
+    const t = Math.floor(v / 10);
+    const o = v % 10;
+    if (o === 0) return TENS[t];
+    return TENS[t] + '-' + ONES[o];
+  }
+
+  function unitName(den, n) {
+    return n === 1 ? DENOM[den].one : DENOM[den].many;
+  }
+
+  function sliceWord(den, plural, family) {
+    if (family === 'spell') return SPELL[den];
+    if (den === 4 && family === 'fourth') return plural ? 'fourths' : 'fourth';
+    return plural ? DENOM[den].many : DENOM[den].one;
+  }
+
+  function hyphenFraction(num, den, plural, family) {
+    return numberToWords(num) + '-' + sliceWord(den, plural, family);
+  }
+
+  function countPhrase(count, den, form) {
+    let unit;
+    if (form === 'plural') unit = DENOM[den].many;
+    else if (form === 'singular') unit = DENOM[den].one;
+    else unit = count === 1 ? DENOM[den].one : DENOM[den].many;
+    return numberToWords(count) + ' ' + unit;
+  }
+
+  function equivalentSpellings(num, den) {
+    const set = new Set();
+    const plural = num !== 1;
+    set.add(hyphenFraction(num, den, plural, 'normal'));
+    if (den === 4) set.add(hyphenFraction(num, den, plural, 'fourth'));
+    return set;
+  }
+
+  function wordOpt(text, trap, num, den) {
+    return { kind: 'words', text: text, num: num, den: den, correct: false, trap: trap };
+  }
+
+  function fracOpt(num, den, trap, correct) {
+    return {
+      kind: 'fraction',
+      text: num + '/' + den,
+      num: num,
+      den: den,
+      correct: !!correct,
+      trap: correct ? null : trap
+    };
+  }
+
+  function swapText(num, den) {
+    const head = numberToWords(den);
+    if (num >= 2 && num <= 12) return head + '-' + sliceWord(num, true, 'normal');
+    return head + '-ones';
+  }
+
+  function takeOptions(correct, candidates, forbidden) {
+    const used = new Set(forbidden || []);
+    used.add(correct.text);
+    const options = [correct];
+    for (let i = 0; i < candidates.length; i++) {
+      const cand = candidates[i];
+      if (!cand || !cand.text || used.has(cand.text)) continue;
+      used.add(cand.text);
+      options.push(cand);
+      if (options.length === 4) break;
+    }
+    let salt = 1;
+    while (options.length < 4 && salt < 90) {
+      const filler = fillerOption(correct, used, salt++);
+      if (!filler) continue;
+      used.add(filler.text);
+      options.push(filler);
+    }
+    return shuffle(options);
+  }
+
+  function fillerOption(correct, used, salt) {
+    const hyphenStyle = correct.kind === 'words' && correct.text.indexOf(' ') < 0;
+    if (correct.kind === 'fraction') {
+      const den = 2 + ((salt - 1) % 11);
+      const num = 1 + ((salt * 3) % (den - 1));
+      const text = num + '/' + den;
+      if (used.has(text)) return null;
+      return fracOpt(num, den, 'near', false);
+    }
+    if (hyphenStyle) {
+      const den = 2 + ((salt - 1) % 11);
+      const num = 1 + (salt % (den - 1));
+      const text = hyphenFraction(num, den, num !== 1, 'normal');
+      if (used.has(text)) return null;
+      return wordOpt(text, 'near', num, den);
+    }
+    const den = 2 + ((salt - 1) % 11);
+    const count = 3 + (salt % 20);
+    const text = countPhrase(count, den, 'auto');
+    if (used.has(text)) return null;
+    return wordOpt(text, 'near', count, den);
+  }
+
+  function barsFor(whole, unitDen, extra) {
+    const groups = [];
+    for (let i = 0; i < whole; i++) groups.push({ parts: unitDen, filled: unitDen });
+    if (extra > 0) groups.push({ parts: unitDen, filled: extra });
+    return groups;
+  }
+
+  function pluralMessage(q) {
+    const family = q.family === 'fourth' ? 'fourth' : 'normal';
+    const one = sliceWord(q.den, false, family);
+    const many = sliceWord(q.den, true, family);
+    const singularEx = 'one-' + one;
+    const pluralEx = numberToWords(Math.max(2, q.num)) + '-' + many;
+    if (many === one + 's') {
+      return 'Use singular (\'' + one + '\') ONLY when the numerator is 1 (\'' + singularEx + '\'); for 2 or more, add \'-s\' (\'' + pluralEx + '\')!';
+    }
+    return 'Use singular (\'' + one + '\') ONLY when the numerator is 1 (\'' + singularEx + '\'); for 2 or more, use \'' + many + '\' (\'' + pluralEx + '\')!';
+  }
+
+  function trapMessage(q, opt) {
+    if (!opt) return q.because;
+    if (opt.trap === 'swap') {
+      const many = DENOM[q.den].many;
+      return 'Read the TOP number (numerator = ' + q.num + ') as a normal counting number, and the BOTTOM number (denominator = ' + q.den + ') as the slice size (\'' + many + '\') -> ' + q.words + '!';
+    }
+    if (opt.trap === 'plural') return pluralMessage(q);
+    if (opt.trap === 'spell') {
+      const said = sliceWord(q.den, q.num !== 1, q.family === 'fourth' ? 'fourth' : 'normal');
+      return 'Look at the denominator spelling. ' + q.den + ' is written "' + said + '", not "' + SPELL[q.den] + '". The fraction is ' + q.words + '.';
+    }
+    if (opt.trap === 'add') return q.addLine || q.because;
+    if (opt.trap === 'convert') return q.convertLine || q.because;
+    if (opt.trap === 'scale') return q.scaleLine || q.because;
+    if (opt.trap === 'forget') return q.forgetLine || q.because;
+    if (q.kind === 'w2f' && opt.num && opt.den) {
+      return '"' + q.words + '" is exactly ' + q.num + ' out of ' + q.den + ', not ' + opt.num + ' out of ' + opt.den + '.';
+    }
+    return q.because;
+  }
+
+  function chooseFeedback(q, locks) {
+    const anyCorrect = locks.some((l) => l.correct);
+    if (anyCorrect || locks.length === 0) return q.because;
+    const order = ['convert', 'add', 'plural', 'swap', 'scale', 'forget', 'spell', 'near'];
+    let best = null;
+    let bestI = 99;
+    for (let i = 0; i < locks.length; i++) {
+      const idx = order.indexOf(locks[i].trap);
+      const rank = idx < 0 ? 50 : idx;
+      if (rank < bestI) {
+        bestI = rank;
+        best = locks[i];
+      }
+    }
+    return best ? (trapMessage(q, best) || q.because) : q.because;
+  }
+
+  function makeF2W(num, den, family, tier) {
+    const fam = family === 'fourth' ? 'fourth' : 'normal';
+    const words = hyphenFraction(num, den, num !== 1, fam);
+    const said = sliceWord(den, num !== 1, fam);
+    let because = 'The top number ' + num + ' is read as "' + numberToWords(num) + '". The bottom number ' + den + ' names the slice: "' + said + '". Together: ' + words + '.';
+    if (den === 4) because += ' Quarters and fourths are both correct names for this denominator.';
+    const pluralFlag = num === 1;
+    const candidates = [
+      wordOpt(hyphenFraction(num, den, pluralFlag, fam), 'plural', num, den),
+      wordOpt(swapText(num, den), 'swap', den, num),
+      wordOpt(hyphenFraction(num + 1, den, true, fam), 'near', num + 1, den),
+      wordOpt(hyphenFraction(Math.max(1, num - 1), den, Math.max(1, num - 1) !== 1, fam), 'near', Math.max(1, num - 1), den)
+    ];
+    if (tier === 'MEDIUM') {
+      candidates.splice(2, 0, wordOpt(hyphenFraction(num, den, num !== 1, 'spell'), 'spell', num, den));
+    }
+    if (DENOM[den + 1] && num < den + 1) {
+      candidates.push(wordOpt(hyphenFraction(num, den + 1, num !== 1, 'normal'), 'near', num, den + 1));
+    }
+    if (DENOM[den - 1] && den - 1 >= 2) {
+      const n2 = Math.min(num, den - 2);
+      if (n2 >= 1) candidates.push(wordOpt(hyphenFraction(n2, den - 1, n2 !== 1, den - 1 === 4 ? fam : 'normal'), 'near', n2, den - 1));
+    }
+    const correct = { kind: 'words', text: words, num: num, den: den, correct: true, trap: null };
+    const options = takeOptions(correct, candidates, equivalentSpellings(num, den));
+    return {
+      id: 'frac:' + num + '/' + den,
+      kind: 'f2w',
+      hero: 'fraction',
+      prompt: 'NAME THIS FRACTION IN WORDS',
+      num: num,
+      den: den,
+      words: words,
+      family: fam,
+      whole: 0,
+      fracNum: 0,
+      fracDen: 0,
+      unitDen: den,
+      count: num,
+      extra: 0,
+      equation: '',
+      note: '',
+      because: because,
+      pie: true,
+      groups: [{ parts: den, filled: num }],
+      options: options,
+      answerLabel: words
+    };
+  }
+
+  function makeW2F(num, den, family) {
+    const fam = family === 'fourth' ? 'fourth' : 'normal';
+    const words = hyphenFraction(num, den, num !== 1, fam);
+    let because = '"' + words + '" means ' + num + ' out of ' + den + ' equal parts.';
+    if (den === 4) because += ' Quarters and fourths are both correct names for this denominator.';
+    const candidates = [
+      fracOpt(den, num, 'swap', false),
+      fracOpt(num + 1, den + (num + 1 >= den ? 2 : 0), 'near', false),
+      fracOpt(num, den + 1, 'near', false)
+    ];
+    if (num - 1 >= 1) candidates.push(fracOpt(num - 1, den, 'near', false));
+    if (den - 1 >= 2 && num < den - 1) candidates.push(fracOpt(num, den - 1, 'near', false));
+    if (den - 1 >= 2 && num >= den - 1) candidates.push(fracOpt(Math.max(1, den - 2), den - 1, 'near', false));
+    const cleaned = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      if (c.num >= 1 && c.den >= 2 && !(c.num === num && c.den === den)) cleaned.push(c);
+    }
+    const correct = fracOpt(num, den, null, true);
+    return {
+      id: 'frac:' + num + '/' + den,
+      kind: 'w2f',
+      hero: 'words',
+      prompt: 'WHICH FRACTION MATCHES THE WORDS?',
+      num: num,
+      den: den,
+      words: words,
+      family: fam,
+      whole: 0,
+      fracNum: 0,
+      fracDen: 0,
+      unitDen: den,
+      count: num,
+      extra: 0,
+      equation: '',
+      note: '',
+      because: because,
+      pie: true,
+      groups: [{ parts: den, filled: num }],
+      options: takeOptions(correct, cleaned, []),
+      answerLabel: num + '/' + den
+    };
+  }
+
+  function makeWhole(whole, den) {
+    const count = whole * den;
+    const words = countPhrase(count, den, 'auto');
+    const many = unitName(den, den);
+    const totalName = unitName(den, count);
+    const because = 'Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' × ' + den + ' = ' + count + ' ' + totalName + '.';
+    const addLine = 'Don\'t add ' + whole + ' + ' + den + '. Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' × ' + den + ' = ' + count + ' ' + totalName + '.';
+    const neighbor = den === 12 ? 10 : (DENOM[den + 1] ? den + 1 : den - 1);
+    const candidates = [
+      wordOpt(countPhrase(whole + den, den, 'auto'), 'add', whole + den, den),
+      wordOpt(countPhrase(count - 1, den, 'auto'), 'near', count - 1, den),
+      wordOpt(countPhrase(count + 1, den, 'auto'), 'near', count + 1, den),
+      wordOpt(countPhrase(count, neighbor, 'auto'), 'near', count, neighbor),
+      wordOpt(countPhrase(count, den, 'singular'), 'plural', count, den)
+    ];
+    const correct = { kind: 'words', text: words, num: count, den: den, correct: true, trap: null };
+    return {
+      id: 'whole:' + whole + ':' + den,
+      kind: 'whole',
+      hero: 'whole',
+      prompt: 'HOW MANY ' + DENOM[den].many.toUpperCase() + ' ARE IN THIS WHOLE NUMBER?',
+      num: 0,
+      den: den,
+      words: words,
+      family: 'normal',
+      whole: whole,
+      fracNum: 0,
+      fracDen: den,
+      unitDen: den,
+      count: count,
+      extra: 0,
+      equation: whole + ' × ' + den + ' = ' + count,
+      note: 'each whole is split into ' + den + ' ' + many,
+      because: because,
+      addLine: addLine,
+      pie: false,
+      groups: barsFor(whole, den, 0),
+      options: takeOptions(correct, candidates, []),
+      answerLabel: words
+    };
+  }
+
+  function makeMixed(whole, fracNum, den) {
+    const count = whole * den + fracNum;
+    const words = countPhrase(count, den, 'auto');
+    const many = DENOM[den].many;
+    const extraName = unitName(den, fracNum);
+    const wholePart = whole * den;
+    const because = 'Each whole has ' + den + ' ' + many + '! Multiply ' + whole + ' wholes × ' + den + ' ' + many + ' = ' + wholePart + ' ' + unitName(den, wholePart) + ', then add the extra ' + fracNum + ' ' + extraName + ' -> ' + count + ' ' + unitName(den, count) + '!';
+    const forgetLine = 'You counted the wholes, then stopped. Add the extra ' + fracNum + ' ' + extraName + ': ' + whole + ' × ' + den + ' + ' + fracNum + ' = ' + count + '.';
+    const candidates = [
+      wordOpt(countPhrase(whole + fracNum, den, 'auto'), 'add', whole + fracNum, den),
+      wordOpt(countPhrase(wholePart, den, 'auto'), 'forget', wholePart, den),
+      wordOpt(countPhrase(count - 1, den, 'auto'), 'near', count - 1, den),
+      wordOpt(countPhrase(count + 1, den, 'auto'), 'near', count + 1, den),
+      wordOpt(countPhrase(count, den, 'singular'), 'plural', count, den)
+    ];
+    const correct = { kind: 'words', text: words, num: count, den: den, correct: true, trap: null };
+    return {
+      id: 'mixed:' + whole + '-' + fracNum + '/' + den + ':' + den,
+      kind: 'mixed',
+      hero: 'mixed',
+      prompt: 'HOW MANY ' + many.toUpperCase() + ' ARE IN THIS MIXED NUMBER?',
+      num: fracNum,
+      den: den,
+      words: words,
+      family: 'normal',
+      whole: whole,
+      fracNum: fracNum,
+      fracDen: den,
+      unitDen: den,
+      count: count,
+      extra: fracNum,
+      equation: '(' + whole + ' × ' + den + ') + ' + fracNum + ' = ' + count,
+      note: '',
+      because: because,
+      addLine: because,
+      forgetLine: forgetLine,
+      pie: false,
+      groups: barsFor(whole, den, fracNum),
+      options: takeOptions(correct, candidates, []),
+      answerLabel: words
+    };
+  }
+
+  function makeConvert(whole, fracNum, fracDen, unitDen) {
+    const scale = unitDen / fracDen;
+    const extra = fracNum * scale;
+    const count = whole * unitDen + extra;
+    const words = countPhrase(count, unitDen, 'auto');
+    const many = DENOM[unitDen].many;
+    const extraName = unitName(unitDen, extra);
+    const convertLine = '1 whole = ' + unitDen + ' ' + unitName(unitDen, unitDen) + ' and ' + fracNum + '/' + fracDen + ' = ' + extra + ' ' + extraName + '! So ' + whole + ' ' + fracNum + '/' + fracDen + ' = (' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + words + '!';
+    const scaleLine = 'The fraction ' + fracNum + '/' + fracDen + ' is not already ' + fracNum + ' ' + unitName(unitDen, fracNum) + '. ' + fracNum + '/' + fracDen + ' = ' + extra + ' ' + extraName + '. (' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + words + '!';
+    const forgetLine = 'You counted the wholes only. ' + fracNum + '/' + fracDen + ' still adds ' + extra + ' ' + extraName + '. (' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + words + '!';
+    const addLine = 'Don\'t add the whole number and the numerator. Each whole has ' + unitDen + ' ' + many + ', and ' + fracNum + '/' + fracDen + ' = ' + extra + ' more. (' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + words + '!';
+    const originalCount = whole * fracDen + fracNum;
+    const unscaled = whole * unitDen + fracNum;
+    const wholesOnly = whole * unitDen;
+    const candidates = [
+      wordOpt(countPhrase(originalCount, unitDen, 'auto'), 'convert', originalCount, unitDen),
+      wordOpt(countPhrase(unscaled, unitDen, 'auto'), 'scale', unscaled, unitDen),
+      wordOpt(countPhrase(wholesOnly, unitDen, 'auto'), 'forget', wholesOnly, unitDen),
+      wordOpt(countPhrase(whole + fracNum, unitDen, 'auto'), 'add', whole + fracNum, unitDen),
+      wordOpt(countPhrase(count - 1, unitDen, 'auto'), 'near', count - 1, unitDen),
+      wordOpt(countPhrase(count + 1, unitDen, 'auto'), 'near', count + 1, unitDen)
+    ];
+    const correct = { kind: 'words', text: words, num: count, den: unitDen, correct: true, trap: null };
+    return {
+      id: 'convert:' + whole + '-' + fracNum + '/' + fracDen + '>' + unitDen,
+      kind: 'convert',
+      hero: 'mixed',
+      prompt: 'HOW MANY ' + many.toUpperCase() + ' ARE IN THIS MIXED NUMBER?',
+      num: fracNum,
+      den: fracDen,
+      words: words,
+      family: 'normal',
+      whole: whole,
+      fracNum: fracNum,
+      fracDen: fracDen,
+      unitDen: unitDen,
+      count: count,
+      extra: extra,
+      equation: '(' + whole + ' × ' + unitDen + ') + ' + extra + ' = ' + count,
+      note: fracNum + '/' + fracDen + ' = ' + extra + ' ' + extraName,
+      because: convertLine,
+      convertLine: convertLine,
+      scaleLine: scaleLine,
+      forgetLine: forgetLine,
+      addLine: addLine,
+      pie: false,
+      groups: barsFor(whole, unitDen, extra),
+      options: takeOptions(correct, candidates, []),
+      answerLabel: words
+    };
+  }
+
+  function pickNum(den) {
+    if (den <= 2) return 1;
+    if (Math.random() < 0.38) return 1;
+    return 1 + Math.floor(Math.random() * (den - 1));
+  }
+
+  function chooseKind(tier) {
+    if (tier === 'EASY') return easyWantWords ? 'f2w' : 'w2f';
+    if (tier === 'MEDIUM') return Math.random() < 0.5 ? 'f2w' : 'w2f';
+    if (tier === 'HARD') return Math.random() < 0.42 ? 'whole' : 'mixed';
+    return 'convert';
+  }
+
+  function otherKind(kind) {
+    if (kind === 'f2w') return 'w2f';
+    if (kind === 'w2f') return 'f2w';
+    if (kind === 'whole') return 'mixed';
+    if (kind === 'mixed') return 'whole';
+    return 'convert';
+  }
+
+  function buildQuestion(kind) {
+    const tier = game.tier;
+    if (kind === 'f2w' || kind === 'w2f') {
+      const den = pickWeighted(tier === 'MEDIUM' ? MED_DENS : EASY_DENS);
+      const num = pickNum(den);
+      const family = (den === 4 && tier !== 'EASY' && Math.random() < 0.45) ? 'fourth' : 'normal';
+      return kind === 'f2w' ? makeF2W(num, den, family, tier) : makeW2F(num, den, family);
+    }
+    if (kind === 'whole') {
+      const den = HARD_UNITS[randInt(0, HARD_UNITS.length - 1)];
+      return makeWhole(randInt(2, 6), den);
+    }
+    if (kind === 'mixed') {
+      const den = HARD_UNITS[randInt(0, HARD_UNITS.length - 1)];
+      return makeMixed(randInt(1, 5), randInt(1, den - 1), den);
+    }
+    const conv = CONVS[randInt(0, CONVS.length - 1)];
+    return makeConvert(randInt(2, 6), randInt(1, conv.from - 1), conv.from, conv.to);
+  }
+
+  function remember(id) {
+    history.push(id);
+    while (history.length > 8) history.shift();
+  }
+
+  function freshQuestion() {
+    let kind = chooseKind(game.tier);
+    let last = null;
+    for (let i = 0; i < 24; i++) {
+      const q = buildQuestion(kind);
+      last = q;
+      if (history.indexOf(q.id) < 0) {
+        remember(q.id);
+        if (game.tier === 'EASY') easyWantWords = !easyWantWords;
+        return q;
+      }
+      if (i === 12) kind = otherKind(kind);
+    }
+    remember(last.id);
+    if (game.tier === 'EASY') easyWantWords = !easyWantWords;
+    return last;
+  }
+
+  function resetFactory() {
+    history.length = 0;
+    easyWantWords = true;
+  }
+
+  function streakMult(streak) {
+    if (streak <= 1) return 1;
+    return Math.min(2, 1 + 0.25 * (streak - 1));
+  }
+
+  function speedBonus(timeLeft, timeMax) {
+    return Math.round(500 * clamp(timeLeft / timeMax, 0, 1));
+  }
+
+  function duelPoints(rank, ratio) {
+    const rows = [[860, 140], [680, 140], [530, 140]];
+    const row = rows[clamp(rank, 0, 2)];
+    return row[0] + Math.round(row[1] * clamp(ratio, 0, 1));
+  }
+
+  function multLabel(m) {
+    if (Math.abs(m - Math.round(m)) < 0.001) return '×' + String(Math.round(m));
+    const s = m.toFixed(2).replace(/0$/, '');
+    return '×' + s;
+  }
+
+  function speakQuestion(q) {
+    const opts = q.options.map((o) => (o.kind === 'fraction' ? o.num + ' over ' + o.den : o.text)).join(', ');
+    if (q.kind === 'f2w') return 'Name the fraction ' + q.num + ' over ' + q.den + ' in words. Options: ' + opts + '.';
+    if (q.kind === 'w2f') return 'Which fraction matches ' + q.words + '? Options: ' + opts + '.';
+    if (q.kind === 'whole') return 'How many ' + DENOM[q.unitDen].many + ' are in ' + q.whole + '? Options: ' + opts + '.';
+    return 'How many ' + DENOM[q.unitDen].many + ' are in ' + q.whole + ' and ' + q.fracNum + ' over ' + q.fracDen + '? Options: ' + opts + '.';
+  }
+
+  function announce(text) {
+    if (live) live.textContent = text;
+  }
+
+  function toast(msg) {
+    game.toast = msg;
+    game.toastT = 1.35;
+  }
+
+  function comboOk() {
+    if (game.mode === 'SOLO') return game.players === 1;
+    return game.players >= 2;
+  }
+
+  function activePlayer() {
+    if (game.mode === 'COOP') return game.round % game.players;
+    return 0;
+  }
+
+  function mousePlayer() {
+    if (game.mode === 'DUEL') return 0;
+    if (game.mode === 'COOP') return activePlayer();
+    return 0;
+  }
+
+  function padRect(i) {
+    const w = (VW - GRID_X * 2 - GRID_GAP) / 2;
+    const h = (VH - GRID_Y - GRID_BOTTOM - GRID_GAP) / 2;
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    return {
+      x: GRID_X + col * (w + GRID_GAP),
+      y: GRID_Y + row * (h + GRID_GAP),
+      w: w,
+      h: h
+    };
+  }
+
+  function dealPads(q) {
+    const opts = shuffle(q.options);
+    const shapes = shuffle([0, 1, 2, 3]);
+    const pads = [];
+    for (let i = 0; i < 4; i++) pads.push({ shape: shapes[i], option: opts[i] });
+    return pads;
+  }
+
+  function indexOfShape(shape) {
+    for (let i = 0; i < game.pads.length; i++) {
+      if (game.pads[i].shape === shape) return i;
+    }
+    return -1;
+  }
+
+  function startMatch() {
+    if (!comboOk()) {
+      toast(game.mode === 'SOLO' ? 'Solo uses 1 player.' : 'Co-op and Duel need 2 or 3 players.');
+      game.shake = 0.25;
+      return;
+    }
+    unlock();
+    game.screen = 'play';
+    game.phase = 'intro';
+    game.introT = 0;
+    game.round = 0;
+    game.score = 0;
+    game.streak = 0;
+    game.bestStreak = 0;
+    game.correct = 0;
+    game.newBest = false;
+    game.question = null;
+    game.pads = [];
+    game.locks = [];
+    game.paused = false;
+    game.banner = '';
+    game.bannerSub = '';
+    game.feedback = '';
+    particles.length = 0;
+    floaters.length = 0;
+    for (let i = 0; i < 3; i++) {
+      game.pilots[i].score = 0;
+      game.pilots[i].streak = 0;
+      game.pilots[i].bestStreak = 0;
+      game.pilots[i].correct = 0;
+    }
+    const modeName = MODE_META[game.mode].label;
+    announce('Fraction Buzz. ' + modeName + '. ' + TIER_META[game.tier].label + '. ' + game.rounds + ' questions. Get ready.');
+  }
+
+  function beginQuestion() {
+    const q = freshQuestion();
+    game.question = q;
+    game.pads = dealPads(q);
+    game.phase = 'ask';
+    game.timeMax = game.tier === 'EXTREME' ? 10 : 12;
+    game.timeLeft = game.timeMax;
+    game.locks = [];
+    game.focus = [0, 0, 0];
+    game.focusOn = [game.mode !== 'DUEL', false, false];
+    game.stickUsed = [false, false, false];
+    game.revealT = 0;
+    game.popped = 0;
+    game.lastCeil = Math.ceil(game.timeMax);
+    game.inputLock = 0.12;
+    game.banner = '';
+    game.feedback = '';
+    let who = '';
+    if (game.mode === 'COOP') who = PILOTS[activePlayer()].badge + ' buzzes. ';
+    if (game.mode === 'DUEL') who = 'All players buzz in. ';
+    announce('Question ' + (game.round + 1) + ' of ' + game.rounds + '. ' + who + speakQuestion(q));
+  }
+
+  function finishMatch() {
+    floaters.length = 0;
+    particles.length = 0;
+    game.screen = 'result';
+    game.phase = 'result';
+    game.resultT = 0;
+    game.inputLock = 0.35;
+    game.paused = false;
+    if (game.mode === 'SOLO') {
+      if (game.score > game.bestSolo) {
+        game.newBest = true;
+        game.bestSolo = game.score;
+        storageSet('fbuzz-best-solo', game.score);
+      }
+    } else if (game.mode === 'COOP') {
+      if (game.score > game.bestCoop) {
+        game.newBest = true;
+        game.bestCoop = game.score;
+        storageSet('fbuzz-best-coop', game.score);
+      }
+    }
+    sfxFanfare();
+    burst(640, 280, game.mode === 'DUEL' ? '#ffd166' : '#ffe566', 48);
+    if (game.mode === 'COOP') {
+      announce('Show complete. Team score ' + comma(game.score) + '. ' + game.correct + ' of ' + game.rounds + ' correct.');
+    } else if (game.mode === 'SOLO') {
+      announce('Show complete. Score ' + comma(game.score) + '. ' + game.correct + ' of ' + game.rounds + ' correct.');
+    } else {
+      const order = standing();
+      announce('Show complete. First place ' + PILOTS[order[0].i].duel + ' with ' + comma(order[0].score) + ' points.');
+    }
+  }
+
+  function resolveRound() {
+    if (game.phase !== 'ask') return;
+    const q = game.question;
+    const timedOut = game.locks.length === 0 || (game.mode === 'DUEL' && game.locks.length < game.players && game.timeLeft <= 0);
+    if (game.mode === 'DUEL') {
+      const correct = game.locks.filter((l) => l.correct).sort((a, b) => a.time - b.time || a.player - b.player);
+      for (let i = 0; i < correct.length; i++) {
+        const ratio = clamp(correct[i].timeLeft / game.timeMax, 0, 1);
+        const pts = duelPoints(i, ratio);
+        correct[i].points = pts;
+        correct[i].rank = i;
+        const pilot = game.pilots[correct[i].player];
+        pilot.score += pts;
+        pilot.streak += 1;
+        pilot.correct += 1;
+        if (pilot.streak > pilot.bestStreak) pilot.bestStreak = pilot.streak;
+      }
+      for (let p = 0; p < game.players; p++) {
+        const lock = lockOf(p);
+        if (!lock || !lock.correct) game.pilots[p].streak = 0;
+      }
+      const bits = [];
+      for (let p = 0; p < game.players; p++) {
+        const lock = lockOf(p);
+        if (lock && lock.correct) bits.push(PILOTS[p].id + ' ' + placeWord(lock.rank + 1) + ' +' + comma(lock.points));
+        else if (lock) bits.push(PILOTS[p].id + ' MISS');
+        else bits.push(PILOTS[p].id + ' OUT');
+      }
+      game.banner = bits.join('    ');
+      game.bannerSub = 'Answer: ' + q.answerLabel;
+      if (correct.length) sfxSparkle();
+      else sfxWrong();
+    } else {
+      const lock = game.locks[0];
+      if (lock && lock.correct) {
+        game.streak += 1;
+        if (game.streak > game.bestStreak) game.bestStreak = game.streak;
+        const speed = speedBonus(lock.timeLeft, game.timeMax);
+        const mult = streakMult(game.streak);
+        const pts = Math.round((500 + speed) * mult);
+        lock.points = pts;
+        lock.speed = speed;
+        lock.mult = mult;
+        game.score += pts;
+        game.correct += 1;
+        let sub = '500 BASE + ' + speed + ' SPEED';
+        if (mult > 1) sub += '  ' + multLabel(mult) + ' STREAK';
+        game.banner = 'CORRECT    +' + comma(pts);
+        game.bannerSub = sub;
+        sfxSparkle();
+        burst(640, 250, '#ffd166', 36);
+        spawnFloater(640, 300, '+' + comma(pts), '#b45309');
+      } else {
+        game.streak = 0;
+        game.banner = game.locks.length === 0 ? 'TIME\'S UP' : 'NOT QUITE';
+        game.bannerSub = 'Answer: ' + q.answerLabel;
+        sfxWrong();
+        game.shake = 0.28;
+      }
+    }
+    const anyCorrect = game.mode === 'DUEL'
+      ? game.locks.some((l) => l.correct)
+      : !!(game.locks[0] && game.locks[0].correct);
+    game.feedback = chooseFeedback(q, game.locks);
+    game.feedbackTone = anyCorrect ? 'good' : (game.locks.length === 0 ? 'time' : 'bad');
+    game.phase = 'reveal';
+    game.revealT = 0;
+    game.popped = 0;
+    game.inputLock = 0.65;
+    announce((anyCorrect ? 'Correct. ' : (game.locks.length === 0 ? 'Time is up. ' : 'Not quite. ')) + q.answerLabel + '. ' + game.feedback);
+    if (timedOut && game.mode !== 'DUEL' && game.locks.length === 0) {
+      /* banner already set */
+    }
+  }
+
+  function lockOf(player) {
+    for (let i = 0; i < game.locks.length; i++) {
+      if (game.locks[i].player === player) return game.locks[i];
+    }
+    return null;
+  }
+
+  function placeWord(n) {
+    if (n === 1) return '1ST';
+    if (n === 2) return '2ND';
+    if (n === 3) return '3RD';
+    return n + 'TH';
+  }
+
+  function buzz(player, padIndex) {
+    if (game.screen !== 'play' || game.paused || game.phase !== 'ask' || game.inputLock > 0) return;
+    if (player < 0 || player >= game.players) return;
+    if (padIndex < 0 || padIndex >= game.pads.length) return;
+    if (game.mode === 'DUEL') {
+      if (lockOf(player)) return;
+    } else if (player !== activePlayer()) {
+      toast('WAIT — ' + PILOTS[activePlayer()].badge + ' BUZZES THIS ONE');
+      return;
+    } else if (game.locks.length) {
+      return;
+    }
+    const pad = game.pads[padIndex];
+    game.locks.push({
+      player: player,
+      padIndex: padIndex,
+      correct: !!pad.option.correct,
+      trap: pad.option.trap,
+      num: pad.option.num,
+      den: pad.option.den,
+      timeLeft: Math.max(0, game.timeLeft),
+      time: nowMs(),
+      points: 0,
+      rank: -1
+    });
+    sfxBuzz();
+    const rect = padRect(padIndex);
+    spawnFloater(rect.x + rect.w - 70, rect.y + 36, PILOTS[player].id + ' IN', PILOTS[player].color);
+    if (game.mode !== 'DUEL') resolveRound();
+    else if (game.locks.length >= game.players) resolveRound();
+  }
+
+  function buzzShape(player, shape) {
+    const idx = indexOfShape(shape);
+    if (idx >= 0) buzz(player, idx);
+  }
+
+  function moveFocus(player, dx, dy) {
+    let f = game.focus[player];
+    let col = (f % 2) + dx;
+    let row = Math.floor(f / 2) + dy;
+    if (col < 0) col = 1;
+    if (col > 1) col = 0;
+    if (row < 0) row = 1;
+    if (row > 1) row = 0;
+    game.focus[player] = row * 2 + col;
+    game.focusOn[player] = true;
+    game.stickUsed[player] = true;
+  }
+
+  function confirmFocus(player) {
+    if (game.mode !== 'DUEL' && player !== activePlayer()) {
+      toast('WAIT — ' + PILOTS[activePlayer()].badge + ' BUZZES THIS ONE');
+      return;
+    }
+    buzz(player, game.focus[player]);
+  }
+
+  function advance() {
+    if (game.phase !== 'reveal') return;
+    game.phase = 'between';
+    game.round += 1;
+    if (game.round >= game.rounds) finishMatch();
+    else beginQuestion();
+  }
+
+  function nowMs() {
+    if (typeof performance !== 'undefined' && performance.now) return performance.now();
+    return Date.now();
+  }
+
+  function standing() {
+    const rows = [];
+    for (let i = 0; i < game.players; i++) rows.push({ i: i, score: game.pilots[i].score, correct: game.pilots[i].correct });
+    rows.sort((a, b) => b.score - a.score || a.i - b.i);
+    let last = null;
+    let place = 0;
+    for (let i = 0; i < rows.length; i++) {
+      if (!last || rows[i].score !== last.score) place = i + 1;
+      rows[i].place = place;
+      last = rows[i];
+    }
+    return rows;
+  }
+
+  function placesByPlayer() {
+    const rows = standing();
+    const map = {};
+    for (let i = 0; i < rows.length; i++) map[rows[i].i] = rows[i].place;
+    return map;
+  }
+
+  function unlock() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!sound.ctx) {
+      sound.ctx = new AC();
+      sound.master = sound.ctx.createGain();
+      sound.master.gain.value = sound.muted ? 0 : 0.22;
+      sound.master.connect(sound.ctx.destination);
+      const n = Math.floor(sound.ctx.sampleRate * 0.08);
+      sound.noise = sound.ctx.createBuffer(1, n, sound.ctx.sampleRate);
+      const data = sound.noise.getChannelData(0);
+      for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+    }
+    if (sound.ctx.state === 'suspended') sound.ctx.resume();
+    sound.ready = true;
+  }
+
+  function tone(freq, dur, type, gain, delay, slide) {
+    if (!sound.ctx || sound.muted || !sound.ready) return;
+    const t = sound.ctx.currentTime + (delay || 0);
+    const o = sound.ctx.createOscillator();
+    const g = sound.ctx.createGain();
+    o.type = type || 'sine';
+    o.frequency.setValueAtTime(Math.max(40, freq), t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, freq + slide), t + dur);
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g);
+    g.connect(sound.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  }
+
+  function noiseBurst(dur, gain) {
+    if (!sound.ctx || sound.muted || !sound.ready || !sound.noise) return;
+    const src = sound.ctx.createBufferSource();
+    src.buffer = sound.noise;
+    const filter = sound.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 3500;
+    const g = sound.ctx.createGain();
+    const t = sound.ctx.currentTime;
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(sound.master);
+    src.start(t);
+    src.stop(t + dur);
+  }
+
+  function sfxBuzz() {
+    tone(740, 0.07, 'square', 0.05, 0, 0);
+    tone(1180, 0.1, 'square', 0.045, 0.06, 0);
+  }
+  function sfxSparkle() {
+    tone(1318, 0.08, 'sine', 0.05, 0, 0);
+    tone(1568, 0.09, 'sine', 0.045, 0.07, 0);
+    tone(2093, 0.14, 'sine', 0.04, 0.14, 0);
+  }
+  function sfxWrong() {
+    tone(150, 0.22, 'sawtooth', 0.05, 0, -70);
+    tone(90, 0.28, 'square', 0.04, 0.08, -30);
+  }
+  function sfxSlice(i) {
+    tone(420 + i * 70, 0.05, 'square', 0.04, 0, 80);
+  }
+  function sfxTick() {
+    tone(988, 0.045, 'square', 0.04, 0, 0);
+  }
+  function sfxClick() {
+    tone(660, 0.04, 'square', 0.03, 0, 0);
+  }
+  function sfxFanfare() {
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    for (let i = 0; i < notes.length; i++) tone(notes[i], 0.22, 'triangle', 0.06, i * 0.12, 0);
+    tone(261.63, 0.5, 'sine', 0.05, 0.05, 0);
+    tone(1568, 0.2, 'sine', 0.03, 0.48, 0);
+  }
+
+  function toggleMute() {
+    unlock();
+    sound.muted = !sound.muted;
+    storageSet('fbuzz-mute', sound.muted);
+    if (sound.master && sound.ctx) {
+      sound.master.gain.setTargetAtTime(sound.muted ? 0 : 0.22, sound.ctx.currentTime, 0.02);
+    }
+  }
+
+  function tickMusic(dt) {
+    if (!sound.ready || sound.muted || game.paused) return;
+    if (game.screen !== 'play' || game.phase !== 'ask') {
+      sound.acc = 0;
+      return;
+    }
+    const urgent = game.timeLeft <= 4;
+    const step = urgent ? 0.16 : 0.28;
+    sound.acc += dt;
+    let guard = 0;
+    while (sound.acc >= step && guard < 4) {
+      sound.acc -= step;
+      guard += 1;
+      const i = sound.step % 8;
+      sound.step += 1;
+      tone(MELODY[i] * (urgent ? 1.0 : 1), 0.14, 'square', urgent ? 0.04 : 0.03, 0, 0);
+      if (i % 2 === 0) tone(BASS[i], 0.16, 'triangle', 0.055, 0, 0);
+      noiseBurst(0.03, urgent ? 0.035 : 0.02);
+      if (urgent && i % 2 === 0) tone(1174, 0.04, 'square', 0.03, 0, 0);
+    }
+  }
+
+  function spawnFloater(x, y, text, color) {
+    floaters.push({ x: x, y: y, text: text, life: 1.25, color: color });
+  }
+
+  function burst(x, y, color, n) {
+    const count = reduceMotion ? Math.min(8, n) : n;
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 40 + Math.random() * 160;
+      particles.push({
+        x: x,
+        y: y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s - 30,
+        life: 0.7 + Math.random() * 0.5,
+        max: 1,
+        color: color,
+        s: 3 + Math.random() * 4
+      });
+    }
+  }
+
+  function updateFx(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 280 * dt;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      floaters[i].life -= dt;
+      floaters[i].y -= 28 * dt;
+      if (floaters[i].life <= 0) floaters.splice(i, 1);
+    }
+  }
+
+  function updateAsk(dt) {
+    const before = Math.ceil(game.timeLeft);
+    game.timeLeft -= dt;
+    if (game.timeLeft < 0) game.timeLeft = 0;
+    const after = Math.ceil(game.timeLeft);
+    if (game.timeLeft <= 4 && after < before && game.timeLeft > 0) sfxTick();
+    game.lastCeil = after;
+    if (game.timeLeft <= 0) resolveRound();
+  }
+
+  function shownGold() {
+    const q = game.question;
+    if (!q) return 0;
+    let total = 0;
+    for (let i = 0; i < q.groups.length; i++) total += q.groups[i].filled;
+    if (total <= 0) return 0;
+    const dur = Math.min(1.15, Math.max(0.35, total * 0.045));
+    const u = clamp(game.revealT / dur, 0, 1);
+    return Math.floor(u * total + 0.0001);
+  }
+
+  function update(dt) {
+    if (game.toastT > 0) game.toastT -= dt;
+    if (game.shake > 0) game.shake = Math.max(0, game.shake - dt);
+    updateFx(dt);
+    if (game.screen === 'play' && !game.paused) {
+      if (game.inputLock > 0) game.inputLock -= dt;
+      if (game.phase === 'intro') {
+        game.introT += dt;
+        if (game.introT >= 2.25) beginQuestion();
+      } else if (game.phase === 'ask') {
+        updateAsk(dt);
+      } else if (game.phase === 'reveal') {
+        const before = shownGold();
+        game.revealT += dt;
+        const after = shownGold();
+        if (after > before) {
+          const pops = Math.min(5, after);
+          if (game.popped < pops) {
+            sfxSlice(game.popped);
+            game.popped += 1;
+          } else game.popped = after;
+        }
+        if (game.revealT >= 7.2) advance();
+      }
+    }
+    if (game.screen === 'result') game.resultT += dt;
+    tickMusic(game.screen === 'play' && !game.paused ? dt : 0);
+    pollPads();
+  }
+
+  function pathRound(x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+  function fillRound(x, y, w, h, r, color) {
+    pathRound(x, y, w, h, r);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+  function strokeRound(x, y, w, h, r, color, width) {
+    pathRound(x, y, w, h, r);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+  function spot(id, x, y, w, h) {
+    hotspots.push({ id: id, x: x, y: y, w: w, h: h });
+  }
+  function hitSpot(x, y) {
+    for (let i = hotspots.length - 1; i >= 0; i--) {
+      const h = hotspots[i];
+      if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h.id;
+    }
+    return '';
+  }
+  function text(str, x, y, size, color, align, weight) {
+    ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(str, x, y);
+  }
+  function fitSize(str, maxW, size, weight) {
+    let s = size;
+    const wgt = weight || 800;
+    while (s > 12) {
+      ctx.font = wgt + ' ' + s + 'px ' + FONT;
+      if (ctx.measureText(str).width <= maxW) return s;
+      s -= 1;
+    }
+    return s;
+  }
+  function wrapText(str, maxW) {
+    const words = String(str).split(' ');
+    const lines = [];
+    let line = '';
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + ' ' + words[i] : words[i];
+      if (line && ctx.measureText(test).width > maxW) {
+        lines.push(line);
+        line = words[i];
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, VH);
+    g.addColorStop(0, '#4a2494');
+    g.addColorStop(0.42, '#2a1468');
+    g.addColorStop(1, '#14082f');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VW, VH);
+    drawSpotCone(240 + Math.sin(animT * 0.35) * 18, 0.16, 'rgba(255, 214, 120, 0.20)');
+    drawSpotCone(980 + Math.cos(animT * 0.28) * 16, 0.14, 'rgba(140, 190, 255, 0.16)');
+    ctx.fillStyle = 'rgba(8, 2, 24, 0.35)';
+    ctx.beginPath();
+    ctx.ellipse(640, 760, 700, 90, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.04)';
+    ctx.fillRect(0, 0, 46, VH);
+    ctx.fillRect(VW - 46, 0, 46, VH);
+  }
+
+  function drawSpotCone(x, alpha, color) {
+    const grd = ctx.createRadialGradient(x, 0, 10, x, 80, 420);
+    grd.addColorStop(0, color);
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.moveTo(x - 30, 0);
+    ctx.lineTo(x + 30, 0);
+    ctx.lineTo(x + 280, 520);
+    ctx.lineTo(x - 280, 520);
+    ctx.closePath();
+    ctx.globalAlpha = alpha / 0.16;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawGlyph(shape, x, y, s, fill) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    if (shape === 0) {
+      ctx.moveTo(0, -s);
+      ctx.lineTo(s * 0.92, s * 0.78);
+      ctx.lineTo(-s * 0.92, s * 0.78);
+    } else if (shape === 1) {
+      ctx.moveTo(0, -s);
+      ctx.lineTo(s * 0.78, 0);
+      ctx.lineTo(0, s);
+      ctx.lineTo(-s * 0.78, 0);
+    } else if (shape === 2) {
+      ctx.arc(0, 0, s * 0.78, 0, Math.PI * 2);
+    } else {
+      const h = s * 0.68;
+      ctx.rect(-h, -h, h * 2, h * 2);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawFraction(x, y, num, den, size, color) {
+    const top = String(num);
+    const bot = String(den);
+    ctx.font = '800 ' + size + 'px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const w = Math.max(ctx.measureText(top).width, ctx.measureText(bot).width) + size * 0.42;
+    ctx.fillStyle = color;
+    ctx.fillText(top, x, y - size * 0.62);
+    const bar = Math.max(4, size * 0.09);
+    ctx.fillRect(x - w / 2, y - bar / 2, w, bar);
+    ctx.fillText(bot, x, y + size * 0.68);
+    return { w: w, h: size * 2.2 };
+  }
+
+  function fractionWidth(num, den, size) {
+    ctx.font = '800 ' + size + 'px ' + FONT;
+    return Math.max(ctx.measureText(String(num)).width, ctx.measureText(String(den)).width) + size * 0.42;
+  }
+
+  function drawMixed(cx, cy, whole, num, den, wholeSize, color) {
+    const fSize = Math.max(22, Math.round(wholeSize * 0.58));
+    ctx.font = '800 ' + wholeSize + 'px ' + FONT;
+    const ww = ctx.measureText(String(whole)).width;
+    const fw = fractionWidth(num, den, fSize);
+    const gap = wholeSize * 0.18;
+    const total = ww + gap + fw;
+    const left = cx - total / 2;
+    text(String(whole), left + ww / 2, cy + wholeSize * 0.02, wholeSize, color, 'center', 800);
+    drawFraction(left + ww + gap + fw / 2, cy, num, den, fSize, color);
+    return total;
+  }
+
+  function drawRing(x, y, r, frac, color) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(frac, 0, 1));
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
+  function drawFlame(x, y, s) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.bezierCurveTo(s * 0.85, -s * 0.15, s * 0.7, s * 0.55, 0, s);
+    ctx.bezierCurveTo(-s * 0.7, s * 0.55, -s * 0.85, -s * 0.15, 0, -s);
+    ctx.fillStyle = '#ff9f1c';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(0, s * 0.18, s * 0.28, s * 0.42, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffe566';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawChipRow(labels, values, selected, y, ids, tintFor) {
+    ctx.font = '800 16px ' + FONT;
+    const pads = 36;
+    const gap = 12;
+    const widths = labels.map((label) => Math.max(118, ctx.measureText(label).width + pads));
+    let total = gap * (widths.length - 1);
+    for (let i = 0; i < widths.length; i++) total += widths[i];
+    let x = (VW - total) / 2;
+    for (let i = 0; i < labels.length; i++) {
+      const on = values[i] === selected;
+      const tint = tintFor ? tintFor(values[i]) : '#f6c453';
+      fillRound(x, y, widths[i], 44, 12, on ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.10)');
+      strokeRound(x, y, widths[i], 44, 12, on ? tint : 'rgba(255,255,255,0.22)', on ? 3 : 1.5);
+      text(labels[i], x + widths[i] / 2, y + 22, 16, on ? '#241238' : '#f4ecff', 'center', 800);
+      spot(ids[i], x, y, widths[i], 44);
+      x += widths[i] + gap;
+    }
+  }
+
+  function drawTitle() {
+    drawBackground();
+    for (let i = 0; i < 4; i++) {
+      const x = i < 2 ? 86 + i * 70 : 1120 + (i - 2) * 70;
+      const y = 118 + Math.sin(animT * 1.4 + i) * 6;
+      drawGlyph(i, x, y, 26, SHAPES[i].color);
+    }
+    text('PRIMARY 2–4   ·   FRACTION NAMES', 640, 28, 14, '#e7d6ff', 'center', 700);
+    text('FRACTION BUZZ', 640, 78, 64, '#fffaf3', 'center', 800);
+    text('FAST-HANDS SHOWDOWN', 640, 124, 20, '#ffd166', 'center', 800);
+    text('Read fractions in words. Count the halves, thirds, quarters, and fifths.', 640, 154, 16, '#ddd0ff', 'center', 600);
+
+    const rowY = [196, 276, 356, 436];
+    const labels = ['PLAYERS', 'DIFFICULTY', 'ROUNDS', 'MODE'];
+    for (let i = 0; i < labels.length; i++) {
+      text(labels[i], 96, rowY[i] - 16, 12, titleRow === i ? '#ffd166' : '#c4b5fd', 'left', 800);
+      if (titleRow === i) text('▸', 76, rowY[i] + 6, 16, '#ffd166', 'center', 800);
+    }
+
+    drawChipRow(['1 PLAYER', '2 PLAYERS', '3 PLAYERS'], PLAYER_OPTS, game.players, 196, ['players:1', 'players:2', 'players:3']);
+    drawChipRow(TIER_OPTS.map((t) => TIER_META[t].label), TIER_OPTS, game.tier, 276, TIER_OPTS.map((t) => 'tier:' + t), (v) => TIER_META[v].tint);
+    drawChipRow(['8 QUESTIONS', '10 QUESTIONS', '12 QUESTIONS'], ROUND_OPTS, game.rounds, 356, ['rounds:8', 'rounds:10', 'rounds:12']);
+    drawChipRow(MODE_OPTS.map((m) => MODE_META[m].label), MODE_OPTS, game.mode, 436, MODE_OPTS.map((m) => 'mode:' + m));
+
+    text(MODE_META[game.mode].blurb, 640, 500, 15, '#f4ecff', 'center', 700);
+    text(TIER_META[game.tier].blurb, 640, 522, 14, TIER_META[game.tier].tint, 'center', 700);
+
+    const ok = comboOk();
+    const bw = 460;
+    const bh = 58;
+    const bx = (VW - bw) / 2;
+    const by = 546;
+    const pulse = ok ? 1 + Math.sin(animT * 3) * 0.012 : 1;
+    ctx.save();
+    ctx.translate(bx + bw / 2, by + bh / 2);
+    ctx.scale(pulse, pulse);
+    fillRound(-bw / 2, -bh / 2, bw, bh, 16, ok ? '#ffd166' : 'rgba(255,255,255,0.16)');
+    text(ok ? 'START THE SHOW' : 'CHECK PLAYERS AND MODE', 0, 0, 24, ok ? '#3b2204' : '#efe7ff', 'center', 800);
+    ctx.restore();
+    spot('start', bx, by, bw, bh);
+
+    if (!ok) {
+      text('Solo is 1 player. Team Co-op and Duel need 2 or 3 players.', 640, 624, 14, '#fecdd3', 'center', 700);
+    } else if (game.mode === 'SOLO' && game.bestSolo > 0) {
+      text('BEST SOLO  ' + comma(game.bestSolo), 640, 624, 14, '#ffe7a3', 'center', 800);
+    } else if (game.mode === 'COOP' && game.bestCoop > 0) {
+      text('BEST TEAM  ' + comma(game.bestCoop), 640, 624, 14, '#ffe7a3', 'center', 800);
+    }
+
+    text('P1  mouse · 1 2 3 4 · arrows + space · pad Y X A B      P2  Q W E R · pad 2      P3  U I O P · pad 3', 640, 662, 13, '#d6c8f5', 'center', 600);
+    text('M mute    ·    Esc pause    ·    Co-op keeps one team score and one team streak', 640, 686, 13, '#b7a6e6', 'center', 600);
+    drawMute(1216, 28);
+  }
+
+  function drawMute(x, y) {
+    const w = 78;
+    const h = 32;
+    fillRound(x - w / 2, y - h / 2, w, h, 10, 'rgba(8,4,20,0.45)');
+    strokeRound(x - w / 2, y - h / 2, w, h, 10, 'rgba(255,255,255,0.28)', 1.5);
+    text(sound.muted ? 'MUTED' : 'SOUND', x, y, 12, '#fff7df', 'center', 800);
+    spot('mute', x - w / 2, y - h / 2, w, h);
+  }
+
+  function drawHUD() {
+    ctx.fillStyle = 'rgba(10, 4, 24, 0.88)';
+    ctx.fillRect(0, 0, VW, HUD_H);
+    ctx.fillStyle = '#f6c453';
+    ctx.fillRect(0, HUD_H - 2, VW, 2);
+    text('FRACTION BUZZ', 16, HUD_H / 2, 15, '#fffaf3', 'left', 800);
+    fillRound(168, 12, game.mode === 'DUEL' ? 118 : 92, 30, 8, 'rgba(255,255,255,0.08)');
+    const modeShort = game.mode === 'COOP' ? 'CO-OP' : game.mode;
+    text(modeShort, 168 + (game.mode === 'DUEL' ? 59 : 46), 27, 13, '#fff', 'center', 800);
+    const tint = TIER_META[game.tier].tint;
+    fillRound(300, 12, 108, 30, 8, 'rgba(255,255,255,0.08)');
+    ctx.fillStyle = tint;
+    ctx.beginPath();
+    ctx.arc(316, 27, 5, 0, Math.PI * 2);
+    ctx.fill();
+    text(TIER_META[game.tier].short, 362, 27, 13, tint, 'center', 800);
+    const qNow = game.screen === 'result' ? game.rounds : Math.min(game.rounds, game.round + 1);
+    const qLabel = qNow + ' / ' + game.rounds;
+    fillRound(422, 12, 86, 30, 8, 'rgba(255,255,255,0.08)');
+    text(qLabel, 465, 27, 14, '#fff', 'center', 800);
+
+    if (game.phase === 'ask' || game.phase === 'reveal') {
+      const frac = game.phase === 'ask' ? game.timeLeft / game.timeMax : 0;
+      const urgent = game.phase === 'ask' && game.timeLeft <= 4;
+      const col = urgent ? '#ff5d7a' : '#7dffe1';
+      drawRing(560, 27, 16, frac, col);
+      const secs = game.phase === 'ask' ? Math.ceil(game.timeLeft) : 0;
+      const pulse = urgent ? 1 + Math.sin(animT * 12) * 0.08 : 1;
+      ctx.save();
+      ctx.translate(560, 27);
+      ctx.scale(pulse, pulse);
+      text(String(secs), 0, 0, 12, '#fff', 'center', 800);
+      ctx.restore();
+    }
+
+    if (game.mode === 'DUEL') drawDuelScores();
+    else if (game.mode === 'COOP') drawTeamScore();
+    else drawSoloScore();
+    drawMute(1218, 27);
+  }
+
+  function drawSoloScore() {
+    fillRound(760, 10, 250, 34, 10, 'rgba(255,255,255,0.08)');
+    text('SCORE  ' + comma(game.score), 780, 27, 16, '#fffaf3', 'left', 800);
+    if (game.streak >= 2) {
+      drawFlame(1024, 27, 10);
+      text(multLabel(streakMult(game.streak)), 1040, 27, 14, '#ffd166', 'left', 800);
+    }
+    if (game.bestSolo > 0) text('BEST ' + comma(game.bestSolo), 700, 27, 11, '#c4b5fd', 'right', 700);
+  }
+
+  function drawTeamScore() {
+    fillRound(640, 10, 360, 34, 10, 'rgba(255,255,255,0.08)');
+    text('TEAM  ' + comma(game.score), 658, 27, 16, '#fffaf3', 'left', 800);
+    if (game.streak >= 2) drawFlame(860, 27, 10);
+    const mult = game.streak >= 2 ? '  ' + multLabel(streakMult(game.streak)) : '';
+    text('STREAK ' + game.streak + mult, game.streak >= 2 ? 876 : 860, 27, 14, '#ffd166', 'left', 800);
+  }
+
+  function drawDuelScores() {
+    const map = placesByPlayer();
+    const n = game.players;
+    const gap = 8;
+    const right = 1164;
+    const pillW = n === 3 ? 172 : 200;
+    let x = right - (n * pillW + (n - 1) * gap);
+    for (let i = 0; i < n; i++) {
+      fillRound(x, 10, pillW, 34, 10, 'rgba(255,255,255,0.08)');
+      text(placeWord(map[i] || 1), x + 8, 27, 11, '#ffd166', 'left', 800);
+      ctx.fillStyle = PILOTS[i].color;
+      ctx.beginPath();
+      ctx.arc(x + 52, 27, 5, 0, Math.PI * 2);
+      ctx.fill();
+      text(PILOTS[i].id, x + 62, 27, 13, PILOTS[i].color, 'left', 800);
+      text(comma(game.pilots[i].score), x + pillW - 10, 27, 14, '#fff', 'right', 800);
+      if (game.pilots[i].streak >= 2) drawFlame(x + pillW - 8, 8, 5);
+      x += pillW + gap;
+    }
+  }
+
+  function drawJumbotron() {
+    fillRound(STAGE.x, STAGE.y, STAGE.w, STAGE.h, 22, '#3a1768');
+    strokeRound(STAGE.x, STAGE.y, STAGE.w, STAGE.h, 22, '#f6c453', 3);
+    fillRound(STAGE.x + 8, STAGE.y + 8, STAGE.w - 16, STAGE.h - 16, 16, '#fffaf3');
+    ctx.fillStyle = '#f6c453';
+    ctx.beginPath();
+    ctx.arc(STAGE.x + 22, STAGE.y + 22, 4, 0, Math.PI * 2);
+    ctx.arc(STAGE.x + STAGE.w - 22, STAGE.y + 22, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawPromptPill(label, y) {
+    ctx.font = '800 18px ' + FONT;
+    const w = Math.min(STAGE.w - 80, Math.max(280, ctx.measureText(label).width + 48));
+    const x = 640 - w / 2;
+    fillRound(x, y, w, 36, 18, '#2a1058');
+    const size = fitSize(label, w - 36, 18, 800);
+    text(label, 640, y + 18, size, '#fffaf3', 'center', 800);
+  }
+
+  function drawHero(q) {
+    const cy = game.mode === 'SOLO' ? 236 : 252;
+    if (q.hero === 'fraction') drawFraction(640, cy, q.num, q.den, 78, '#241238');
+    else if (q.hero === 'words') {
+      const size = fitSize(q.words, 980, 54, 800);
+      text(q.words, 640, cy, size, '#5b21b6', 'center', 800);
+    } else if (q.hero === 'whole') {
+      text(String(q.whole), 640, cy, 108, '#241238', 'center', 800);
+    } else {
+      drawMixed(640, cy, q.whole, q.fracNum, q.fracDen, 92, '#241238');
+    }
+  }
+
+  function drawTimerBar() {
+    const x = 40;
+    const y = STAGE.y + STAGE.h - 28;
+    const w = VW - 80;
+    const h = 14;
+    fillRound(x, y, w, h, 7, '#efe6da');
+    const frac = clamp(game.timeLeft / game.timeMax, 0, 1);
+    const urgent = game.timeLeft <= 4;
+    if (frac > 0) fillRound(x, y, Math.max(14, w * frac), h, 7, urgent ? '#ef4444' : '#14b8a6');
+  }
+
+  function drawGroups(q, areaY) {
+    const groups = q.groups;
+    const goldShown = shownGold();
+    const areaX = 48;
+    const areaW = VW - 96;
+    const areaH = 70;
+    if (q.pie && groups.length === 1) {
+      drawPie(250, areaY + areaH / 2, 34, groups[0], goldShown);
+      drawBar(430, areaY + 8, 760, 62, groups[0], goldShown, 0);
+      return;
+    }
+    const n = groups.length;
+    const gap = n > 6 ? 8 : 12;
+    const bw = Math.min(168, (areaW - gap * (n - 1)) / n);
+    const total = n * bw + gap * (n - 1);
+    let x = areaX + (areaW - total) / 2;
+    let goldIndex = 0;
+    for (let i = 0; i < n; i++) {
+      drawBar(x, areaY + 6, bw, 64, groups[i], goldShown, goldIndex);
+      goldIndex += groups[i].filled;
+      x += bw + gap;
+    }
+  }
+
+  function drawPie(x, y, r, group, goldShown) {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#efe8ff';
+    ctx.fill();
+    const step = (Math.PI * 2) / group.parts;
+    const show = Math.min(group.filled, goldShown);
+    for (let i = 0; i < group.parts; i++) {
+      if (i >= show) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.arc(x, y, r - 1, -Math.PI / 2 + i * step, -Math.PI / 2 + (i + 1) * step);
+      ctx.closePath();
+      ctx.fillStyle = '#f5b400';
+      ctx.fill();
+    }
+    ctx.strokeStyle = '#3b1764';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < group.parts; i++) {
+      const a = -Math.PI / 2 + i * step;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawBar(x, y, w, h, group, goldShown, goldOffset) {
+    fillRound(x, y, w, h, 8, '#efe8ff');
+    const gap = group.parts > 8 ? 2 : 3;
+    const sw = (w - gap * (group.parts + 1)) / group.parts;
+    for (let i = 0; i < group.parts; i++) {
+      const sx = x + gap + i * (sw + gap);
+      const isGold = i < group.filled && (goldOffset + i) < goldShown;
+      fillRound(sx, y + gap, Math.max(2, sw), h - gap * 2, 3, isGold ? '#f5b400' : '#f7f3ff');
+    }
+    strokeRound(x, y, w, h, 8, '#3b1764', 2);
+  }
+
+  function drawFeedback(tone, msg) {
+    const x = 36;
+    const y = 268;
+    const w = VW - 72;
+    const h = 112;
+    const bg = tone === 'good' ? 'rgba(16, 185, 129, 0.14)' : (tone === 'time' ? 'rgba(245, 158, 11, 0.16)' : 'rgba(244, 63, 94, 0.12)');
+    const border = tone === 'good' ? '#059669' : (tone === 'time' ? '#d97706' : '#e11d48');
+    fillRound(x, y, w, h, 12, bg);
+    strokeRound(x, y, w, h, 12, border, 2);
+    let size = 16;
+    ctx.font = '700 ' + size + 'px ' + FONT;
+    let lines = wrapText(msg, w - 36);
+    if (lines.length > 4) {
+      size = 14;
+      ctx.font = '700 ' + size + 'px ' + FONT;
+      lines = wrapText(msg, w - 36);
+    }
+    const show = lines.slice(0, 4);
+    const lh = size + 5;
+    let ly = y + 18 + size / 2;
+    for (let i = 0; i < show.length; i++) {
+      text(show[i], x + 18, ly, size, '#241238', 'left', 700);
+      ly += lh;
+    }
+  }
+
+  function drawRevealHeader(q, y) {
+    if (q.kind === 'f2w' || q.kind === 'w2f') {
+      const word = q.words;
+      ctx.font = '800 26px ' + FONT;
+      const ww = ctx.measureText(word).width;
+      const fw = fractionWidth(q.num, q.den, 24);
+      const gap = 16;
+      const eq = 24;
+      const total = fw + gap + eq + gap + ww;
+      let x = 640 - total / 2;
+      drawFraction(x + fw / 2, y, q.num, q.den, 24, '#241238');
+      x += fw + gap;
+      text('=', x + eq / 2, y, 26, '#5b21b6', 'center', 800);
+      x += eq + gap;
+      text(word, x + ww / 2, y, 26, '#5b21b6', 'center', 800);
+      return;
+    }
+    const line = q.equation + '   ' + q.words;
+    const size = fitSize(line, 1100, 26, 800);
+    text(line, 640, y, size, '#241238', 'center', 800);
+  }
+
+  function drawPads() {
+    for (let i = 0; i < 4; i++) {
+      if (!game.pads[i]) drawEmptyPad(i);
+      else drawPad(i);
+    }
+  }
+
+  function drawEmptyPad(i) {
+    const r = padRect(i);
+    const shape = SHAPES[i];
+    fillRound(r.x, r.y, r.w, r.h, 18, 'rgba(255,255,255,0.08)');
+    strokeRound(r.x, r.y, r.w, r.h, 18, 'rgba(255,255,255,0.16)', 2);
+    drawGlyph(i, r.x + 64, r.y + r.h / 2, 28, shape.color);
+  }
+
+  function drawPad(i) {
+    const r = padRect(i);
+    const pad = game.pads[i];
+    const shape = SHAPES[pad.shape];
+    const opt = pad.option;
+    const reveal = game.phase === 'reveal';
+    const chosen = game.locks.filter((l) => l.padIndex === i);
+    fillRound(r.x, r.y + 6, r.w, r.h, 18, shape.deep);
+    fillRound(r.x, r.y, r.w, r.h, 18, shape.color);
+    ctx.globalAlpha = 0.18;
+    drawGlyph(pad.shape, r.x + r.w * 0.72, r.y + r.h * 0.48, 70, '#ffffff');
+    ctx.globalAlpha = 1;
+    drawGlyph(pad.shape, r.x + 58, r.y + r.h * 0.42, 28, shape.ink);
+
+    if (opt.kind === 'fraction') {
+      drawFraction(r.x + r.w * 0.58, r.y + r.h * 0.40, opt.num, opt.den, 36, shape.ink);
+    } else if (opt.text.indexOf(' ') >= 0) {
+      const parts = opt.text.split(' ');
+      const head = parts.slice(0, -1).join(' ');
+      const tail = parts[parts.length - 1];
+      const s1 = fitSize(head, r.w - 150, 30, 800);
+      const s2 = fitSize(tail, r.w - 150, 26, 800);
+      text(head, r.x + r.w * 0.58, r.y + r.h * 0.34, s1, shape.ink, 'center', 800);
+      text(tail, r.x + r.w * 0.58, r.y + r.h * 0.56, s2, shape.ink, 'center', 800);
+    } else {
+      const s = fitSize(opt.text, r.w - 150, 32, 800);
+      text(opt.text, r.x + r.w * 0.58, r.y + r.h * 0.42, s, shape.ink, 'center', 800);
+    }
+
+    drawBadges(r, shape);
+    drawLockChips(r, chosen, reveal);
+
+    const focused = focusPlayersOn(i);
+    if (!reveal && focused.length) {
+      strokeRound(r.x + 4, r.y + 4, r.w - 8, r.h - 8, 14, '#ffffff', 4);
+    }
+    if (reveal) {
+      if (opt.correct) strokeRound(r.x + 3, r.y + 3, r.w - 6, r.h - 6, 16, '#f6c453', 6);
+      else if (chosen.length) {
+        ctx.fillStyle = 'rgba(80, 0, 20, 0.28)';
+        pathRound(r.x, r.y, r.w, r.h, 18);
+        ctx.fill();
+        strokeRound(r.x + 3, r.y + 3, r.w - 6, r.h - 6, 16, '#7f1d1d', 5);
+      } else {
+        ctx.fillStyle = 'rgba(20, 8, 40, 0.28)';
+        pathRound(r.x, r.y, r.w, r.h, 18);
+        ctx.fill();
+      }
+    }
+    spot('pad:' + i, r.x, r.y, r.w, r.h);
+  }
+
+  function focusPlayersOn(padIndex) {
+    const list = [];
+    const n = game.mode === 'DUEL' ? game.players : 1;
+    for (let p = 0; p < n; p++) {
+      const player = game.mode === 'DUEL' ? p : activePlayer();
+      if (game.focusOn[player] && game.focus[player] === padIndex) {
+        list.push(PILOTS[player]);
+        if (game.mode !== 'DUEL') break;
+      }
+    }
+    return list;
+  }
+
+  function drawBadges(r, shape) {
+    const badges = [{ tag: game.mode === 'SOLO' ? 'KEY' : 'P1', key: shape.k1, color: PILOTS[0].color }];
+    if (game.players >= 2 && game.mode !== 'SOLO') badges.push({ tag: 'P2', key: shape.k2, color: PILOTS[1].color });
+    if (game.players >= 3 && game.mode !== 'SOLO') badges.push({ tag: 'P3', key: shape.k3, color: PILOTS[2].color });
+    const bw = game.mode === 'SOLO' ? 72 : 70;
+    const total = badges.length * bw + (badges.length - 1) * 6;
+    let x = r.x + (r.w - total) / 2;
+    const y = r.y + r.h - 28;
+    for (let i = 0; i < badges.length; i++) {
+      fillRound(x, y, bw, 20, 8, 'rgba(0,0,0,0.22)');
+      text(badges[i].tag + ' ' + badges[i].key, x + bw / 2, y + 10, 11, '#fffaf3', 'center', 800);
+      x += bw + 6;
+    }
+  }
+
+  function drawLockChips(r, chosen, reveal) {
+    for (let i = 0; i < chosen.length; i++) {
+      const lock = chosen[i];
+      const pilot = PILOTS[lock.player];
+      const cx = r.x + r.w - 22 - i * 28;
+      const cy = r.y + 20;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+      ctx.fillStyle = pilot.color;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+      text(pilot.id, cx, cy, 8, pilot.ink, 'center', 800);
+      if (reveal) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+        ctx.strokeStyle = lock.correct ? '#f6c453' : '#fecdd3';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    }
+  }
+
+  function drawPlay() {
+    drawBackground();
+    if (game.shake > 0 && !reduceMotion) {
+      ctx.save();
+      ctx.translate((Math.random() - 0.5) * game.shake * 18, (Math.random() - 0.5) * game.shake * 12);
+    }
+    drawJumbotron();
+    if (game.phase === 'intro') drawIntro();
+    else if (game.phase === 'ask') drawAsk();
+    else if (game.phase === 'reveal') drawReveal();
+    else drawAsk();
+    drawPads();
+    if (game.shake > 0 && !reduceMotion) ctx.restore();
+    drawHUD();
+    drawFx();
+    if (game.paused) drawPause();
+    if (game.toastT > 0) drawToast();
+  }
+
+  function drawIntro() {
+    const n = game.introT < 0.55 ? '3' : game.introT < 1.1 ? '2' : game.introT < 1.65 ? '1' : 'BUZZ!';
+    text(TIER_META[game.tier].label + '   ·   ' + MODE_META[game.mode].label, 640, 150, 18, '#6d28d9', 'center', 800);
+    text(n, 640, 250, n === 'BUZZ!' ? 72 : 96, '#241238', 'center', 800);
+    text(game.rounds + ' QUESTIONS', 640, 330, 16, '#7c3aed', 'center', 700);
+  }
+
+  function drawAsk() {
+    const q = game.question;
+    if (!q) return;
+    drawPromptPill(q.prompt, 80);
+    if (game.mode === 'COOP') {
+      const p = PILOTS[activePlayer()];
+      fillRound(500, 122, 280, 28, 14, p.color);
+      text(p.badge + '  ·  YOUR BUZZ', 640, 136, 14, p.ink, 'center', 800);
+    } else if (game.mode === 'DUEL') {
+      fillRound(500, 122, 280, 28, 14, '#2a1058');
+      text('EVERYONE BUZZ IN', 640, 136, 14, '#fffaf3', 'center', 800);
+    }
+    drawHero(q);
+    drawTimerBar();
+    spot('stage', STAGE.x, STAGE.y, STAGE.w, STAGE.h);
+  }
+
+  function drawReveal() {
+    const q = game.question;
+    if (!q) return;
+    const tone = game.feedbackTone;
+    const pillColor = tone === 'good' ? '#047857' : (tone === 'time' ? '#b45309' : '#be123c');
+    ctx.font = '800 18px ' + FONT;
+    const bw = Math.min(1160, Math.max(320, ctx.measureText(game.banner).width + 40));
+    const bh = game.bannerSub ? 46 : 32;
+    fillRound(640 - bw / 2, 76, bw, bh, 16, pillColor);
+    const bs = fitSize(game.banner, bw - 28, 16, 800);
+    text(game.banner, 640, game.bannerSub ? 90 : 92, bs, '#fffaf3', 'center', 800);
+    if (game.bannerSub) {
+      const ss = fitSize(game.bannerSub, bw - 28, 12, 700);
+      text(game.bannerSub, 640, 110, ss, '#ecfdf5', 'center', 700);
+    }
+    drawRevealHeader(q, 148);
+    drawGroups(q, 176);
+    drawFeedback(tone, game.feedback);
+    spot('stage', STAGE.x, STAGE.y, STAGE.w, STAGE.h);
+  }
+
+  function drawFx() {
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, p.s, p.s);
+    }
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < floaters.length; i++) {
+      const f = floaters[i];
+      ctx.globalAlpha = Math.max(0, f.life);
+      text(f.text, f.x, f.y, 16, f.color, 'center', 800);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawToast() {
+    ctx.font = '800 16px ' + FONT;
+    const w = Math.min(760, ctx.measureText(game.toast).width + 40);
+    fillRound(640 - w / 2, 324, w, 30, 10, '#3b0764');
+    text(game.toast, 640, 339, 16, '#fff', 'center', 800);
+  }
+
+  function drawPause() {
+    ctx.fillStyle = 'rgba(10, 4, 24, 0.55)';
+    ctx.fillRect(0, 0, VW, VH);
+    fillRound(390, 250, 500, 180, 20, '#fffaf3');
+    text('PAUSED', 640, 310, 42, '#241238', 'center', 800);
+    text('Esc or Start resumes', 640, 360, 18, '#6d28d9', 'center', 700);
+    fillRound(520, 386, 240, 36, 10, '#ffd166');
+    text('RESUME', 640, 404, 16, '#3b2204', 'center', 800);
+    spot('resume', 520, 386, 240, 36);
+  }
+
+  function drawResult() {
+    drawBackground();
+    drawHUD();
+    text('SHOW COMPLETE', 640, 92, 16, '#ffd166', 'center', 800);
+    if (game.mode === 'DUEL') drawPodium();
+    else drawScoreResult();
+    const bw = 280;
+    const by = 636;
+    fillRound(340, by, bw, 54, 14, '#ffd166');
+    text('PLAY AGAIN', 340 + bw / 2, by + 27, 20, '#3b2204', 'center', 800);
+    spot('again', 340, by, bw, 54);
+    fillRound(660, by, bw, 54, 14, 'rgba(255,255,255,0.12)');
+    strokeRound(660, by, bw, 54, 14, 'rgba(255,255,255,0.3)', 2);
+    text('TITLE', 660 + bw / 2, by + 27, 20, '#fffaf3', 'center', 800);
+    spot('title', 660, by, bw, 54);
+    drawFx();
+  }
+
+  function drawScoreResult() {
+    const team = game.mode === 'COOP';
+    text(team ? 'TEAM SCORE' : 'YOUR SCORE', 640, 140, 18, '#ddd0ff', 'center', 800);
+    const pop = Math.min(1, game.resultT / 0.45);
+    text(comma(game.score), 640, 210, 72 * (0.8 + 0.2 * pop), '#fffaf3', 'center', 800);
+    text(game.correct + ' of ' + game.rounds + ' correct', 640, 270, 20, '#7dffe1', 'center', 700);
+    text((team ? 'TEAM STREAK BEST  ' : 'BEST STREAK  ') + game.bestStreak, 640, 304, 18, '#ffd166', 'center', 800);
+    if (game.newBest) text('NEW BEST', 640, 340, 22, '#fb7185', 'center', 800);
+    const best = team ? game.bestCoop : game.bestSolo;
+    text((team ? 'TEAM BEST  ' : 'SOLO BEST  ') + comma(best), 640, 380, 16, '#c4b5fd', 'center', 700);
+    text(team
+      ? 'One squad. One score. The bars showed every unit fraction you counted.'
+      : 'Top number is the count. Bottom number is the slice name.', 640, 450, 16, '#efe7ff', 'center', 600);
+  }
+
+  function drawPodium() {
+    const rows = standing();
+    const slots = rows.length === 2
+      ? [{ x: 470, row: rows[1] }, { x: 810, row: rows[0] }]
+      : [{ x: 320, row: rows[1] }, { x: 640, row: rows[0] }, { x: 960, row: rows[2] }];
+    const base = 520;
+    for (let i = 0; i < slots.length; i++) {
+      const row = slots[i].row;
+      if (!row) continue;
+      const pilot = PILOTS[row.i];
+      const full = row.place === 1 ? 210 : row.place === 2 ? 160 : 120;
+      const grow = reduceMotion ? 1 : Math.min(1, game.resultT / 0.7);
+      const h = full * grow;
+      const x = slots[i].x;
+      fillRound(x - 90, base - h, 180, h, 12, pilot.color);
+      text(placeWord(row.place), x, base - h + 24, 16, pilot.ink, 'center', 800);
+      text(comma(row.score), x, base - h * 0.55, 28, '#fffaf3', 'center', 800);
+      if (row.place === 1) drawCrown(x, base - h - 28);
+      text(pilot.duel, x, base + 28, 16, pilot.color, 'center', 800);
+      text(row.correct + ' / ' + game.rounds + ' correct', x, base + 50, 13, '#ddd0ff', 'center', 700);
+    }
+  }
+
+  function drawCrown(x, y) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.moveTo(-28, 16);
+    ctx.lineTo(-22, -6);
+    ctx.lineTo(-10, 8);
+    ctx.lineTo(0, -16);
+    ctx.lineTo(10, 8);
+    ctx.lineTo(22, -6);
+    ctx.lineTo(28, 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function render() {
+    hotspots.length = 0;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#12082c';
+    ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+    ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offsetX, dpr * offsetY);
+    ctx.clearRect(0, 0, VW, VH);
+    if (game.screen === 'title') drawTitle();
+    else if (game.screen === 'result') drawResult();
+    else drawPlay();
+    const hover = hitSpot(pointer.x, pointer.y);
+    canvas.style.cursor = hover ? 'pointer' : 'default';
+  }
+
+  function frame(now) {
+    if (!lastNow) lastNow = now;
+    const dt = Math.min(0.05, (now - lastNow) / 1000);
+    lastNow = now;
+    animT += dt;
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    const winW = window.innerWidth;
+    const winH = window.innerHeight;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(winW * dpr));
+    canvas.height = Math.max(1, Math.floor(winH * dpr));
+    scale = Math.min(winW / VW, winH / VH);
+    offsetX = (winW - VW * scale) / 2;
+    offsetY = (winH - VH * scale) / 2;
+  }
+
+  function screenToVirtual(clientX, clientY) {
+    return { x: (clientX - offsetX) / scale, y: (clientY - offsetY) / scale };
+  }
+
+  function cycleRow(dir) {
+    if (titleRow === 0) {
+      const i = PLAYER_OPTS.indexOf(game.players);
+      game.players = PLAYER_OPTS[(i + dir + PLAYER_OPTS.length) % PLAYER_OPTS.length];
+    } else if (titleRow === 1) {
+      const i = TIER_OPTS.indexOf(game.tier);
+      game.tier = TIER_OPTS[(i + dir + TIER_OPTS.length) % TIER_OPTS.length];
+    } else if (titleRow === 2) {
+      const i = ROUND_OPTS.indexOf(game.rounds);
+      game.rounds = ROUND_OPTS[(i + dir + ROUND_OPTS.length) % ROUND_OPTS.length];
+    } else if (titleRow === 3) {
+      const i = MODE_OPTS.indexOf(game.mode);
+      game.mode = MODE_OPTS[(i + dir + MODE_OPTS.length) % MODE_OPTS.length];
+    }
+    sfxClick();
+  }
+
+  function onTitle(id) {
+    if (id.indexOf('players:') === 0) {
+      game.players = Number(id.slice(8));
+      titleRow = 0;
+      sfxClick();
+      return;
+    }
+    if (id.indexOf('tier:') === 0) {
+      game.tier = id.slice(5);
+      titleRow = 1;
+      sfxClick();
+      return;
+    }
+    if (id.indexOf('rounds:') === 0) {
+      game.rounds = Number(id.slice(7));
+      titleRow = 2;
+      sfxClick();
+      return;
+    }
+    if (id.indexOf('mode:') === 0) {
+      game.mode = id.slice(5);
+      titleRow = 3;
+      sfxClick();
+      return;
+    }
+    if (id === 'start') startMatch();
+  }
+
+  function onResult(id) {
+    if (id === 'again') startMatch();
+    else if (id === 'title') {
+      game.screen = 'title';
+      game.phase = 'intro';
+      announce('Fraction Buzz title.');
+    }
+  }
+
+  function onPointerDown(e) {
+    unlock();
+    canvas.focus();
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.down = true;
+    const id = hitSpot(p.x, p.y);
+    if (!id) {
+      if (game.screen === 'play' && game.phase === 'reveal' && game.inputLock <= 0) advance();
+      return;
+    }
+    if (id === 'mute') {
+      toggleMute();
+      return;
+    }
+    if (game.screen === 'title') {
+      onTitle(id);
+      return;
+    }
+    if (game.screen === 'result') {
+      onResult(id);
+      return;
+    }
+    if (game.paused) {
+      if (id === 'resume') game.paused = false;
+      return;
+    }
+    if (id.indexOf('pad:') === 0) {
+      const idx = Number(id.slice(4));
+      if (game.phase === 'ask') buzz(mousePlayer(), idx);
+      else if (game.phase === 'reveal' && game.inputLock <= 0) advance();
+      return;
+    }
+    if (game.phase === 'reveal' && game.inputLock <= 0) advance();
+  }
+
+  function onPointerMove(e) {
+    const p = screenToVirtual(e.clientX, e.clientY);
+    pointer.x = p.x;
+    pointer.y = p.y;
+    if (game.screen === 'play' && game.phase === 'ask' && game.mode !== 'DUEL') {
+      const id = hitSpot(p.x, p.y);
+      if (id.indexOf('pad:') === 0) {
+        game.focus[activePlayer()] = Number(id.slice(4));
+        game.focusOn[activePlayer()] = true;
+      }
+    }
+  }
+
+  function onKeyDown(e) {
+    unlock();
+    const code = e.code;
+    if (code === 'ArrowLeft' || code === 'ArrowRight' || code === 'ArrowUp' || code === 'ArrowDown' || code === 'Space' || code === 'Enter' || KEY_SHAPE[code] || code === 'KeyM' || code === 'Escape') {
+      e.preventDefault();
+    }
+    if (e.repeat) return;
+    if (code === 'KeyM') {
+      toggleMute();
+      return;
+    }
+    if (game.screen === 'title') {
+      if (code === 'ArrowUp') titleRow = (titleRow + 4) % 5;
+      else if (code === 'ArrowDown') titleRow = (titleRow + 1) % 5;
+      else if (code === 'ArrowLeft') { if (titleRow < 4) cycleRow(-1); }
+      else if (code === 'ArrowRight') { if (titleRow < 4) cycleRow(1); }
+      else if (code === 'Enter' || code === 'Space') startMatch();
+      return;
+    }
+    if (game.screen === 'result') {
+      if (code === 'Enter' || code === 'Space') startMatch();
+      else if (code === 'Escape') {
+        game.screen = 'title';
+        announce('Fraction Buzz title.');
+      }
+      return;
+    }
+    if (code === 'Escape') {
+      if (game.phase === 'reveal') return;
+      game.paused = !game.paused;
+      return;
+    }
+    if (game.paused) return;
+    if (game.phase === 'reveal') {
+      if (game.inputLock <= 0) advance();
+      return;
+    }
+    if (game.phase !== 'ask') return;
+    if (KEY_SHAPE[code]) {
+      const map = KEY_SHAPE[code];
+      if (map.p >= game.players) return;
+      if (game.mode !== 'DUEL' && map.p !== activePlayer()) {
+        toast('WAIT — ' + PILOTS[activePlayer()].badge + ' BUZZES THIS ONE');
+        return;
+      }
+      buzzShape(map.p, map.s);
+      return;
+    }
+    if (code === 'ArrowLeft') moveFocus(0, -1, 0);
+    else if (code === 'ArrowRight') moveFocus(0, 1, 0);
+    else if (code === 'ArrowUp') moveFocus(0, 0, -1);
+    else if (code === 'ArrowDown') moveFocus(0, 0, 1);
+    else if (code === 'Space' || code === 'Enter') confirmFocus(0);
+  }
+
+  function pollPads() {
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav || !nav.getGamepads) return;
+    const list = nav.getGamepads();
+    for (let i = 0; i < 3; i++) {
+      const gp = list[i];
+      if (!gp) {
+        padState[i] = {};
+        continue;
+      }
+      const b = (n) => !!(gp.buttons[n] && (gp.buttons[n].pressed || gp.buttons[n].value > 0.5));
+      const ax = gp.axes && gp.axes.length ? gp.axes[0] : 0;
+      const ay = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+      const now = {
+        left: b(14) || ax < -0.55,
+        right: b(15) || ax > 0.55,
+        up: b(12) || ay < -0.55,
+        down: b(13) || ay > 0.55,
+        a: b(0),
+        b: b(1),
+        x: b(2),
+        y: b(3),
+        start: b(9)
+      };
+      const prev = padState[i] || {};
+      const edge = (k) => now[k] && !prev[k];
+      if (i < game.players || game.screen === 'title') handlePad(i, edge);
+      padState[i] = now;
+    }
+  }
+
+  function handlePad(i, edge) {
+    if (edge('start')) {
+      unlock();
+      if (game.screen === 'title') startMatch();
+      else if (game.screen === 'play') game.paused = !game.paused;
+      else if (game.screen === 'result') startMatch();
+      return;
+    }
+    if (game.screen === 'title') {
+      if (i !== 0) return;
+      if (edge('up')) titleRow = (titleRow + 4) % 5;
+      else if (edge('down')) titleRow = (titleRow + 1) % 5;
+      else if (edge('left') && titleRow < 4) cycleRow(-1);
+      else if (edge('right') && titleRow < 4) cycleRow(1);
+      else if (edge('a') || edge('b')) startMatch();
+      return;
+    }
+    if (game.screen === 'result') {
+      if (i === 0 && (edge('a') || edge('b'))) startMatch();
+      return;
+    }
+    if (game.paused || game.screen !== 'play') return;
+    if (game.phase === 'reveal') {
+      if (edge('a') && game.inputLock <= 0) advance();
+      return;
+    }
+    if (game.phase !== 'ask') return;
+    if (edge('left')) moveFocus(i, -1, 0);
+    if (edge('right')) moveFocus(i, 1, 0);
+    if (edge('up')) moveFocus(i, 0, -1);
+    if (edge('down')) moveFocus(i, 0, 1);
+    if (edge('y')) buzzShape(i, 0);
+    if (edge('x')) buzzShape(i, 1);
+    if (edge('b')) buzzShape(i, 3);
+    if (edge('a')) {
+      if (game.stickUsed[i]) confirmFocus(i);
+      else buzzShape(i, 2);
+    }
+  }
+
+  function boot() {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    live = document.getElementById('live');
+    reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    sound.muted = !!storageGet('fbuzz-mute', false);
+    game.bestSolo = storageGet('fbuzz-best-solo', 0) || 0;
+    game.bestCoop = storageGet('fbuzz-best-coop', 0) || 0;
+    resize();
+    window.addEventListener('resize', resize);
+    canvas.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('keydown', onKeyDown);
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    announce('Fraction Buzz. Fast-hands showdown. Choose players, difficulty, rounds, and mode, then start the show.');
+    requestAnimationFrame(frame);
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
