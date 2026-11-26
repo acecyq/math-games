@@ -1,0 +1,3268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>Power-Core Forge: War-Machine Bar-Model Arena</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #050914;
+    overflow: hidden;
+    overscroll-behavior: none;
+    color: #eef6ff;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: pointer;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="1280" height="800" aria-label="Power-Core Forge. A Primary 3 and 4 comparison bar-model game. Choose a difficulty, then lock Step 1 and Step 2 on the power-core cards."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+
+const VW = 1280;
+const VH = 800;
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const UI = {
+  hud: 52,
+  bannerX: 16, bannerY: 58, bannerW: 1248, bannerH: 104,
+  mechY: 168, mechH: 120,
+  barX: 16, barY: 294, barW: 1248, barH: 206,
+  tipX: 16, tipY: 506, tipW: 1248, tipH: 48,
+  soloY: 560, soloH: 222,
+  duelY1: 560, duelH: 104, duelY2: 672
+};
+const TIMER = { easy: 90, medium: 70, hard: 55, extreme: 34 };
+const ROUNDS = 8;
+const BEST_SOLO = 'pcf-best-solo';
+const BEST_COOP = 'pcf-best-coop';
+
+const COL = {
+  ink: '#eef6ff',
+  dim: '#9eb4ce',
+  cyan: '#3ee0ff',
+  gold: '#ffd76a',
+  amber: '#ffb020',
+  green: '#3dff9a',
+  red: '#ff4d6a',
+  violet: '#c9a6ff',
+  line: 'rgba(140, 198, 230, 0.32)'
+};
+
+const PILOT = [
+  { name: 'P1', call: 'CRIMSON', color: '#ff3b4e', keys: ['1', '2', '3', '4'], codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4'] },
+  { name: 'P2', call: 'AZURE', color: '#3aa0ff', keys: ['Q', 'W', 'E', 'R'], codes: ['KeyQ', 'KeyW', 'KeyE', 'KeyR'] },
+  { name: 'P3', call: 'EMERALD', color: '#2ee59d', keys: ['U', 'I', 'O', 'P'], codes: ['KeyU', 'KeyI', 'KeyO', 'KeyP'] }
+];
+
+const ROSTER = [
+  { name: 'Vanguard Mech', kind: 'mech', accent: '#7ee0ff' },
+  { name: 'Titan Tank', kind: 'tank', accent: '#ffb020' },
+  { name: 'Valkyrie Jet', kind: 'jet', accent: '#d7b4ff' },
+  { name: 'Aegis Cruiser', kind: 'cruiser', accent: '#8eb6ff' },
+  { name: 'Scout Drone', kind: 'drone', accent: '#3dff9a' },
+  { name: 'Sentinel Walker', kind: 'mech', accent: '#ff8aa0' },
+  { name: 'Nova Striker', kind: 'jet', accent: '#ffd76a' },
+  { name: 'Bulwark Siege', kind: 'tank', accent: '#ff7a45' },
+  { name: 'Wisp Hopper', kind: 'drone', accent: '#7af0ff' },
+  { name: 'Lancer Frame', kind: 'mech', accent: '#b6ff7a' },
+  { name: 'Onyx Railgun', kind: 'tank', accent: '#c9d4e5' },
+  { name: 'Zephyr Wing', kind: 'jet', accent: '#ff9de2' },
+  { name: 'Helmi Core', kind: 'mech', accent: '#9ad1ff' },
+  { name: 'Ben Mech', kind: 'mech', accent: '#ffd0a8' },
+  { name: 'Danny Drone', kind: 'drone', accent: '#8dffcf' },
+  { name: 'Veronica Titan', kind: 'tank', accent: '#ffcf8a' },
+  { name: 'Rachael Skiff', kind: 'jet', accent: '#ffd0e8' },
+  { name: 'Bay Alpha', kind: 'cruiser', accent: '#9ecbff' },
+  { name: 'Bay Beta', kind: 'cruiser', accent: '#d2c4ff' }
+];
+
+const PAIRS = [
+  { a: 'Light Drone', b: 'Heavy Mech', kindA: 'drone', kindB: 'mech', accentA: '#3dff9a', accentB: '#ffb020', unit: 'MW', noun: 'power' },
+  { a: 'Arc Turret', b: 'Aegis Shield', kindA: 'tank', kindB: 'cruiser', accentA: '#ffb020', accentB: '#8eb6ff', unit: 'cells', noun: 'power cells' },
+  { a: 'Scout Wing', b: 'Vanguard Frame', kindA: 'jet', kindB: 'mech', accentA: '#d7b4ff', accentB: '#7ee0ff', unit: 'plates', noun: 'armour plates' },
+  { a: 'Pulse Node', b: 'Siege Core', kindA: 'drone', kindB: 'tank', accentA: '#7af0ff', accentB: '#ff7a45', unit: 'MW', noun: 'power' }
+];
+
+const FLAVORS = [
+  { id: 'mw', unit: 'MW', noun: 'power', minU: 40, maxU: 280 },
+  { id: 'cm', unit: 'cm', noun: 'length', minU: 30, maxU: 150 },
+  { id: 'cells', unit: 'cells', noun: 'power cells', minU: 16, maxU: 120 },
+  { id: 'marks', unit: 'marks', noun: 'marks', minU: 16, maxU: 80 }
+];
+
+const DIFFS = [
+  { id: 'easy', label: 'EASY', rank: 'Cadet Engineer', blurb: '3-machine more / less comparisons and equalizing transfers.' },
+  { id: 'medium', label: 'MEDIUM', rank: 'Systems Specialist', blurb: 'Times as many, plus a more-than or fewer-than block.' },
+  { id: 'hard', label: 'HARD', rank: 'Tactical Commander', blurb: 'Internal transfers. The total never leaves the hangar.' },
+  { id: 'extreme', label: 'EXTREME', rank: 'Supreme Architect', blurb: 'Multi-unit comparisons, transfers, and a combo reactor timer.' }
+];
+
+const REDUCE = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d', { alpha: false });
+const live = document.getElementById('live');
+
+const view = { dpr: 1, scale: 1, ox: 0, oy: 0 };
+const keysDown = new Set();
+const keyEdge = new Set();
+let pointer = { x: 0, y: 0, inside: false };
+let clickEdge = null;
+const padPrev = [{}, {}, {}];
+const padEdge = [null, null, null];
+
+const G = {
+  scene: 'title',
+  time: 0,
+  playersN: 1,
+  mode: 'solo',
+  difficulty: 'easy',
+  muted: false,
+  bestSolo: readBest(BEST_SOLO),
+  bestCoop: readBest(BEST_COOP),
+  history: [],
+  focus: { row: 0, col: 0 },
+  note: 'Arrows move the selector. Enter confirms. Click any control.',
+  round: 1,
+  score: 0,
+  shields: 5,
+  shieldsMax: 5,
+  combo: 0,
+  bestCombo: 0,
+  clean: true,
+  correctSteps: 0,
+  wrongSteps: 0,
+  puzzle: null,
+  step: 1,
+  options1: [],
+  options2: [],
+  cursor: 0,
+  hover: -1,
+  hoverStep: 0,
+  gate: 0,
+  after: '',
+  tip: '',
+  tipColor: COL.dim,
+  timer: 90,
+  timerMax: 90,
+  timerOn: false,
+  particles: [],
+  floaters: [],
+  charge: 0,
+  surge: 0,
+  shake: 0,
+  flash: 0,
+  pilots: [0, 1],
+  duelists: [],
+  winner: -1,
+  overReason: '',
+  stats: null,
+  badFlash: null,
+  audioReady: false
+};
+
+let fatal = '';
+
+function readBest(key) {
+  try { return Number(window.localStorage.getItem(key)) || 0; }
+  catch (e) { return 0; }
+}
+function writeBest(key, value) {
+  try { window.localStorage.setItem(key, String(value)); }
+  catch (e) { /* private mode */ }
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) {
+  if (b < a) { const t = a; a = b; b = t; }
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+function gcd(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  while (b) { const t = a % b; a = b; b = t; }
+  return a || 1;
+}
+function fmt(n) {
+  const v = Math.round(n);
+  const s = String(Math.abs(v));
+  const withCommas = s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (v < 0 ? '-' : '') + withCommas;
+}
+function isInt(n) { return typeof n === 'number' && Number.isInteger(n); }
+function hexAlpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+function modeOk(mode) {
+  if (mode === 'solo') return G.playersN === 1;
+  return G.playersN >= 2;
+}
+function fixMode() {
+  if (G.playersN === 1) G.mode = 'solo';
+  else if (G.mode === 'solo') G.mode = 'coop';
+}
+
+function announce(text) {
+  if (!live) return;
+  live.textContent = '';
+  window.setTimeout(function () { if (live) live.textContent = text; }, 30);
+}
+
+/* ---------------- audio ---------------- */
+
+const audio = {
+  ctx: null,
+  master: null,
+  nextAt: 0,
+  step: 0,
+  noise: null,
+  ensure() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = G.muted ? 0 : 0.22;
+    this.master.connect(this.ctx.destination);
+    const seconds = 1;
+    const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate * seconds, this.ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    this.noise = buffer;
+    G.audioReady = true;
+  },
+  resume() {
+    this.ensure();
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  setMuted(m) {
+    G.muted = m;
+    if (this.master) this.master.gain.value = m ? 0 : 0.22;
+  },
+  tone(freq, dur, type, vol, delay) {
+    if (!this.ctx || G.muted || !freq) return;
+    const t = this.ctx.currentTime + (delay || 0);
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g);
+    g.connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  },
+  sweep(a, b, dur, vol) {
+    if (!this.ctx || G.muted) return;
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(a, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(40, b), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g);
+    g.connect(this.master);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  },
+  burst(dur, vol, freq) {
+    if (!this.ctx || G.muted || !this.noise) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = freq || 1400;
+    const g = this.ctx.createGain();
+    const t = this.ctx.currentTime;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filter);
+    filter.connect(g);
+    g.connect(this.master);
+    src.start(t);
+    src.stop(t + dur);
+  },
+  tickMusic() {
+    if (!this.ctx || G.muted) return;
+    const pattern = [
+      [110, 'square', 0.04, 0.15],
+      null,
+      [220, 'square', 0.028, 0.08],
+      [277.18, 'triangle', 0.03, 0.09],
+      [164.81, 'square', 0.035, 0.14],
+      null,
+      [329.63, 'square', 0.024, 0.08],
+      [220, 'triangle', 0.028, 0.1],
+      [98, 'square', 0.042, 0.16],
+      null,
+      [246.94, 'square', 0.026, 0.08],
+      [311.13, 'triangle', 0.028, 0.09],
+      [196, 'square', 0.034, 0.14],
+      null,
+      [392, 'square', 0.02, 0.07],
+      [164.81, 'triangle', 0.026, 0.1]
+    ];
+    const horizon = this.ctx.currentTime + 0.28;
+    if (!this.nextAt || this.nextAt < this.ctx.currentTime - 0.05) this.nextAt = this.ctx.currentTime + 0.05;
+    while (this.nextAt < horizon) {
+      const note = pattern[this.step % pattern.length];
+      if (note && G.scene !== 'title') this.tone(note[0], note[3], note[1], note[2], this.nextAt - this.ctx.currentTime);
+      else if (note && G.scene === 'title' && this.step % 4 === 0) this.tone(note[0] * 0.5, 0.18, 'triangle', 0.02, this.nextAt - this.ctx.currentTime);
+      this.nextAt += 0.18;
+      this.step = (this.step + 1) % pattern.length;
+    }
+  }
+};
+
+const sfx = {
+  unlock() { audio.resume(); },
+  tick() { audio.tone(740, 0.04, 'square', 0.03); },
+  snap() {
+    audio.tone(520, 0.07, 'square', 0.06);
+    audio.tone(780, 0.09, 'triangle', 0.05, 0.05);
+  },
+  charge() { audio.sweep(180, 620, 0.28, 0.05); },
+  blast() {
+    audio.burst(0.18, 0.08, 900);
+    audio.tone(196, 0.2, 'sawtooth', 0.05);
+    audio.tone(784, 0.16, 'square', 0.04, 0.02);
+  },
+  buzz() {
+    audio.tone(92, 0.16, 'sawtooth', 0.06);
+    audio.tone(70, 0.18, 'square', 0.04, 0.01);
+    audio.burst(0.12, 0.05, 220);
+  },
+  fanfare() {
+    [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+      audio.tone(f, 0.22, 'square', 0.05, i * 0.09);
+      audio.tone(f * 0.5, 0.22, 'triangle', 0.03, i * 0.09);
+    });
+  }
+};
+
+function toggleMute() {
+  sfx.unlock();
+  audio.setMuted(!G.muted);
+}
+
+/* ---------------- input ---------------- */
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.dpr = dpr;
+  view.scale = Math.min(window.innerWidth / VW, window.innerHeight / VH);
+  view.ox = (window.innerWidth - VW * view.scale) / 2;
+  view.oy = (window.innerHeight - VH * view.scale) / 2;
+  canvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function toWorld(cx, cy) {
+  return {
+    x: (cx - view.ox) / view.scale,
+    y: (cy - view.oy) / view.scale
+  };
+}
+function hit(r, p) {
+  return !!r && !!p && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+function muteRect() { return { x: 1186, y: 10, w: 78, h: 32 }; }
+
+window.addEventListener('resize', resize);
+window.addEventListener('keydown', function (e) {
+  if (e.repeat) return;
+  keysDown.add(e.code);
+  keyEdge.add(e.code);
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(e.code) >= 0) e.preventDefault();
+  sfx.unlock();
+  if (e.code === 'KeyM') toggleMute();
+});
+window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+canvas.addEventListener('pointerdown', function (e) {
+  const p = toWorld(e.clientX, e.clientY);
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+  clickEdge = { x: p.x, y: p.y };
+  sfx.unlock();
+});
+canvas.addEventListener('pointermove', function (e) {
+  const p = toWorld(e.clientX, e.clientY);
+  pointer.x = p.x; pointer.y = p.y;
+  pointer.inside = p.x >= 0 && p.y >= 0 && p.x <= VW && p.y <= VH;
+});
+canvas.addEventListener('pointerleave', function () { pointer.inside = false; });
+canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+document.addEventListener('visibilitychange', function () { G.hidden = document.hidden; });
+
+function pollPads() {
+  const list = (navigator.getGamepads && navigator.getGamepads()) || [];
+  for (let i = 0; i < 3; i++) {
+    const p = list[i];
+    padEdge[i] = null;
+    if (!p) { padPrev[i] = {}; continue; }
+    const b = p.buttons || [];
+    const ax = p.axes || [];
+    const pressed = function (idx) { return !!(b[idx] && (b[idx].pressed || b[idx].value > 0.5)); };
+    const now = {
+      left: pressed(14) || (ax[0] || 0) < -0.55,
+      right: pressed(15) || (ax[0] || 0) > 0.55,
+      up: pressed(12) || (ax[1] || 0) < -0.55,
+      down: pressed(13) || (ax[1] || 0) > 0.55,
+      A: pressed(0)
+    };
+    const prev = padPrev[i] || {};
+    padEdge[i] = {
+      left: now.left && !prev.left,
+      right: now.right && !prev.right,
+      up: now.up && !prev.up,
+      down: now.down && !prev.down,
+      A: now.A && !prev.A
+    };
+    if (now.A || now.left || now.right || now.up || now.down) sfx.unlock();
+    padPrev[i] = now;
+  }
+}
+
+/* ---------------- language ---------------- */
+
+function compareClause(flavor, name, amount, other, dir) {
+  const n = fmt(amount);
+  if (flavor.id === 'cm') {
+    return name + ' is ' + n + ' cm ' + (dir === 'more' ? 'longer' : 'shorter') + ' than ' + other;
+  }
+  if (flavor.id === 'marks') {
+    return name + ' scores ' + n + ' ' + (dir === 'more' ? 'more' : 'fewer') + ' marks than ' + other;
+  }
+  if (flavor.id === 'cells') {
+    return name + ' has ' + n + ' ' + (dir === 'more' ? 'more' : 'fewer') + ' power cells than ' + other;
+  }
+  return name + ' has ' + n + ' MW ' + (dir === 'more' ? 'more' : 'less') + ' power than ' + other;
+}
+function totalClause(flavor, total, subject) {
+  const n = fmt(total);
+  const who = subject || 'They';
+  if (flavor.id === 'cm') return who + ' have a total length of ' + n + ' cm';
+  if (flavor.id === 'marks') return who + ' have ' + n + ' marks altogether';
+  if (flavor.id === 'cells') return who + ' have ' + n + ' power cells altogether';
+  return who + ' have ' + n + ' MW of power altogether';
+}
+function holds(flavor, name, amount) {
+  const n = fmt(amount);
+  if (flavor.id === 'cm') return name + ' is ' + n + ' cm long';
+  if (flavor.id === 'marks') return name + ' has ' + n + ' marks';
+  if (flavor.id === 'cells') return name + ' has ' + n + ' power cells';
+  return name + ' has ' + n + ' MW';
+}
+function findMachine(flavor, name) {
+  if (flavor.id === 'cm') return 'Find ' + name + "'s length";
+  if (flavor.id === 'marks') return 'Find ' + name + "'s marks";
+  if (flavor.id === 'cells') return 'Find how many power cells ' + name + ' has';
+  return 'Find ' + name + "'s power";
+}
+function endMultipleClause(big, small, flavor, mult) {
+  const word = mult === 2 ? 'twice' : (mult + ' times');
+  if (flavor.id === 'cm') return big + ' is ' + word + ' as long as ' + small;
+  if (flavor.id === 'mw') return big + ' has ' + word + ' as much power as ' + small;
+  if (flavor.id === 'marks') return big + ' has ' + word + ' as many marks as ' + small;
+  return big + ' has ' + word + ' as many power cells as ' + small;
+}
+function endGapClause(large, small, flavor, gap) {
+  const n = fmt(gap);
+  if (flavor.id === 'cm') return large + ' is ' + n + ' cm longer than ' + small;
+  if (flavor.id === 'mw') return large + ' has ' + n + ' MW more power than ' + small;
+  if (flavor.id === 'marks') return large + ' scores ' + n + ' more marks than ' + small;
+  return large + ' has ' + n + ' more power cells than ' + small;
+}
+function unitWord(flavor, n) {
+  if (flavor.id === 'cells') return n === 1 ? 'power cell' : 'power cells';
+  if (flavor.id === 'marks') return n === 1 ? 'mark' : 'marks';
+  if (flavor.id === 'plates') return n === 1 ? 'plate' : 'plates';
+  return flavor.unit;
+}
+function pickMachines(n) {
+  return shuffle(ROSTER).slice(0, n).map(function (m) {
+    return { name: m.name, kind: m.kind, accent: m.accent };
+  });
+}
+
+/* ---------------- generators ---------------- */
+
+function rollAdd3() {
+  const flavor = pick(FLAVORS);
+  const machines = pickMachines(3);
+  let e1 = 0;
+  let e2 = 0;
+  for (let i = 0; i < 40; i++) {
+    if (flavor.id === 'mw') {
+      e1 = rand(3, 18) * 10;
+      e2 = rand(3, 18) * 10;
+    } else if (flavor.id === 'marks') {
+      e1 = rand(4, 18);
+      e2 = rand(4, 18);
+    } else {
+      e1 = rand(2, 12) * (Math.random() < 0.5 ? 2 : 5);
+      e2 = rand(2, 12) * (Math.random() < 0.5 ? 2 : 5);
+    }
+    if (e1 !== e2 && e1 >= 4 && e2 >= 4 && (e1 + e2) % 3 === 0) break;
+  }
+  if ((e1 + e2) % 3 !== 0 || e1 === e2) { e1 = 30; e2 = 60; }
+  let unit = flavor.id === 'mw' ? rand(8, 36) * 5 : rand(flavor.minU, flavor.maxU);
+  const template = rand(0, 2);
+  if (template === 2 && e2 < e1) { const s = e1; e1 = e2; e2 = s; }
+  const ask = rand(1, 2);
+  return {
+    kind: 'add3', flavor: flavor, machines: machines, unit: unit,
+    extras: [0, e1, e2], ask: ask, template: template
+  };
+}
+
+function rollEqualize() {
+  const timesMode = Math.random() < 0.42;
+  const flavor = timesMode ? pick([FLAVORS[0], FLAVORS[2]]) : pick(FLAVORS);
+  const machines = pickMachines(2);
+  if (!timesMode) {
+    let half;
+    let low;
+    if (flavor.id === 'mw' && Math.random() < 0.55) {
+      half = rand(12, 160) * 10;
+      low = rand(20, 220) * 10;
+    } else if (flavor.id === 'cm') {
+      half = rand(6, 36);
+      low = rand(18, 90);
+    } else if (flavor.id === 'marks') {
+      half = rand(4, 16);
+      low = rand(8, 40);
+    } else {
+      half = rand(4, 40) * 2;
+      low = rand(6, 50) * 2;
+    }
+    return { kind: 'equalize', flavor: flavor, machines: machines, high: low + half * 2, low: low, times: 0 };
+  }
+  const mult = Math.random() < 0.7 ? 2 : 3;
+  let low;
+  if (flavor.id === 'mw') low = rand(12, 90) * 10;
+  else if (flavor.id === 'cells') low = rand(8, 40) * 2;
+  else low = rand(8, 30) * 2;
+  if (mult === 2 && low % 2 !== 0) low += 1;
+  return { kind: 'equalize', flavor: flavor, machines: machines, high: low * mult, low: low, times: mult };
+}
+
+function rollRatio() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const flavor = pick([FLAVORS[0], FLAVORS[2], FLAVORS[3]]);
+    const machines = pickMachines(2);
+    const mult = pick([2, 3, 4]);
+    let u;
+    if (flavor.id === 'mw') u = rand(4, 24) * pick([5, 10, 20]);
+    else if (flavor.id === 'marks') u = rand(6, 24);
+    else u = rand(5, 22) * pick([1, 2, 5]);
+    const bigIsA = Math.random() < 0.5;
+    const a1 = bigIsA ? mult * u : u;
+    const b1 = bigIsA ? u : mult * u;
+    let receiver = Math.random() < 0.5 ? 0 : 1;
+    let recvEnd = receiver === 0 ? a1 : b1;
+    if (recvEnd < 4) receiver = 1 - receiver;
+    recvEnd = receiver === 0 ? a1 : b1;
+    if (recvEnd < 4) continue;
+    const tMax = recvEnd - 1;
+    const tMin = Math.min(tMax, Math.max(2, Math.floor(recvEnd * 0.18)));
+    let t = rand(tMin, tMax);
+    if (t > 12) t = Math.round(t / 2) * 2;
+    t = clamp(t, 1, tMax);
+    const a0 = receiver === 0 ? a1 - t : a1 + t;
+    const b0 = receiver === 1 ? b1 - t : b1 + t;
+    if (a0 <= 0 || b0 <= 0 || t <= 0) continue;
+    const smaller = a1 < b1 ? 'A' : 'B';
+    const larger = a1 > b1 ? 'A' : 'B';
+    const ask = pick(['transfer', 'transfer', smaller, larger]);
+    const total = a0 + b0;
+    const step2 = ask === 'transfer' ? t : (ask === 'A' ? a1 : b1);
+    if (step2 === total || step2 <= 0) continue;
+    return {
+      kind: 'ratio', flavor: flavor, machines: machines,
+      a0: a0, b0: b0, a1: a1, b1: b1, mult: mult, ask: ask,
+      donor: receiver === 0 ? 1 : 0, t: t, u: u
+    };
+  }
+  return null;
+}
+
+function rollDiff() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const flavor = pick([FLAVORS[0], FLAVORS[2], FLAVORS[3], FLAVORS[1]]);
+    const machines = pickMachines(2);
+    let gap;
+    let small;
+    if (flavor.id === 'mw') {
+      gap = rand(3, 18) * pick([5, 10]);
+      small = rand(4, 24) * pick([2, 5, 10]);
+    } else if (flavor.id === 'cm') {
+      gap = rand(6, 30);
+      small = rand(8, 40);
+    } else if (flavor.id === 'marks') {
+      gap = rand(4, 20);
+      small = rand(6, 24);
+    } else {
+      gap = rand(3, 14) * 2;
+      small = rand(4, 20) * 2;
+    }
+    const large = small + gap;
+    const bigIsA = Math.random() < 0.5;
+    const a1 = bigIsA ? large : small;
+    const b1 = bigIsA ? small : large;
+    let receiver = Math.random() < 0.5 ? 0 : 1;
+    let recvEnd = receiver === 0 ? a1 : b1;
+    if (recvEnd < 3) receiver = 1 - receiver;
+    recvEnd = receiver === 0 ? a1 : b1;
+    if (recvEnd < 3) continue;
+    const t = rand(1, recvEnd - 1);
+    const a0 = receiver === 0 ? a1 - t : a1 + t;
+    const b0 = receiver === 1 ? b1 - t : b1 + t;
+    if (a0 <= 0 || b0 <= 0) continue;
+    const smaller = a1 < b1 ? 'A' : 'B';
+    const larger = a1 > b1 ? 'A' : 'B';
+    const ask = pick([smaller, smaller, 'transfer', larger]);
+    const total = a0 + b0;
+    const step2 = ask === 'transfer' ? t : (ask === 'A' ? a1 : b1);
+    if (step2 === total || step2 <= 0) continue;
+    return {
+      kind: 'diffend', flavor: flavor, machines: machines,
+      a0: a0, b0: b0, a1: a1, b1: b1, gap: gap, ask: ask,
+      donor: receiver === 0 ? 1 : 0, t: t, small: small, large: large
+    };
+  }
+  return null;
+}
+
+function rollGroup() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const pair = pick(PAIRS);
+    let nA = rand(2, 5);
+    let nB = rand(2, 6);
+    if (nA === nB) nB = Math.min(6, nB + 1);
+    const fewer = Math.random() < 0.5;
+    const N = nA + nB;
+    let diff;
+    if (Math.random() < 0.6) {
+      const step = N / gcd(nB, N);
+      diff = step * rand(1, 2);
+    } else {
+      diff = pick([3, 4, 5, 6, 8, 10, 12]);
+    }
+    const base = rand(8, 34);
+    const A = fewer ? base + diff : base;
+    const B = fewer ? base : base + diff;
+    const total = nA * A + nB * B;
+    if (total < 40 || total > 1600) continue;
+    if (A <= 0 || B <= 0 || A === B) continue;
+    let ask = pick(['B', 'B', 'sumB', 'sumA']);
+    let step2 = ask === 'B' ? B : (ask === 'sumB' ? nB * B : nA * A);
+    if (step2 === A) ask = 'sumB';
+    step2 = ask === 'B' ? B : (ask === 'sumB' ? nB * B : nA * A);
+    if (step2 === A || step2 <= 0) continue;
+    const flavor = {
+      id: pair.unit === 'MW' ? 'mw' : (pair.unit === 'cells' ? 'cells' : 'plates'),
+      unit: pair.unit,
+      noun: pair.noun
+    };
+    return {
+      kind: 'group', flavor: flavor, pair: pair, nA: nA, nB: nB,
+      A: A, B: B, diff: diff, fewer: fewer, ask: ask
+    };
+  }
+  return null;
+}
+
+function rollTimes() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const flavor = pick(FLAVORS);
+    const three = Math.random() < 0.64;
+    const fewer = Math.random() < 0.46;
+    const k = pick([2, 3, 4, 5]);
+    const machines = pickMachines(three ? 3 : 2);
+    const mults = three ? [1, k, k] : [1, k];
+    const extraIndex = three ? 2 : 1;
+    const givenLast = !three && Math.random() < 0.48;
+    const sumMult = mults.reduce(function (a, b) { return a + b; }, 0);
+    const divisor = givenLast ? k : sumMult;
+    const scale = flavor.id === 'mw' ? pick([5, 10]) : (flavor.id === 'cells' ? pick([1, 2]) : 1);
+    const blocks = rand(1, flavor.id === 'mw' ? 3 : 2);
+    const M = blocks * scale;
+    const extraAmt = divisor * M;
+    const signed = fewer ? -extraAmt : extraAmt;
+    const host = mults[extraIndex];
+    let unit = Math.max(
+      fewer ? (2 * M + rand(3, 12)) : (flavor.id === 'mw' ? rand(6, 18) * 5 : rand(8, 36)),
+      Math.ceil((extraAmt + 1) / host)
+    );
+    if (flavor.id === 'mw') unit = Math.max(unit, Math.ceil(unit / 5) * 5);
+    if (!fewer && flavor.id === 'mw') unit = rand(6, 22) * 5;
+    if (!fewer && flavor.id !== 'mw') unit = rand(8, 40);
+    const extras = mults.map(function (_, i) { return i === extraIndex ? signed : 0; });
+    const values = mults.map(function (m, i) { return m * unit + extras[i]; });
+    if (values.some(function (v) { return !isInt(v) || v <= 0; })) continue;
+    if (values[extraIndex] < Math.max(8, Math.round(host * unit * 0.2))) continue;
+    const sum = values.reduce(function (a, b) { return a + b; }, 0);
+    if (sum > 9000 || sum < 20) continue;
+    const trapDelta = 2 * M;
+    if (fewer && unit - trapDelta <= 0) continue;
+    let ask = 'machine';
+    let askIndex = extraIndex;
+    if (givenLast) ask = 'total';
+    else if (three && Math.random() < 0.5) askIndex = 1;
+    if (ask === 'machine' && values[askIndex] === unit) askIndex = extraIndex;
+    if (ask === 'machine' && values[askIndex] === unit) continue;
+    if (!givenLast && three && Math.random() < 0.2) {
+      ask = 'pair';
+      if (values[0] + values[1] === unit) continue;
+    }
+    return {
+      kind: 'times', flavor: flavor, machines: machines, mults: mults, extras: extras,
+      extraAmt: extraAmt, fewer: fewer, extraIndex: extraIndex, unit: unit,
+      given: givenLast ? 'last' : 'total', ask: ask, askIndex: askIndex, k: k, M: M
+    };
+  }
+  return null;
+}
+
+function rollRaw(diff) {
+  if (diff === 'easy') return Math.random() < 0.58 ? rollAdd3() : rollEqualize();
+  if (diff === 'medium') return rollTimes();
+  if (diff === 'hard') return Math.random() < 0.52 ? rollRatio() : rollDiff();
+  const r = Math.random();
+  if (r < 0.36) return rollGroup();
+  if (r < 0.58) return rollRatio();
+  if (r < 0.74) return rollDiff();
+  if (r < 0.9) return rollTimes();
+  return rollAdd3();
+}
+
+function trap(value, tip) { return { value: value, tip: tip }; }
+
+function unitTrap(unit, unitName, flavor, missionLine) {
+  return trap(unit, fmt(unit) + ' ' + flavor.unit + ' is 1 unit (' + unitName + ')! Check the mission prompt — ' + missionLine);
+}
+
+function equationError(text) {
+  if (!text) return '';
+  let src = String(text).replace(/,/g, '');
+  const times = /(\d+)\s×\s(\d+)(?:\s([+−-])\s(\d+))?\s=\s(\d+)/g;
+  let match;
+  while ((match = times.exec(src))) {
+    let value = Number(match[1]) * Number(match[2]);
+    if (match[3]) value = match[3] === '+' ? value + Number(match[4]) : value - Number(match[4]);
+    if (value !== Number(match[5])) return match[0];
+  }
+  src = src.replace(/(\d+)\s×\s(\d+)(?:\s([+−-])\s(\d+))?\s=\s(\d+)/g, ' ');
+  const rest = [
+    [/(\d+)\s\+\s(\d+)\s=\s(\d+)/g, function (a, b, c) { return a + b === c; }],
+    [/(\d+)\s[−-]\s(\d+)\s=\s(\d+)/g, function (a, b, c) { return a - b === c; }],
+    [/(\d+)\s÷\s(\d+)\s=\s(\d+)/g, function (a, b, c) { return b !== 0 && a / b === c; }]
+  ];
+  for (let i = 0; i < rest.length; i++) {
+    const re = rest[i][0];
+    const ok = rest[i][1];
+    re.lastIndex = 0;
+    while ((match = re.exec(src))) {
+      if (!ok(Number(match[1]), Number(match[2]), Number(match[3]))) return match[0];
+    }
+  }
+  return '';
+}
+
+function compose(raw) {
+  if (!raw) return null;
+  if (raw.kind === 'add3') return composeAdd3(raw);
+  if (raw.kind === 'times') return composeTimes(raw);
+  if (raw.kind === 'equalize') return composeEqualize(raw);
+  if (raw.kind === 'ratio') return composeRatio(raw);
+  if (raw.kind === 'diffend') return composeDiff(raw);
+  if (raw.kind === 'group') return composeGroup(raw);
+  return null;
+}
+
+function basePuzzle(raw, extra) {
+  const puzzle = {
+    raw: raw,
+    construct: { add3: 1, times: 2, equalize: 3, ratio: 4, diffend: 4, group: 5 }[raw.kind],
+    flavor: raw.flavor,
+    machines: extra.machines,
+    glow: extra.glow,
+    directive: extra.directive,
+    missionBadge: extra.missionBadge,
+    step1: extra.step1,
+    step2: extra.step2,
+    bars: extra.bars,
+    strategy: extra.strategy,
+    sig: extra.sig
+  };
+  return puzzle;
+}
+
+function composeAdd3(raw) {
+  const f = raw.flavor;
+  const names = raw.machines.map(function (m) { return m.name; });
+  const values = raw.extras.map(function (e) { return raw.unit + e; });
+  const total = values[0] + values[1] + values[2];
+  const e1 = raw.extras[1];
+  const e2 = raw.extras[2];
+  const ask = raw.ask;
+  let sentence;
+  if (raw.template === 1) {
+    if (f.id === 'cm') sentence = names[0] + ' is ' + fmt(e1) + ' cm shorter than ' + names[1] + ' and ' + fmt(e2) + ' cm shorter than ' + names[2];
+    else if (f.id === 'marks') sentence = names[0] + ' scores ' + fmt(e1) + ' fewer marks than ' + names[1] + ' and ' + fmt(e2) + ' fewer marks than ' + names[2];
+    else if (f.id === 'cells') sentence = names[0] + ' has ' + fmt(e1) + ' fewer power cells than ' + names[1] + ' and ' + fmt(e2) + ' fewer power cells than ' + names[2];
+    else sentence = names[0] + ' has ' + fmt(e1) + ' MW less power than ' + names[1] + ' and ' + fmt(e2) + ' MW less power than ' + names[2];
+  } else if (raw.template === 2) {
+    const mid = e2 - e1;
+    sentence = compareClause(f, names[1], e1, names[0], 'more') + '. ' + compareClause(f, names[2], mid, names[1], 'more');
+  } else {
+    sentence = compareClause(f, names[1], e1, names[0], 'more') + '. ' + compareClause(f, names[2], e2, names[0], 'more');
+  }
+  const directive = sentence + '. ' + totalClause(f, total) + '. ' + findMachine(f, names[ask]) + '.';
+  const excess = e1 + e2;
+  const coach1 = 'Extra blocks ' + fmt(e1) + ' + ' + fmt(e2) + ' = ' + fmt(excess) + '. ' + fmt(total) + ' − ' + fmt(excess) + ' = ' + fmt(3 * raw.unit) + '. ' + fmt(3 * raw.unit) + ' ÷ 3 = ' + fmt(raw.unit) + '.';
+  const coach2 = names[ask] + ' = 1 unit + ' + fmt(raw.extras[ask]) + ' = ' + fmt(raw.unit) + ' + ' + fmt(raw.extras[ask]) + ' = ' + fmt(values[ask]) + ' ' + f.unit + '.';
+  const avg = total / 3;
+  const traps1 = [
+    trap(excess, fmt(excess) + ' is only the extra blocks (' + fmt(e1) + ' + ' + fmt(e2) + '). Subtract them from the total, then divide by 3.'),
+    trap(3 * raw.unit, fmt(3 * raw.unit) + ' is the 3 equal units together. Divide by 3 to get 1 unit.'),
+    trap(avg, 'Dividing the whole total by 3 leaves the extras inside. Remove ' + fmt(e1) + ' + ' + fmt(e2) + ' first.')
+  ];
+  const other = ask === 1 ? 2 : 1;
+  const traps2 = [
+    unitTrap(raw.unit, names[0], f, names[ask] + ' has 1 unit + ' + fmt(raw.extras[ask]) + ' (' + fmt(raw.unit) + ' + ' + fmt(raw.extras[ask]) + ' = ' + fmt(values[ask]) + ' ' + f.unit + ').'),
+    trap(values[other], 'That is ' + names[other] + '. The mission asks for ' + names[ask] + '.'),
+    trap(raw.unit + e1 + e2, 'Both extras were stacked on one bar. ' + names[ask] + ' only has its own extra of ' + fmt(raw.extras[ask]) + '.')
+  ];
+  return basePuzzle(raw, {
+    machines: raw.machines.map(function (m, i) { return { name: m.name, kind: m.kind, accent: m.accent, value: values[i] }; }),
+    glow: [ask],
+    directive: directive,
+    missionBadge: 'FIND MACHINE POWER',
+    strategy: 'Subtract every extra block from the total, then divide by 3 equal bars.',
+    step1: {
+      badge: 'FIND 1 UNIT',
+      subtitle: 'Enter 1 unit — the equal bar after the extras are removed.',
+      answer: raw.unit,
+      coach: coach1,
+      traps: traps1,
+      fallbackTip: 'Recount the equal bars. 1 unit is the total after the extras are removed, divided by 3.'
+    },
+    step2: {
+      badge: 'FIND MACHINE POWER',
+      subtitle: 'Enter ' + names[ask] + "'s " + f.noun + '.',
+      answer: values[ask],
+      coach: coach2,
+      traps: traps2,
+      fallbackTip: 'Use the 1-unit value, then add only the extra that belongs to ' + names[ask] + '.'
+    },
+    bars: {
+      mode: 'compare',
+      unitValue: raw.unit,
+      rows: names.map(function (name, i) {
+        return {
+          label: name,
+          accent: raw.machines[i].accent,
+          segments: raw.extras[i] > 0 ? [{ t: 'unit', n: 1 }, { t: 'more', v: raw.extras[i] }] : [{ t: 'unit', n: 1 }]
+        };
+      }),
+      footnote: 'Each gold block is extra. Every equal block is 1 unit.'
+    },
+    sig: ['add3', names.join('+'), raw.unit, e1, e2, ask, raw.template].join(':')
+  });
+}
+
+function composeTimes(raw) {
+  const f = raw.flavor;
+  const names = raw.machines.map(function (m) { return m.name; });
+  const values = raw.mults.map(function (m, i) { return m * raw.unit + raw.extras[i]; });
+  const sum = values.reduce(function (a, b) { return a + b; }, 0);
+  const sumMult = raw.mults.reduce(function (a, b) { return a + b; }, 0);
+  const host = names[raw.extraIndex];
+  const baseName = names[0];
+  let relation;
+  if (names.length === 3) {
+    relation = endMultipleClause(names[1], names[0], f, raw.k) + '. ' + (raw.fewer
+      ? compareClause(f, names[2], raw.extraAmt, names[1], 'less')
+      : compareClause(f, names[2], raw.extraAmt, names[1], 'more'));
+  } else if (raw.fewer) {
+    relation = endMultipleClause(host, baseName, f, raw.k) + ', but ' + fmt(raw.extraAmt) + ' ' + f.unit + ' fewer than that full amount';
+  } else if (f.id === 'cm') {
+    relation = host + ' is ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as long as ' + baseName + ', and ' + fmt(raw.extraAmt) + ' cm longer still';
+  } else if (f.id === 'mw') {
+    relation = host + ' has ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as much power as ' + baseName + ', and ' + fmt(raw.extraAmt) + ' MW more';
+  } else {
+    relation = host + ' has ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as many ' + f.noun + ' as ' + baseName + ', and ' + fmt(raw.extraAmt) + ' more';
+  }
+  let givenSentence;
+  let coach1;
+  if (raw.given === 'last') {
+    givenSentence = holds(f, host, values[raw.extraIndex]);
+    if (raw.fewer) {
+      const filled = values[raw.extraIndex] + raw.extraAmt;
+      coach1 = host + ' is ' + fmt(raw.extraAmt) + ' fewer than ' + raw.k + ' units. ' + fmt(values[raw.extraIndex]) + ' + ' + fmt(raw.extraAmt) + ' = ' + fmt(filled) + '. ' + fmt(filled) + ' ÷ ' + raw.k + ' = ' + fmt(raw.unit) + '.';
+    } else {
+      const bare = values[raw.extraIndex] - raw.extraAmt;
+      coach1 = fmt(values[raw.extraIndex]) + ' − ' + fmt(raw.extraAmt) + ' = ' + fmt(bare) + '. ' + fmt(bare) + ' ÷ ' + raw.k + ' = ' + fmt(raw.unit) + '.';
+    }
+  } else {
+    givenSentence = totalClause(f, sum);
+    if (raw.fewer) {
+      const filled = sum + raw.extraAmt;
+      coach1 = 'The short block is ' + fmt(raw.extraAmt) + '. Add it back: ' + fmt(sum) + ' + ' + fmt(raw.extraAmt) + ' = ' + fmt(filled) + '. ' + fmt(filled) + ' ÷ ' + sumMult + ' = ' + fmt(raw.unit) + '.';
+    } else {
+      const bare = sum - raw.extraAmt;
+      coach1 = 'Count ' + sumMult + ' equal units. Subtract the extra ' + fmt(raw.extraAmt) + ': ' + fmt(sum) + ' − ' + fmt(raw.extraAmt) + ' = ' + fmt(bare) + '. ' + fmt(bare) + ' ÷ ' + sumMult + ' = ' + fmt(raw.unit) + '.';
+    }
+  }
+  let answer2;
+  let badge = 'FIND MACHINE POWER';
+  let subtitle2;
+  let coach2;
+  let glow = [raw.askIndex || raw.extraIndex];
+  if (raw.ask === 'total') {
+    answer2 = sum;
+    badge = 'FIND TOTAL POWER';
+    subtitle2 = 'Enter the total of every machine.';
+    coach2 = 'Add every machine: ' + values.map(fmt).join(' + ') + ' = ' + fmt(sum) + ' ' + f.unit + '.';
+    glow = names.map(function (_, i) { return i; });
+  } else if (raw.ask === 'pair') {
+    answer2 = values[0] + values[1];
+    badge = 'FIND TOTAL POWER';
+    subtitle2 = 'Enter the combined ' + f.noun + ' of ' + names[0] + ' and ' + names[1] + '.';
+    coach2 = names[0] + ' + ' + names[1] + ' = ' + fmt(values[0]) + ' + ' + fmt(values[1]) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    glow = [0, 1];
+  } else {
+    const i = raw.askIndex;
+    answer2 = values[i];
+    subtitle2 = 'Enter ' + names[i] + "'s " + f.noun + '.';
+    const extra = raw.extras[i];
+    if (extra > 0) coach2 = names[i] + ' = ' + raw.mults[i] + ' × ' + fmt(raw.unit) + ' + ' + fmt(extra) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    else if (extra < 0) coach2 = names[i] + ' = ' + raw.mults[i] + ' × ' + fmt(raw.unit) + ' − ' + fmt(-extra) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    else coach2 = names[i] + ' = ' + raw.mults[i] + ' × ' + fmt(raw.unit) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    glow = [i];
+  }
+  let question;
+  if (raw.ask === 'total') question = 'Find their total ' + (f.id === 'cm' ? 'length' : f.noun);
+  else if (raw.ask === 'pair') question = 'Find the combined ' + f.noun + ' of ' + names[0] + ' and ' + names[1];
+  else question = findMachine(f, names[raw.askIndex]);
+  const directive = relation + '. ' + givenSentence + '. ' + question + '.';
+  const wrongFewer = raw.unit - 2 * raw.M;
+  const wrongMore = raw.unit + 2 * raw.M;
+  const traps1 = [];
+  if (raw.fewer) {
+    traps1.push(trap(wrongFewer, host + ' has ' + fmt(raw.extraAmt) + ' FEWER than a full set of equal units! Add ' + fmt(raw.extraAmt) + ' to the given amount (' + fmt(raw.given === 'last' ? values[raw.extraIndex] : sum) + ' + ' + fmt(raw.extraAmt) + ' = ' + fmt((raw.given === 'last' ? values[raw.extraIndex] : sum) + raw.extraAmt) + ') to complete the equal units before dividing.'));
+  } else {
+    traps1.push(trap(wrongMore, 'The extra block is already inside the given amount. Subtract ' + fmt(raw.extraAmt) + ' before you divide, instead of adding it again.'));
+  }
+  traps1.push(trap(raw.extraAmt, fmt(raw.extraAmt) + ' is the more / fewer block, not 1 unit.'));
+  traps1.push(trap(values[raw.extraIndex], 'That is the whole of ' + host + '. Step 1 asks for 1 equal unit only.'));
+  let missionLine = coach2;
+  if (raw.ask === 'machine' && raw.extras[raw.askIndex] === 0) {
+    const mult = raw.mults[raw.askIndex];
+    missionLine = names[raw.askIndex] + ' has ' + mult + ' unit' + (mult === 1 ? '' : 's') + ' (' + mult + ' × ' + fmt(raw.unit) + ' = ' + fmt(answer2) + ' ' + f.unit + ').';
+  }
+  const traps2 = [
+    unitTrap(raw.unit, baseName, f, missionLine)
+  ];
+  if (raw.ask === 'pair') traps2.push(trap(sum, fmt(sum) + ' is the total of all the machines. The mission asks only for ' + names[0] + ' and ' + names[1] + '.'));
+  if (raw.ask === 'total') traps2.push(trap(values[raw.extraIndex], 'That is only ' + host + '. Add every machine to get the total.'));
+  if (raw.ask === 'machine') {
+    const other = raw.askIndex === 0 ? 1 : 0;
+    traps2.push(trap(values[other], 'That is ' + names[other] + '. Read the mission name again.'));
+  }
+  const rows = names.map(function (name, i) {
+    const segs = [{ t: 'unit', n: raw.mults[i] }];
+    if (raw.extras[i] > 0) segs.push({ t: 'more', v: raw.extras[i] });
+    if (raw.extras[i] < 0) segs.push({ t: 'less', v: -raw.extras[i] });
+    return { label: name, accent: raw.machines[i].accent, segments: segs };
+  });
+  return basePuzzle(raw, {
+    machines: raw.machines.map(function (m, i) { return { name: m.name, kind: m.kind, accent: m.accent, value: values[i] }; }),
+    glow: glow,
+    directive: directive,
+    missionBadge: badge,
+    strategy: raw.fewer
+      ? 'A “fewer” block is missing from the units. Add it back, then divide.'
+      : 'Count every 1-unit block. Subtract the gold “more” block, then divide.',
+    step1: {
+      badge: 'FIND 1 UNIT',
+      subtitle: 'Enter 1 unit (' + baseName + ').',
+      answer: raw.unit,
+      coach: coach1,
+      traps: traps1,
+      fallbackTip: 'Match the mission badge. Step 1 is 1 equal unit, after the more or fewer block is put in its place.'
+    },
+    step2: {
+      badge: badge,
+      subtitle: subtitle2,
+      answer: answer2,
+      coach: coach2,
+      traps: traps2,
+      fallbackTip: 'Scale the 1-unit value up to the machine, pair, or total named in the mission.'
+    },
+    bars: {
+      mode: 'compare',
+      unitValue: raw.unit,
+      rows: rows,
+      footnote: raw.fewer ? 'The hatched block is missing. Add it back before you divide.' : 'Gold is extra power sitting outside the equal units.'
+    },
+    sig: ['times', names.join('+'), raw.unit, raw.mults.join(','), raw.extras.join(','), raw.ask, raw.askIndex, raw.given].join(':')
+  });
+}
+
+function composeEqualize(raw) {
+  const f = raw.flavor;
+  const high = raw.machines[0];
+  const low = raw.machines[1];
+  const diff = raw.high - raw.low;
+  const half = diff / 2;
+  let lead;
+  if (raw.times) {
+    lead = endMultipleClause(high.name, low.name, f, raw.times) + '. ' + holds(f, low.name, raw.low);
+  } else {
+    lead = holds(f, high.name, raw.high) + '. ' + holds(f, low.name, raw.low);
+  }
+  const directive = lead + '. How much must ' + high.name + ' transfer to ' + low.name + ' so both have the same ' + (f.id === 'cm' ? 'length' : f.noun) + '?';
+  const coach1 = (raw.times ? (raw.times + ' × ' + fmt(raw.low) + ' = ' + fmt(raw.high) + '. ') : '') + 'Gap = ' + fmt(raw.high) + ' − ' + fmt(raw.low) + ' = ' + fmt(diff) + '.';
+  const coach2 = 'Transfer half the gap: ' + fmt(diff) + ' ÷ 2 = ' + fmt(half) + ' ' + f.unit + '.';
+  const ending = (raw.high + raw.low) / 2;
+  return basePuzzle(raw, {
+    machines: [
+      { name: high.name, kind: high.kind, accent: high.accent, value: raw.high },
+      { name: low.name, kind: low.kind, accent: low.accent, value: raw.low }
+    ],
+    glow: [0, 1],
+    directive: directive,
+    missionBadge: 'FIND POWER TRANSFERRED',
+    strategy: 'Find the gap first. The transfer is half the gap — the whole gap would swap who has more.',
+    step1: {
+      badge: 'FIND THE DIFFERENCE',
+      subtitle: 'Enter the gap between ' + high.name + ' and ' + low.name + '.',
+      answer: diff,
+      coach: coach1,
+      traps: [
+        trap(half, fmt(half) + ' is already half the gap. Step 1 asks for the full difference.'),
+        trap(raw.high, 'That is ' + high.name + "'s whole amount, not the gap."),
+        trap(raw.low, 'That is ' + low.name + "'s whole amount, not the gap.")
+      ],
+      fallbackTip: 'The gap is the greater amount minus the smaller amount.'
+    },
+    step2: {
+      badge: 'FIND POWER TRANSFERRED',
+      subtitle: 'Enter the amount transferred so both machines match.',
+      answer: half,
+      coach: coach2,
+      traps: [
+        trap(diff, 'If ' + high.name + ' gives away ALL ' + fmt(diff) + ' ' + f.unit + ', ' + high.name + ' loses ' + fmt(diff) + ' and ' + low.name + ' gains ' + fmt(diff) + ' — reversing their difference! Always transfer HALF the difference (' + fmt(diff) + ' ÷ 2 = ' + fmt(half) + ' ' + f.unit + ').'),
+        trap(ending, fmt(ending) + ' is what each machine has at the end. The mission asks how much is transferred.'),
+        trap(raw.low, 'That is the starting amount of ' + low.name + ', not the transfer.')
+      ],
+      fallbackTip: 'Close the gap from both sides. Transfer half of the difference you found in Step 1.'
+    },
+    bars: {
+      mode: 'equalize',
+      high: { label: high.name, value: raw.high, accent: high.accent },
+      low: { label: low.name, value: raw.low, accent: low.accent },
+      diff: diff,
+      half: half,
+      footnote: 'The gold stretch is the gap. Half of it moves across.'
+    },
+    sig: ['equalize', high.name, low.name, raw.high, raw.low, raw.times].join(':')
+  });
+}
+
+function transferMachines(raw) {
+  return [
+    { name: raw.machines[0].name, kind: raw.machines[0].kind, accent: raw.machines[0].accent, value: raw.a1 },
+    { name: raw.machines[1].name, kind: raw.machines[1].kind, accent: raw.machines[1].accent, value: raw.b1 }
+  ];
+}
+
+function composeRatio(raw) {
+  const f = raw.flavor;
+  const A = raw.machines[0].name;
+  const B = raw.machines[1].name;
+  const donor = raw.donor === 0 ? A : B;
+  const recv = raw.donor === 0 ? B : A;
+  const big = raw.a1 > raw.b1 ? A : B;
+  const small = raw.a1 > raw.b1 ? B : A;
+  const total = raw.a0 + raw.b0;
+  const askName = raw.ask === 'A' ? A : B;
+  const askValue = raw.ask === 'A' ? raw.a1 : raw.b1;
+  let question;
+  let badge;
+  let subtitle2;
+  let answer2;
+  let coach2;
+  let glow;
+  const endUnit = Math.round(total / (raw.mult + 1));
+  if (raw.ask === 'transfer') {
+    question = 'How much does ' + donor + ' transfer?';
+    badge = 'FIND POWER TRANSFERRED';
+    subtitle2 = 'Enter how much ' + donor + ' transfers to ' + recv + '.';
+    answer2 = raw.t;
+    coach2 = 'End total stays ' + fmt(total) + '. 1 end unit = ' + fmt(total) + ' ÷ ' + (raw.mult + 1) + ' = ' + fmt(endUnit) + '. Transferred = ' + fmt(raw.t) + ' ' + f.unit + '.';
+    glow = [raw.donor === 0 ? 1 : 0];
+  } else {
+    question = 'Find ' + askName + "'s ending " + (f.id === 'cm' ? 'length' : f.noun);
+    badge = 'FIND MACHINE POWER';
+    subtitle2 = 'Enter ' + askName + "'s ending " + f.noun + '.';
+    answer2 = askValue;
+    const parts = Math.max(1, Math.round(askValue / endUnit));
+    coach2 = askName + ' ends with ' + parts + ' × ' + fmt(endUnit) + ' = ' + fmt(askValue) + ' ' + f.unit + '.';
+    glow = [raw.ask === 'A' ? 0 : 1];
+  }
+  const directive = holds(f, A, raw.a0) + '. ' + holds(f, B, raw.b0) + '. ' + donor + ' transfers to ' + recv + ' so that ' + endMultipleClause(big, small, f, raw.mult) + '. ' + question + (question.indexOf('?') >= 0 ? '' : '.');
+  const endSegs = [
+    { label: A, accent: raw.machines[0].accent, segments: [{ t: 'unit', n: Math.round(raw.a1 / endUnit) }] },
+    { label: B, accent: raw.machines[1].accent, segments: [{ t: 'unit', n: Math.round(raw.b1 / endUnit) }] }
+  ];
+  const traps2 = [
+    trap(total, fmt(total) + ' is the fixed total. The mission asks for the transfer or one ending bar.'),
+    unitTrap(endUnit, small, f, coach2)
+  ];
+  if (raw.ask === 'transfer') traps2.push(trap(Math.abs(raw.a0 - raw.b0), 'That is the starting gap, not the amount that moves.'));
+  else traps2.push(trap(raw.ask === 'A' ? raw.a0 : raw.b0, 'That is the starting amount. Draw the END bar before you answer.'));
+  return basePuzzle(raw, {
+    machines: transferMachines(raw),
+    glow: glow,
+    directive: directive,
+    missionBadge: badge,
+    strategy: 'No power leaves the hangar. Add both starts, then split that fixed total into the END bars.',
+    step1: {
+      badge: 'FIND THE TOTAL',
+      subtitle: 'Enter the unchanged total of ' + A + ' and ' + B + '.',
+      answer: total,
+      coach: fmt(raw.a0) + ' + ' + fmt(raw.b0) + ' = ' + fmt(total) + '. A transfer inside the hangar does not change this total.',
+      traps: [
+        trap(Math.abs(raw.a0 - raw.b0), 'No power leaves the hangar during a transfer between ' + A + ' and ' + B + '! Add ' + fmt(raw.a0) + ' + ' + fmt(raw.b0) + ' first to get the fixed Total (' + fmt(total) + '), then split into the END bar model.'),
+        trap(raw.a0, fmt(raw.a0) + ' is only ' + A + '. Add both machines. Nothing leaves the hangar.'),
+        trap(raw.b0, fmt(raw.b0) + ' is only ' + B + '. Add both machines. Nothing leaves the hangar.')
+      ],
+      fallbackTip: 'Add the two starting amounts. The total is the same at the end.'
+    },
+    step2: {
+      badge: badge,
+      subtitle: subtitle2,
+      answer: answer2,
+      coach: coach2,
+      traps: traps2,
+      fallbackTip: 'Split the fixed total into the END units, then read the value the mission names.'
+    },
+    bars: {
+      mode: 'transfer',
+      unitValue: endUnit,
+      total: total,
+      goal: endMultipleClause(big, small, f, raw.mult),
+      now: [
+        { label: A, value: raw.a0, accent: raw.machines[0].accent },
+        { label: B, value: raw.b0, accent: raw.machines[1].accent }
+      ],
+      end: endSegs,
+      footnote: 'END bars first. The total bracket never changes.'
+    },
+    sig: ['ratio', A, B, raw.a0, raw.b0, raw.a1, raw.b1, raw.ask].join(':')
+  });
+}
+
+function composeDiff(raw) {
+  const f = raw.flavor;
+  const A = raw.machines[0].name;
+  const B = raw.machines[1].name;
+  const donor = raw.donor === 0 ? A : B;
+  const recv = raw.donor === 0 ? B : A;
+  const largeName = raw.a1 > raw.b1 ? A : B;
+  const smallName = raw.a1 > raw.b1 ? B : A;
+  const total = raw.a0 + raw.b0;
+  const smallEnd = Math.min(raw.a1, raw.b1);
+  const largeEnd = Math.max(raw.a1, raw.b1);
+  let question;
+  let badge;
+  let subtitle2;
+  let answer2;
+  let coach2;
+  let glow;
+  if (raw.ask === 'transfer') {
+    question = 'How much is transferred?';
+    badge = 'FIND POWER TRANSFERRED';
+    subtitle2 = 'Enter how much ' + donor + ' transfers.';
+    answer2 = raw.t;
+    coach2 = fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + '. Transferred = ' + fmt(raw.t) + ' ' + f.unit + '.';
+    glow = [raw.donor === 0 ? 1 : 0];
+  } else {
+    const askName = raw.ask === 'A' ? A : B;
+    const askValue = raw.ask === 'A' ? raw.a1 : raw.b1;
+    question = 'Find ' + askName + "'s ending " + (f.id === 'cm' ? 'length' : f.noun);
+    badge = 'FIND MACHINE POWER';
+    subtitle2 = 'Enter ' + askName + "'s ending " + f.noun + '.';
+    answer2 = askValue;
+    if (askValue === smallEnd) coach2 = fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + ' ' + f.unit + '.';
+    else coach2 = fmt(total) + ' + ' + fmt(raw.gap) + ' = ' + fmt(total + raw.gap) + '. ' + fmt(total + raw.gap) + ' ÷ 2 = ' + fmt(largeEnd) + ' ' + f.unit + '.';
+    glow = [raw.ask === 'A' ? 0 : 1];
+  }
+  const directive = holds(f, A, raw.a0) + ' and ' + holds(f, B, raw.b0) + '. ' + donor + ' transfers to ' + recv + ' so that ' + endGapClause(largeName, smallName, f, raw.gap) + '. ' + question + (question.indexOf('?') >= 0 ? '' : '.');
+  const traps2 = [
+    trap(total - raw.gap, 'You removed the ' + fmt(raw.gap) + ' ' + f.unit + ' gap but forgot to split the rest into 2 equal bars. ' + fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + '.'),
+    trap(raw.ask === 'A' ? raw.b1 : (raw.ask === 'B' ? raw.a1 : largeEnd), 'Check which END bar the mission names. One bar is the equal part, the other is the equal part plus ' + fmt(raw.gap) + '.'),
+    trap(raw.gap, fmt(raw.gap) + ' is the ending gap, which was already given. It is not the transfer and not an ending bar.')
+  ];
+  return basePuzzle(raw, {
+    machines: transferMachines(raw),
+    glow: glow,
+    directive: directive,
+    missionBadge: badge,
+    strategy: 'The total stays fixed. Draw the END bars with one gap block, then split what remains into two equal parts.',
+    step1: {
+      badge: 'FIND THE TOTAL',
+      subtitle: 'Enter the unchanged total.',
+      answer: total,
+      coach: fmt(raw.a0) + ' + ' + fmt(raw.b0) + ' = ' + fmt(total) + '. No power leaves the hangar.',
+      traps: [
+        trap(Math.abs(raw.a0 - raw.b0), 'No power leaves the hangar during a transfer between ' + A + ' and ' + B + '! Add ' + fmt(raw.a0) + ' + ' + fmt(raw.b0) + ' first to get the fixed Total (' + fmt(total) + '), then split into the END bar model.'),
+        trap(raw.a0, 'That is only ' + A + "'s start. Add both amounts."),
+        trap(total + raw.t, 'A transfer does not bring in outside power. The total stays ' + fmt(total) + '.')
+      ],
+      fallbackTip: 'Add both starting amounts. That total is the END total too.'
+    },
+    step2: {
+      badge: badge,
+      subtitle: subtitle2,
+      answer: answer2,
+      coach: coach2,
+      traps: traps2,
+      fallbackTip: 'Use the fixed total and the ending gap. Split the rest equally if you need an ending bar.'
+    },
+    bars: {
+      mode: 'transfer',
+      unitValue: smallEnd,
+      total: total,
+      goal: endGapClause(largeName, smallName, f, raw.gap),
+      now: [
+        { label: A, value: raw.a0, accent: raw.machines[0].accent },
+        { label: B, value: raw.b0, accent: raw.machines[1].accent }
+      ],
+      end: [
+        { label: smallName, accent: raw.a1 < raw.b1 ? raw.machines[0].accent : raw.machines[1].accent, segments: [{ t: 'unit', n: 1 }] },
+        { label: largeName, accent: raw.a1 > raw.b1 ? raw.machines[0].accent : raw.machines[1].accent, segments: [{ t: 'unit', n: 1 }, { t: 'more', v: raw.gap }] }
+      ],
+      footnote: 'The gold block is the ending gap, already given in the mission.'
+    },
+    sig: ['diff', A, B, raw.a0, raw.b0, raw.a1, raw.b1, raw.ask].join(':')
+  });
+}
+
+function composeGroup(raw) {
+  const pair = raw.pair;
+  const f = raw.flavor;
+  const N = raw.nA + raw.nB;
+  const total = raw.nA * raw.A + raw.nB * raw.B;
+  const removed = raw.nB * raw.diff;
+  let answer2;
+  let badge;
+  let subtitle2;
+  let coach2;
+  let glow;
+  if (raw.ask === 'B') {
+    answer2 = raw.B;
+    badge = 'FIND MACHINE POWER';
+    subtitle2 = 'Enter the amount used by 1 ' + pair.b + '.';
+    coach2 = '1 ' + pair.b + ' = ' + fmt(raw.A) + (raw.fewer ? ' − ' : ' + ') + fmt(raw.diff) + ' = ' + fmt(raw.B) + ' ' + f.unit + '.';
+    glow = [1];
+  } else if (raw.ask === 'sumB') {
+    answer2 = raw.nB * raw.B;
+    badge = 'FIND TOTAL POWER';
+    subtitle2 = 'Enter the total used by all ' + raw.nB + ' ' + pair.b + 's.';
+    coach2 = raw.nB + ' × ' + fmt(raw.B) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    glow = [1];
+  } else {
+    answer2 = raw.nA * raw.A;
+    badge = 'FIND TOTAL POWER';
+    subtitle2 = 'Enter the total used by all ' + raw.nA + ' ' + pair.a + 's.';
+    coach2 = raw.nA + ' × ' + fmt(raw.A) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
+    glow = [0];
+  }
+  const link = raw.fewer
+    ? 'Each ' + pair.b + ' uses ' + fmt(raw.diff) + ' ' + f.unit + ' less than a ' + pair.a
+    : 'Each ' + pair.b + ' uses ' + fmt(raw.diff) + ' ' + f.unit + ' more than a ' + pair.a;
+  const question = raw.ask === 'B'
+    ? 'Find how much 1 ' + pair.b + ' uses'
+    : (raw.ask === 'sumB' ? 'Find the total used by the ' + raw.nB + ' ' + pair.b + 's' : 'Find the total used by the ' + raw.nA + ' ' + pair.a + 's');
+  const directive = raw.nA + ' ' + pair.a + 's and ' + raw.nB + ' ' + pair.b + 's use ' + fmt(total) + ' ' + f.unit + ' altogether. ' + link + '. ' + question + '.';
+  const coach1 = raw.fewer
+    ? 'Add the missing blocks: ' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + '. ' + fmt(total) + ' + ' + fmt(removed) + ' = ' + fmt(N * raw.A) + '. ' + fmt(N * raw.A) + ' ÷ ' + N + ' = ' + fmt(raw.A) + '.'
+    : 'Remove the extra blocks: ' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + '. ' + fmt(total) + ' − ' + fmt(removed) + ' = ' + fmt(N * raw.A) + '. ' + fmt(N * raw.A) + ' ÷ ' + N + ' = ' + fmt(raw.A) + '.';
+  const wrongDir = raw.fewer ? (total - removed) / N : (total + removed) / N;
+  const traps1 = [
+    trap(wrongDir, raw.fewer
+      ? 'Each ' + pair.b + ' is ' + fmt(raw.diff) + ' LESS than a ' + pair.a + '. Add the missing blocks (' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + ') before you divide.'
+      : 'Each ' + pair.b + ' is ' + fmt(raw.diff) + ' MORE than a ' + pair.a + '. Subtract ' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + ' before you divide.'),
+    trap(removed, fmt(removed) + ' is only the pile of difference blocks. It still has to come off the total, and then you divide by ' + N + '.'),
+    trap(N * raw.A, fmt(N * raw.A) + ' is ' + N + ' base units together. Divide by ' + N + ' to get 1 ' + pair.a + '.')
+  ];
+  const traps2 = [
+    unitTrap(raw.A, pair.a, f, coach2),
+    trap(raw.diff, fmt(raw.diff) + ' is the difference between one ' + pair.a + ' and one ' + pair.b + ', not the mission target.'),
+    trap(raw.ask === 'B' ? raw.A : raw.B, 'Read the badge. Step 2 is not the same machine you found for 1 unit.')
+  ];
+  return basePuzzle(raw, {
+    machines: [
+      { name: pair.a, kind: pair.kindA, accent: pair.accentA, count: raw.nA, value: raw.A },
+      { name: pair.b, kind: pair.kindB, accent: pair.accentB, count: raw.nB, value: raw.B }
+    ],
+    glow: glow,
+    directive: directive,
+    missionBadge: badge,
+    strategy: raw.fewer
+      ? 'Turn every machine into the larger base unit. Add back the missing blocks, then divide.'
+      : 'Turn every machine into the smaller base unit. Remove the extra blocks, then divide.',
+    step1: {
+      badge: 'FIND 1 UNIT',
+      subtitle: 'Enter the amount used by 1 ' + pair.a + '.',
+      answer: raw.A,
+      coach: coach1,
+      traps: traps1,
+      fallbackTip: 'Replace every machine with the base unit, adjust the difference blocks, then divide.'
+    },
+    step2: {
+      badge: badge,
+      subtitle: subtitle2,
+      answer: answer2,
+      coach: coach2,
+      traps: traps2,
+      fallbackTip: 'Start from 1 base unit, then build the machine or the group the mission names.'
+    },
+    bars: {
+      mode: 'group',
+      total: total,
+      unitValue: raw.A,
+      fewer: raw.fewer,
+      diff: raw.diff,
+      groups: [
+        { label: pair.a, count: raw.nA, accent: pair.accentA, extra: 0 },
+        { label: pair.b, count: raw.nB, accent: pair.accentB, extra: raw.diff, fewer: raw.fewer }
+      ],
+      footnote: link + '.'
+    },
+    sig: ['group', pair.a, pair.b, raw.nA, raw.nB, raw.A, raw.B, raw.ask, raw.fewer ? 1 : 0].join(':')
+  });
+}
+
+function valuesOf(raw) {
+  if (!raw) return null;
+  if (raw.kind === 'add3') {
+    const values = raw.extras.map(function (e) { return raw.unit + e; });
+    return { step1: raw.unit, step2: values[raw.ask], total: values.reduce(function (a, b) { return a + b; }, 0), values: values };
+  }
+  if (raw.kind === 'times') {
+    const values = raw.mults.map(function (m, i) { return m * raw.unit + raw.extras[i]; });
+    const sum = values.reduce(function (a, b) { return a + b; }, 0);
+    let step2 = sum;
+    if (raw.ask === 'machine') step2 = values[raw.askIndex];
+    if (raw.ask === 'pair') step2 = values[0] + values[1];
+    return { step1: raw.unit, step2: step2, total: sum, values: values };
+  }
+  if (raw.kind === 'equalize') {
+    return { step1: raw.high - raw.low, step2: (raw.high - raw.low) / 2 };
+  }
+  if (raw.kind === 'ratio' || raw.kind === 'diffend') {
+    const total = raw.a0 + raw.b0;
+    const step2 = raw.ask === 'transfer' ? Math.abs(raw.a0 - raw.a1) : (raw.ask === 'A' ? raw.a1 : raw.b1);
+    return { step1: total, step2: step2 };
+  }
+  if (raw.kind === 'group') {
+    const step2 = raw.ask === 'B' ? raw.B : (raw.ask === 'sumB' ? raw.nB * raw.B : raw.nA * raw.A);
+    return { step1: raw.A, step2: step2, total: raw.nA * raw.A + raw.nB * raw.B };
+  }
+  return null;
+}
+
+function invariantError(puzzle) {
+  if (!puzzle || !puzzle.raw) return 'missing puzzle';
+  const raw = puzzle.raw;
+  const got = valuesOf(raw);
+  if (!got) return 'no values';
+  if (!isInt(got.step1) || !isInt(got.step2) || got.step1 <= 0 || got.step2 <= 0) return 'non integer answer';
+  if (got.step1 === got.step2) return 'steps match';
+  if (puzzle.step1.answer !== got.step1 || puzzle.step2.answer !== got.step2) return 'answer drift';
+  if (!puzzle.directive || puzzle.directive.length < 20) return 'directive';
+  if (puzzle.directive.indexOf('undefined') >= 0 || puzzle.directive.indexOf('NaN') >= 0) return 'bad text';
+  if (puzzle.step1.coach.indexOf('NaN') >= 0 || puzzle.step2.coach.indexOf('NaN') >= 0) return 'bad coach';
+  if (raw.kind === 'add3') {
+    const excess = raw.extras[1] + raw.extras[2];
+    if ((got.total - excess) / 3 !== raw.unit) return 'add3 algebra';
+    if (excess % 3 !== 0) return 'add3 trap not integer';
+  }
+  if (raw.kind === 'times') {
+    const values = got.values;
+    if (values.some(function (v) { return v <= 0 || !isInt(v); })) return 'times value';
+    const sumMult = raw.mults.reduce(function (a, b) { return a + b; }, 0);
+    const extraSum = raw.extras.reduce(function (a, b) { return a + b; }, 0);
+    if ((got.total - extraSum) / sumMult !== raw.unit) return 'times algebra';
+    if (raw.given === 'last') {
+      const last = values[raw.extraIndex];
+      if ((last - raw.extras[raw.extraIndex]) / raw.mults[raw.extraIndex] !== raw.unit) return 'times last';
+    }
+  }
+  if (raw.kind === 'equalize') {
+    if ((raw.high - raw.low) % 2 !== 0) return 'odd gap';
+    if (raw.times && raw.high !== raw.low * raw.times) return 'times equalize';
+    if (!puzzle.step2.traps.some(function (t) { return t && t.value === raw.high - raw.low && t.tip.indexOf('HALF') >= 0; })) return 'missing half trap';
+  }
+  if (raw.kind === 'ratio') {
+    if (raw.a0 + raw.b0 !== raw.a1 + raw.b1) return 'ratio total';
+    if (!(raw.a1 === raw.mult * raw.b1 || raw.b1 === raw.mult * raw.a1)) return 'ratio end';
+    if (Math.abs(raw.a0 - raw.a1) !== raw.t) return 'ratio transfer';
+    if (!puzzle.step1.traps.some(function (t) { return t && t.tip.indexOf('hangar') >= 0; })) return 'missing hangar tip';
+  }
+  if (raw.kind === 'diffend') {
+    if (raw.a0 + raw.b0 !== raw.a1 + raw.b1) return 'diff total';
+    if (Math.abs(raw.a1 - raw.b1) !== raw.gap) return 'diff gap';
+    if ((raw.a0 + raw.b0 - raw.gap) % 2 !== 0) return 'diff split';
+    if (!puzzle.step1.traps.some(function (t) { return t && t.tip.indexOf('hangar') >= 0; })) return 'missing hangar tip';
+  }
+  if (raw.kind === 'group') {
+    const N = raw.nA + raw.nB;
+    const total = got.total;
+    if (!raw.fewer && (total - raw.nB * raw.diff) / N !== raw.A) return 'group more';
+    if (raw.fewer && (total + raw.nB * raw.diff) / N !== raw.A) return 'group fewer';
+    if (!raw.fewer && raw.B !== raw.A + raw.diff) return 'group link';
+    if (raw.fewer && raw.A !== raw.B + raw.diff) return 'group link fewer';
+    const wrong = raw.fewer ? (total - raw.nB * raw.diff) / N : (total + raw.nB * raw.diff) / N;
+    if (!isInt(wrong)) return 'group trap fraction';
+  }
+  if (!puzzle.bars || !puzzle.bars.mode) return 'bars';
+  const texts = [puzzle.directive, puzzle.step1.coach, puzzle.step2.coach]
+    .concat((puzzle.step1.traps || []).map(function (t) { return t && t.tip; }))
+    .concat((puzzle.step2.traps || []).map(function (t) { return t && t.tip; }));
+  for (let i = 0; i < texts.length; i++) {
+    const bad = equationError(texts[i]);
+    if (bad) return 'bad equation ' + bad;
+  }
+  return '';
+}
+
+function buildOptions(step) {
+  const chosen = [{ value: step.answer, correct: true, tip: '' }];
+  const used = new Set([step.answer]);
+  const traps = (step.traps || []).filter(Boolean);
+  for (let i = 0; i < traps.length && chosen.length < 4; i++) {
+    const t = traps[i];
+    if (!t || !isInt(t.value) || t.value <= 0 || t.value > 200000) continue;
+    if (used.has(t.value)) continue;
+    used.add(t.value);
+    chosen.push({ value: t.value, correct: false, tip: t.tip });
+  }
+  let salt = 1;
+  while (chosen.length < 4 && salt < 50) {
+    const mag = Math.max(2, Math.round(Math.abs(step.answer) * 0.12) || 2);
+    const v = step.answer + (salt % 2 === 0 ? 1 : -1) * mag * Math.ceil(salt / 2);
+    if (isInt(v) && v > 0 && !used.has(v)) {
+      used.add(v);
+      chosen.push({
+        value: v,
+        correct: false,
+        tip: step.fallbackTip || 'That amount does not match the equal units. Recount the 1-unit blocks, then build the value the mission names.'
+      });
+    }
+    salt++;
+  }
+  return shuffle(chosen);
+}
+
+function createPuzzle(diff) {
+  for (let i = 0; i < 24; i++) {
+    const raw = rollRaw(diff);
+    const puzzle = compose(raw);
+    if (!puzzle) continue;
+    const err = invariantError(puzzle);
+    if (err) continue;
+    if (G.history.indexOf(puzzle.sig) >= 0) continue;
+    G.history.push(puzzle.sig);
+    if (G.history.length > 8) G.history.shift();
+    return puzzle;
+  }
+  for (let i = 0; i < 24; i++) {
+    const raw = rollRaw(diff);
+    const puzzle = compose(raw);
+    if (puzzle && !invariantError(puzzle)) {
+      G.history.push(puzzle.sig);
+      if (G.history.length > 8) G.history.shift();
+      return puzzle;
+    }
+  }
+  const fallback = compose(rollAdd3());
+  G.history.push(fallback.sig);
+  if (G.history.length > 8) G.history.shift();
+  return fallback;
+}
+
+/* ---------------- flow ---------------- */
+
+function shieldsFor(diff) {
+  if (diff === 'hard' || diff === 'extreme') return 4;
+  return 5;
+}
+function nextMult() {
+  if (G.difficulty !== 'extreme') return 1;
+  if (G.combo >= 2) return 3;
+  if (G.combo >= 1) return 2;
+  return 1;
+}
+function activePilot() {
+  if (G.mode !== 'coop') return 0;
+  return G.step === 1 ? G.pilots[0] : G.pilots[1];
+}
+function makeDuelists(n) {
+  const list = [];
+  for (let i = 0; i < n; i++) list.push({ step: 1, lives: 3, stars: 0, score: 0, stun: 0, cursor: 0, locked1: false, done: false, out: false });
+  return list;
+}
+
+function startRun() {
+  fixMode();
+  G.scene = 'play';
+  G.round = 1;
+  G.score = 0;
+  G.shieldsMax = shieldsFor(G.difficulty);
+  G.shields = G.shieldsMax;
+  G.combo = 0;
+  G.bestCombo = 0;
+  G.correctSteps = 0;
+  G.wrongSteps = 0;
+  G.particles = [];
+  G.floaters = [];
+  G.duelists = makeDuelists(G.mode === 'duel' ? G.playersN : 0);
+  G.overReason = '';
+  G.stats = null;
+  beginRound();
+}
+
+function beginRound() {
+  G.puzzle = createPuzzle(G.difficulty);
+  G.step = 1;
+  G.options1 = buildOptions(G.puzzle.step1);
+  G.options2 = buildOptions(G.puzzle.step2);
+  G.cursor = 0;
+  G.winner = -1;
+  G.clean = true;
+  G.charge = 0;
+  G.surge = 0;
+  G.badFlash = null;
+  G.timerMax = TIMER[G.difficulty];
+  G.timer = G.timerMax;
+  G.timerOn = false;
+  G.tip = G.puzzle.strategy;
+  G.tipColor = COL.dim;
+  G.after = 'arm';
+  G.gate = 0.4;
+  if (G.mode === 'coop') {
+    const n = G.playersN;
+    const i = G.round - 1;
+    G.pilots = [i % n, (i + 1) % n];
+  }
+  if (G.mode === 'duel') {
+    G.duelists.forEach(function (d) {
+      d.step = 1;
+      d.locked1 = false;
+      d.done = false;
+      d.cursor = 0;
+      d.stun = 0;
+      d.out = d.lives <= 0;
+    });
+    if (G.duelists.every(function (d) { return d.out; })) {
+      G.overReason = 'All lane lives lost';
+      finish();
+      return;
+    }
+  }
+  announce('Round ' + G.round + '. ' + G.puzzle.missionBadge + '. ' + G.puzzle.directive + ' ' + G.puzzle.step1.subtitle);
+}
+
+function spawnBurst(x, y, color, n) {
+  const count = REDUCE ? Math.min(6, n) : n;
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 50 + Math.random() * 220;
+    G.particles.push({
+      x: x, y: y,
+      vx: Math.cos(a) * s,
+      vy: Math.sin(a) * s - 30,
+      life: 0.45 + Math.random() * 0.45,
+      age: 0,
+      color: color,
+      r: 1.5 + Math.random() * 2.8
+    });
+  }
+}
+function floatText(text, x, y, color) {
+  G.floaters.push({ text: text, x: x, y: y, color: color, age: 0, life: 1.25 });
+}
+
+function step1Done() {
+  if (!G.puzzle) return false;
+  if (G.mode === 'duel') {
+    if (G.winner >= 0) return true;
+    const live = G.duelists.filter(function (d) { return !d.out; });
+    return live.length > 0 && live.every(function (d) { return d.locked1 || d.done; });
+  }
+  return G.step >= 2 || G.after === 'step2' || G.surge > 0;
+}
+
+function choose(playerIndex, cardIndex) {
+  if (G.scene !== 'play' || G.gate > 0 || !G.puzzle) return;
+  if (cardIndex < 0 || cardIndex > 3) return;
+  if (G.mode === 'duel') {
+    const d = G.duelists[playerIndex];
+    if (!d || d.out || d.done || d.stun > 0 || G.winner >= 0) return;
+    const options = d.step === 1 ? G.options1 : G.options2;
+    const opt = options[cardIndex];
+    if (!opt) return;
+    if (opt.correct) {
+      G.correctSteps++;
+      sfx.snap();
+      if (d.step === 1) {
+        d.step = 2;
+        d.locked1 = true;
+        d.cursor = 0;
+        sfx.charge();
+        G.charge = Math.max(G.charge, 0.45);
+        spawnBurst(640, 400, PILOT[playerIndex].color, 16);
+        G.tip = PILOT[playerIndex].call + ' locked Step 1. Race the mission target.';
+        G.tipColor = PILOT[playerIndex].color;
+      } else {
+        d.done = true;
+        d.stars += 1;
+        const bonus = Math.ceil(G.timer * 6);
+        const mult = nextMult();
+        const gain = Math.round((400 + bonus) * mult);
+        d.score += gain;
+        if (G.clean) {
+          G.combo += 1;
+          G.bestCombo = Math.max(G.bestCombo, G.combo);
+        }
+        G.winner = playerIndex;
+        G.surge = 1;
+        G.flash = 0.45;
+        sfx.blast();
+        sfx.fanfare();
+        G.timerOn = false;
+        G.tip = PILOT[playerIndex].call + ' overcharges the core. +1 star. +' + fmt(gain) + ' speed points.';
+        G.tipColor = COL.gold;
+        floatText('+' + fmt(gain), 640, 430, COL.gold);
+        spawnBurst(640, 360, COL.gold, 36);
+        G.after = (G.round >= ROUNDS) ? 'results' : 'next';
+        G.gate = 1.55;
+        if (G.duelists.every(function (x) { return x.out; })) G.after = 'results';
+      }
+    } else {
+      d.lives -= 1;
+      d.stun = 1.5;
+      G.wrongSteps++;
+      G.clean = false;
+      G.combo = 0;
+      sfx.buzz();
+      G.shake = REDUCE ? 0 : 7;
+      G.flash = 0.18;
+      G.badFlash = { step: d.step, index: cardIndex, until: G.time + 0.45, player: playerIndex };
+      G.tip = 'Chief Engineer — ' + PILOT[playerIndex].call + ' overload. ' + opt.tip;
+      G.tipColor = '#ff8aa0';
+      if (d.lives <= 0) {
+        d.out = true;
+        d.stun = 0;
+      }
+      if (G.duelists.every(function (x) { return x.out; })) {
+        G.overReason = 'All lane lives lost';
+        G.timerOn = false;
+        G.after = 'results';
+        G.gate = 1.7;
+      }
+    }
+    return;
+  }
+
+  if (G.mode === 'coop' && playerIndex !== activePilot()) return;
+  const options = G.step === 1 ? G.options1 : G.options2;
+  const opt = options[cardIndex];
+  if (!opt) return;
+  if (opt.correct) {
+    G.correctSteps++;
+    if (G.step === 1) {
+      sfx.snap();
+      sfx.charge();
+      G.charge = 1;
+      G.tip = G.puzzle.step1.coach;
+      G.tipColor = COL.green;
+      G.after = 'step2';
+      G.gate = 1.05;
+      G.timerOn = false;
+      spawnBurst(640, 390, COL.cyan, 22);
+      G.badFlash = null;
+    } else {
+      const bonus = Math.ceil(Math.max(0, G.timer) * (G.difficulty === 'extreme' ? 8 : 5));
+      const mult = nextMult();
+      const gain = Math.round((400 + bonus) * mult);
+      if (G.clean) {
+        G.combo += 1;
+        G.bestCombo = Math.max(G.bestCombo, G.combo);
+      } else {
+        G.combo = 0;
+      }
+      G.score += gain;
+      G.surge = 1;
+      G.flash = 0.4;
+      sfx.blast();
+      sfx.fanfare();
+      G.timerOn = false;
+      const multLabel = mult > 1 ? '  ×' + mult : '';
+      G.tip = '+' + fmt(gain) + ' forge points' + multLabel + '. ' + G.puzzle.step2.coach;
+      G.tipColor = COL.gold;
+      floatText('+' + fmt(gain) + (mult > 1 ? '  ×' + mult : ''), 640, 420, COL.gold);
+      spawnBurst(640, 360, COL.gold, 40);
+      G.after = (G.round >= ROUNDS || G.shields <= 0) ? 'results' : 'next';
+      G.gate = 1.5;
+    }
+  } else {
+    G.wrongSteps++;
+    G.clean = false;
+    G.combo = 0;
+    G.shields -= 1;
+    G.shake = REDUCE ? 0 : 8;
+    G.flash = 0.2;
+    sfx.buzz();
+    G.badFlash = { step: G.step, index: cardIndex, until: G.time + 1.4 };
+    G.tip = 'Chief Engineer — ' + opt.tip;
+    G.tipColor = '#ff8aa0';
+    G.timerOn = false;
+    if (G.shields <= 0) {
+      G.overReason = 'Core shields depleted';
+      G.after = 'results';
+      G.gate = 2.05;
+    } else {
+      G.after = 'reshuffle';
+      G.gate = 2.05;
+    }
+  }
+}
+
+function timeoutRound() {
+  G.timer = 0;
+  G.timerOn = false;
+  G.clean = false;
+  G.combo = 0;
+  sfx.buzz();
+  if (G.mode === 'duel') {
+    G.duelists.forEach(function (d) {
+      if (!d.out && !d.done) {
+        d.lives -= 1;
+        if (d.lives <= 0) d.out = true;
+      }
+    });
+    G.tip = 'Reactor timeout. Every pilot still racing loses 1 lane life. Target was ' + fmt(G.puzzle.step2.answer) + ' ' + G.puzzle.flavor.unit + '.';
+    G.tipColor = '#ff8aa0';
+    if (G.duelists.every(function (d) { return d.out; })) {
+      G.overReason = 'Reactor timeout';
+      G.after = 'results';
+    } else {
+      G.after = G.round >= ROUNDS ? 'results' : 'next';
+    }
+    G.gate = 1.7;
+    return;
+  }
+  G.shields -= 1;
+  G.tip = "Time's up. " + G.puzzle.step2.coach;
+  G.tipColor = '#ff8aa0';
+  if (G.shields <= 0) {
+    G.overReason = 'Core shields depleted';
+    G.after = 'results';
+  } else {
+    G.after = G.round >= ROUNDS ? 'results' : 'next';
+  }
+  G.gate = 1.8;
+}
+
+function finish() {
+  G.scene = 'results';
+  G.timerOn = false;
+  G.gate = 0;
+  G.after = '';
+  if (G.mode === 'solo' && G.score > G.bestSolo) {
+    G.bestSolo = G.score;
+    writeBest(BEST_SOLO, G.score);
+  }
+  if (G.mode === 'coop' && G.score > G.bestCoop) {
+    G.bestCoop = G.score;
+    writeBest(BEST_COOP, G.score);
+  }
+  G.stats = {
+    score: G.score,
+    correct: G.correctSteps,
+    wrong: G.wrongSteps,
+    round: G.round,
+    reason: G.overReason,
+    combo: G.bestCombo,
+    shields: G.shields,
+    shieldsMax: G.shieldsMax,
+    duel: G.duelists.map(function (d) { return { stars: d.stars, lives: d.lives, score: d.score }; })
+  };
+  if (G.surge <= 0) sfx.fanfare();
+  announce('Run complete. ' + (G.mode === 'duel' ? 'Duel results.' : 'Score ' + G.score + '.'));
+}
+
+function resolveGate() {
+  const action = G.after;
+  G.after = '';
+  if (action === 'arm') {
+    G.timerOn = true;
+    return;
+  }
+  if (action === 'step2') {
+    G.step = 2;
+    G.cursor = 0;
+    G.timerOn = true;
+    G.tip = 'Step 2 is live. ' + (G.puzzle ? G.puzzle.step2.subtitle : '');
+    G.tipColor = '#d7e8ff';
+    if (G.puzzle) announce(G.puzzle.step2.subtitle);
+    return;
+  }
+  if (action === 'reshuffle') {
+    if (G.step === 1) G.options1 = buildOptions(G.puzzle.step1);
+    else G.options2 = buildOptions(G.puzzle.step2);
+    G.cursor = 0;
+    G.badFlash = null;
+    G.timerOn = true;
+    return;
+  }
+  if (action === 'next') {
+    if (G.round >= ROUNDS) finish();
+    else {
+      G.round += 1;
+      beginRound();
+    }
+    return;
+  }
+  if (action === 'results') finish();
+}
+
+function foreignCoopPress() {
+  if (G.mode !== 'coop' || G.gate > 0) return;
+  const active = activePilot();
+  for (let p = 0; p < G.playersN; p++) {
+    if (p === active) continue;
+    for (let k = 0; k < PILOT[p].codes.length; k++) {
+      if (keyEdge.has(PILOT[p].codes[k])) {
+        G.tip = PILOT[p].call + ' is on standby. ' + PILOT[active].call + ' locks this step.';
+        G.tipColor = PILOT[active].color;
+        return;
+      }
+    }
+  }
+}
+
+function moveCursor(delta, owner) {
+  if (G.mode === 'duel') {
+    const d = G.duelists[owner];
+    if (!d || d.out || d.done || d.stun > 0) return;
+    d.cursor = (d.cursor + delta + 4) % 4;
+  } else {
+    G.cursor = (G.cursor + delta + 4) % 4;
+  }
+  sfx.tick();
+}
+
+function consumePlay(clicked) {
+  if (clicked && hit(muteRect(), clicked)) {
+    toggleMute();
+    return;
+  }
+  if (G.gate > 0) return;
+  foreignCoopPress();
+  if (G.mode !== 'duel') {
+    const pilot = activePilot();
+    if (clicked) {
+      const rects = cardRects(G.step);
+      for (let i = 0; i < 4; i++) if (hit(rects[i], clicked)) choose(pilot, i);
+    }
+    const codes = PILOT[pilot].codes;
+    for (let i = 0; i < 4; i++) {
+      if (keyEdge.has(codes[i])) choose(pilot, i);
+      if (pilot === 0 && keyEdge.has('Numpad' + (i + 1))) choose(0, i);
+    }
+    if (keyEdge.has('ArrowLeft')) moveCursor(-1, pilot);
+    if (keyEdge.has('ArrowRight')) moveCursor(1, pilot);
+    if (keyEdge.has('Space') || keyEdge.has('Enter') || keyEdge.has('NumpadEnter')) choose(pilot, G.cursor);
+    const pad = padEdge[pilot];
+    if (pad) {
+      if (pad.left) moveCursor(-1, pilot);
+      if (pad.right) moveCursor(1, pilot);
+      if (pad.A) choose(pilot, G.cursor);
+    }
+    return;
+  }
+  if (clicked && G.duelists[0] && !G.duelists[0].out) {
+    const rects = cardRects(G.duelists[0].step);
+    for (let i = 0; i < 4; i++) if (hit(rects[i], clicked)) choose(0, i);
+  }
+  for (let p = 0; p < G.playersN; p++) {
+    const d = G.duelists[p];
+    if (!d || d.out || d.done || d.stun > 0 || G.winner >= 0) continue;
+    const codes = PILOT[p].codes;
+    for (let i = 0; i < 4; i++) {
+      if (keyEdge.has(codes[i])) choose(p, i);
+      if (p === 0 && keyEdge.has('Numpad' + (i + 1))) choose(p, i);
+    }
+    if (p === 0) {
+      if (keyEdge.has('ArrowLeft')) moveCursor(-1, 0);
+      if (keyEdge.has('ArrowRight')) moveCursor(1, 0);
+      if (keyEdge.has('Space') || keyEdge.has('Enter') || keyEdge.has('NumpadEnter')) choose(0, d.cursor);
+    }
+    const pad = padEdge[p];
+    if (pad) {
+      if (pad.left) moveCursor(-1, p);
+      if (pad.right) moveCursor(1, p);
+      if (pad.A) choose(p, d.cursor);
+    }
+  }
+}
+
+/* ---------------- title / results input ---------------- */
+
+function titleRows() {
+  const rows = [];
+  const pw = 168;
+  const ph = 50;
+  let x = (VW - (pw * 3 + 32)) / 2;
+  const r1 = [];
+  for (let n = 1; n <= 3; n++) {
+    r1.push({ rect: { x: x, y: 208, w: pw, h: ph }, item: { type: 'players', n: n } });
+    x += pw + 16;
+  }
+  rows.push(r1);
+  const mw = 220;
+  x = (VW - (mw * 3 + 32)) / 2;
+  const r2 = [];
+  ['solo', 'coop', 'duel'].forEach(function (mode) {
+    r2.push({ rect: { x: x, y: 292, w: mw, h: 50 }, item: { type: 'mode', mode: mode, enabled: modeOk(mode) } });
+    x += mw + 16;
+  });
+  rows.push(r2);
+  const dw = 196;
+  x = (VW - (dw * 4 + 42)) / 2;
+  const r3 = [];
+  DIFFS.forEach(function (d) {
+    r3.push({ rect: { x: x, y: 372, w: dw, h: 62 }, item: { type: 'diff', d: d.id } });
+    x += dw + 14;
+  });
+  rows.push(r3);
+  rows.push([{ rect: { x: 390, y: 496, w: 500, h: 58 }, item: { type: 'start' } }]);
+  return rows;
+}
+
+function activateTitle(item) {
+  if (!item) return;
+  if (item.type === 'players') {
+    G.playersN = item.n;
+    fixMode();
+    G.note = item.n === 1 ? 'Solo flight. One pilot, one forge score.' : (item.n + ' pilots. Choose Team Co-op or Mecha Duel.');
+    sfx.tick();
+  } else if (item.type === 'mode') {
+    if (!item.enabled) {
+      G.note = item.mode === 'solo' ? 'Solo is the 1-pilot bay.' : 'Co-op and Duel need 2 or 3 pilots.';
+      sfx.buzz();
+      return;
+    }
+    G.mode = item.mode;
+    G.note = item.mode === 'coop' ? 'One team score. Pilots rotate Step 1 and Step 2.' : (item.mode === 'duel' ? 'Fastest pilot to lock both steps wins the star.' : 'Solo forge. Chase the high score.');
+    sfx.tick();
+  } else if (item.type === 'diff') {
+    G.difficulty = item.d;
+    const info = DIFFS.filter(function (d) { return d.id === item.d; })[0];
+    G.note = info.rank + ' — ' + info.blurb;
+    sfx.tick();
+  } else if (item.type === 'start') {
+    sfx.snap();
+    startRun();
+  }
+}
+
+function consumeTitle(clicked) {
+  const rows = titleRows();
+  if (clicked && hit(muteRect(), clicked)) toggleMute();
+  if (clicked) {
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < rows[r].length; c++) {
+        if (hit(rows[r][c].rect, clicked)) {
+          G.focus = { row: r, col: c };
+          activateTitle(rows[r][c].item);
+        }
+      }
+    }
+  }
+  const row = rows[G.focus.row] || rows[0];
+  if (keyEdge.has('ArrowRight') || (padEdge[0] && padEdge[0].right)) {
+    G.focus.col = (G.focus.col + 1) % row.length;
+    sfx.tick();
+  }
+  if (keyEdge.has('ArrowLeft') || (padEdge[0] && padEdge[0].left)) {
+    G.focus.col = (G.focus.col + row.length - 1) % row.length;
+    sfx.tick();
+  }
+  if (keyEdge.has('ArrowDown') || (padEdge[0] && padEdge[0].down)) {
+    G.focus.row = Math.min(rows.length - 1, G.focus.row + 1);
+    G.focus.col = Math.min(G.focus.col, rows[G.focus.row].length - 1);
+    sfx.tick();
+  }
+  if (keyEdge.has('ArrowUp') || (padEdge[0] && padEdge[0].up)) {
+    G.focus.row = Math.max(0, G.focus.row - 1);
+    G.focus.col = Math.min(G.focus.col, rows[G.focus.row].length - 1);
+    sfx.tick();
+  }
+  if (keyEdge.has('Enter') || keyEdge.has('Space') || keyEdge.has('NumpadEnter') || (padEdge[0] && padEdge[0].A)) {
+    const item = rows[G.focus.row][G.focus.col];
+    if (item) activateTitle(item.item);
+  }
+}
+
+function resultButtons() {
+  return [
+    { id: 'again', rect: { x: 340, y: 600, w: 280, h: 64 } },
+    { id: 'title', rect: { x: 660, y: 600, w: 280, h: 64 } }
+  ];
+}
+function consumeResults(clicked) {
+  const buttons = resultButtons();
+  function go(id) {
+    if (id === 'again') startRun();
+    else { G.scene = 'title'; G.note = 'Select a bay and forge again.'; }
+    sfx.tick();
+  }
+  if (clicked) {
+    if (hit(muteRect(), clicked)) toggleMute();
+    buttons.forEach(function (b) { if (hit(b.rect, clicked)) go(b.id); });
+  }
+  if (keyEdge.has('Enter') || keyEdge.has('Space') || (padEdge[0] && padEdge[0].A)) go('again');
+  if (keyEdge.has('Escape')) go('title');
+}
+
+/* ---------------- rendering helpers ---------------- */
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function panel(x, y, w, h, radius) {
+  roundRect(x, y, w, h, radius == null ? 12 : radius);
+  ctx.fillStyle = 'rgba(7, 16, 34, 0.88)';
+  ctx.fill();
+  ctx.strokeStyle = COL.line;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+function wrap(text, maxW) {
+  const words = String(text || '').split(' ');
+  const lines = [];
+  let cur = '';
+  for (let i = 0; i < words.length; i++) {
+    const next = cur ? cur + ' ' + words[i] : words[i];
+    if (cur && ctx.measureText(next).width > maxW) {
+      lines.push(cur);
+      cur = words[i];
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function fillLines(lines, x, y, lineH, align) {
+  ctx.textAlign = align || 'left';
+  lines.forEach(function (ln, i) { ctx.fillText(ln, x, y + i * lineH); });
+}
+function cardRects(step) {
+  const duel = G.mode === 'duel';
+  const h = duel ? UI.duelH : UI.soloH;
+  const y = duel ? (step === 1 ? UI.duelY1 : UI.duelY2) : UI.soloY;
+  const gap = 14;
+  const inset = 18;
+  const w = (VW - inset * 2 - gap * 3) / 4;
+  const rects = [];
+  for (let i = 0; i < 4; i++) rects.push({ x: inset + i * (w + gap), y: y, w: w, h: h });
+  return rects;
+}
+function machineSlots(puzzle) {
+  const n = puzzle.machines.length;
+  const gap = n === 2 ? 180 : 70;
+  const span = n === 2 ? 560 : 860;
+  const x0 = (VW - span) / 2;
+  const slots = [];
+  for (let i = 0; i < n; i++) {
+    slots.push({
+      x: x0 + (n === 1 ? span / 2 : (span / (n - 1)) * i),
+      y: UI.mechY + 58,
+      s: n === 2 ? 0.78 : 0.68,
+      machine: puzzle.machines[i],
+      index: i
+    });
+  }
+  if (n === 2) {
+    slots[0].x = 420;
+    slots[1].x = 860;
+  }
+  return slots;
+}
+
+function drawJet(accent) {
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.moveTo(54, 0);
+  ctx.lineTo(8, -8);
+  ctx.lineTo(-28, -6);
+  ctx.lineTo(-40, -16);
+  ctx.lineTo(-28, 0);
+  ctx.lineTo(-40, 16);
+  ctx.lineTo(-28, 6);
+  ctx.lineTo(8, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.beginPath();
+  ctx.moveTo(10, -6);
+  ctx.lineTo(-36, -28);
+  ctx.lineTo(-18, -6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(10, 6);
+  ctx.lineTo(-36, 28);
+  ctx.lineTo(-18, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#e9fbff';
+  ctx.beginPath();
+  ctx.ellipse(16, 0, 8, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const flame = 0.45 + Math.sin(G.time * 18) * 0.25;
+  ctx.fillStyle = hexAlpha('#ffd76a', 0.35 + flame);
+  ctx.beginPath();
+  ctx.moveTo(-30, -5);
+  ctx.lineTo(-52 - flame * 16, 0);
+  ctx.lineTo(-30, 5);
+  ctx.fill();
+}
+function drawTank(accent) {
+  ctx.fillStyle = '#1b2436';
+  roundRect(-40, 10, 80, 16, 6);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.stroke();
+  ctx.fillStyle = accent;
+  roundRect(-36, -16, 72, 30, 6);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  roundRect(-10, -28, 36, 20, 8);
+  ctx.fill();
+  ctx.fillStyle = accent;
+  ctx.fillRect(18, -24, 36, 7);
+  ctx.fillStyle = hexAlpha('#7af0ff', 0.85);
+  ctx.beginPath();
+  ctx.arc(54, -20, 5 + Math.sin(G.time * 6) * 1.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#e9fbff';
+  ctx.fillRect(-22, -8, 16, 4);
+}
+function drawMech(accent) {
+  ctx.fillStyle = accent;
+  roundRect(-18, -24, 36, 34, 6);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  roundRect(-12, -44, 24, 18, 4);
+  ctx.fill();
+  ctx.fillStyle = '#9ff6ff';
+  ctx.fillRect(-8, -38, 16, 4);
+  ctx.fillStyle = hexAlpha(accent, 0.85);
+  ctx.beginPath();
+  ctx.moveTo(-18, -8);
+  ctx.lineTo(-52, -30);
+  ctx.lineTo(-40, 8);
+  ctx.lineTo(-16, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(18, -8);
+  ctx.lineTo(52, -30);
+  ctx.lineTo(40, 8);
+  ctx.lineTo(16, 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#101826';
+  roundRect(-16, 8, 12, 26, 3);
+  ctx.fill();
+  roundRect(4, 8, 12, 26, 3);
+  ctx.fill();
+  ctx.fillStyle = '#ffd76a';
+  ctx.beginPath();
+  ctx.arc(0, -8, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+function drawDrone(accent) {
+  ctx.strokeStyle = hexAlpha(accent, 0.7);
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 24, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 16, 11, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#07111f';
+  ctx.beginPath();
+  ctx.arc(-18, -16, 6, 0, Math.PI * 2);
+  ctx.arc(18, -16, 6, 0, Math.PI * 2);
+  ctx.fill();
+  const pulse = 4 + Math.sin(G.time * 5) * 1.5;
+  ctx.fillStyle = '#ffd76a';
+  ctx.beginPath();
+  ctx.arc(0, 0, pulse, 0, Math.PI * 2);
+  ctx.fill();
+}
+function drawCruiser(accent) {
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.moveTo(48, 0);
+  ctx.lineTo(16, -14);
+  ctx.lineTo(-40, -10);
+  ctx.lineTo(-48, 0);
+  ctx.lineTo(-40, 10);
+  ctx.lineTo(16, 14);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  roundRect(-8, -22, 22, 14, 3);
+  ctx.fill();
+  ctx.fillStyle = '#e9fbff';
+  ctx.fillRect(-4, -18, 5, 4);
+  ctx.fillRect(4, -18, 5, 4);
+  ctx.fillStyle = hexAlpha('#7af0ff', 0.8);
+  ctx.fillRect(-46, -4, 10, 8);
+}
+function drawMachine(kind, x, y, s, accent, hot) {
+  ctx.save();
+  ctx.translate(x, y + (REDUCE ? 0 : Math.sin(G.time * 2 + x * 0.01) * 3));
+  ctx.scale(s, s);
+  const glow = ctx.createRadialGradient(0, 6, 4, 0, 6, 46);
+  glow.addColorStop(0, hexAlpha(accent, hot ? 0.55 : 0.18));
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 8, 46, 0, Math.PI * 2);
+  ctx.fill();
+  if (kind === 'jet') drawJet(accent);
+  else if (kind === 'tank') drawTank(accent);
+  else if (kind === 'drone') drawDrone(accent);
+  else if (kind === 'cruiser') drawCruiser(accent);
+  else drawMech(accent);
+  ctx.restore();
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, VH);
+  g.addColorStop(0, '#12345f');
+  g.addColorStop(0.45, '#0b1b36');
+  g.addColorStop(1, '#070d18');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.strokeStyle = 'rgba(90, 170, 220, 0.06)';
+  ctx.lineWidth = 1;
+  const shift = REDUCE ? 0 : (G.time * 12) % 46;
+  for (let y = -20; y < VH; y += 46) {
+    for (let x = -20; x < VW; x += 54) {
+      const ox = ((y / 46) | 0) % 2 === 0 ? 0 : 27;
+      ctx.beginPath();
+      ctx.arc(x + ox, y + shift * 0.15, 10, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  const floor = ctx.createLinearGradient(0, 520, 0, 800);
+  floor.addColorStop(0, 'rgba(62,224,255,0.03)');
+  floor.addColorStop(1, 'rgba(62,224,255,0)');
+  ctx.fillStyle = floor;
+  ctx.fillRect(0, 520, VW, 280);
+}
+
+function drawHex(x, y, r, fill, stroke) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + i * Math.PI / 3;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
+}
+
+function drawHUD() {
+  panel(12, 8, VW - 24, 40, 10);
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillStyle = COL.gold;
+  ctx.textAlign = 'left';
+  ctx.fillText('FORGE', 26, 28);
+  if (G.scene === 'title') {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 12px ' + FONT;
+    ctx.fillText('WAR-MACHINE BAR-MODEL ARENA', 86, 28);
+  } else {
+    const modeLabel = G.mode === 'coop' ? 'TEAM CO-OP' : (G.mode === 'duel' ? 'MECHA DUEL' : 'SOLO');
+    ctx.fillStyle = COL.cyan;
+    ctx.fillText(modeLabel, 86, 28);
+    const diff = DIFFS.filter(function (d) { return d.id === G.difficulty; })[0];
+    ctx.fillStyle = COL.ink;
+    ctx.fillText(diff.label, G.mode === 'coop' ? 220 : 190, 28);
+    ctx.fillStyle = COL.dim;
+    ctx.fillText('ROUND ' + G.round + ' / ' + ROUNDS, G.mode === 'coop' ? 310 : 280, 28);
+  }
+
+  if (G.mode === 'duel' && (G.scene === 'play' || G.scene === 'results')) {
+    let x = 470;
+    for (let i = 0; i < G.playersN; i++) {
+      const d = G.duelists[i];
+      ctx.fillStyle = PILOT[i].color;
+      ctx.font = '700 13px ' + FONT;
+      ctx.textAlign = 'left';
+      const stun = d && d.stun > 0;
+      ctx.globalAlpha = d && d.out ? 0.35 : 1;
+      ctx.fillText(PILOT[i].name, x, 28);
+      ctx.fillStyle = COL.gold;
+      ctx.fillText('★' + (d ? d.stars : 0), x + 28, 28);
+      ctx.fillStyle = stun ? '#ff8aa0' : '#ff6b81';
+      let hearts = '';
+      const lives = d ? Math.max(0, d.lives) : 0;
+      for (let h = 0; h < lives; h++) hearts += '♥';
+      ctx.fillText(hearts || '—', x + 58, 28);
+      ctx.globalAlpha = 1;
+      x += 150;
+    }
+    if (G.difficulty === 'extreme' && nextMult() > 1) {
+      ctx.fillStyle = COL.amber;
+      ctx.font = '700 13px ' + FONT;
+      ctx.textAlign = 'left';
+      ctx.fillText('COMBO ×' + nextMult(), 960, 28);
+    }
+  } else if (G.scene === 'play' || G.scene === 'results') {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 12px ' + FONT;
+    ctx.fillText(G.mode === 'coop' ? 'TEAM SCORE' : 'SCORE', 500, 22);
+    ctx.fillStyle = COL.gold;
+    ctx.font = '700 16px ' + FONT;
+    ctx.fillText(fmt(G.score), 500, 38);
+    let sx = 640;
+    for (let i = 0; i < G.shieldsMax; i++) {
+      drawHex(sx + i * 22, 28, 8, i < G.shields ? '#3ee0ff' : 'transparent', i < G.shields ? '#bff6ff' : 'rgba(255,255,255,0.2)');
+    }
+    if (G.difficulty === 'extreme' && nextMult() > 1 && G.scene === 'play') {
+      ctx.fillStyle = COL.amber;
+      ctx.font = '700 13px ' + FONT;
+      ctx.fillText('COMBO ×' + nextMult(), 780, 28);
+    }
+  } else {
+    ctx.fillStyle = COL.dim;
+    ctx.font = '700 12px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.fillText('BEST ' + fmt(Math.max(G.bestSolo, G.bestCoop)), 500, 28);
+  }
+
+  if (G.scene === 'play') {
+    const t = Math.max(0, G.timer);
+    ctx.textAlign = 'right';
+    ctx.font = '700 16px ' + FONT;
+    ctx.fillStyle = t < 10 ? COL.red : COL.ink;
+    ctx.fillText(clock(t), 1168, 24);
+    roundRect(1048, 34, 120, 6, 3);
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.fill();
+    roundRect(1048, 34, 120 * clamp(t / G.timerMax, 0, 1), 6, 3);
+    ctx.fillStyle = t < 10 ? COL.red : COL.cyan;
+    ctx.fill();
+  }
+
+  const mr = muteRect();
+  roundRect(mr.x, mr.y, mr.w, mr.h, 8);
+  ctx.fillStyle = G.muted ? 'rgba(255,77,106,0.2)' : 'rgba(62,224,255,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = G.muted ? COL.red : COL.cyan;
+  ctx.stroke();
+  ctx.fillStyle = COL.ink;
+  ctx.font = '700 12px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(G.muted ? 'MUTED' : 'MUTE', mr.x + mr.w / 2, mr.y + mr.h / 2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function clock(t) {
+  const s = Math.max(0, Math.ceil(t));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ':' + (r < 10 ? '0' : '') + r;
+}
+
+function drawBanner() {
+  const b = UI;
+  panel(b.bannerX, b.bannerY, b.bannerW, b.bannerH, 12);
+  if (!G.puzzle) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(b.bannerX, b.bannerY, b.bannerW, b.bannerH);
+  ctx.clip();
+  const badge = G.puzzle.missionBadge;
+  ctx.font = '700 12px ' + FONT;
+  const bw = ctx.measureText(badge).width + 22;
+  roundRect(28, b.bannerY + 10, bw, 24, 12);
+  ctx.fillStyle = 'rgba(255,215,106,0.16)';
+  ctx.fill();
+  ctx.strokeStyle = COL.gold;
+  ctx.stroke();
+  ctx.fillStyle = COL.gold;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(badge, 39, b.bannerY + 22);
+
+  const stepBadge = G.mode === 'duel'
+    ? 'RACE · STEP 1 THEN STEP 2'
+    : ('STEP ' + G.step + ' / 2 · ' + (G.step === 1 ? G.puzzle.step1.badge : G.puzzle.step2.badge));
+  ctx.font = '700 12px ' + FONT;
+  const sw = ctx.measureText(stepBadge).width + 22;
+  const sx = 28 + bw + 10;
+  roundRect(sx, b.bannerY + 10, sw, 24, 12);
+  ctx.fillStyle = 'rgba(62,224,255,0.12)';
+  ctx.fill();
+  ctx.strokeStyle = COL.cyan;
+  ctx.stroke();
+  ctx.fillStyle = COL.cyan;
+  ctx.fillText(stepBadge, sx + 11, b.bannerY + 22);
+
+  if (G.mode === 'coop') {
+    const p = activePilot();
+    const label = PILOT[p].name + ' ' + PILOT[p].call + ' LOCKS THIS STEP';
+    ctx.font = '700 12px ' + FONT;
+    const lw = ctx.measureText(label).width + 22;
+    const lx = sx + sw + 10;
+    roundRect(lx, b.bannerY + 10, lw, 24, 12);
+    ctx.fillStyle = hexAlpha(PILOT[p].color, 0.18);
+    ctx.fill();
+    ctx.strokeStyle = PILOT[p].color;
+    ctx.stroke();
+    ctx.fillStyle = PILOT[p].color;
+    ctx.fillText(label, lx + 11, b.bannerY + 22);
+  }
+
+  const sub = G.mode === 'duel'
+    ? 'Lock the Step 1 card, then the Step 2 card. First pilot through both wins the star.'
+    : (G.step === 1 ? G.puzzle.step1.subtitle : G.puzzle.step2.subtitle);
+  ctx.font = '700 16px ' + FONT;
+  ctx.fillStyle = COL.ink;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(sub, 30, b.bannerY + 56);
+  ctx.font = '500 15px ' + FONT;
+  ctx.fillStyle = '#d5e4f4';
+  const lines = wrap(G.puzzle.directive, b.bannerW - 48);
+  fillLines(lines.slice(0, 2), 30, b.bannerY + 78, 18, 'left');
+  ctx.restore();
+}
+
+function drawMachines() {
+  if (!G.puzzle) return;
+  const slots = machineSlots(G.puzzle);
+  slots.forEach(function (slot) {
+    const hot = G.surge > 0 && G.puzzle.glow.indexOf(slot.index) >= 0;
+    drawMachine(slot.machine.kind, slot.x, slot.y - 8, slot.s, slot.machine.accent, hot);
+    ctx.textAlign = 'center';
+    ctx.font = '700 14px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    const label = slot.machine.name + (slot.machine.count ? '  ×' + slot.machine.count : '');
+    ctx.fillText(label, slot.x, UI.mechY + UI.mechH - 22);
+    const coreY = UI.mechY + UI.mechH - 8;
+    ctx.beginPath();
+    ctx.arc(slot.x, coreY, 7, 0, Math.PI * 2);
+    ctx.strokeStyle = COL.gold;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(slot.x, coreY, 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * G.charge);
+    ctx.fillStyle = hot ? '#fff4c4' : COL.gold;
+    ctx.fill();
+    if (hot && !REDUCE) {
+      ctx.strokeStyle = hexAlpha(COL.gold, 0.45 + Math.sin(G.time * 16) * 0.25);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(slot.x, slot.y - 20);
+      ctx.lineTo(slot.x + Math.sin(G.time * 20) * 8, UI.mechY + 6);
+      ctx.stroke();
+    }
+  });
+  if (G.puzzle.bars && G.puzzle.bars.mode === 'transfer' && slots.length === 2) {
+    ctx.strokeStyle = hexAlpha(COL.cyan, 0.7);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.lineDashOffset = -G.time * 30;
+    ctx.beginPath();
+    ctx.moveTo(slots[0].x + 50, slots[0].y);
+    ctx.lineTo(slots[1].x - 50, slots[1].y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function measureSegments(row) {
+  let units = 0;
+  let more = 0;
+  let less = 0;
+  row.segments.forEach(function (s) {
+    if (s.t === 'unit') units += s.n;
+    if (s.t === 'more') more += s.v;
+    if (s.t === 'less') less += s.v;
+  });
+  return { units: units, more: more, less: less };
+}
+function planRows(rows, unitValue, trackW) {
+  const measured = rows.map(measureSegments);
+  const safeUnit = unitValue > 0 ? unitValue : 1;
+  const weights = measured.map(function (m) {
+    return m.units + (m.more > 0 ? m.more / safeUnit : 0);
+  });
+  const longest = Math.max.apply(null, weights.concat([1]));
+  let unitW = Math.min(52, trackW / longest);
+  if (unitW < 24) unitW = 24;
+  return measured.map(function (m) {
+    let moreW = m.more > 0 ? (m.more / safeUnit) * unitW : 0;
+    const used = m.units * unitW + moreW;
+    if (used > trackW && moreW > 0) moreW = Math.max(10, trackW - m.units * unitW);
+    const lessW = m.less > 0 ? Math.min(unitW * 0.82, Math.max(12, (m.less / safeUnit) * unitW)) : 0;
+    return { units: m.units, unitW: unitW, moreW: moreW, lessW: lessW, more: m.more, less: m.less };
+  });
+}
+function paintBarTag(x, y, w, h, text, ink, outside) {
+  ctx.font = '700 12px ' + FONT;
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width;
+  if (w >= tw + 8) {
+    ctx.fillStyle = ink;
+    ctx.textAlign = 'center';
+    ctx.fillText(text, x + w / 2, y + h / 2);
+  } else {
+    ctx.fillStyle = outside;
+    ctx.textAlign = 'left';
+    ctx.fillText(text, x + Math.max(w, 8) + 4, y + h / 2);
+  }
+}
+
+function drawUnitBlocks(x, y, h, plan, accent, known) {
+  let cursor = x;
+  for (let i = 0; i < plan.units; i++) {
+    roundRect(cursor, y, Math.max(8, plan.unitW - 4), h, 5);
+    ctx.fillStyle = hexAlpha(accent, known ? 0.95 : 0.78);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.stroke();
+    if (plan.unitW > 28) {
+      ctx.fillStyle = '#07111f';
+      ctx.font = '700 12px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('1u', cursor + (plan.unitW - 4) / 2, y + h / 2);
+    }
+    cursor += plan.unitW;
+  }
+  return cursor;
+}
+
+function drawCompareRows(area, bars) {
+  const known = step1Done();
+  const rows = bars.rows;
+  const trackW = area.w - 260;
+  const plans = planRows(rows, bars.unitValue, trackW);
+  const top = area.y + 14;
+  const rowH = Math.min(52, (area.h - 42) / rows.length);
+  rows.forEach(function (row, i) {
+    const y = top + i * rowH;
+    ctx.font = '700 13px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.label, area.x + 16, y + 14);
+    const trackX = area.x + 230;
+    const plan = plans[i];
+    const end = drawUnitBlocks(trackX, y, 28, plan, row.accent, known);
+    if (plan.more > 0) {
+      const bw = Math.max(plan.moreW, 8);
+      roundRect(end, y, bw, 28, 5);
+      ctx.fillStyle = COL.gold;
+      ctx.fill();
+      paintBarTag(end, y, bw, 28, '+' + fmt(plan.more), '#2a2108', COL.gold);
+    }
+    if (plan.less > 0) {
+      const lw = Math.max(plan.lessW, 10);
+      const hx = end - lw;
+      hatch(hx, y, lw, 28);
+      paintBarTag(hx, y, lw, 28, '−' + fmt(plan.less), '#fff4f6', COL.red);
+    }
+  });
+  ctx.textBaseline = 'alphabetic';
+}
+
+function hatch(x, y, w, h) {
+  ctx.save();
+  roundRect(x, y, w, h, 4);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255,77,106,0.18)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = 'rgba(255,77,106,0.9)';
+  ctx.lineWidth = 1.5;
+  for (let i = -h; i < w; i += 7) {
+    ctx.beginPath();
+    ctx.moveTo(x + i, y + h);
+    ctx.lineTo(x + i + h, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawBracket(x, y, w, label) {
+  ctx.strokeStyle = COL.gold;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x, y + 7);
+  ctx.lineTo(x + w, y + 7);
+  ctx.lineTo(x + w, y);
+  ctx.stroke();
+  ctx.fillStyle = COL.gold;
+  ctx.font = '700 12px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(label, x + w / 2, y + 20);
+}
+
+function drawEqualize(area, bars) {
+  const known = step1Done();
+  const solved = G.surge > 0 && (G.mode === 'duel' ? G.winner >= 0 : G.step >= 2);
+  const maxV = Math.max(bars.high.value, bars.low.value);
+  const trackX = area.x + 230;
+  const trackW = area.w - 280;
+  [{ item: bars.high, y: area.y + 36 }, { item: bars.low, y: area.y + 92 }].forEach(function (row) {
+    ctx.font = '700 14px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.item.label, area.x + 16, row.y + 16);
+    const w = Math.max(20, trackW * (row.item.value / maxV));
+    roundRect(trackX, row.y, w, 32, 6);
+    ctx.fillStyle = hexAlpha(row.item.accent, 0.9);
+    ctx.fill();
+    ctx.fillStyle = '#07111f';
+    ctx.font = '700 13px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.fillText(fmt(row.item.value), trackX + Math.min(w - 30, w / 2), row.y + 16);
+  });
+  const highW = trackW * (bars.high.value / maxV);
+  const lowW = trackW * (bars.low.value / maxV);
+  const gapX = trackX + lowW;
+  const gapW = Math.max(8, highW - lowW);
+  ctx.fillStyle = hexAlpha(COL.gold, 0.45);
+  ctx.fillRect(gapX, area.y + 36, gapW, 32);
+  drawBracket(gapX, area.y + 70, gapW, known ? ('gap ' + fmt(bars.diff)) : 'gap ?');
+  if (solved) {
+    ctx.fillStyle = COL.green;
+    ctx.font = '700 14px ' + FONT;
+    ctx.textAlign = 'left';
+    ctx.fillText('Transfer ' + fmt(bars.half) + '  ·  both end equal', trackX, area.y + 168);
+  }
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawTransfer(area, bars) {
+  const known = step1Done();
+  const solved = G.surge > 0 && (G.mode === 'duel' ? G.winner >= 0 : G.step >= 2);
+  ctx.font = '700 12px ' + FONT;
+  ctx.fillStyle = COL.dim;
+  ctx.textAlign = 'left';
+  ctx.fillText('NOW', area.x + 16, area.y + 18);
+  ctx.fillStyle = COL.cyan;
+  ctx.fillText('END', area.x + 16, area.y + 84);
+  const maxNow = Math.max(bars.now[0].value, bars.now[1].value);
+  bars.now.forEach(function (row, i) {
+    const y = area.y + 28 + i * 28;
+    ctx.font = '700 12px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.label, area.x + 70, y + 9);
+    const w = Math.max(16, 360 * (row.value / maxNow));
+    roundRect(area.x + 250, y, w, 18, 4);
+    ctx.fillStyle = hexAlpha(row.accent, 0.75);
+    ctx.fill();
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.fillText(fmt(row.value), area.x + 258 + w, y + 9);
+  });
+  const endPlans = planRows(bars.end, bars.unitValue || 40, area.w - 280);
+  bars.end.forEach(function (row, i) {
+    const y = area.y + 92 + i * 36;
+    ctx.font = '700 13px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.label, area.x + 16, y + 14);
+    const plan = endPlans[i];
+    const end = drawUnitBlocks(area.x + 230, y, 28, plan, row.accent, true);
+    if (plan.more > 0) {
+      const bw = Math.max(plan.moreW, 8);
+      roundRect(end, y, bw, 28, 4);
+      ctx.fillStyle = COL.gold;
+      ctx.fill();
+      paintBarTag(end, y, bw, 28, '+' + fmt(plan.more), '#2a2108', COL.gold);
+    }
+  });
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillStyle = known ? COL.gold : COL.dim;
+  ctx.textAlign = 'left';
+  const footY = area.y + area.h - 14;
+  ctx.fillText(known ? ('Total stays ' + fmt(bars.total)) : 'Total stays  ?', area.x + 16, footY);
+  ctx.fillStyle = COL.dim;
+  const goalLines = wrap(bars.goal, solved ? area.w - 460 : area.w - 290);
+  ctx.fillText(goalLines[0] || '', area.x + 250, footY);
+  if (solved) {
+    ctx.fillStyle = COL.green;
+    ctx.textAlign = 'right';
+    ctx.fillText('END locked', area.x + area.w - 16, footY);
+    ctx.textAlign = 'left';
+  }
+}
+
+function drawGroup(area, bars) {
+  const known = step1Done();
+  bars.groups.forEach(function (group, i) {
+    const y = area.y + 20 + i * 72;
+    ctx.font = '700 14px ' + FONT;
+    ctx.fillStyle = COL.ink;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(group.label + '  ×' + group.count, area.x + 16, y + 16);
+    const unitW = 36;
+    const maxShow = Math.min(group.count, 8);
+    for (let n = 0; n < maxShow; n++) {
+      const x = area.x + 230 + n * (unitW + 6);
+      roundRect(x, y, unitW, 32, 5);
+      ctx.fillStyle = hexAlpha(group.accent, 0.9);
+      ctx.fill();
+      ctx.fillStyle = '#07111f';
+      ctx.font = '700 11px ' + FONT;
+      ctx.textAlign = 'center';
+      ctx.fillText('1u', x + unitW / 2, y + 16);
+      if (group.extra && !group.fewer) {
+        ctx.fillStyle = COL.gold;
+        ctx.fillRect(x + unitW - 8, y - 6, 10, 8);
+      }
+      if (group.extra && group.fewer) hatch(x + unitW - 12, y, 12, 32);
+    }
+    if (group.count > maxShow) {
+      ctx.fillStyle = COL.dim;
+      ctx.textAlign = 'left';
+      ctx.font = '700 12px ' + FONT;
+      ctx.fillText('+' + (group.count - maxShow), area.x + 230 + maxShow * (unitW + 6), y + 16);
+    }
+  });
+  ctx.textBaseline = 'alphabetic';
+  drawBracket(area.x + 230, area.y + 148, 36, known ? ('1u = ' + fmt(bars.unitValue)) : '1u = ?');
+  ctx.fillStyle = COL.dim;
+  ctx.font = '600 13px ' + FONT;
+  ctx.textAlign = 'left';
+  const lines = wrap(bars.footnote, area.w - 40);
+  ctx.fillText(lines[0] || '', area.x + 16, area.y + area.h - 16);
+}
+
+function drawBars() {
+  panel(UI.barX, UI.barY, UI.barW, UI.barH, 12);
+  if (!G.puzzle) return;
+  const bars = G.puzzle.bars;
+  if (bars.mode === 'compare') drawCompareRows({ x: UI.barX, y: UI.barY, w: UI.barW, h: UI.barH }, bars);
+  else if (bars.mode === 'equalize') drawEqualize({ x: UI.barX, y: UI.barY, w: UI.barW, h: UI.barH }, bars);
+  else if (bars.mode === 'transfer') drawTransfer({ x: UI.barX, y: UI.barY, w: UI.barW, h: UI.barH }, bars);
+  else if (bars.mode === 'group') drawGroup({ x: UI.barX, y: UI.barY, w: UI.barW, h: UI.barH }, bars);
+  if (bars.mode === 'compare') {
+    const known = step1Done();
+    const prefix = known ? ('1u = ' + fmt(bars.unitValue) + ' ' + (G.puzzle.flavor.unit) + '. ') : '1u = ?. ';
+    ctx.font = '600 13px ' + FONT;
+    ctx.fillStyle = known ? COL.gold : COL.dim;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(prefix + bars.footnote, UI.barX + 16, UI.barY + UI.barH - 14);
+  }
+}
+
+function drawTip() {
+  panel(UI.tipX, UI.tipY, UI.tipW, UI.tipH, 10);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(UI.tipX + 8, UI.tipY + 4, UI.tipW - 16, UI.tipH - 8);
+  ctx.clip();
+  let size = 15;
+  ctx.font = '600 ' + size + 'px ' + FONT;
+  let lines = wrap(G.tip || '', UI.tipW - 36);
+  if (lines.length > 2) {
+    size = 13;
+    ctx.font = '600 13px ' + FONT;
+    lines = wrap(G.tip || '', UI.tipW - 36);
+  }
+  const shown = lines.slice(0, 3);
+  const lineH = size + 2;
+  const block = shown.length * lineH;
+  let y = UI.tipY + (UI.tipH - block) / 2 + size - 1;
+  ctx.fillStyle = G.tipColor || COL.dim;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  shown.forEach(function (ln, i) { ctx.fillText(ln, UI.tipX + 16, y + i * lineH); });
+  ctx.restore();
+}
+
+function keyLegend(index) {
+  if (G.mode === 'duel') {
+    const bits = [];
+    for (let p = 0; p < G.playersN; p++) bits.push(PILOT[p].keys[index]);
+    return bits.join(' ');
+  }
+  if (G.mode === 'coop') return PILOT[activePilot()].keys[index];
+  return PILOT[0].keys[index];
+}
+
+function drawCards() {
+  const steps = G.mode === 'duel' ? [1, 2] : [G.step];
+  steps.forEach(function (step) {
+    const rects = cardRects(step);
+    const options = step === 1 ? G.options1 : G.options2;
+    const revealCorrect = (G.mode !== 'duel' && ((step === 1 && G.after === 'step2') || (step === 2 && G.surge > 0)))
+      || (G.mode === 'duel' && G.winner >= 0 && step === 2);
+    rects.forEach(function (r, i) {
+      const opt = options[i];
+      if (!opt) return;
+      const hovered = G.hover === i && G.hoverStep === step;
+      const selectedSolo = G.mode !== 'duel' && G.cursor === i && step === G.step;
+      const miss = G.badFlash && G.badFlash.step === step && G.badFlash.index === i && G.time < G.badFlash.until;
+      roundRect(r.x, r.y, r.w, r.h, 14);
+      ctx.fillStyle = miss ? 'rgba(90, 16, 32, 0.95)' : (opt.correct && revealCorrect ? 'rgba(18, 70, 48, 0.95)' : 'rgba(12, 28, 52, 0.95)');
+      ctx.fill();
+      ctx.lineWidth = hovered || selectedSolo ? 3 : 1.5;
+      ctx.strokeStyle = miss ? COL.red : (opt.correct && revealCorrect ? COL.green : (hovered || selectedSolo ? COL.cyan : 'rgba(150,200,230,0.35)'));
+      ctx.stroke();
+      if (G.mode === 'duel') {
+        G.duelists.forEach(function (d, p) {
+          if (d.out || d.done || d.stun > 0) return;
+          if (d.step === step && d.cursor === i) {
+            ctx.strokeStyle = PILOT[p].color;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(r.x + 3 + p, r.y + 3 + p, r.w - 6 - p * 2, r.h - 6 - p * 2);
+          }
+        });
+        ctx.font = '700 11px ' + FONT;
+        ctx.fillStyle = COL.dim;
+        ctx.textAlign = 'left';
+        ctx.fillText(step === 1 ? 'STEP 1' : 'STEP 2', r.x + 12, r.y + 16);
+      }
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const num = fmt(opt.value);
+      ctx.font = '700 ' + (num.length > 5 ? 28 : (G.mode === 'duel' ? 32 : 46)) + 'px ' + FONT;
+      ctx.fillStyle = COL.ink;
+      ctx.fillText(num, r.x + r.w / 2, r.y + r.h * (G.mode === 'duel' ? 0.48 : 0.46));
+      ctx.font = '700 13px ' + FONT;
+      ctx.fillStyle = COL.gold;
+      ctx.fillText(G.puzzle ? G.puzzle.flavor.unit : '', r.x + r.w / 2, r.y + r.h * (G.mode === 'duel' ? 0.72 : 0.66));
+      ctx.font = '700 13px ' + FONT;
+      ctx.fillStyle = COL.dim;
+      ctx.fillText(keyLegend(i), r.x + r.w / 2, r.y + r.h - (G.mode === 'duel' ? 14 : 22));
+    });
+  });
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawFX() {
+  G.particles.forEach(function (p) {
+    const t = 1 - p.age / p.life;
+    ctx.globalAlpha = Math.max(0, t);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+  G.floaters.forEach(function (f) {
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    ctx.fillStyle = f.color;
+    ctx.font = '700 28px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.globalAlpha = 1;
+  });
+  if (G.flash > 0) {
+    ctx.fillStyle = 'rgba(255, 236, 180, ' + (G.flash * 0.35) + ')';
+    ctx.fillRect(0, 0, VW, VH);
+  }
+}
+
+function drawTitle() {
+  drawBackground();
+  drawHUD();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '700 13px ' + FONT;
+  ctx.fillText('SINGAPORE PRIMARY 3–4  ·  COMPARISON BAR MODELS', VW / 2, 70);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '700 46px ' + FONT;
+  ctx.fillText('POWER-CORE FORGE', VW / 2, 112);
+  ctx.fillStyle = COL.gold;
+  ctx.font = '700 16px ' + FONT;
+  ctx.fillText('Solve the bar. Charge the core.', VW / 2, 138);
+  const showcase = [
+    { kind: 'jet', accent: '#d7b4ff', name: 'Valkyrie' },
+    { kind: 'tank', accent: '#ffb020', name: 'Titan' },
+    { kind: 'mech', accent: '#7ee0ff', name: 'Vanguard' },
+    { kind: 'drone', accent: '#3dff9a', name: 'Scout' }
+  ];
+  showcase.forEach(function (m, i) {
+    const x = 250 + i * 220;
+    drawMachine(m.kind, x, 178, 0.5, m.accent, false);
+  });
+
+  ctx.font = '700 12px ' + FONT;
+  ctx.fillStyle = COL.dim;
+  ctx.textAlign = 'left';
+  ctx.fillText('PILOTS', 78, 238);
+  ctx.fillText('MODE', 78, 322);
+  ctx.fillText('DIFFICULTY', 78, 408);
+
+  const rows = titleRows();
+  rows.forEach(function (row, r) {
+    row.forEach(function (cell, c) {
+      const item = cell.item;
+      const focused = G.focus.row === r && G.focus.col === c;
+      let selected = false;
+      let label = '';
+      let sub = '';
+      if (item.type === 'players') {
+        selected = G.playersN === item.n;
+        label = item.n + (item.n === 1 ? ' PILOT' : ' PILOTS');
+      } else if (item.type === 'mode') {
+        selected = G.mode === item.mode;
+        label = item.mode === 'solo' ? 'SOLO' : (item.mode === 'coop' ? 'TEAM CO-OP' : 'MECHA DUEL');
+      } else if (item.type === 'diff') {
+        selected = G.difficulty === item.d;
+        const info = DIFFS.filter(function (d) { return d.id === item.d; })[0];
+        label = info.label;
+        sub = info.rank;
+      } else {
+        label = 'START FORGE';
+        selected = true;
+      }
+      const enabled = item.enabled !== false;
+      roundRect(cell.rect.x, cell.rect.y, cell.rect.w, cell.rect.h, 12);
+      ctx.globalAlpha = enabled ? 1 : 0.35;
+      ctx.fillStyle = selected ? 'rgba(62,224,255,0.16)' : 'rgba(8,18,36,0.88)';
+      ctx.fill();
+      ctx.lineWidth = focused ? 3 : 1.5;
+      ctx.strokeStyle = focused ? COL.gold : (selected ? COL.cyan : COL.line);
+      ctx.stroke();
+      ctx.fillStyle = COL.ink;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '700 ' + (item.type === 'start' ? 22 : 16) + 'px ' + FONT;
+      ctx.fillText(label, cell.rect.x + cell.rect.w / 2, cell.rect.y + (sub ? 22 : cell.rect.h / 2));
+      if (sub) {
+        ctx.font = '600 12px ' + FONT;
+        ctx.fillStyle = COL.gold;
+        ctx.fillText(sub, cell.rect.x + cell.rect.w / 2, cell.rect.y + 44);
+      }
+      ctx.globalAlpha = 1;
+    });
+  });
+
+  const info = DIFFS.filter(function (d) { return d.id === G.difficulty; })[0];
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'center';
+  ctx.font = '600 15px ' + FONT;
+  ctx.fillStyle = '#d5e4f4';
+  ctx.fillText(info.blurb, VW / 2, 470);
+  ctx.font = '600 14px ' + FONT;
+  ctx.fillStyle = COL.gold;
+  const noteLines = wrap(G.note, 900);
+  ctx.fillText(noteLines[0] || '', VW / 2, 574);
+
+  ctx.textAlign = 'left';
+  ctx.font = '600 14px ' + FONT;
+  ctx.fillStyle = COL.dim;
+  const colX = [80, 500, 900];
+  const blocks = [
+    ['P1 CRIMSON', 'Mouse, 1 2 3 4, arrows + Space', 'Gamepad 0 · D-pad + A'],
+    ['P2 AZURE', 'Q W E R', 'Gamepad 1 · D-pad + A'],
+    ['P3 EMERALD', 'U I O P', 'Gamepad 2 · D-pad + A']
+  ];
+  blocks.forEach(function (lines, i) {
+    ctx.fillStyle = PILOT[i].color;
+    ctx.font = '700 14px ' + FONT;
+    ctx.fillText(lines[0], colX[i], 630);
+    ctx.fillStyle = COL.dim;
+    ctx.font = '600 13px ' + FONT;
+    ctx.fillText(lines[1], colX[i], 652);
+    ctx.fillText(lines[2], colX[i], 672);
+  });
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#c5d7ea';
+  ctx.font = '600 14px ' + FONT;
+  ctx.fillText('Co-op shows one team score. Pilots rotate Step 1 and Step 2. Duel: first to lock both steps wins the star. M mutes.', VW / 2, 720);
+  ctx.fillStyle = COL.gold;
+  ctx.fillText('Best solo ' + fmt(G.bestSolo) + '    ·    Best team ' + fmt(G.bestCoop), VW / 2, 752);
+  ctx.fillStyle = COL.dim;
+  ctx.font = '600 12px ' + FONT;
+  ctx.fillText('8BitDo pads: set XInput so the bottom button is A. Wrong cards cost a Core Shield, or 1 Lane Life in a duel.', VW / 2, 778);
+}
+
+function drawPlay() {
+  drawBackground();
+  ctx.save();
+  if (G.shake > 0.2) {
+    const s = G.shake;
+    ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+  }
+  drawHUD();
+  drawBanner();
+  drawMachines();
+  drawBars();
+  drawTip();
+  drawCards();
+  drawFX();
+  if (G.mode === 'duel') {
+    G.duelists.forEach(function (d, i) {
+      if (d.stun > 0 && !d.out) {
+        ctx.fillStyle = hexAlpha(PILOT[i].color, 0.12);
+        ctx.fillRect(0, 0, VW, VH);
+      }
+    });
+  }
+  ctx.restore();
+}
+
+function drawResults() {
+  drawBackground();
+  drawHUD();
+  const stats = G.stats || { score: 0, correct: 0, wrong: 0, round: 1, reason: '', combo: 0, shields: 0, shieldsMax: 0, duel: [] };
+  const attempts = stats.correct + stats.wrong;
+  const accuracy = attempts ? Math.round(100 * stats.correct / attempts) : 0;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = COL.cyan;
+  ctx.font = '700 14px ' + FONT;
+  ctx.fillText(stats.reason ? stats.reason.toUpperCase() : 'FORGE STABLE', VW / 2, 120);
+  ctx.fillStyle = COL.ink;
+  ctx.font = '700 48px ' + FONT;
+  if (G.mode === 'duel') {
+    const ranked = stats.duel.map(function (d, i) { return { i: i, stars: d.stars, score: d.score }; });
+    ranked.sort(function (a, b) { return b.stars - a.stars || b.score - a.score; });
+    const top = ranked[0];
+    const tied = ranked.filter(function (r) { return r.stars === top.stars && r.score === top.score; });
+    const title = tied.length > 1 ? 'PILOTS TIE THE BAY' : (PILOT[top.i].call + ' TAKES THE BAY');
+    ctx.fillText(title, VW / 2, 180);
+    ranked.forEach(function (r, idx) {
+      const y = 250 + idx * 70;
+      ctx.fillStyle = PILOT[r.i].color;
+      ctx.font = '700 24px ' + FONT;
+      ctx.fillText(PILOT[r.i].name + '  ' + PILOT[r.i].call + '    ★ ' + r.stars + '    ♥ ' + stats.duel[r.i].lives + '    speed ' + fmt(r.score), VW / 2, y);
+    });
+  } else {
+    ctx.fillText(G.mode === 'coop' ? 'TEAM SCORE  ' + fmt(stats.score) : fmt(stats.score), VW / 2, 190);
+    ctx.font = '600 20px ' + FONT;
+    ctx.fillStyle = COL.dim;
+    ctx.fillText(G.mode === 'coop' ? 'One squadron. Shared shields.' : 'Forge points', VW / 2, 230);
+    if (G.mode === 'coop') {
+      const names = [];
+      for (let i = 0; i < G.playersN; i++) names.push(PILOT[i].call);
+      ctx.fillStyle = COL.ink;
+      ctx.fillText('Squadron  ' + names.join('   '), VW / 2, 280);
+    }
+  }
+  ctx.font = '600 18px ' + FONT;
+  ctx.fillStyle = '#d5e4f4';
+  ctx.fillText('Accuracy ' + accuracy + '%    ·    ' + stats.correct + ' locks    ·    ' + stats.wrong + ' overloads', VW / 2, G.mode === 'duel' ? 480 : 340);
+  ctx.fillText('Reached round ' + stats.round + ' of ' + ROUNDS + (G.difficulty === 'extreme' ? '    ·    best combo ×' + (stats.combo >= 2 ? 3 : stats.combo === 1 ? 2 : 1) : ''), VW / 2, G.mode === 'duel' ? 514 : 374);
+  if (G.mode !== 'duel') {
+    ctx.fillText('Shields left  ' + stats.shields + ' / ' + stats.shieldsMax, VW / 2, 414);
+    ctx.fillStyle = COL.gold;
+    ctx.fillText(G.mode === 'solo' ? ('Best solo  ' + fmt(G.bestSolo)) : ('Best team  ' + fmt(G.bestCoop)), VW / 2, 460);
+  }
+  resultButtons().forEach(function (b) {
+    roundRect(b.rect.x, b.rect.y, b.rect.w, b.rect.h, 14);
+    ctx.fillStyle = b.id === 'again' ? 'rgba(62,224,255,0.16)' : 'rgba(8,18,36,0.9)';
+    ctx.fill();
+    ctx.strokeStyle = b.id === 'again' ? COL.cyan : COL.line;
+    ctx.stroke();
+    ctx.fillStyle = COL.ink;
+    ctx.font = '700 18px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.id === 'again' ? 'FORGE AGAIN' : 'TITLE SCREEN', b.rect.x + b.rect.w / 2, b.rect.y + b.rect.h / 2);
+  });
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = '600 14px ' + FONT;
+  ctx.fillStyle = COL.dim;
+  ctx.fillText('Enter forges again. Escape returns to the title.', VW / 2, 700);
+}
+
+function updateHover() {
+  G.hover = -1;
+  G.hoverStep = 0;
+  if (!pointer.inside || G.scene !== 'play') return;
+  if (G.mode === 'duel') {
+    if (!G.duelists[0] || G.duelists[0].out) return;
+    const step = G.duelists[0].step;
+    const rects = cardRects(step);
+    for (let i = 0; i < 4; i++) if (hit(rects[i], pointer)) { G.hover = i; G.hoverStep = step; }
+    return;
+  }
+  const rects = cardRects(G.step);
+  for (let i = 0; i < 4; i++) if (hit(rects[i], pointer)) { G.hover = i; G.hoverStep = G.step; }
+}
+
+function update(dt) {
+  G.time += dt;
+  if (G.scene === 'play') {
+    if (G.gate > 0) {
+      G.gate -= dt;
+      if (G.gate <= 0) {
+        G.gate = 0;
+        resolveGate();
+      }
+    } else if (G.timerOn && !G.hidden) {
+      G.timer -= dt;
+      if (G.timer <= 0) timeoutRound();
+    }
+    if (G.mode === 'duel') {
+      G.duelists.forEach(function (d) { if (d.stun > 0) d.stun = Math.max(0, d.stun - dt); });
+    }
+    const goal = step1Done() ? 1 : 0;
+    G.charge = lerp(G.charge, goal, REDUCE ? 1 : 0.08);
+    G.shake *= 0.86;
+    G.flash = Math.max(0, G.flash - dt);
+    for (let i = G.particles.length - 1; i >= 0; i--) {
+      const p = G.particles[i];
+      p.age += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 40 * dt;
+      if (p.age >= p.life) G.particles.splice(i, 1);
+    }
+    if (G.particles.length > 260) G.particles.splice(0, G.particles.length - 260);
+    for (let i = G.floaters.length - 1; i >= 0; i--) {
+      const f = G.floaters[i];
+      f.age += dt;
+      f.y -= 26 * dt;
+      if (f.age >= f.life) G.floaters.splice(i, 1);
+    }
+  }
+}
+
+function frame(ts) {
+  try {
+    if (!frame.prev) frame.prev = ts;
+    const dt = clamp((ts - frame.prev) / 1000, 0, 0.05);
+    frame.prev = ts;
+    pollPads();
+    audio.tickMusic();
+    const clicked = clickEdge;
+    clickEdge = null;
+    if (G.scene === 'title') consumeTitle(clicked);
+    else if (G.scene === 'results') consumeResults(clicked);
+    else consumePlay(clicked);
+    update(dt);
+    updateHover();
+    ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+    ctx.fillStyle = '#050914';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.translate(view.ox, view.oy);
+    ctx.scale(view.scale, view.scale);
+    if (fatal) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '16px ' + FONT;
+      ctx.fillText(fatal, 40, 40);
+    } else if (G.scene === 'title') drawTitle();
+    else if (G.scene === 'results') drawResults();
+    else drawPlay();
+    keyEdge.clear();
+  } catch (err) {
+    fatal = String(err && err.stack || err);
+  }
+  if (!window.__PCF_TEST) requestAnimationFrame(frame);
+}
+
+window.addEventListener('error', function (e) { fatal = String(e.message || e); });
+
+window.__PCF = {
+  G: G,
+  createPuzzle: createPuzzle,
+  invariantError: invariantError,
+  buildOptions: buildOptions,
+  compose: compose,
+  rollRaw: rollRaw
+};
+
+if (!window.__PCF_TEST) {
+  resize();
+  requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
