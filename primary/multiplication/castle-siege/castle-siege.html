@@ -315,7 +315,7 @@
             <span class="best" id="titleBest">Best honor 0</span>
           </div>
           <p>Build each product the way you would on paper: one digit at a time, carries in the cups, zero seals so each new row keeps its place, then add the columns.</p>
-          <p>Tier 1: 9 × 5, 23 × 8, 478 × 6. Tier 2: 29 × 35, 169 × 83, 7,639 × 42. Tier 3: 478 × 391, 8,395 × 601, 7,492 × 5,738.</p>
+          <p>Every round rolls a new product. Tier 1 uses a 1-digit multiplier. Tier 2 uses 2-digit multipliers. Tier 3 uses 3- and 4-digit multipliers, including a zero in the multiplier. Siege again for a fresh set. A failed wall stays put until you reforge it.</p>
           <ul class="rules">
             <li>Pick the rune for the <strong>whole step</strong>, after adding any carry orb.</li>
             <li>A shifted row needs zero seals first: tens 1, hundreds 2, thousands 3.</li>
@@ -362,17 +362,95 @@
 
     /*MATH*/
     var PLACE = ['ones', 'tens', 'hundreds', 'thousands', 'ten-thousands', 'hundred-thousands', 'millions', 'ten-millions', 'hundred-millions'];
-    var PROBLEMS = [
-      { tier: 1, a: 9, b: 5, title: 'Single-digit fundamentals' },
-      { tier: 1, a: 23, b: 8, title: 'A single carry' },
-      { tier: 1, a: 478, b: 6, title: 'Chained carries' },
-      { tier: 2, a: 29, b: 35, title: 'Two partial rows' },
-      { tier: 2, a: 169, b: 83, title: 'The placeholder gate' },
-      { tier: 2, a: 7639, b: 42, title: 'Four digits by two' },
-      { tier: 3, a: 478, b: 391, title: 'Double wax seal' },
-      { tier: 3, a: 8395, b: 601, title: 'The zero multiplier' },
-      { tier: 3, a: 7492, b: 5738, title: 'Epic four-row siege' }
+
+    function randInt(min, max) {
+      min = Math.ceil(min);
+      max = Math.floor(max);
+      if (max < min) return min;
+      return min + Math.floor(Math.random() * (max - min + 1));
+    }
+
+    function digitsToNum(digits) {
+      var n = 0;
+      var i;
+      for (i = 0; i < digits.length; i++) n = n * 10 + digits[i];
+      return n;
+    }
+
+    function rollNum(len, nonzero) {
+      var digits = [];
+      var i;
+      for (i = 0; i < len; i++) {
+        if (i === 0) digits.push(randInt(1, 9));
+        else if (nonzero) digits.push(randInt(2, 9));
+        else digits.push(randInt(0, 9));
+      }
+      return digitsToNum(digits);
+    }
+
+    function rollFundamentals() {
+      return { a: randInt(2, 9), b: randInt(2, 9) };
+    }
+
+    function rollSingleCarry() {
+      var b = randInt(2, 9);
+      var ones = randInt(Math.ceil(10 / b), 9);
+      var tens = randInt(1, 9);
+      return { a: tens * 10 + ones, b: b };
+    }
+
+    function rollChained() {
+      var b = randInt(2, 9);
+      var ones = randInt(Math.ceil(10 / b), 9);
+      var carry = Math.floor(ones * b / 10);
+      var tens = randInt(Math.ceil((10 - carry) / b), 9);
+      var hundreds = randInt(1, 9);
+      return { a: hundreds * 100 + tens * 10 + ones, b: b };
+    }
+
+    function rollZeroMultiplier() {
+      var a = rollNum(Math.random() < 0.5 ? 3 : 4, false);
+      var hi = randInt(2, 9);
+      var mid = randInt(2, 9);
+      var lo = randInt(2, 9);
+      var b = Math.random() < 0.5 ? (hi * 100 + lo) : (hi * 100 + mid * 10);
+      return { a: a, b: b };
+    }
+
+    var SHAPES = [
+      { tier: 1, id: 'fundamentals', title: 'Single-digit fundamentals', roll: rollFundamentals },
+      { tier: 1, id: 'single-carry', title: 'A single carry', roll: rollSingleCarry },
+      { tier: 1, id: 'chained', title: 'Chained carries', roll: rollChained },
+      { tier: 2, id: 'two-rows', title: 'Two partial rows', roll: function () { return { a: rollNum(2, false), b: rollNum(2, true) }; } },
+      { tier: 2, id: 'placeholder', title: 'The placeholder gate', roll: function () { return { a: rollNum(3, false), b: rollNum(2, true) }; } },
+      { tier: 2, id: 'four-by-two', title: 'Four digits by two', roll: function () { return { a: rollNum(4, false), b: rollNum(2, true) }; } },
+      { tier: 3, id: 'double-seal', title: 'Double wax seal', roll: function () { return { a: rollNum(3, false), b: rollNum(3, true) }; } },
+      { tier: 3, id: 'zero-mult', title: 'The zero multiplier', roll: rollZeroMultiplier },
+      { tier: 3, id: 'four-row', title: 'Epic four-row siege', roll: function () { return { a: rollNum(4, false), b: rollNum(4, true) }; } }
     ];
+
+    function rollShape(shape) {
+      var pair = shape.roll();
+      return { tier: shape.tier, a: pair.a, b: pair.b, title: shape.title };
+    }
+
+    function shapeFits(shape, a, b) {
+      var as = String(a);
+      var bs = String(b);
+      var ones = a % 10;
+      var tens = Math.floor(a / 10) % 10;
+      var carry = Math.floor(ones * b / 10);
+      if (shape.id === 'fundamentals') return as.length === 1 && bs.length === 1 && a >= 2 && b >= 2;
+      if (shape.id === 'single-carry') return as.length === 2 && bs.length === 1 && b >= 2 && ones * b >= 10;
+      if (shape.id === 'chained') return as.length === 3 && bs.length === 1 && b >= 2 && ones * b >= 10 && tens * b + carry >= 10;
+      if (shape.id === 'two-rows') return as.length === 2 && bs.length === 2 && bs.indexOf('0') === -1;
+      if (shape.id === 'placeholder') return as.length === 3 && bs.length === 2 && bs.indexOf('0') === -1;
+      if (shape.id === 'four-by-two') return as.length === 4 && bs.length === 2 && bs.indexOf('0') === -1;
+      if (shape.id === 'double-seal') return as.length === 3 && bs.length === 3 && bs.indexOf('0') === -1;
+      if (shape.id === 'zero-mult') return (as.length === 3 || as.length === 4) && bs.length === 3 && bs.indexOf('0') > 0;
+      if (shape.id === 'four-row') return as.length === 4 && bs.length === 4 && bs.indexOf('0') === -1;
+      return false;
+    }
 
     function cap(s) {
       s = s || 'next';
@@ -759,7 +837,17 @@
     }
 
     function auditAll() {
-      var tests = PROBLEMS.map(function (p) { return [p.a, p.b, p.title]; });
+      var tests = [
+        [9, 5, 'fixed'],
+        [23, 8, 'fixed'],
+        [478, 6, 'fixed'],
+        [29, 35, 'fixed'],
+        [169, 83, 'fixed'],
+        [7639, 42, 'fixed'],
+        [478, 391, 'fixed'],
+        [8395, 601, 'fixed'],
+        [7492, 5738, 'fixed']
+      ];
       [[101, 11], [305, 20], [207, 10], [1001, 10], [50, 50], [999, 999], [12, 10], [8, 1], [25, 5], [604, 307], [100, 100], [7, 9], [80, 40]].forEach(function (pair) {
         tests.push([pair[0], pair[1], 'extra']);
       });
@@ -773,18 +861,65 @@
         });
       }
       tests.forEach(function (t) { run(t[0], t[1], t[2]); });
+      var sample;
+      for (sample = 0; sample < 16; sample++) {
+        SHAPES.forEach(function (shape) {
+          var problem = rollShape(shape);
+          if (!shapeFits(shape, problem.a, problem.b)) {
+            if (errors.length < 50) errors.push(shape.id + ' shape ' + problem.a + '×' + problem.b);
+          }
+          run(problem.a, problem.b, shape.id);
+        });
+      }
+      var savedRecent = recentKeys;
+      recentKeys = {};
+      ['1', '2', '3', 'all'].forEach(function (mode) {
+        var q = buildQueue(mode);
+        var expect = mode === 'all' ? SHAPES.length : 3;
+        if (q.length !== expect) errors.push('queue ' + mode + ' length ' + q.length);
+        var prevTier = 0;
+        q.forEach(function (p, i) {
+          if (mode !== 'all' && String(p.tier) !== String(mode)) errors.push('tier leak ' + mode);
+          if (mode === 'all' && p.tier < prevTier) errors.push('campaign order');
+          prevTier = p.tier;
+          if (i > 0 && q[i - 1].a === p.a && q[i - 1].b === p.b) errors.push('duplicate in queue');
+          run(p.a, p.b, 'queue-' + mode);
+        });
+      });
+      var first = buildQueue('1').map(function (p) { return p.a + '×' + p.b; }).join(',');
+      var second = buildQueue('1').map(function (p) { return p.a + '×' + p.b; }).join(',');
+      if (first === second) errors.push('tier replayed the same products ' + first);
+      recentKeys = savedRecent;
       return { ok: errors.length === 0, errors: errors, checked: n, summary: n + ' sieges, ' + errors.length + ' errors' };
     }
     /*ENDMATH*/
 
-    var CURRICULUM = {
-      tiers: {
-        '1': { label: 'Tier 1 · Easy', items: PROBLEMS.filter(function (p) { return p.tier === 1; }) },
-        '2': { label: 'Tier 2 · Medium', items: PROBLEMS.filter(function (p) { return p.tier === 2; }) },
-        '3': { label: 'Tier 3 · Hard', items: PROBLEMS.filter(function (p) { return p.tier === 3; }) }
-      },
-      flat: PROBLEMS.slice()
+    var recentKeys = {};
+    var TIER_LABELS = {
+      '1': 'Tier 1 · Easy',
+      '2': 'Tier 2 · Medium',
+      '3': 'Tier 3 · Hard',
+      all: 'Full campaign'
     };
+
+    function rollFresh(shape) {
+      var problem;
+      var key;
+      var guard = 0;
+      do {
+        problem = rollShape(shape);
+        key = problem.a + '×' + problem.b;
+        guard += 1;
+      } while (recentKeys[key] && guard < 24);
+      recentKeys[key] = true;
+      return problem;
+    }
+
+    function buildQueue(mode) {
+      return SHAPES.filter(function (shape) {
+        return mode === 'all' || String(shape.tier) === String(mode);
+      }).map(rollFresh);
+    }
 
     var WORLD = { w: 1280, h: 720 };
     var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -1244,14 +1379,8 @@
 
     function startSiege() {
       audioEnsure();
-      if (state.mode === 'all') {
-        queue = CURRICULUM.flat.slice();
-        state.queueLabel = 'Full campaign';
-      } else {
-        var tier = CURRICULUM.tiers[state.mode];
-        queue = tier.items.slice();
-        state.queueLabel = tier.label;
-      }
+      queue = buildQueue(state.mode);
+      state.queueLabel = TIER_LABELS[state.mode] || 'War room';
       state.qIndex = 0;
       state.honor = 0;
       pilots.forEach(function (p) {
