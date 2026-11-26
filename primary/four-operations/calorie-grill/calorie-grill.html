@@ -468,12 +468,12 @@
     easy: {
       name: 'EASY',
       title: 'Line Cook',
-      blurb: 'Two-burger and three-burger more / fewer models, plus equal trays. Transfer half the difference.'
+      blurb: 'One burger, different add-ons. More / fewer bars, plus equal trays.'
     },
     medium: {
       name: 'MEDIUM',
       title: 'Grill Chef',
-      blurb: 'Times as many, plus a more or fewer block. Read the ticket: one burger, or a meal total.'
+      blurb: 'The same burger: times as many, plus a more or fewer add-on.'
     },
     hard: {
       name: 'HARD',
@@ -591,13 +591,85 @@
     }
     return a || 1;
   }
-  function sheet(id, name) {
-    const f = FOOD[id];
-    const label = name || f.name;
-    return { id: id, name: label, short: name || f.short, layers: f.layers, accent: f.accent };
+  const GRILL_BASES = [
+    { id: 'veggie', name: 'Veggie Burger', short: 'Veggie' },
+    { id: 'chicken', name: 'Chicken Burger', short: 'Chicken' },
+    { id: 'beef', name: 'Beef Burger', short: 'Beef' },
+    { id: 'fish', name: 'Fish Burger', short: 'Fish' }
+  ];
+  const TOPPINGS = [
+    { id: 'sausage', name: 'sausage', short: 'Sausage', layer: 'sausage', with: 'with sausage' },
+    { id: 'fish', name: 'fish', short: 'Fish', layer: 'fish', with: 'with fish' },
+    { id: 'cheese', name: 'cheese', short: 'Cheese', layer: 'cheese', with: 'with cheese' },
+    { id: 'bacon', name: 'bacon', short: 'Bacon', layer: 'bacon', with: 'with bacon' },
+    { id: 'egg', name: 'egg', short: 'Egg', layer: 'egg', with: 'with an egg' },
+    { id: 'patty', name: 'extra patty', short: 'Patty', layer: 'beef', with: 'with an extra patty' }
+  ];
+  function grillBase(spec) {
+    const picked = spec || pick(GRILL_BASES);
+    const food = FOOD[picked.id];
+    return {
+      id: picked.id,
+      baseId: picked.id,
+      name: picked.name,
+      short: picked.short,
+      baseName: picked.name,
+      baseShort: picked.short,
+      layers: food.layers.slice(),
+      accent: food.accent,
+      topping: '',
+      withBit: ''
+    };
+  }
+  function grillTopped(base, topping) {
+    const layers = base.layers.slice();
+    const at = layers[0] === 'bun-top' ? 1 : 0;
+    layers.splice(at, 0, topping.layer);
+    return {
+      id: base.id,
+      baseId: base.baseId,
+      name: base.baseName + ' ' + topping.with,
+      short: base.baseShort + ' + ' + topping.short,
+      baseName: base.baseName,
+      baseShort: base.baseShort,
+      layers: layers,
+      accent: base.accent,
+      topping: topping.short,
+      withBit: topping.with
+    };
+  }
+  function grillLine(count, baseId) {
+    const spec = baseId ? GRILL_BASES.filter((item) => item.id === baseId)[0] : null;
+    const base = grillBase(spec);
+    const open = TOPPINGS.filter((topping) => base.layers.indexOf(topping.layer) === -1);
+    const pool = open.length >= count - 1 ? open : TOPPINGS;
+    const chosen = shuffle(pool).slice(0, count - 1);
+    return [base].concat(chosen.map((topping) => grillTopped(base, topping)));
+  }
+  function copiesOf(n, item) {
+    const noun = n === 1 ? item.baseName : item.baseName + 's';
+    return n + ' ' + noun + (item.withBit ? ' ' + item.withBit : '');
   }
   function showBurger(item, badge) {
-    return { kind: 'burger', name: item.short, layers: item.layers, badge: badge, accent: item.accent };
+    return {
+      kind: 'burger',
+      name: item.baseShort || item.short,
+      baseShort: item.baseShort || item.short,
+      topping: item.topping || '',
+      baseId: item.baseId || item.id,
+      layers: item.layers,
+      badge: badge,
+      accent: item.accent
+    };
+  }
+  function asLoadout(row, item, count) {
+    if (item && item.baseShort) {
+      row.base = item.baseShort;
+      row.addon = item.topping || '';
+      row.plain = !item.topping;
+    }
+    if (count) row.count = count;
+    return row;
   }
   function showTray(name, badge, accent) {
     return { kind: 'tray', name: name, badge: badge, accent: accent, layers: [] };
@@ -653,6 +725,13 @@
     if (ok1[0].value !== p.a1 || ok2[0].value !== p.a2) return false;
     if (p.need1 && !s1.has(p.need1)) return false;
     if (p.need2 && !s2.has(p.need2)) return false;
+    const burgers = p.show.filter((item) => item.kind === 'burger' && item.baseId);
+    if (burgers.length > 1) {
+      const id = burgers[0].baseId;
+      if (burgers.some((item) => item.baseId !== id)) return false;
+      if (burgers.filter((item) => !item.topping).length !== 1) return false;
+    }
+    if (p.story.indexOf('undefined') >= 0 || p.story.indexOf('NaN') >= 0) return false;
     return true;
   }
 
@@ -693,13 +772,10 @@
   }
 
   function makeTwoBurger() {
-    const bases = [sheet('chicken'), sheet('beef'), sheet('fish'), sheet('mini')];
     const more = Math.random() < 0.68;
-    const base = pick(bases);
-    let top = more
-      ? pick([sheet('chickcheese'), sheet('cheese'), sheet('bacon'), sheet('mega'), sheet('double')])
-      : pick([sheet('veggie'), sheet('fish'), sheet('mini', 'Garden Bite')]);
-    if (top.name === base.name) top = sheet(more ? 'mega' : 'veggie');
+    const line = grillLine(2);
+    const base = line[0];
+    const top = line[1];
     const A = ri(16, 40) * 10;
     let D = ri(4, 14) * 10;
     if (!more && D >= A - 60) D = 40;
@@ -735,8 +811,8 @@
       badge: askTotal ? 'FIND TOTAL CALORIES' : 'FIND BURGER CALORIES',
       badgeTone: askTotal ? 'total' : 'burger',
       story: story,
-      step1Ask: 'What is 1 unit? Lock in the ' + base.short + '.',
-      step2Ask: askTotal ? 'What are the total calories of both burgers?' : 'How many calories is 1 ' + top.short + '?',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
+      step2Ask: askTotal ? 'What are the total calories of both burgers?' : 'How many calories is the ' + top.name + '?',
       step1Em: '1 unit',
       step2Em: askTotal ? 'both burgers' : top.short,
       step1Mode: 'unit',
@@ -764,17 +840,17 @@
         unitKcal: A,
         footer: askTotal ? 'Altogether ?' : 'Stamp the ' + top.short,
         rows: more
-          ? [unitRow(base.short, 1, A + ' kcal', 'unit'), plusRow(top.short, 1, D, '+' + D, '?', 'ask')]
-          : [unitRow(base.short, 1, A + ' kcal', 'unit'), unitRow(top.short, 1, B === A - D ? '?' : '?', 'ask', D, '−' + D)]
+          ? [asLoadout(unitRow(base.short, 1, A + ' kcal', 'unit'), base), asLoadout(plusRow(top.short, 1, D, '+' + D, '?', 'ask'), top)]
+          : [asLoadout(unitRow(base.short, 1, A + ' kcal', 'unit'), base), asLoadout(unitRow(top.short, 1, '?', 'ask', D, '−' + D), top)]
       }
     });
   }
 
   function makeThreeBurger() {
-    const trio = shuffle([sheet('chicken'), sheet('fish'), sheet('beef'), sheet('veggie'), sheet('mini')]).slice(0, 3);
-    const base = trio[0];
-    const mid = trio[1];
-    const top = trio[2];
+    const line = grillLine(3);
+    const base = line[0];
+    const mid = line[1];
+    const top = line[2];
     const u = ri(14, 32) * 10;
     let f = ri(4, 16) * 10;
     let b = ri(4, 16) * 10;
@@ -792,14 +868,14 @@
     if (roll < 0.46) {
       a2 = beef;
       askName = top.name;
-      askText = 'Find the ' + top.name + "'s calories.";
+      askText = 'Find the calories of the ' + top.name + '.';
       badge = 'FIND BURGER CALORIES';
       tone = 'burger';
       em = top.short;
     } else if (roll < 0.74) {
       a2 = fish;
       askName = mid.name;
-      askText = 'Find the ' + mid.name + "'s calories.";
+      askText = 'Find the calories of the ' + mid.name + '.';
       badge = 'FIND BURGER CALORIES';
       tone = 'burger';
       em = mid.short;
@@ -820,7 +896,7 @@
       badge: badge,
       badgeTone: tone,
       story: story,
-      step1Ask: 'What is 1 unit? Find the ' + base.short + '.',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
       step2Ask: a2 === fish + beef
         ? ('What is the total of the ' + mid.name + ' and the ' + top.name + '?')
         : ('How many calories is the ' + (a2 === fish ? mid.name : top.name) + '?'),
@@ -857,9 +933,9 @@
         unitKcal: u,
         footer: 'Altogether ' + total + ' kcal',
         rows: [
-          unitRow(base.short, 1, '?', 'unit'),
-          plusRow(mid.short, 1, f, '+' + f, '?', ''),
-          plusRow(top.short, 1, b, '+' + b, '?', 'ask')
+          asLoadout(unitRow(base.short, 1, '?', 'unit'), base),
+          asLoadout(plusRow(mid.short, 1, f, '+' + f, '?', ''), mid),
+          asLoadout(plusRow(top.short, 1, b, '+' + b, '?', 'ask'), top)
         ]
       }
     });
@@ -923,31 +999,12 @@
     });
   }
 
-  function pickExcept(list, banned) {
-    const ok = list.filter((item) => banned.indexOf(item.name) === -1);
-    return ok.length ? pick(ok) : null;
-  }
-
-  function basePool() {
-    return [sheet('mini'), sheet('chicken'), sheet('veggie'), sheet('fish'), sheet('beef')];
-  }
-
-  function midPool(mult) {
-    if (mult === 2) return [sheet('double'), sheet('cheese'), sheet('bacon')];
-    if (mult === 3) return [sheet('chickcheese'), sheet('classic'), sheet('bacon')];
-    return [sheet('mega'), sheet('classic'), sheet('fishcheese')];
-  }
-
-  function topPool() {
-    return [sheet('mega'), sheet('fishcheese'), sheet('vegcheese'), sheet('chickcheese'), sheet('bacon')];
-  }
-
   function makeTimesTrio(fewerTop) {
     const mult = pick([2, 3, 5]);
-    const base = pick(basePool());
-    const mid = pickExcept(midPool(mult), [base.name]);
-    const top = mid ? pickExcept(topPool(), [base.name, mid.name]) : null;
-    if (!mid || !top) return null;
+    const line = grillLine(3);
+    const base = line[0];
+    const mid = line[1];
+    const top = line[2];
     const u = ri(6, 16) * 10;
     let extra = ri(4, 16) * 10;
     const B = mult * u;
@@ -960,7 +1017,7 @@
     const askB = Math.random() < 0.62;
     const a2 = askB ? B : C;
     const target = askB ? mid : top;
-    const story = 'A ' + mid.name + ' has ' + mult + ' times as many calories as a ' + base.name + '. A ' + top.name + ' has ' + extra + ' kcal ' + (fewerTop ? 'fewer' : 'more') + ' than a ' + mid.name + '. All three burgers have ' + total + ' kcal altogether. Find the ' + target.name + "'s calories.";
+    const story = 'A ' + mid.name + ' has ' + mult + ' times as many calories as a ' + base.name + '. A ' + top.name + ' has ' + extra + ' kcal ' + (fewerTop ? 'fewer' : 'more') + ' than a ' + mid.name + '. All three burgers have ' + total + ' kcal altogether. Find the calories of the ' + target.name + '.';
     const fullUnits = fewerTop ? total + extra : total - extra;
     const forgot = fewerTop ? total - extra : total + extra;
     const tipFewer = 'The ' + top.short + ' has ' + extra + ' kcal FEWER than the ' + mid.short + '. Add ' + extra + ' kcal (' + total + ' + ' + extra + ' = ' + fullUnits + ') so the equal units are complete before you divide!';
@@ -992,8 +1049,8 @@
       badge: 'FIND BURGER CALORIES',
       badgeTone: 'burger',
       story: story,
-      step1Ask: 'What is 1 unit? Find the ' + base.short + '.',
-      step2Ask: 'How many calories is the ' + target.short + '?',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
+      step2Ask: 'How many calories is the ' + target.name + '?',
       step1Em: '1 unit',
       step2Em: target.short,
       step1Mode: 'unit',
@@ -1015,14 +1072,14 @@
         footer: 'Altogether ' + total + ' kcal',
         rows: fewerTop
           ? [
-              unitRow(base.short, 1, '?', 'unit'),
-              unitRow(mid.short, mult, '?', ''),
-              unitRow(top.short, mult, '?', 'ask', extra, '−' + extra)
+              asLoadout(unitRow(base.short, 1, '?', 'unit'), base),
+              asLoadout(unitRow(mid.short, mult, '?', ''), mid),
+              asLoadout(unitRow(top.short, mult, '?', 'ask', extra, '−' + extra), top)
             ]
           : [
-              unitRow(base.short, 1, '?', 'unit'),
-              unitRow(mid.short, mult, '?', ''),
-              plusRow(top.short, mult, extra, '+' + extra, '?', 'ask')
+              asLoadout(unitRow(base.short, 1, '?', 'unit'), base),
+              asLoadout(unitRow(mid.short, mult, '?', ''), mid),
+              asLoadout(plusRow(top.short, mult, extra, '+' + extra, '?', 'ask'), top)
             ]
       }
     });
@@ -1030,10 +1087,10 @@
 
   function makeFewerKnown() {
     const n = pick([2, 3, 4, 5]);
-    const base = pick([sheet('mini'), sheet('chicken'), sheet('beef')]);
-    const veg = pickExcept([sheet('veggie'), sheet('fish', 'Lite Fish Burger'), sheet('vegcheese', 'Garden Burger')], [base.name]);
-    const fullItem = veg ? pickExcept([sheet('classic'), sheet('bacon'), sheet('chickcheese')], [base.name, veg.name]) : null;
-    if (!veg || !fullItem) return null;
+    const line = grillLine(3);
+    const base = line[0];
+    const veg = line[1];
+    const fullItem = line[2];
     const u = ri(8, 18) * 10;
     let fewer = n * ri(2, 5) * 5;
     if (fewer >= n * u * 0.45) fewer = n * 10;
@@ -1044,15 +1101,15 @@
     const wrongUnit = (known - fewer) / n;
     if (!Number.isInteger(wrongUnit) || wrongUnit <= 0 || wrongUnit === u) return null;
     const alert = fewerAlert(veg.name, fewer, known, full);
-    const story = 'A ' + veg.name + ' has ' + n + ' times as many calories as a ' + base.name + ', and ' + fewer + ' kcal fewer than that. The ' + veg.name + ' has ' + known + ' kcal. A ' + fullItem.name + ' is exactly ' + n + ' times a ' + base.name + ', with nothing removed. Find the ' + fullItem.name + "'s calories.";
+    const story = 'A ' + veg.name + ' has ' + n + ' times as many calories as a ' + base.name + ', and ' + fewer + ' kcal fewer than that. The ' + veg.name + ' has ' + known + ' kcal. A ' + fullItem.name + ' is exactly ' + n + ' times a ' + base.name + ', with nothing removed. Find the calories of the ' + fullItem.name + '.';
     return pack({
       kind: 'fewer-known',
       construct: 'TIMES + FEWER',
       badge: 'FIND BURGER CALORIES',
       badgeTone: 'burger',
       story: story,
-      step1Ask: 'What is 1 unit? Find the ' + base.short + '.',
-      step2Ask: 'How many calories is the ' + fullItem.short + '?',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
+      step2Ask: 'How many calories is the ' + fullItem.name + '?',
       step1Em: '1 unit',
       step2Em: fullItem.short,
       step1Mode: 'unit',
@@ -1083,9 +1140,9 @@
         unitKcal: u,
         footer: veg.short + ' = ' + known + ' kcal',
         rows: [
-          unitRow(base.short, 1, '?', 'unit'),
-          unitRow(veg.short, n, known + ' kcal', '', fewer, '−' + fewer),
-          unitRow(fullItem.short, n, '?', 'ask')
+          asLoadout(unitRow(base.short, 1, '?', 'unit'), base),
+          asLoadout(unitRow(veg.short, n, known + ' kcal', '', fewer, '−' + fewer), veg),
+          asLoadout(unitRow(fullItem.short, n, '?', 'ask'), fullItem)
         ]
       }
     });
@@ -1093,9 +1150,9 @@
 
   function makeTimesPair() {
     const mult = pick([2, 3, 5]);
-    const base = pick(basePool());
-    const big = pickExcept(midPool(mult), [base.name]);
-    if (!big) return null;
+    const line = grillLine(2);
+    const base = line[0];
+    const big = line[1];
     const fewer = Math.random() < 0.5;
     const u = ri(7, 16) * 10;
     let gap = ri(3, 10) * 10;
@@ -1120,9 +1177,9 @@
       badge: askPlain ? 'FIND BURGER CALORIES' : 'FIND TOTAL CALORIES',
       badgeTone: askPlain ? 'burger' : 'total',
       story: story,
-      step1Ask: 'What is 1 unit? Find the ' + base.short + '.',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
       step2Ask: askPlain
-        ? ('How many calories are ' + mult + ' ' + base.name + 's before the change?')
+        ? ('How many calories are ' + mult + ' plain ' + base.name + 's before the change?')
         : ('What is the total of the ' + base.name + ' and the ' + big.name + '?'),
       step1Em: '1 unit',
       step2Em: askPlain ? 'plain units' : 'both burgers',
@@ -1155,8 +1212,8 @@
         unitKcal: u,
         footer: big.short + ' = ' + bigK + ' kcal',
         rows: fewer
-          ? [unitRow(base.short, 1, '?', 'unit'), unitRow(big.short, mult, bigK + ' kcal', '', gap, '−' + gap)]
-          : [unitRow(base.short, 1, '?', 'unit'), plusRow(big.short, mult, gap, '+' + gap, bigK + ' kcal', '')]
+          ? [asLoadout(unitRow(base.short, 1, '?', 'unit'), base), asLoadout(unitRow(big.short, mult, bigK + ' kcal', '', gap, '−' + gap), big)]
+          : [asLoadout(unitRow(base.short, 1, '?', 'unit'), base), asLoadout(plusRow(big.short, mult, gap, '+' + gap, bigK + ' kcal', ''), big)]
       }
     });
   }
@@ -1319,17 +1376,9 @@
   }
 
   function makeCombo() {
-    const pairs = [
-      [sheet('chicken'), sheet('cheese')],
-      [sheet('chicken'), sheet('chickcheese')],
-      [sheet('beef'), sheet('bacon')],
-      [sheet('fish'), sheet('fishcheese')],
-      [sheet('veggie'), sheet('vegcheese')],
-      [sheet('mini'), sheet('mega')]
-    ];
-    const pair = pick(pairs);
-    const base = pair[0];
-    const top = pair[1];
+    const line = grillLine(2);
+    const base = line[0];
+    const top = line[1];
     const p = pick([2, 3, 4]);
     const q = pick([3, 4, 5, 6]);
     const g = (p + q) / gcd(q, p + q);
@@ -1348,7 +1397,7 @@
       : (ask === 'allBase'
         ? 'Find the total calories of the ' + p + ' ' + base.name + 's.'
         : 'Find the total calories of the ' + q + ' ' + top.name + 's.');
-    const story = p + ' ' + base.name + 's and ' + q + ' ' + top.name + 's have ' + total + ' kcal altogether. Each ' + top.name + ' has ' + extra + ' kcal more than a ' + base.name + '. ' + askLine;
+    const story = copiesOf(p, base) + ' and ' + copiesOf(q, top) + ' have ' + total + ' kcal altogether. Each ' + top.name + ' has ' + extra + ' kcal more than a ' + base.name + '. ' + askLine;
     const equalTotal = total - removed;
     const method = 'Remove ' + q + ' × ' + extra + ' = ' + removed + ' kcal. ' + (p + q) + ' ' + base.short + 's = ' + equalTotal + '. 1 ' + base.short + ' = ' + u + ' kcal.';
     return pack({
@@ -1357,7 +1406,7 @@
       badge: badge,
       badgeTone: ask === 'oneTop' ? 'burger' : 'total',
       story: story,
-      step1Ask: 'What is 1 unit? Find 1 ' + base.short + '.',
+      step1Ask: 'What is 1 unit? Find 1 plain ' + base.name + '.',
       step2Ask: askLine,
       step1Em: '1 unit',
       step2Em: ask === 'oneTop' ? top.short : 'group total',
@@ -1393,8 +1442,8 @@
         unitKcal: u,
         footer: 'Altogether ' + total + ' kcal',
         rows: [
-          unitRow(base.short + ' ×' + p, p, '?', 'unit'),
-          plusRow(top.short + ' ×' + q, q, removed, '+' + removed, '?', 'ask')
+          asLoadout(unitRow(base.short + ' ×' + p, p, '?', 'unit'), base, p),
+          asLoadout(plusRow(top.short + ' ×' + q, q, removed, '+' + removed, '?', 'ask'), top, q)
         ]
       }
     });
@@ -1428,15 +1477,16 @@
     const D = 40 + ri(0, 6) * 10;
     const B = A + D;
     const T = A + B;
-    const base = sheet('chicken');
-    const top = sheet('chickcheese');
+    const line = grillLine(2, 'veggie');
+    const base = line[0];
+    const top = line[1];
     return pack({
       kind: 'two',
       construct: 'MORE CALORIES',
       badge: 'FIND TOTAL CALORIES',
       badgeTone: 'total',
-      story: 'A Chicken Burger has ' + A + ' kcal. A Chicken & Cheese Burger has ' + D + ' kcal more than a Chicken Burger. Find the total calories of both burgers.',
-      step1Ask: 'What is 1 unit? Lock in the Chicken.',
+      story: 'A ' + base.name + ' has ' + A + ' kcal. A ' + top.name + ' has ' + D + ' kcal more than a ' + base.name + '. Find the total calories of both burgers.',
+      step1Ask: 'What is 1 unit? Find the plain ' + base.name + '.',
       step2Ask: 'What are the total calories of both burgers?',
       step1Em: '1 unit',
       step2Em: 'both burgers',
@@ -1445,7 +1495,7 @@
       a2: T,
       need2: B,
       traps1: [
-        { value: B, tip: 'That is the Chicken & Cheese Burger. 1 unit is the Chicken Burger: ' + A + ' kcal.' },
+        { value: B, tip: 'That is the ' + top.name + '. 1 unit is the plain ' + base.name + ': ' + A + ' kcal.' },
         { value: T, tip: 'That total is Step 2. Lock 1 unit first.' },
         { value: D, tip: 'That is only the extra cheese block.' }
       ],
@@ -1455,15 +1505,15 @@
         { value: D, tip: 'Add both bars, not only the difference.' }
       ],
       hint: A + ' + ' + B + ' = ' + T + ' kcal.',
-      lockedLine: '1 unit = ' + A + ' kcal. Chicken & Cheese = 1 unit + ' + D + ' kcal.',
-      serveLine: 'Chicken + Chicken & Cheese = ' + A + ' + ' + B + ' = ' + T + ' kcal.',
+      lockedLine: '1 unit = ' + A + ' kcal. ' + top.short + ' = 1 unit + ' + D + ' kcal.',
+      serveLine: base.short + ' + ' + top.short + ' = ' + A + ' + ' + B + ' = ' + T + ' kcal.',
       coach: 'Add both bars for the total.',
       show: [showBurger(base, A + ' kcal'), showBurger(top, '+' + D)],
       model: {
         type: 'units',
         unitKcal: A,
         footer: 'Altogether ?',
-        rows: [unitRow('Chicken', 1, A + ' kcal', 'unit'), plusRow('Chicken & Cheese', 1, D, '+' + D, '?', 'ask')]
+        rows: [asLoadout(unitRow(base.short, 1, A + ' kcal', 'unit'), base), asLoadout(plusRow(top.short, 1, D, '+' + D, '?', 'ask'), top)]
       }
     });
   }
@@ -2338,6 +2388,31 @@
       ctx.fillRect(x + 8, y + h * 0.4, w - 16, 2);
       return;
     }
+    if (kind === 'sausage') {
+      const g = ctx.createLinearGradient(x, y, x, y + h);
+      g.addColorStop(0, '#e07a62');
+      g.addColorStop(1, '#a33b32');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(x + w * 0.32, y + h * 0.5, w * 0.28, h * 0.46, 0, 0, Math.PI * 2);
+      ctx.ellipse(x + w * 0.68, y + h * 0.5, w * 0.28, h * 0.46, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 220, 190, 0.45)';
+      ctx.fillRect(x + w * 0.28, y + h * 0.35, 3, h * 0.3);
+      ctx.fillRect(x + w * 0.62, y + h * 0.35, 3, h * 0.3);
+      return;
+    }
+    if (kind === 'egg') {
+      ctx.fillStyle = '#fffaf0';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h * 0.55, w * 0.42, h * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#f2c14e';
+      ctx.beginPath();
+      ctx.ellipse(x + w / 2, y + h * 0.55, w * 0.16, h * 0.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
     if (kind === 'chicken') {
       const g = ctx.createLinearGradient(x, y, x, y + h);
       g.addColorStop(0, '#f0c48a');
@@ -2378,7 +2453,9 @@
       beef: 0.16,
       chicken: 0.16,
       fish: 0.15,
-      veg: 0.15
+      veg: 0.15,
+      sausage: 0.14,
+      egg: 0.16
     };
     return size * (map[kind] || 0.14);
   }
@@ -2510,8 +2587,8 @@
     });
     const px = barMax / maxK;
     const top = y + (problem.model.now ? 72 : 28);
-    const bottom = y + h - 34;
-    const rowH = rows.length ? Math.max(18, (bottom - top) / rows.length) : 40;
+    const bottom = y + h - 52;
+    const rowH = rows.length ? (bottom - top) / rows.length : 40;
     if (problem.model.now) {
       const now = problem.model.now;
       const maxNow = Math.max(now[0].kcal, now[1].kcal);
@@ -2530,12 +2607,27 @@
       const cy = top + rowH * i + rowH * 0.42;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(x + 8, cy - 14, labelW - 18, 28);
+      ctx.rect(x + 8, cy - rowH / 2, labelW - 16, rowH);
       ctx.clip();
-      text(row.label, x + 12, cy, 12, '#3a2416', 'left', 800);
+      if (row.base) {
+        const countBit = row.count ? (' ×' + row.count) : '';
+        const extra = row.addon ? ('+ ' + row.addon) : 'plain';
+        const extraColor = row.addon ? '#9a3412' : '#4d6a3a';
+        if (rowH >= 34) {
+          text(row.base + countBit, x + 12, cy - 7, 11, '#3a2416', 'left', 700);
+          text(extra, x + 12, cy + 7, 12, extraColor, 'left', 800);
+        } else {
+          ctx.font = '800 11px ' + FONT;
+          const name = row.base + countBit;
+          text(name, x + 12, cy, 11, '#3a2416', 'left', 800);
+          text(extra, x + 16 + ctx.measureText(name).width, cy, 11, extraColor, 'left', 800);
+        }
+      } else {
+        text(row.label, x + 12, cy, 12, '#3a2416', 'left', 800);
+      }
       ctx.restore();
       let bx = x + labelW;
-      const bh = Math.max(11, Math.min(22, rowH - 14));
+      const bh = Math.max(8, Math.min(20, rowH * 0.55));
       const by = cy - bh / 2 + 3;
       row.parts.forEach((part) => {
         const fullK = (part.units || 0) * unitK + (part.plus || 0);
@@ -2569,7 +2661,10 @@
           }
           ctx.stroke();
         }
-        if (part.tag && rowH > 30) text(part.tag, bx + bw / 2, by - 8, 10, '#7a4b2a', 'center', 800);
+        if (part.tag) {
+          if (rowH > 28) text(part.tag, bx + bw / 2, by - 9, 10, '#7a4b2a', 'center', 800);
+          else text(part.tag, bx + bw / 2, by + bh / 2, 10, '#3a2416', 'center', 800);
+        }
         if (!bracket && part.units && problem.step1Mode === 'unit') {
           const uw = part.units > 1 ? bw / part.units : bw;
           bracket = { x: bx, w: Math.max(18, uw) };
@@ -2635,7 +2730,7 @@
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    const modelH = Math.round(Math.max(148, Math.min(h * 0.56, h - 96)));
+    const modelH = Math.round(Math.min(Math.max(120, h - 124), Math.max(176, h * 0.46)));
     const grillH = Math.max(96, h - modelH);
     ctx.fillStyle = '#5a4638';
     ctx.fillRect(0, grillH - 18, w, 28);
@@ -2664,14 +2759,24 @@
       const base = gy - 14;
       let size = Math.min(118, slot * 0.7);
       const layers = item.layers && item.layers.length ? item.layers : ['bun-top', 'beef', 'bun-bot'];
-      while (size > 46 && base - burgerHeight(layers, size) - 34 < 6) size -= 4;
+      while (size > 26 && base - burgerHeight(layers, size) < 58) size -= 2;
       const bounce = anim.drop > 0 && anim.drop < 1 ? Math.sin(anim.drop * Math.PI) * -10 : 0;
       if (item.kind === 'tray') drawTray(cx, base + bounce, size * 0.9, item.accent, item.name, item.badge);
       else {
         const top = base - burgerHeight(layers, size);
         drawBurger(cx, base + bounce, size, layers, 1);
-        drawBadge(cx, top - 12, item.badge, item.accent);
-        text(item.name, cx, top - 30, 13, '#3a2416', 'center', 800);
+        const badgeY = Math.max(34, top - 16);
+        drawBadge(cx, badgeY, item.badge, item.accent);
+        const baseName = item.baseShort || item.name;
+        const extra = item.topping ? ('+ ' + item.topping) : (item.baseId ? 'plain' : '');
+        ctx.font = '800 13px ' + FONT;
+        const baseW = ctx.measureText(baseName).width;
+        const extraW = extra ? ctx.measureText(extra).width : 0;
+        const gap = extra ? 6 : 0;
+        const left = cx - (baseW + gap + extraW) / 2;
+        const capY = Math.max(14, badgeY - 22);
+        text(baseName, left, capY, 13, '#3a2416', 'left', 800);
+        if (extra) text(extra, left + baseW + gap, capY, 13, item.topping ? '#9a3412' : '#4d6a3a', 'left', 800);
       }
     });
 
