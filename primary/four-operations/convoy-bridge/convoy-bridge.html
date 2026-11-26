@@ -1,0 +1,2553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>Convoy Bridge: BODMAS Canyon Rush</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a120e'/%3E%3Cpath d='M4 40h56' stroke='%23d5dde6' stroke-width='4'/%3E%3Cpath d='M8 40 V28 M56 40 V28' stroke='%23ffb020' stroke-width='4'/%3E%3Cpath d='M8 30 H56' stroke='%233ee0ff' stroke-width='2' stroke-dasharray='3 2'/%3E%3Crect x='14' y='34' width='22' height='8' rx='1' fill='%23e4232f'/%3E%3Crect x='28' y='36' width='8' height='6' fill='%23f4f7fb'/%3E%3Ccircle cx='18' cy='44' r='3' fill='%23101818'/%3E%3Ccircle cx='32' cy='44' r='3' fill='%23101818'/%3E%3C/svg%3E" />
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #140c0a;
+    overflow: hidden;
+    overscroll-behavior: none;
+    color: #f4f7fb;
+    font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+  }
+  canvas {
+    display: block;
+    position: absolute;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: pointer;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="1280" height="800" aria-label="Convoy Bridge: BODMAS Canyon Rush. Primary 5 order of operations. Choose a difficulty, then pick the bridge deck that matches the expression."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<script>
+'use strict';
+
+const VW = 1280;
+const VH = 800;
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const SAVE_KEY = 'convoy-bridge-bodmas-v1';
+const RACE_TO = 6;
+const LIMIT = { easy: 18, medium: 13, hard: 9.5, extreme: 7.2 };
+const TIER_BONUS = { easy: 0, medium: 50, hard: 100, extreme: 140 };
+const REDUCE = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const PILOTS = [
+  { name: 'P1', short: 'RED', call: 'CRIMSON RIG', color: '#ff3b4e', deep: '#9d1424' },
+  { name: 'P2', short: 'BLUE', call: 'AZURE RIG', color: '#3aa0ff', deep: '#1357a8' },
+  { name: 'P3', short: 'GREEN', call: 'EMERALD RIG', color: '#2ee59d', deep: '#0d7a4a' }
+];
+const KEYS = [
+  ['1', '2', '3', '4'],
+  ['Q', 'W', 'E', 'R'],
+  ['U', 'I', 'O', 'P']
+];
+const KEY_CODES = {
+  Digit1: [0, 0], Digit2: [0, 1], Digit3: [0, 2], Digit4: [0, 3],
+  KeyQ: [1, 0], KeyW: [1, 1], KeyE: [1, 2], KeyR: [1, 3],
+  KeyU: [2, 0], KeyI: [2, 1], KeyO: [2, 2], KeyP: [2, 3]
+};
+const DIFF_META = {
+  easy: {
+    name: 'EASY',
+    role: 'Canyon Rookie',
+    blurb: '3-term addition and subtraction, strictly left to right, plus a single pair of brackets. The truck takes a relaxed cruise.'
+  },
+  medium: {
+    name: 'MEDIUM',
+    role: 'Bridge Engineer',
+    blurb: 'Multiplication and division run left to right, and they are done before addition or subtraction.'
+  },
+  hard: {
+    name: 'HARD',
+    role: 'Convoy Captain',
+    blurb: 'Full BODMAS spans: brackets first, then ÷ and × left to right, then + and −. The truck rolls briskly.'
+  },
+  extreme: {
+    name: 'EXTREME',
+    role: 'Turbo Rig Blitz',
+    blurb: 'Nested priority at turbo speed. Rapid correct streaks pay a 2× then 3× convoy multiplier.'
+  }
+};
+const MODE_META = {
+  solo: 'One rig, three hearts, chase the canyon record.',
+  coop: 'One mega-truck. Players alternate spans. One team score and shared hearts only.',
+  duel: 'Separate lanes and different questions. Own hearts and scores. First to 6 spans, or the last rig still rolling.'
+};
+
+const G = {
+  scene: 'title',
+  playersN: 1,
+  mode: 'solo',
+  difficulty: 'easy',
+  muted: false,
+  history: [],
+  turn: 0,
+  lanes: [],
+  time: 0,
+  shake: 0,
+  hits: [],
+  floats: [],
+  view: null,
+  newRecord: false,
+  overReason: '',
+  pointer: { x: -1, y: -1 },
+  best: {
+    solo: { easy: 0, medium: 0, hard: 0, extreme: 0 },
+    coop: { easy: 0, medium: 0, hard: 0, extreme: 0 }
+  }
+};
+
+const audio = {
+  ctx: null, master: null, music: null, sfx: null, noise: null,
+  engine: null, engine2: null, next: 0, step: 0
+};
+
+let canvas = null;
+let ctx = null;
+let live = null;
+let forceN = 0;
+const padPrev = [
+  { l: false, r: false, a: false },
+  { l: false, r: false, a: false },
+  { l: false, r: false, a: false }
+];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function rnd(a, b) {
+  if (b < a) return a;
+  return a + Math.floor(Math.random() * (b - a + 1));
+}
+function pick(arr) { return arr[rnd(0, arr.length - 1)]; }
+function shuffle(list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
+function commas(n) {
+  return Math.round(n).toLocaleString('en-US');
+}
+function divisorsBetween(n, lo, hi) {
+  const out = [];
+  const start = Math.max(lo, 1);
+  for (let d = start; d <= hi; d++) if (n % d === 0) out.push(d);
+  return out;
+}
+
+function parseTokens(tokens) {
+  let i = 0;
+  function peek() { return tokens[i]; }
+  function parseExpr() {
+    let left = parseTerm();
+    while (peek() === '+' || peek() === '−') {
+      const op = tokens[i++];
+      const right = parseTerm();
+      left = { t: op, a: left, b: right };
+    }
+    return left;
+  }
+  function parseTerm() {
+    let left = parseFactor();
+    while (peek() === '×' || peek() === '÷') {
+      const op = tokens[i++];
+      const right = parseFactor();
+      left = { t: op, a: left, b: right };
+    }
+    return left;
+  }
+  function parseFactor() {
+    if (peek() === '(') {
+      i++;
+      const inner = parseExpr();
+      if (tokens[i] !== ')') throw new Error('paren');
+      i++;
+      return inner;
+    }
+    const v = tokens[i++];
+    if (typeof v !== 'number') throw new Error('num');
+    return { t: 'n', v: v };
+  }
+  const node = parseExpr();
+  if (i !== tokens.length) throw new Error('tail');
+  return node;
+}
+
+function evalNode(node) {
+  if (!node) return NaN;
+  if (node.t === 'n') return node.v;
+  const a = evalNode(node.a);
+  const b = evalNode(node.b);
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) return NaN;
+  let v;
+  if (node.t === '+') v = a + b;
+  else if (node.t === '−') v = a - b;
+  else if (node.t === '×') v = a * b;
+  else if (node.t === '÷') {
+    if (b === 0 || a % b !== 0) return NaN;
+    v = a / b;
+  } else return NaN;
+  if (!Number.isInteger(v) || v < 0) return NaN;
+  return v;
+}
+
+function leavesOk(node) {
+  if (node.t === 'n') return Number.isInteger(node.v) && node.v >= 2 && node.v <= 30;
+  return leavesOk(node.a) && leavesOk(node.b);
+}
+
+function paintExpr(tokens) {
+  let s = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const prev = tokens[i - 1];
+    if (t === ')') {
+      s += ')';
+    } else if (t === '(') {
+      if (s && prev !== '(') s += ' ';
+      s += '(';
+    } else if (typeof t === 'number') {
+      if (s && prev !== '(') s += ' ';
+      s += String(t);
+    } else {
+      s += ' ' + t;
+    }
+  }
+  return s.trim();
+}
+
+function cleanTrap(raw) {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  if (Math.abs(raw - Math.round(raw)) > 1e-6) return null;
+  const v = Math.round(raw);
+  if (v < 0 || v > 160) return null;
+  return v;
+}
+
+function accept(tokens, answer, tip, steps, traps) {
+  try {
+    const node = parseTokens(tokens);
+    const got = evalNode(node);
+    if (got !== answer) return null;
+    if (!leavesOk(node)) return null;
+    if (!Number.isInteger(answer) || answer < 1 || answer > 72) return null;
+    const used = new Set([answer]);
+    const options = [{ value: answer, correct: true }];
+    for (let i = 0; i < traps.length; i++) {
+      const v = cleanTrap(traps[i]);
+      if (v === null || used.has(v)) continue;
+      used.add(v);
+      options.push({ value: v, correct: false });
+      if (options.length >= 4) break;
+    }
+    if (options.length < 2) return null;
+    let salt = 1;
+    while (options.length < 4 && salt <= 24) {
+      for (let sign = 1; sign >= -1; sign -= 2) {
+        const v = answer + sign * salt;
+        if (v >= 0 && v <= 160 && !used.has(v)) {
+          used.add(v);
+          options.push({ value: v, correct: false });
+          if (options.length >= 4) break;
+        }
+      }
+      salt++;
+    }
+    if (options.length < 4) return null;
+    const correctCount = options.filter(function (o) { return o.correct; }).length;
+    if (correctCount !== 1) return null;
+    return {
+      text: paintExpr(tokens),
+      sig: tokens.join(','),
+      tokens: tokens,
+      answer: answer,
+      tip: tip,
+      steps: steps,
+      options: shuffle(options)
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+function tagged(kind, q) {
+  if (q) q.kind = kind;
+  return q;
+}
+
+function genEasyAdd() {
+  const kind = rnd(0, 4);
+  if (kind <= 2) {
+    const b = rnd(4, 14);
+    const c = rnd(2, 12);
+    const a = b + rnd(5, 14);
+    if (a > 30) return null;
+    const mid = a - b;
+    const answer = mid + c;
+    const tip = 'Addition and subtraction have EQUAL priority — work strictly from LEFT to RIGHT: '
+      + a + ' − ' + b + ' = ' + mid + ' first, then ' + mid + ' + ' + c + ' = ' + answer + '!';
+    const steps = a + ' − ' + b + ' = ' + mid + ', then ' + mid + ' + ' + c + ' = ' + answer;
+    return tagged('addsub', accept(
+      [a, '−', b, '+', c],
+      answer,
+      tip,
+      steps,
+      [a - (b + c), mid, a + c, a - b - c]
+    ));
+  }
+  if (kind === 3) {
+    const c = rnd(2, 9);
+    const b = rnd(3, 12);
+    const extra = rnd(2, 10);
+    const a = b + c + extra;
+    if (a > 30) return null;
+    const mid = a - b;
+    const answer = mid - c;
+    const trap = a - (b - c);
+    const tip = 'Addition and subtraction have EQUAL priority — work strictly from LEFT to RIGHT: '
+      + a + ' − ' + b + ' = ' + mid + ' first, then ' + mid + ' − ' + c + ' = ' + answer + '!';
+    const steps = a + ' − ' + b + ' = ' + mid + ', then ' + mid + ' − ' + c + ' = ' + answer;
+    return tagged('addsub', accept(
+      [a, '−', b, '−', c],
+      answer,
+      tip,
+      steps,
+      [trap, mid, a - c, b + c]
+    ));
+  }
+  const a = rnd(4, 16);
+  const b = rnd(2, 12);
+  const c = rnd(2, Math.min(14, a + b - 1));
+  const mid = a + b;
+  const answer = mid - c;
+  const tip = 'Addition and subtraction have EQUAL priority — work strictly from LEFT to RIGHT: '
+    + a + ' + ' + b + ' = ' + mid + ' first, then ' + mid + ' − ' + c + ' = ' + answer + '!';
+  const steps = a + ' + ' + b + ' = ' + mid + ', then ' + mid + ' − ' + c + ' = ' + answer;
+  return tagged('addsub', accept(
+    [a, '+', b, '−', c],
+    answer,
+    tip,
+    steps,
+    [mid, a, a + c, Math.abs(a - b)]
+  ));
+}
+
+function genEasyMul() {
+  const k = rnd(2, 9);
+  const sub = Math.random() < 0.7;
+  let b;
+  let c;
+  let inner;
+  let innerText;
+  let tokens;
+  if (sub) {
+    c = rnd(2, 9);
+    b = c + rnd(2, 9);
+    if (b > 30) return null;
+    inner = b - c;
+    innerText = b + ' − ' + c;
+    tokens = [b, '−', c];
+  } else {
+    b = rnd(2, 9);
+    c = rnd(2, 8);
+    inner = b + c;
+    if (inner > 24) return null;
+    innerText = b + ' + ' + c;
+    tokens = [b, '+', c];
+  }
+  const answer = k * inner;
+  if (answer < 4 || answer > 56) return null;
+  const lead = Math.random() < 0.55;
+  const full = lead
+    ? [k, '×', '('].concat(tokens, [')'])
+    : ['('].concat(tokens, [')', '×', k]);
+  const ignore = sub ? (k * b - c) : (k * b + c);
+  const tip = 'Always solve inside the BRACKETS (' + innerText + ' = ' + inner + ') FIRST, then multiply '
+    + k + ' × ' + inner + ' = ' + answer + '!';
+  const steps = '(' + innerText + ') = ' + inner + ', then ' + k + ' × ' + inner + ' = ' + answer;
+  return tagged('brackets', accept(full, answer, tip, steps, [ignore, k * b, inner, k + inner, answer + k]));
+}
+
+function genEasyDiv() {
+  const c = rnd(2, 8);
+  const quot = rnd(2, 9);
+  const sum = c * quot;
+  if (sum < 6 || sum > 30) return null;
+  if (Math.random() < 0.6) {
+    const a = rnd(2, sum - 2);
+    const b = sum - a;
+    if (b < 2 || b > 30 || a > 30) return null;
+    const traps = [sum, a + b + c, quot + c, a + c];
+    if (b % c === 0) traps.push(a + b / c);
+    if (a % c === 0) traps.push(a / c + b);
+    const tip = 'Always solve inside the BRACKETS (' + a + ' + ' + b + ' = ' + sum + ') FIRST, then divide '
+      + sum + ' ÷ ' + c + ' = ' + quot + '!';
+    const steps = '(' + a + ' + ' + b + ') = ' + sum + ', then ' + sum + ' ÷ ' + c + ' = ' + quot;
+    return tagged('brackets', accept(['(', a, '+', b, ')', '÷', c], quot, tip, steps, traps));
+  }
+  const b = rnd(2, 12);
+  const a = sum + b;
+  if (a > 30 || a < 2) return null;
+  const traps = [sum, a, quot + b, a - b + c];
+  if (a % c === 0 && a / c !== b) traps.push(a / c - b);
+  const tip = 'Always solve inside the BRACKETS (' + a + ' − ' + b + ' = ' + sum + ') FIRST, then divide '
+    + sum + ' ÷ ' + c + ' = ' + quot + '!';
+  const steps = '(' + a + ' − ' + b + ') = ' + sum + ', then ' + sum + ' ÷ ' + c + ' = ' + quot;
+  return tagged('brackets', accept(['(', a, '−', b, ')', '÷', c], quot, tip, steps, traps));
+}
+
+function genMedDivMul() {
+  const b = rnd(2, 6);
+  const c = rnd(2, 6);
+  const t = rnd(1, 4);
+  const a = t * b * c;
+  if (a < 4 || a > 30) return null;
+  const mid = a / b;
+  const answer = mid * c;
+  if (!Number.isInteger(mid) || !Number.isInteger(answer) || answer > 60 || answer < 2) return null;
+  if (t === answer) return null;
+  const tip = 'Multiplication and division have EQUAL priority — work strictly from LEFT to RIGHT: '
+    + a + ' ÷ ' + b + ' = ' + mid + ' first, then ' + mid + ' × ' + c + ' = ' + answer + '!';
+  const steps = a + ' ÷ ' + b + ' = ' + mid + ', then ' + mid + ' × ' + c + ' = ' + answer;
+  return tagged('muldiv', accept(
+    [a, '÷', b, '×', c],
+    answer,
+    tip,
+    steps,
+    [t, mid, a, b * c, answer + b]
+  ));
+}
+
+function genMedChain() {
+  let val = rnd(2, 12);
+  const parts = [val];
+  const ops = [];
+  let divs = 0;
+  for (let i = 0; i < 3; i++) {
+    const divChoices = val >= 4 ? divisorsBetween(val, 2, Math.min(12, val)) : [];
+    let op = '×';
+    if (i === 2 && divs === 0 && divChoices.length) op = '÷';
+    else if (divChoices.length && Math.random() < 0.62) op = '÷';
+    if (op === '×') {
+      const maxN = Math.min(8, Math.floor(84 / val));
+      if (maxN < 2) return null;
+      const n = rnd(2, maxN);
+      val *= n;
+      if (val > 96) return null;
+      parts.push(n);
+      ops.push('×');
+    } else {
+      if (!divChoices.length) return null;
+      const n = pick(divChoices);
+      if (n >= val) return null;
+      val /= n;
+      parts.push(n);
+      ops.push('÷');
+      divs++;
+    }
+  }
+  if (divs === 0 || val < 1 || val > 60) return null;
+  if (parts.some(function (n) { return n < 2 || n > 30; })) return null;
+  const tokens = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (i) tokens.push(ops[i - 1]);
+    tokens.push(parts[i]);
+  }
+  let run = parts[0];
+  const early = [];
+  const bits = [];
+  for (let i = 0; i < ops.length; i++) {
+    const next = ops[i] === '×' ? run * parts[i + 1] : run / parts[i + 1];
+    if (i < ops.length - 1) early.push(next);
+    bits.push(run + ' ' + ops[i] + ' ' + parts[i + 1] + ' = ' + next);
+    run = next;
+  }
+  const tip = 'Multiplication and division have EQUAL priority — work strictly from LEFT to RIGHT: ' + bits.join(', then ') + '!';
+  const steps = bits.join(', then ');
+  early.push(parts[0] * parts[1]);
+  early.push(parts[0] + parts[1]);
+  return tagged('muldiv', accept(tokens, val, tip, steps, early));
+}
+
+function genMedPriority() {
+  const form = rnd(0, 5);
+  if (form === 0) {
+    const b = rnd(2, 8);
+    const c = rnd(2, 6);
+    const prod = b * c;
+    if (prod > 26) return null;
+    const a = prod + rnd(2, Math.min(16, 30 - prod));
+    if (a > 30 || a <= prod) return null;
+    const answer = a - prod;
+    const tip = 'Do multiplication BEFORE subtraction. ' + b + ' × ' + c + ' = ' + prod
+      + ' first, then ' + a + ' − ' + prod + ' = ' + answer + '!';
+    const steps = b + ' × ' + c + ' = ' + prod + ', then ' + a + ' − ' + prod + ' = ' + answer;
+    return tagged('priority', accept([a, '−', b, '×', c], answer, tip, steps, [(a - b) * c, a - b, prod, a - c]));
+  }
+  if (form === 1) {
+    const b = rnd(2, 8);
+    const c = rnd(2, 5);
+    const prod = b * c;
+    const a = rnd(2, 18);
+    const answer = a + prod;
+    if (answer > 64 || prod > 40) return null;
+    const tip = 'Do multiplication BEFORE addition. ' + b + ' × ' + c + ' = ' + prod
+      + ' first, then ' + a + ' + ' + prod + ' = ' + answer + '!';
+    const steps = b + ' × ' + c + ' = ' + prod + ', then ' + a + ' + ' + prod + ' = ' + answer;
+    return tagged('priority', accept([a, '+', b, '×', c], answer, tip, steps, [(a + b) * c, a + b, prod, a * c]));
+  }
+  if (form === 2) {
+    const c = rnd(2, 8);
+    const quot = rnd(2, 8);
+    const b = c * quot;
+    if (b > 30) return null;
+    const a = rnd(2, 20);
+    const answer = a + quot;
+    if (answer > 48) return null;
+    const traps = [a + b, quot, b, a + b - c];
+    if ((a + b) % c === 0) traps.push((a + b) / c);
+    const tip = 'Do division BEFORE addition. ' + b + ' ÷ ' + c + ' = ' + quot
+      + ' first, then ' + a + ' + ' + quot + ' = ' + answer + '!';
+    const steps = b + ' ÷ ' + c + ' = ' + quot + ', then ' + a + ' + ' + quot + ' = ' + answer;
+    return tagged('priority', accept([a, '+', b, '÷', c], answer, tip, steps, traps));
+  }
+  if (form === 3) {
+    const c = rnd(2, 8);
+    const quot = rnd(2, 7);
+    const b = c * quot;
+    if (b > 30) return null;
+    const a = quot + rnd(2, 14);
+    if (a > 30) return null;
+    const answer = a - quot;
+    const traps = [quot, a, b, a - c];
+    if (a > b && (a - b) % c === 0) traps.push((a - b) / c);
+    else if ((a - b) % c === 0) traps.push((a - b) / c);
+    const tip = 'Do division BEFORE subtraction. ' + b + ' ÷ ' + c + ' = ' + quot
+      + ' first, then ' + a + ' − ' + quot + ' = ' + answer + '!';
+    const steps = b + ' ÷ ' + c + ' = ' + quot + ', then ' + a + ' − ' + quot + ' = ' + answer;
+    return tagged('priority', accept([a, '−', b, '÷', c], answer, tip, steps, traps));
+  }
+  if (form === 4) {
+    const b = rnd(2, 8);
+    const quot = rnd(2, 8);
+    const a = b * quot;
+    if (a > 30) return null;
+    const c = rnd(2, 12);
+    const answer = quot + c;
+    const traps = [quot, a + c, a, b + c];
+    if ((b + c) > 0 && a % (b + c) === 0) traps.push(a / (b + c));
+    const tip = 'Do division BEFORE addition. ' + a + ' ÷ ' + b + ' = ' + quot
+      + ' first, then ' + quot + ' + ' + c + ' = ' + answer + '!';
+    const steps = a + ' ÷ ' + b + ' = ' + quot + ', then ' + quot + ' + ' + c + ' = ' + answer;
+    return tagged('priority', accept([a, '÷', b, '+', c], answer, tip, steps, traps));
+  }
+  const a = rnd(2, 8);
+  const b = rnd(2, 6);
+  const prod = a * b;
+  if (prod < 6 || prod > 48) return null;
+  const c = rnd(2, prod - 1);
+  const answer = prod - c;
+  const traps = [prod, a + b - c, a * c];
+  if (b > c) traps.push(a * (b - c));
+  const tip = 'Do multiplication BEFORE subtraction. ' + a + ' × ' + b + ' = ' + prod
+    + ' first, then ' + prod + ' − ' + c + ' = ' + answer + '!';
+  const steps = a + ' × ' + b + ' = ' + prod + ', then ' + prod + ' − ' + c + ' = ' + answer;
+  return tagged('priority', accept([a, '×', b, '−', c], answer, tip, steps, traps));
+}
+
+function genHardPlus() {
+  const D = rnd(2, 6);
+  const E = rnd(2, 5);
+  const mid = rnd(2, 5);
+  const P = mid * D;
+  const Q = mid * E;
+  if (P < 6 || P > 24 || Q > 36) return null;
+  const room = 54 - Q;
+  if (room < 4) return null;
+  const A = rnd(4, Math.min(30, room));
+  const C = rnd(2, Math.min(14, 30 - P));
+  const B = P + C;
+  if (B > 30 || B < 2 || A < 2) return null;
+  const answer = A + Q;
+  const traps = [A + P, Q, P, A + mid, mid * D];
+  if (P % (D * E) === 0) traps.push(A + (P / (D * E)));
+  if ((A + P) % D === 0) traps.push(((A + P) / D) * E);
+  if (C % D === 0) traps.push(A + B - (C / D) * E);
+  const tip = 'After solving brackets (' + P + '), do ÷ and × from left to right ('
+    + P + ' ÷ ' + D + ' × ' + E + ' = ' + Q + ') BEFORE adding ' + A + ' + ' + Q + ' = ' + answer + '!';
+  const steps = '(' + B + ' − ' + C + ') = ' + P + ', then ' + P + ' ÷ ' + D + ' × ' + E + ' = ' + Q + ', then ' + A + ' + ' + Q + ' = ' + answer;
+  return tagged('full', accept([A, '+', '(', B, '−', C, ')', '÷', D, '×', E], answer, tip, steps, traps));
+}
+
+function genHardMinus() {
+  const D = rnd(2, 5);
+  const E = rnd(2, 4);
+  const mid = rnd(2, 5);
+  const P = mid * D;
+  const Q = mid * E;
+  if (P < 8 || P > 28 || Q < 4 || Q > 27) return null;
+  const extra = rnd(2, Math.min(14, 30 - Q));
+  const A = Q + extra;
+  if (A > 30 || A < Q) return null;
+  const B = rnd(2, P - 2);
+  const C = P - B;
+  if (C < 2 || C > 30 || B > 30) return null;
+  const answer = A - Q;
+  const traps = [Q, P, A - mid, mid, B + C - D];
+  if (A >= P) traps.push(A - P);
+  if (P % (D * E) === 0) traps.push(A - (P / (D * E)));
+  if (C % D === 0) traps.push(A - B + (C / D) * E);
+  const tip = 'After solving brackets (' + P + '), do ÷ and × from left to right ('
+    + P + ' ÷ ' + D + ' × ' + E + ' = ' + Q + ') BEFORE subtracting ' + A + ' − ' + Q + ' = ' + answer + '!';
+  const steps = '(' + B + ' + ' + C + ') = ' + P + ', then ' + P + ' ÷ ' + D + ' × ' + E + ' = ' + Q + ', then ' + A + ' − ' + Q + ' = ' + answer;
+  return tagged('full', accept([A, '−', '(', B, '+', C, ')', '÷', D, '×', E], answer, tip, steps, traps));
+}
+
+function genHardLeft() {
+  const C = rnd(2, 6);
+  const D = rnd(2, 5);
+  const mid = rnd(2, 5);
+  const P = mid * C;
+  const Q = mid * D;
+  if (P < 6 || P > 24 || Q > 36) return null;
+  const B = rnd(2, Math.min(12, 30 - P));
+  const A = P + B;
+  if (A > 30) return null;
+  const E = rnd(2, Math.min(16, 60 - Q));
+  const answer = Q + E;
+  const traps = [P + E, Q, P, A + E, mid + E];
+  if (P % (C * D) === 0) traps.push(P / (C * D) + E);
+  const tip = 'After solving brackets (' + P + '), do ÷ and × from left to right ('
+    + P + ' ÷ ' + C + ' × ' + D + ' = ' + Q + ') BEFORE adding ' + Q + ' + ' + E + ' = ' + answer + '!';
+  const steps = '(' + A + ' − ' + B + ') = ' + P + ', then ' + P + ' ÷ ' + C + ' × ' + D + ' = ' + Q + ', then ' + Q + ' + ' + E + ' = ' + answer;
+  return tagged('full', accept(['(', A, '−', B, ')', '÷', C, '×', D, '+', E], answer, tip, steps, traps));
+}
+
+function genExSumProd() {
+  const C = rnd(2, 6);
+  const left = rnd(2, 7);
+  const P = left * C;
+  if (P > 24) return null;
+  const B = rnd(2, Math.min(12, 30 - P));
+  const A = P + B;
+  if (A > 30 || A < 2) return null;
+  const E = rnd(2, 5);
+  const D = rnd(2, Math.min(9, Math.floor(28 / E)));
+  const prod = D * E;
+  const answer = left + prod;
+  if (prod < 4 || answer > 64) return null;
+  const traps = [(left + D) * E, left + D, left * E, P + prod, A - left];
+  if (B % C === 0) traps.push(A - (B / C) + prod);
+  const tip = 'Always solve inside the BRACKETS (' + A + ' − ' + B + ' = ' + P + ') FIRST. Divide '
+    + P + ' ÷ ' + C + ' = ' + left + ', and multiply ' + D + ' × ' + E + ' = ' + prod
+    + ', THEN add ' + left + ' + ' + prod + ' = ' + answer + '!';
+  const steps = '(' + A + ' − ' + B + ') = ' + P + ', ' + P + ' ÷ ' + C + ' = ' + left + ', ' + D + ' × ' + E + ' = ' + prod + ', ' + left + ' + ' + prod + ' = ' + answer;
+  return tagged('full', accept(['(', A, '−', B, ')', '÷', C, '+', D, '×', E], answer, tip, steps, traps));
+}
+
+function genExDivBracket() {
+  const B = rnd(2, 5);
+  const C = rnd(2, 4);
+  const inner = B * C;
+  if (inner < 4 || inner > 16) return null;
+  const quotMax = Math.floor(30 / inner);
+  if (quotMax < 2) return null;
+  const quot = rnd(2, quotMax);
+  const A = quot * inner;
+  const E = rnd(2, 8);
+  const D = E + rnd(2, 12);
+  if (D > 24) return null;
+  const answer = quot + D - E;
+  const mid = quot + D;
+  const ignore = (A / B) * C + D - E;
+  const traps = [ignore, mid, quot, A / B, quot * C + D - E];
+  const tip = 'Always solve inside the BRACKETS (' + B + ' × ' + C + ' = ' + inner + ') FIRST, then divide '
+    + A + ' ÷ ' + inner + ' = ' + quot + '. Addition and subtraction have EQUAL priority — work strictly from LEFT to RIGHT: '
+    + quot + ' + ' + D + ' = ' + mid + ', then ' + mid + ' − ' + E + ' = ' + answer + '!';
+  const steps = '(' + B + ' × ' + C + ') = ' + inner + ', ' + A + ' ÷ ' + inner + ' = ' + quot + ', then ' + quot + ' + ' + D + ' − ' + E + ' = ' + answer;
+  return tagged('full', accept([A, '÷', '(', B, '×', C, ')', '+', D, '−', E], answer, tip, steps, traps));
+}
+
+function genExInner() {
+  const Ediv = rnd(2, 6);
+  const quot = rnd(2, 8);
+  const inner = quot * Ediv;
+  const C = rnd(2, 6);
+  const B = rnd(2, Math.min(8, Math.floor(40 / C)));
+  const prod = B * C;
+  const D = prod - inner;
+  if (D < 2 || D > 30 || prod > 42 || prod <= inner) return null;
+  const A = rnd(2, 18);
+  const answer = A + quot;
+  if (answer > 48) return null;
+  const traps = [A + inner, A + prod, quot, prod - D, A * quot];
+  if (D % Ediv === 0) traps.push(A + prod - (D / Ediv));
+  const tip = 'Always solve inside the BRACKETS (' + B + ' × ' + C + ' − ' + D + ' = ' + inner
+    + ') FIRST, then divide ' + inner + ' ÷ ' + Ediv + ' = ' + quot + ' BEFORE adding ' + A + ' + ' + quot + ' = ' + answer + '!';
+  const steps = B + ' × ' + C + ' = ' + prod + ', ' + prod + ' − ' + D + ' = ' + inner + ', ' + inner + ' ÷ ' + Ediv + ' = ' + quot + ', ' + A + ' + ' + quot + ' = ' + answer;
+  return tagged('full', accept([A, '+', '(', B, '×', C, '−', D, ')', '÷', Ediv], answer, tip, steps, traps));
+}
+
+function genExBracketProd() {
+  const B = rnd(2, 6);
+  const C = rnd(2, 5);
+  const prod = B * C;
+  const A = rnd(2, 14);
+  const sum = A + prod;
+  if (sum > 48) return null;
+  const ds = divisorsBetween(sum, 2, Math.min(9, sum));
+  if (!ds.length) return null;
+  const D = pick(ds);
+  const quot = sum / D;
+  if (quot < 2) return null;
+  const E = rnd(2, 14);
+  const answer = quot + E;
+  if (answer > 52) return null;
+  const traps = [sum, quot * E, A + E, prod + E, quot];
+  if (((A + B) * C) % D === 0) traps.push(((A + B) * C) / D + E);
+  const tip = 'Inside the BRACKETS, multiply before you add: ' + B + ' × ' + C + ' = ' + prod
+    + ', then ' + A + ' + ' + prod + ' = ' + sum + '. Divide ' + sum + ' ÷ ' + D + ' = ' + quot
+    + ' BEFORE adding ' + quot + ' + ' + E + ' = ' + answer + '!';
+  const steps = B + ' × ' + C + ' = ' + prod + ', ' + A + ' + ' + prod + ' = ' + sum + ', ' + sum + ' ÷ ' + D + ' = ' + quot + ', ' + quot + ' + ' + E + ' = ' + answer;
+  return tagged('full', accept(['(', A, '+', B, '×', C, ')', '÷', D, '+', E], answer, tip, steps, traps));
+}
+
+function forceQuestion(diff) {
+  const n = (forceN % 6) + 2;
+  forceN++;
+  if (diff === 'medium') {
+    const b = 2 + (n % 3);
+    const c = 2;
+    const t = 2 + (n % 2);
+    const a = t * b * c;
+    const mid = a / b;
+    const answer = mid * c;
+    return tagged('muldiv', accept(
+      [a, '÷', b, '×', c],
+      answer,
+      'Multiplication and division have EQUAL priority — work strictly from LEFT to RIGHT: ' + a + ' ÷ ' + b + ' = ' + mid + ' first, then ' + mid + ' × ' + c + ' = ' + answer + '!',
+      a + ' ÷ ' + b + ' = ' + mid + ', then ' + mid + ' × ' + c + ' = ' + answer,
+      [t, mid, a, answer + n]
+    ));
+  }
+  if (diff === 'hard' || diff === 'extreme') {
+    const A = 8 + (n % 5) * 2;
+    const answer = A + 12;
+    const q = accept(
+      [A, '+', '(', 16, '−', 4, ')', '÷', 3, '×', 3],
+      answer,
+      'After solving brackets (12), do ÷ and × from left to right (12 ÷ 3 × 3 = 12) BEFORE adding ' + A + ' + 12 = ' + answer + '!',
+      '(16 − 4) = 12, then 12 ÷ 3 × 3 = 12, then ' + A + ' + 12 = ' + answer,
+      [A + 12 - n, 12, A + 4, A + 16]
+    );
+    return tagged('full', q);
+  }
+  const b = 4 + (n % 5);
+  const c = 3 + (n % 4);
+  const a = b + 6;
+  const mid = a - b;
+  const answer = mid + c;
+  return tagged('addsub', accept(
+    [a, '−', b, '+', c],
+    answer,
+    'Addition and subtraction have EQUAL priority — work strictly from LEFT to RIGHT: ' + a + ' − ' + b + ' = ' + mid + ' first, then ' + mid + ' + ' + c + ' = ' + answer + '!',
+    a + ' − ' + b + ' = ' + mid + ', then ' + mid + ' + ' + c + ' = ' + answer,
+    [a - (b + c), mid, a, answer + 2]
+  ));
+}
+
+const BUILDERS = {
+  easy: [genEasyAdd, genEasyAdd, genEasyMul, genEasyDiv],
+  medium: [genMedDivMul, genMedChain, genMedPriority, genMedPriority],
+  hard: [genHardPlus, genHardMinus, genHardLeft, genHardPlus],
+  extreme: [genExSumProd, genExDivBracket, genExInner, genExBracketProd]
+};
+
+function makeQuestion(diff) {
+  const set = BUILDERS[diff] || BUILDERS.easy;
+  for (let i = 0; i < 70; i++) {
+    const q = set[rnd(0, set.length - 1)]();
+    if (q) return q;
+  }
+  return forceQuestion(diff);
+}
+
+function deal(diff) {
+  let fallback = null;
+  for (let i = 0; i < 36; i++) {
+    const q = makeQuestion(diff);
+    if (!q) continue;
+    if (!fallback) fallback = q;
+    if (G.history.indexOf(q.sig) >= 0) continue;
+    if (G.mode === 'duel' && G.lanes.some(function (lane) { return lane.question && lane.question.sig === q.sig; })) continue;
+    G.history.push(q.sig);
+    if (G.history.length > 8) G.history.shift();
+    return q;
+  }
+  const q = fallback || forceQuestion(diff);
+  G.history.push(q.sig);
+  if (G.history.length > 8) G.history.shift();
+  return q;
+}
+
+function unlock() {
+  if (typeof window === 'undefined') return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audio.ctx) {
+    const actx = new AC();
+    audio.ctx = actx;
+    audio.master = actx.createGain();
+    audio.master.gain.value = G.muted ? 0 : 1;
+    audio.master.connect(actx.destination);
+    audio.music = actx.createGain();
+    audio.music.gain.value = 0.22;
+    audio.music.connect(audio.master);
+    audio.sfx = actx.createGain();
+    audio.sfx.gain.value = 0.9;
+    audio.sfx.connect(audio.master);
+    const buf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    audio.noise = buf;
+    audio.next = actx.currentTime + 0.06;
+    const o = actx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.value = 46;
+    const filter = actx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 150;
+    const g = actx.createGain();
+    g.gain.value = 0.0001;
+    o.connect(filter);
+    filter.connect(g);
+    g.connect(audio.sfx);
+    o.start();
+    audio.engine = g;
+    const o2 = actx.createOscillator();
+    o2.type = 'square';
+    o2.frequency.value = 53;
+    const g2 = actx.createGain();
+    g2.gain.value = 0.0001;
+    o2.connect(g2);
+    g2.connect(audio.sfx);
+    o2.start();
+    audio.engine2 = g2;
+  }
+  if (audio.ctx.state === 'suspended') audio.ctx.resume();
+}
+
+function envGain(when, dur, peak, dest) {
+  const g = audio.ctx.createGain();
+  g.connect(dest || audio.sfx);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), when + 0.015);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + Math.max(0.04, dur));
+  return g;
+}
+
+function tone(freq, dur, type, peak, when, dest) {
+  if (!audio.ctx) return;
+  const t = when || audio.ctx.currentTime;
+  const o = audio.ctx.createOscillator();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, t);
+  const g = envGain(t, dur, peak, dest || audio.sfx);
+  o.connect(g);
+  o.start(t);
+  o.stop(t + dur + 0.03);
+}
+
+function noiseHit(dur, peak, freq, q, when) {
+  if (!audio.ctx || !audio.noise) return;
+  const t = when || audio.ctx.currentTime;
+  const src = audio.ctx.createBufferSource();
+  src.buffer = audio.noise;
+  const filter = audio.ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  filter.Q.value = q || 0.7;
+  const g = envGain(t, dur, peak, audio.sfx);
+  src.connect(filter);
+  filter.connect(g);
+  src.start(t);
+  src.stop(t + dur + 0.03);
+}
+
+const sfx = {
+  clang: function () {
+    noiseHit(0.16, 0.22, 280, 0.6);
+    tone(168, 0.28, 'square', 0.07);
+    tone(420, 0.12, 'triangle', 0.05);
+    tone(90, 0.22, 'sine', 0.06);
+  },
+  horn: function () {
+    if (!audio.ctx) return;
+    const t0 = audio.ctx.currentTime;
+    [0, 0.2].forEach(function (off) {
+      const t = t0 + off;
+      const o = audio.ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.setValueAtTime(466, t);
+      o.frequency.exponentialRampToValueAtTime(294, t + 0.16);
+      const g = audio.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.07, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+      o.connect(g);
+      g.connect(audio.sfx);
+      o.start(t);
+      o.stop(t + 0.2);
+    });
+  },
+  whistle: function () {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    const o = audio.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(920, t);
+    o.frequency.exponentialRampToValueAtTime(180, t + 0.55);
+    const g = audio.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.07, t + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.58);
+    o.connect(g);
+    g.connect(audio.sfx);
+    o.start(t);
+    o.stop(t + 0.6);
+  },
+  chute: function () {
+    noiseHit(0.22, 0.1, 500, 0.5);
+    tone(520, 0.18, 'triangle', 0.04);
+  },
+  buzz: function () {
+    tone(98, 0.22, 'sawtooth', 0.05);
+    tone(74, 0.26, 'square', 0.04);
+    noiseHit(0.14, 0.06, 180, 0.4);
+  },
+  fanfare: function () {
+    if (!audio.ctx) return;
+    const t = audio.ctx.currentTime;
+    [523, 659, 784, 1047].forEach(function (f, i) {
+      tone(f, 0.24, 'triangle', 0.07, t + i * 0.09);
+    });
+  },
+  end: function () {
+    tone(220, 0.16, 'sine', 0.05);
+    tone(164, 0.32, 'triangle', 0.04);
+  }
+};
+
+function scheduleMusic() {
+  if (!audio.ctx) return;
+  const actx = audio.ctx;
+  const spb = 60 / 126 / 2;
+  const melody = [440, 523, 659, 587, 523, 440, 392, 440, 494, 523, 587, 523, 494, 440, 392, 349];
+  const bass = [110, 0, 110, 165, 0, 110, 98, 0, 87, 0, 110, 0, 98, 0, 110, 82];
+  if (!audio.next) audio.next = actx.currentTime + 0.05;
+  let guard = 0;
+  while (audio.next < actx.currentTime + 0.32 && guard < 8) {
+    const step = audio.step % 16;
+    const when = audio.next;
+    if (melody[step]) tone(melody[step], 0.14, 'square', 0.035, when, audio.music);
+    if (bass[step]) tone(bass[step], 0.16, 'triangle', 0.05, when, audio.music);
+    if (step % 2 === 1) noiseHit(0.03, 0.025, 6400, 0.5, when);
+    if (step % 4 === 0) tone(55, 0.1, 'sine', 0.04, when, audio.music);
+    audio.step += 1;
+    audio.next += spb;
+    guard += 1;
+  }
+}
+
+function updateEngine() {
+  if (!audio.engine || !audio.ctx) return;
+  let moving = false;
+  if (G.scene === 'play') {
+    moving = G.lanes.some(function (lane) {
+      return !lane.halted && (lane.phase === 'cruise' || lane.phase === 'cross' || lane.phase === 'lock');
+    });
+  }
+  const now = audio.ctx.currentTime;
+  audio.engine.gain.setTargetAtTime(moving ? 0.02 : 0.0001, now, 0.12);
+  audio.engine2.gain.setTargetAtTime(moving ? 0.008 : 0.0001, now, 0.12);
+}
+
+function setMuted(on) {
+  G.muted = on;
+  if (audio.master) audio.master.gain.value = on ? 0 : 1;
+  persist();
+}
+function toggleMute() {
+  unlock();
+  setMuted(!G.muted);
+}
+
+function persist() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      mute: G.muted,
+      solo: G.best.solo,
+      coop: G.best.coop
+    }));
+  } catch (err) { /* ignore quota */ }
+}
+function loadSave() {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && data.solo) G.best.solo = Object.assign(G.best.solo, data.solo);
+    if (data && data.coop) G.best.coop = Object.assign(G.best.coop, data.coop);
+    if (data && data.mute) G.muted = true;
+  } catch (err) { /* ignore */ }
+}
+
+function say(msg) {
+  if (live) live.textContent = msg;
+}
+
+function fixMode() {
+  G.playersN = clamp(G.playersN, 1, 3);
+  if (G.playersN === 1) G.mode = 'solo';
+  if (G.playersN > 1 && G.mode === 'solo') G.mode = 'coop';
+}
+
+function makeLane(player) {
+  return {
+    player: player,
+    score: 0,
+    spans: 0,
+    lives: 3,
+    combo: 0,
+    bestCombo: 0,
+    correct: 0,
+    wrong: 0,
+    cursor: 0,
+    hover: -1,
+    picked: -1,
+    question: null,
+    phase: 'cruise',
+    phaseT: 0,
+    truckX: 0,
+    drop: 0,
+    rot: 0,
+    wheel: Math.random() * 6,
+    puffT: 0,
+    puffs: [],
+    sparks: [],
+    bridge: 0,
+    crane: 0,
+    pendingFinish: false,
+    fallDrop: 0,
+    lastAward: null,
+    hurtT: 0,
+    halted: false,
+    scale: 1,
+    startX: 360,
+    dangerX: 900,
+    gapW: 150,
+    roadY: 500,
+    stage: { x: 0, y: 160, w: VW, h: 400 },
+    mega: false
+  };
+}
+
+function rect(x, y, w, h) { return { x: x, y: y, w: w, h: h }; }
+
+function packLane(top, height, headerH, bannerH, deckH, pad) {
+  const header = rect(14, top + pad, VW - 28, headerH);
+  const banner = rect(14, header.y + header.h + 4, VW - 28, bannerH);
+  const deck = rect(14, top + height - pad - deckH, VW - 28, deckH);
+  const stageY = banner.y + banner.h + 4;
+  const stage = rect(0, stageY, VW, Math.max(48, deck.y - 4 - stageY));
+  return { header: header, banner: banner, stage: stage, deck: deck, top: top, height: height };
+}
+
+function computeGeom() {
+  const hud = rect(0, 0, VW, 52);
+  const lanes = [];
+  if (!G.lanes.length || G.scene === 'title') {
+    G.view = { hud: hud, lanes: [] };
+    return;
+  }
+  if (G.mode !== 'duel') {
+    const box = {
+      header: rect(0, 52, VW, 0),
+      banner: rect(18, 60, VW - 36, 104),
+      stage: rect(0, 172, VW, 384),
+      deck: rect(16, 566, VW - 32, 220)
+    };
+    lanes.push(box);
+  } else {
+    const n = G.playersN;
+    const laneH = (VH - hud.h) / n;
+    for (let i = 0; i < n; i++) {
+      if (n === 3) lanes.push(packLane(hud.h + i * laneH, laneH, 20, 52, 68, 4));
+      else lanes.push(packLane(hud.h + i * laneH, laneH, 26, 66, 102, 6));
+    }
+  }
+  G.view = { hud: hud, lanes: lanes };
+  G.lanes.forEach(function (lane, i) {
+    const box = lanes[i];
+    if (!box) return;
+    const stage = box.stage;
+    const mega = G.mode === 'coop';
+    let scale = G.mode !== 'duel' ? (mega ? 0.9 : 1) : (G.playersN === 3 ? 0.33 : 0.5);
+    const body = 158 * scale;
+    if (body > stage.h - 18) scale = Math.max(0.22, (stage.h - 18) / 158);
+    const length = (mega ? 520 : 400) * scale;
+    let startX = Math.max(length + 10, G.mode === 'duel' ? 280 : 390);
+    let dangerX = G.mode === 'duel' && G.playersN === 3 ? 860 : 930;
+    let gapW = G.playersN === 3 && G.mode === 'duel' ? 108 : 156;
+    if (dangerX < startX + 130) dangerX = startX + 160;
+    if (dangerX + gapW > VW - 30) {
+      gapW = 96;
+      dangerX = Math.min(dangerX, VW - 30 - gapW);
+    }
+    lane.scale = scale;
+    lane.mega = mega;
+    lane.startX = startX;
+    lane.dangerX = dangerX;
+    lane.gapW = gapW;
+    const dropRoom = stage.h > 220 ? stage.h * 0.30 : (stage.h > 130 ? stage.h * 0.24 : Math.max(16, stage.h * 0.18));
+    lane.roadY = stage.y + stage.h - dropRoom;
+    lane.stage = stage;
+    lane.box = box;
+  });
+}
+
+function nextMult(lane) {
+  if (G.difficulty !== 'extreme') return 1;
+  const c = lane.combo + 1;
+  if (c >= 3) return 3;
+  if (c >= 2) return 2;
+  return 1;
+}
+
+function beginSpan(lane, advance) {
+  if (lane.halted) return;
+  if (G.mode === 'coop' && advance) G.turn = (G.turn + 1) % G.playersN;
+  const q = deal(G.difficulty);
+  lane.question = q;
+  lane.cursor = 0;
+  lane.hover = -1;
+  lane.picked = -1;
+  lane.phase = 'cruise';
+  lane.phaseT = 0;
+  lane.truckX = lane.startX;
+  lane.drop = 0;
+  lane.rot = 0;
+  lane.bridge = 0;
+  lane.crane = 0;
+  lane.pendingFinish = false;
+  lane.puffs = [];
+  lane.sparks = [];
+  lane.fallDrop = 0;
+  const who = G.mode === 'coop' ? PILOTS[G.turn] : PILOTS[lane.player];
+  const opts = q.options.map(function (o) { return o.value; }).join(', ');
+  say('Span ' + (lane.spans + 1) + '. ' + who.name + ' ' + who.call + '. ' + q.text + '. Options ' + opts + '.');
+}
+
+function startRun() {
+  unlock();
+  fixMode();
+  G.scene = 'play';
+  G.history = [];
+  G.turn = 0;
+  G.overReason = '';
+  G.newRecord = false;
+  G.floats = [];
+  G.shake = 0;
+  const n = G.mode === 'duel' ? G.playersN : 1;
+  G.lanes = [];
+  for (let i = 0; i < n; i++) G.lanes.push(makeLane(i));
+  computeGeom();
+  G.lanes.forEach(function (lane) { beginSpan(lane, false); });
+}
+
+function floatText(x, y, str, color) {
+  G.floats.push({ x: x, y: y, str: str, color: color || '#fff4d2', age: 0, life: 1.15 });
+}
+
+function stackWorld(lane) {
+  const scale = lane.scale;
+  const pivot = lane.mega ? -500 : -370;
+  let x = -172;
+  let y = -124;
+  if (lane.rot) {
+    const dx = x - pivot;
+    const c = Math.cos(lane.rot);
+    const s = Math.sin(lane.rot);
+    const rx = pivot + dx * c - y * s;
+    const ry = dx * s + y * c;
+    x = rx;
+    y = ry;
+  }
+  return { x: lane.truckX + x * scale, y: lane.roadY + lane.drop + y * scale };
+}
+
+function spawnSparks(lane) {
+  const x = lane.dangerX + lane.gapW * 0.45;
+  const y = lane.roadY - 8;
+  const count = REDUCE ? 6 : 18;
+  for (let i = 0; i < count; i++) {
+    const a = -Math.PI + Math.random() * Math.PI;
+    const sp = 70 + Math.random() * 220;
+    lane.sparks.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      age: 0,
+      life: 0.28 + Math.random() * 0.28,
+      color: Math.random() < 0.5 ? '#ffd76a' : '#ff5a1f'
+    });
+  }
+}
+
+function miss(lane, how, picked) {
+  if (!lane || lane.phase !== 'cruise' || lane.halted) return;
+  lane.picked = typeof picked === 'number' ? picked : -1;
+  lane.lives -= 1;
+  lane.wrong += 1;
+  lane.combo = 0;
+  lane.hurtT = 0.55;
+  const prefix = how === 'fall' ? 'Gap closed. ' : 'Not that deck. ';
+  say(prefix + (lane.question ? lane.question.tip : ''));
+  if (how === 'fall') {
+    lane.phase = 'fall';
+    lane.phaseT = 1.15;
+    lane.truckX = lane.dangerX;
+    sfx.whistle();
+    G.shake = REDUCE ? 0 : 1.15;
+    floatText(lane.truckX - 20, lane.roadY - 70, '-1 HEART', '#ff8b98');
+  } else {
+    lane.phase = 'sting';
+    lane.phaseT = 1.9;
+    sfx.buzz();
+    spawnSparks(lane);
+    floatText(lane.dangerX, lane.roadY - 64, '-1 HEART', '#ff8b98');
+  }
+}
+
+function answer(lane, index) {
+  if (!lane || lane.halted || lane.phase !== 'cruise' || !lane.question) return;
+  if (index < 0 || index > 3) return;
+  const opt = lane.question.options[index];
+  if (!opt) return;
+  unlock();
+  if (!opt.correct) {
+    miss(lane, 'sting', index);
+    return;
+  }
+  lane.picked = index;
+  lane.correct += 1;
+  lane.combo += 1;
+  if (lane.combo > lane.bestCombo) lane.bestCombo = lane.combo;
+  const travel = Math.max(1, lane.dangerX - lane.startX);
+  const early = clamp((lane.dangerX - lane.truckX) / travel, 0, 1);
+  const bonus = Math.round(early * 150) + TIER_BONUS[G.difficulty];
+  const mult = G.difficulty === 'extreme' ? (lane.combo >= 3 ? 3 : lane.combo >= 2 ? 2 : 1) : 1;
+  let finish = 0;
+  if (G.mode === 'duel' && lane.spans + 1 >= RACE_TO) finish = 500;
+  const pts = (300 + bonus) * mult + finish;
+  lane.score += pts;
+  lane.spans += 1;
+  lane.lastAward = { bonus: bonus, mult: mult, finish: finish, pts: pts };
+  lane.phase = 'lock';
+  lane.phaseT = 0.52;
+  lane.pendingFinish = G.mode === 'duel' && lane.spans >= RACE_TO;
+  G.shake = REDUCE ? 0 : 0.65;
+  floatText(lane.truckX - 30, lane.roadY - 90 * lane.scale, '+' + pts + (mult > 1 ? '  ' + mult + '×' : ''), '#ffe08a');
+  say('Span locked. ' + lane.question.text + ' = ' + lane.question.answer + '. ' + lane.question.steps + '. Plus ' + pts + '.');
+}
+
+function moveCursor(lane, dir) {
+  if (!lane || lane.halted || lane.phase !== 'cruise') return;
+  lane.cursor = (lane.cursor + dir + 4) % 4;
+}
+
+function cruiseSpeed(lane) {
+  const dist = Math.max(80, lane.dangerX - lane.startX);
+  return dist / LIMIT[G.difficulty];
+}
+
+function finishDeath(lane) {
+  if (G.mode === 'duel') {
+    lane.halted = true;
+    lane.phase = 'halt';
+    lane.lives = Math.max(0, lane.lives);
+    lane.drop = 0;
+    lane.rot = 0;
+    checkDuelEnd();
+    return;
+  }
+  endRun('The canyon took the last heart.');
+}
+
+function checkDuelEnd() {
+  if (G.scene !== 'play' || G.mode !== 'duel') return;
+  const racing = G.lanes.filter(function (lane) { return !lane.halted && lane.lives > 0; });
+  if (!racing.length) endRun('Every rig is halted. Highest score takes the canyon.');
+}
+
+function updateLane(lane, dt) {
+  if (lane.hurtT > 0) lane.hurtT -= dt;
+  lane.puffs.forEach(function (p) {
+    p.age += dt;
+    p.y -= 22 * dt;
+    p.x -= 12 * dt;
+    p.r += 8 * dt;
+  });
+  lane.puffs = lane.puffs.filter(function (p) { return p.age < p.life; });
+  lane.sparks.forEach(function (p) {
+    p.age += dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 280 * dt;
+  });
+  lane.sparks = lane.sparks.filter(function (p) { return p.age < p.life; });
+  if (lane.halted || lane.phase === 'halt') return;
+
+  if (lane.phase === 'cruise' || lane.phase === 'cross') {
+    lane.puffT -= dt;
+    if (lane.puffT <= 0) {
+      const s = stackWorld(lane);
+      lane.puffs.push({ x: s.x, y: s.y, age: 0, life: 0.75, r: 4 + Math.random() * 4 });
+      if (lane.puffs.length > 16) lane.puffs.shift();
+      lane.puffT = 0.13;
+    }
+  }
+
+  if (lane.phase === 'cruise') {
+    const speed = cruiseSpeed(lane);
+    lane.truckX += speed * dt;
+    lane.wheel += speed / Math.max(8, 22 * lane.scale) * dt;
+    if (lane.truckX >= lane.dangerX) {
+      lane.truckX = lane.dangerX;
+      miss(lane, 'fall', -1);
+    }
+    return;
+  }
+
+  if (lane.phase === 'sting') {
+    lane.phaseT -= dt;
+    lane.truckX = Math.max(lane.startX, lane.truckX - 80 * dt);
+    lane.wheel -= 3 * dt;
+    if (lane.phaseT <= 0) {
+      if (lane.lives <= 0) finishDeath(lane);
+      else beginSpan(lane, true);
+    }
+    return;
+  }
+
+  if (lane.phase === 'fall') {
+    const FALL = 1.15;
+    lane.phaseT -= dt;
+    const u = 1 - clamp(lane.phaseT, 0, FALL) / FALL;
+    lane.fallDrop = Math.min(110, (lane.stage.h || 120) * 0.5);
+    lane.drop = u * lane.fallDrop;
+    lane.rot = u * 0.62;
+    lane.wheel += 8 * dt;
+    if (lane.phaseT <= 0) {
+      lane.phase = 'rescue';
+      lane.phaseT = 1.15;
+      sfx.chute();
+    }
+    return;
+  }
+
+  if (lane.phase === 'rescue') {
+    const RES = 1.15;
+    lane.phaseT -= dt;
+    const u = 1 - clamp(lane.phaseT, 0, RES) / RES;
+    lane.drop = (1 - u) * lane.fallDrop;
+    lane.rot = (1 - u) * 0.22;
+    lane.truckX = lane.dangerX + (lane.startX - lane.dangerX) * u;
+    if (lane.phaseT <= 0) {
+      lane.drop = 0;
+      lane.rot = 0;
+      lane.truckX = lane.startX;
+      if (lane.lives <= 0) finishDeath(lane);
+      else beginSpan(lane, true);
+    }
+    return;
+  }
+
+  if (lane.phase === 'lock') {
+    lane.phaseT -= dt;
+    lane.crane = 1 - clamp(lane.phaseT, 0, 0.52) / 0.52;
+    lane.wheel += 2 * dt;
+    if (lane.phaseT <= 0) {
+      lane.bridge = 1;
+      lane.crane = 1;
+      lane.phase = 'cross';
+      lane.phaseT = 1.15;
+      sfx.clang();
+      sfx.horn();
+      G.shake = REDUCE ? 0 : 1;
+      floatText(lane.truckX, lane.roadY - 120 * lane.scale, 'HONK!', '#fff7df');
+    }
+    return;
+  }
+
+  if (lane.phase === 'cross') {
+    const goal = lane.dangerX + lane.gapW + 24;
+    if (lane.phaseT > 0.02) {
+      lane.truckX += (goal - lane.truckX) * Math.min(1, dt / lane.phaseT);
+    } else {
+      lane.truckX = goal;
+    }
+    lane.wheel += 14 * dt;
+    lane.phaseT -= dt;
+    if (lane.phaseT <= 0) {
+      if (lane.pendingFinish) endRun('Finish line crossed. Highest score takes the canyon.');
+      else beginSpan(lane, true);
+    }
+  }
+}
+
+function endRun(reason) {
+  if (G.scene === 'results') return;
+  G.scene = 'results';
+  G.overReason = reason || 'Convoy stopped.';
+  G.newRecord = false;
+  if (G.mode === 'duel') {
+    sfx.fanfare();
+    return;
+  }
+  const lane = G.lanes[0];
+  if (!lane) {
+    sfx.end();
+    return;
+  }
+  const bucket = G.mode === 'coop' ? G.best.coop : G.best.solo;
+  const prev = bucket[G.difficulty] || 0;
+  if (lane.score > prev) {
+    bucket[G.difficulty] = lane.score;
+    G.newRecord = true;
+    sfx.fanfare();
+  } else {
+    sfx.end();
+  }
+  persist();
+  const label = G.mode === 'coop' ? 'Team score ' : 'Score ';
+  say(G.overReason + ' ' + label + lane.score + '. Spans ' + lane.spans + '.');
+}
+
+function updateFloats(dt) {
+  G.floats.forEach(function (f) {
+    f.age += dt;
+    f.y -= 26 * dt;
+  });
+  G.floats = G.floats.filter(function (f) { return f.age < f.life; });
+}
+
+function padEdges() {
+  const edges = [];
+  const pads = (typeof navigator !== 'undefined' && navigator.getGamepads) ? navigator.getGamepads() : [];
+  for (let i = 0; i < 3; i++) {
+    const p = pads && pads[i];
+    const left = !!(p && ((p.buttons[14] && p.buttons[14].pressed) || p.axes[0] < -0.55));
+    const right = !!(p && ((p.buttons[15] && p.buttons[15].pressed) || p.axes[0] > 0.55));
+    const a = !!(p && p.buttons[0] && p.buttons[0].pressed);
+    edges.push({
+      left: left && !padPrev[i].l,
+      right: right && !padPrev[i].r,
+      a: a && !padPrev[i].a
+    });
+    padPrev[i].l = left;
+    padPrev[i].r = right;
+    padPrev[i].a = a;
+  }
+  return edges;
+}
+
+function pollPads() {
+  const edges = padEdges();
+  if (G.scene === 'title') {
+    if (edges[0].a) startRun();
+    return;
+  }
+  if (G.scene === 'results') {
+    if (edges[0].a) startRun();
+    return;
+  }
+  if (G.scene !== 'play') return;
+  if (G.mode === 'duel') {
+    edges.forEach(function (edge, i) {
+      if (i >= G.lanes.length) return;
+      if (edge.left) moveCursor(G.lanes[i], -1);
+      if (edge.right) moveCursor(G.lanes[i], 1);
+      if (edge.a) answer(G.lanes[i], G.lanes[i].cursor);
+    });
+    return;
+  }
+  const who = G.mode === 'coop' ? G.turn : 0;
+  const edge = edges[who];
+  const lane = G.lanes[0];
+  if (!edge || !lane) return;
+  if (edge.left) moveCursor(lane, -1);
+  if (edge.right) moveCursor(lane, 1);
+  if (edge.a) answer(lane, lane.cursor);
+}
+
+function update(dt) {
+  G.time += dt;
+  scheduleMusic();
+  updateEngine();
+  G.shake = Math.max(0, G.shake - dt * 2.3);
+  updateFloats(dt);
+  if (G.scene === 'play') {
+    computeGeom();
+    pollPads();
+    G.lanes.forEach(function (lane) { updateLane(lane, dt); });
+  } else {
+    pollPads();
+  }
+}
+
+function fitCanvas() {
+  if (!canvas || !ctx) return;
+  const dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1);
+  canvas.width = Math.round(VW * dpr);
+  canvas.height = Math.round(VH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const scale = Math.min(window.innerWidth / VW, window.innerHeight / VH);
+  canvas.style.width = Math.round(VW * scale) + 'px';
+  canvas.style.height = Math.round(VH * scale) + 'px';
+  canvas.style.left = Math.round((window.innerWidth - VW * scale) / 2) + 'px';
+  canvas.style.top = Math.round((window.innerHeight - VH * scale) / 2) + 'px';
+}
+
+function canvasPoint(ev) {
+  const rectBox = canvas.getBoundingClientRect();
+  return {
+    x: (ev.clientX - rectBox.left) * (VW / rectBox.width),
+    y: (ev.clientY - rectBox.top) * (VH / rectBox.height)
+  };
+}
+
+function hitTest(x, y) {
+  for (let i = G.hits.length - 1; i >= 0; i--) {
+    const h = G.hits[i];
+    if (h.disabled) continue;
+    if (x >= h.x && y >= h.y && x <= h.x + h.w && y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
+function fillRound(x, y, w, h, r, fill, stroke, sw) {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+  if (fill) {
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+  if (stroke) {
+    ctx.lineWidth = sw || 1;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+}
+
+function text(str, x, y, font, color, align) {
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+
+function wrapText(str, maxW) {
+  const words = String(str).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = words[i];
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawHat(x, y, s, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(0, 4, 16, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(0, 2, 9, Math.PI, 0);
+  ctx.lineTo(9, 5);
+  ctx.lineTo(-9, 5);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(-4, -5, 3, 6);
+  ctx.restore();
+}
+
+function drawHeart(x, y, filled, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s || 1, s || 1);
+  ctx.beginPath();
+  ctx.moveTo(0, 4);
+  ctx.bezierCurveTo(-10, -2, -6, -10, 0, -5);
+  ctx.bezierCurveTo(6, -10, 10, -2, 0, 4);
+  ctx.fillStyle = filled ? '#ff4d6a' : 'rgba(255,255,255,0.18)';
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHearts(x, y, lives, hurt) {
+  for (let i = 0; i < 3; i++) {
+    const flash = hurt > 0 && i === Math.max(0, lives) && Math.sin(G.time * 24) > 0;
+    drawHeart(x + i * 22, y, i < lives && !flash, 1);
+  }
+}
+
+function chipWidth(label, font) {
+  ctx.font = font;
+  return ctx.measureText(label).width + 22;
+}
+
+function drawChip(x, y, h, label, fill, ink, font) {
+  const f = font || '800 13px ' + FONT;
+  const w = chipWidth(label, f);
+  fillRound(x, y, w, h, h / 2, fill, 'rgba(255,255,255,0.16)', 1);
+  text(label, x + w / 2, y + h / 2, f, ink, 'center');
+  return w;
+}
+
+function rigColor(lane) {
+  if (G.mode === 'solo' || G.mode === 'coop') return '#e10600';
+  return PILOTS[lane.player].color;
+}
+
+function drawWheel(x, y, r, spin, dual) {
+  function one(ox, oy) {
+    ctx.save();
+    ctx.translate(x + ox, y + oy);
+    ctx.fillStyle = '#14181d';
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#c5ced6';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.52, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.save();
+    ctx.rotate(spin);
+    ctx.strokeStyle = '#1c2128';
+    ctx.lineWidth = Math.max(1.5, r * 0.12);
+    for (let i = 0; i < 3; i++) {
+      ctx.rotate(Math.PI / 3);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.42, 0);
+      ctx.lineTo(r * 0.42, 0);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.fillStyle = '#ffd76a';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  if (dual) one(-4, 1);
+  one(0, 0);
+}
+
+function drawTruck(lane) {
+  const scale = lane.scale;
+  const mega = !!lane.mega;
+  const color = rigColor(lane);
+  const pivot = mega ? -500 : -370;
+  ctx.save();
+  ctx.translate(lane.truckX, lane.roadY + lane.drop);
+  ctx.scale(scale, scale);
+  if (lane.rot) {
+    ctx.translate(pivot, 0);
+    ctx.rotate(lane.rot);
+    ctx.translate(-pivot, 0);
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.beginPath();
+  ctx.ellipse(-190, 8, mega ? 230 : 170, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const back = mega ? -530 : -378;
+  fillRound(back, -132, (mega ? -178 : -168) - back, 90, 8, '#f4f7fb', '#8aa0b4', 2);
+  ctx.fillStyle = color;
+  ctx.fillRect(back + 8, -108, (mega ? -190 : -180) - back, 16);
+  ctx.fillStyle = '#16324f';
+  ctx.font = '800 22px ' + FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(mega ? 'MEGA' : 'BODMAS', (back + (mega ? -190 : -176)) / 2, -78);
+  if (mega) {
+    fillRound(-168, -126, 70, 78, 6, '#e7eef6', '#8aa0b4', 2);
+    ctx.fillStyle = color;
+    ctx.fillRect(-160, -100, 54, 12);
+  }
+  for (let rx = back + 16; rx < -190; rx += 28) {
+    ctx.fillStyle = '#9aafc2';
+    ctx.beginPath();
+    ctx.arc(rx, -122, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#2a3038';
+  ctx.fillRect(-188, -58, 28, 10);
+  fillRound(-158, -118, 112, 74, 8, color, '#4a0a10', 2);
+  ctx.fillStyle = '#9ad7ff';
+  ctx.beginPath();
+  ctx.moveTo(-146, -108);
+  ctx.lineTo(-78, -108);
+  ctx.lineTo(-70, -78);
+  ctx.lineTo(-146, -78);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(-150, -70, 96, 18);
+  fillRound(-78, -64, 18, 28, 3, '#c8d0d8', '#6e7c8a', 1);
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.moveTo(-108, -46);
+  ctx.lineTo(-108, -78);
+  ctx.stroke();
+
+  fillRound(-86, -78, 92, 36, 8, color, '#4a0a10', 2);
+  ctx.fillStyle = '#1b1f24';
+  fillRound(-8, -46, 14, 16, 2, '#1b1f24', null, 0);
+  ctx.fillStyle = '#ffd76a';
+  ctx.shadowColor = '#ffe9a2';
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.arc(-2, -38, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#d7dee6';
+  ctx.fillRect(-30, -34, 18, 8);
+
+  ctx.fillStyle = '#5c6770';
+  ctx.fillRect(-168, -132, 8, 28);
+  ctx.fillStyle = 'rgba(90,90,90,0.35)';
+  ctx.beginPath();
+  ctx.arc(-164, -138, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (G.difficulty === 'extreme' && lane.combo >= 1 && lane.phase === 'cruise') {
+    ctx.strokeStyle = 'rgba(255, 210, 90, 0.8)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-40 - i * 16, -20 - i * 6);
+      ctx.lineTo(-70 - i * 22, -20 - i * 6);
+      ctx.stroke();
+    }
+  }
+
+  const axles = mega
+    ? [
+      { x: -62, dual: false },
+      { x: -124, dual: true },
+      { x: -160, dual: true },
+      { x: -250, dual: true },
+      { x: -294, dual: true },
+      { x: -430, dual: true },
+      { x: -474, dual: true }
+    ]
+    : [
+      { x: -64, dual: false },
+      { x: -126, dual: true },
+      { x: -162, dual: true },
+      { x: -276, dual: true },
+      { x: -320, dual: true }
+    ];
+  axles.forEach(function (ax) { drawWheel(ax.x, -40, 22, lane.wheel, ax.dual); });
+  ctx.restore();
+}
+
+function drawBridge(lane) {
+  const gapX = lane.dangerX;
+  const gapW = lane.gapW;
+  const stage = lane.stage;
+  const deckTop = lane.roadY - 18 * lane.scale;
+  const bottom = stage.y + stage.h;
+  const close = lane.phase === 'cruise' && (lane.dangerX - lane.truckX) / Math.max(1, lane.dangerX - lane.startX) < 0.28;
+  const asphaltH = Math.max(8, 14 * Math.min(1.1, lane.scale + 0.25));
+  const girderH = Math.max(6, 12 * Math.min(1, lane.scale + 0.2));
+
+  ctx.fillStyle = '#a84836';
+  ctx.fillRect(0, deckTop + asphaltH, gapX, bottom - deckTop);
+  ctx.fillStyle = '#8d3a2c';
+  ctx.fillRect(gapX + gapW, deckTop + asphaltH, VW - gapX - gapW, bottom - deckTop);
+  ctx.fillStyle = '#c45a42';
+  for (let i = 0; i < 5; i++) {
+    const rx = 30 + i * 70;
+    if (rx < gapX - 20) ctx.fillRect(rx, deckTop + asphaltH + 18 + (i % 3) * 10, 26, 14);
+  }
+
+  const chasm = ctx.createLinearGradient(0, deckTop, 0, bottom);
+  chasm.addColorStop(0, '#4a221c');
+  chasm.addColorStop(0.55, '#2a120e');
+  chasm.addColorStop(1, '#1a6e86');
+  ctx.fillStyle = chasm;
+  ctx.fillRect(gapX, deckTop - 2, gapW, bottom - deckTop + 2);
+  ctx.fillStyle = 'rgba(140, 230, 255, 0.55)';
+  ctx.beginPath();
+  ctx.ellipse(gapX + gapW / 2, bottom - 10, Math.max(16, gapW * 0.22), 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  function deck(x, w) {
+    if (w <= 2) return;
+    ctx.fillStyle = '#b7c6d4';
+    ctx.fillRect(x, deckTop + asphaltH, w, girderH);
+    ctx.strokeStyle = '#6d7f90';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const step = Math.max(36, 54 * lane.scale);
+    for (let k = x; k < x + w - 8; k += step) {
+      ctx.moveTo(k, deckTop + asphaltH + girderH);
+      ctx.lineTo(Math.min(x + w, k + step * 0.5), deckTop + asphaltH);
+      ctx.lineTo(Math.min(x + w, k + step), deckTop + asphaltH + girderH);
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#2a313a';
+    ctx.fillRect(x, deckTop, w, asphaltH);
+    ctx.fillStyle = '#f0c14a';
+    ctx.fillRect(x, deckTop + asphaltH * 0.45, w, Math.max(2, asphaltH * 0.12));
+    ctx.fillStyle = '#d5dde6';
+    for (let k = x + 10; k < x + w; k += 28) {
+      ctx.beginPath();
+      ctx.arc(k, deckTop + asphaltH + 3, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  deck(0, gapX);
+  deck(gapX + gapW, VW - gapX - gapW);
+  if (lane.bridge >= 1) deck(gapX, gapW);
+
+  if (lane.bridge < 1) {
+    const pulse = 0.35 + Math.sin(G.time * (close ? 10 : 4)) * 0.2;
+    ctx.save();
+    ctx.strokeStyle = close ? '#ff5a6a' : '#3ee0ff';
+    ctx.fillStyle = close ? 'rgba(255,90,106,' + (0.16 + pulse * 0.2) + ')' : 'rgba(62,224,255,' + (0.12 + pulse * 0.35) + ')';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 6]);
+    ctx.lineDashOffset = -G.time * 36;
+    ctx.fillRect(gapX + 6, deckTop, gapW - 12, asphaltH + 4);
+    ctx.strokeRect(gapX + 6, deckTop, gapW - 12, asphaltH + 4);
+    ctx.setLineDash([]);
+    ctx.font = '800 ' + Math.max(10, 13 * Math.min(1, lane.scale + 0.45)) + 'px ' + FONT;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = close ? '#ffd0d6' : '#e7fbff';
+    if (gapW > 78) ctx.fillText(close ? 'GAP' : 'BLUEPRINT', gapX + gapW / 2, deckTop + asphaltH * 0.5);
+    ctx.restore();
+  }
+
+  if (stage.h > 120) {
+    const top = stage.y + Math.min(36, stage.h * 0.12);
+    ctx.fillStyle = '#c5d2de';
+    ctx.fillRect(gapX - 16, top, 12, deckTop - top);
+    ctx.fillRect(gapX + gapW + 6, top, 12, deckTop - top);
+    ctx.fillStyle = '#ffb020';
+    ctx.fillRect(gapX - 22, top, 24, 7);
+    ctx.fillRect(gapX + gapW, top, 24, 7);
+    ctx.strokeStyle = '#f4f7fb';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(gapX - 10, top + 7);
+    ctx.quadraticCurveTo(gapX + gapW / 2, top + Math.min(54, gapW * 0.28), gapX + gapW + 12, top + 7);
+    ctx.stroke();
+  }
+}
+
+function drawCrane(lane) {
+  if (lane.phase !== 'lock' && lane.crane <= 0) return;
+  if (lane.bridge >= 1 && lane.phase !== 'lock') return;
+  const stage = lane.stage;
+  const gapX = lane.dangerX;
+  const gapW = lane.gapW;
+  const deckTop = lane.roadY - 18 * lane.scale;
+  const mastX = Math.min(VW - 24, gapX + gapW + 28);
+  const top = stage.y + 6;
+  const girderY = top + 10 + (deckTop - top - 8) * clamp(lane.crane, 0, 1);
+  ctx.strokeStyle = '#ffb020';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(mastX, deckTop);
+  ctx.lineTo(mastX, top);
+  ctx.lineTo(gapX + gapW * 0.45, top);
+  ctx.stroke();
+  ctx.strokeStyle = '#d5dde6';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(gapX + gapW * 0.45, top);
+  ctx.lineTo(gapX + gapW * 0.45, girderY);
+  ctx.stroke();
+  const gw = Math.min(gapW - 12, 120);
+  const gx = gapX + gapW * 0.45 - gw / 2;
+  const grad = ctx.createLinearGradient(gx, girderY, gx, girderY + 16);
+  grad.addColorStop(0, '#ffffff');
+  grad.addColorStop(1, '#8ea0b3');
+  ctx.fillStyle = grad;
+  ctx.fillRect(gx, girderY, gw, 14);
+}
+
+function drawChute(lane) {
+  const show = lane.phase === 'rescue' || (lane.phase === 'fall' && lane.phaseT < 0.4);
+  if (!show) return;
+  const scale = lane.scale;
+  const x = lane.truckX - 180 * scale;
+  const y = lane.roadY + lane.drop - 150 * scale;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = '#ffb020';
+  ctx.beginPath();
+  ctx.arc(0, 0, 34 * Math.max(0.45, scale), Math.PI, 0);
+  ctx.quadraticCurveTo(18, 16, 0, 8);
+  ctx.quadraticCurveTo(-18, 16, -34 * Math.max(0.45, scale), 0);
+  ctx.fill();
+  ctx.strokeStyle = '#fff4d2';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-20, 2);
+  ctx.lineTo(0, 70 * scale);
+  ctx.lineTo(20, 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawPuffs(lane) {
+  lane.puffs.forEach(function (p) {
+    const a = 1 - p.age / p.life;
+    ctx.fillStyle = 'rgba(210,210,210,' + (0.35 * a) + ')';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  lane.sparks.forEach(function (p) {
+    const a = 1 - p.age / p.life;
+    ctx.strokeStyle = p.color;
+    ctx.globalAlpha = a;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+
+function drawStage(lane) {
+  const stage = lane.stage;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(stage.x, stage.y, stage.w, stage.h);
+  ctx.clip();
+  if (!REDUCE && G.shake > 0) {
+    ctx.translate((Math.random() - 0.5) * G.shake * 8, (Math.random() - 0.5) * G.shake * 6);
+  }
+  const sky = ctx.createLinearGradient(0, stage.y, 0, lane.roadY);
+  sky.addColorStop(0, '#8fd4ff');
+  sky.addColorStop(0.55, '#ffd39a');
+  sky.addColorStop(1, '#e07a45');
+  ctx.fillStyle = sky;
+  ctx.fillRect(stage.x, stage.y, stage.w, stage.h);
+  if (stage.h > 90) {
+    const sunX = stage.w - 90;
+    const sunY = stage.y + 28;
+    ctx.fillStyle = '#ffe08a';
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    const drift = (G.time * 18) % (stage.w + 160);
+    ctx.beginPath();
+    ctx.ellipse(drift - 40, stage.y + 22, 26, 10, 0, 0, Math.PI * 2);
+    ctx.ellipse(drift - 18, stage.y + 20, 18, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  drawBridge(lane);
+  drawChute(lane);
+  drawTruck(lane);
+  drawCrane(lane);
+  drawPuffs(lane);
+  G.floats.forEach(function (f) {
+    if (f.y < stage.y - 10 || f.y > stage.y + stage.h) return;
+    if (Math.abs(f.x - lane.truckX) > 420 && G.mode === 'duel') return;
+    ctx.globalAlpha = 1 - f.age / f.life;
+    text(f.str, f.x, f.y, '800 20px ' + FONT, f.color, 'center');
+    ctx.globalAlpha = 1;
+  });
+  ctx.restore();
+}
+
+function bannerCopy(lane) {
+  const q = lane.question;
+  const who = G.mode === 'coop' ? PILOTS[G.turn] : PILOTS[lane.player];
+  if (!q) return { kicker: '', main: '', sub: '' };
+  if (lane.phase === 'halt') {
+    return { kicker: who.name + ' HALTED', main: q.text + '  =  ' + q.answer, sub: q.steps };
+  }
+  if (lane.phase === 'lock' || lane.phase === 'cross') {
+    const award = lane.lastAward;
+    const pay = award
+      ? ('300 + ' + award.bonus + ' speed' + (award.mult > 1 ? ' × ' + award.mult : '') + (award.finish ? ' + 500 finish' : '') + ' = ' + award.pts)
+      : '';
+    return { kicker: 'SPAN LOCKED', main: q.text + '  =  ' + q.answer, sub: q.steps + (pay ? '    ' + pay : '') };
+  }
+  if (lane.phase === 'cruise') {
+    let kicker = 'BODMAS  ·  BRACKETS, THEN × ÷ LEFT TO RIGHT, THEN + −';
+    if (G.mode === 'solo') kicker = 'KEYS 1 2 3 4   ·   ARROWS + ENTER   ·   PAD A';
+    if (G.mode === 'coop') kicker = who.name + ' ' + who.short + ' HARD HAT  ·  YOUR SPAN  ·  ' + KEYS[G.turn].join(' ');
+    if (G.mode === 'duel') kicker = who.name + ' ' + who.call + '  ·  ' + KEYS[lane.player].join(' ') + '  ·  PAD ' + lane.player;
+    const mult = nextMult(lane);
+    if (mult > 1) kicker += '   ·   NEXT ' + mult + '×';
+    const remain = lane.dangerX - lane.truckX;
+    const total = Math.max(1, lane.dangerX - lane.startX);
+    if (remain / total < 0.28) kicker = 'GAP CLOSING  ·  ' + kicker;
+    return { kicker: kicker, main: q.text, sub: '' };
+  }
+  const prefix = lane.phase === 'fall' || lane.phase === 'rescue' ? 'GAP CLOSED. ' : 'NOT THAT DECK. ';
+  return { kicker: 'CHIEF ENGINEER', main: q.text, sub: prefix + q.tip };
+}
+
+function drawBanner(lane, box) {
+  const copy = bannerCopy(lane);
+  const danger = lane.phase === 'cruise' && (lane.dangerX - lane.truckX) / Math.max(1, lane.dangerX - lane.startX) < 0.28;
+  fillRound(box.x, box.y, box.w, box.h, 16, danger ? '#3a1420' : '#102033', danger ? '#ff5a6a' : '#ffb020', 3);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x + 8, box.y + 4, box.w - 16, box.h - 8);
+  ctx.clip();
+  const kickerPx = box.h < 80 ? 11 : 12;
+  text(copy.kicker, box.x + 16, box.y + 8 + kickerPx / 2, '800 ' + kickerPx + 'px ' + FONT, '#ffd76a', 'left');
+  const mainMax = box.h < 70 ? 20 : (box.h < 100 ? 30 : 42);
+  const mainPx = fitSize(copy.main, box.w - 36, mainMax, 13);
+  if (!copy.sub) {
+    text(copy.main, box.x + 16, box.y + box.h * 0.62, '800 ' + mainPx + 'px ' + FONT, '#f7fbff', 'left');
+    ctx.restore();
+    return;
+  }
+  const mainY = box.y + 12 + kickerPx + mainPx * 0.45;
+  text(copy.main, box.x + 16, mainY, '800 ' + mainPx + 'px ' + FONT, '#f7fbff', 'left');
+  const subPx = box.h < 80 ? 12 : 15;
+  ctx.font = '700 ' + subPx + 'px ' + FONT;
+  const lineH = subPx + 3;
+  const room = box.y + box.h - 10 - (mainY + mainPx * 0.5);
+  const maxLines = Math.max(1, Math.floor(room / lineH));
+  const lines = wrapText(copy.sub, box.w - 32).slice(0, maxLines);
+  lines.forEach(function (line, i) {
+    text(line, box.x + 16, mainY + mainPx * 0.55 + 8 + i * lineH, '700 ' + subPx + 'px ' + FONT, '#d5e4f5', 'left');
+  });
+  ctx.restore();
+}
+
+function fitSize(str, maxW, maxPx, minPx) {
+  let px = maxPx;
+  ctx.textBaseline = 'middle';
+  while (px > minPx) {
+    ctx.font = '800 ' + px + 'px ' + FONT;
+    if (ctx.measureText(str).width <= maxW) return px;
+    px -= 2;
+  }
+  return minPx;
+}
+
+function drawCards(lane, box) {
+  const n = 4;
+  const gap = box.h < 90 ? 8 : 12;
+  const w = (box.w - gap * (n - 1)) / n;
+  const pilot = G.mode === 'coop' ? G.turn : lane.player;
+  const keys = KEYS[pilot] || KEYS[0];
+  const halted = lane.halted && lane.phase === 'halt';
+  for (let i = 0; i < n; i++) {
+    const x = box.x + i * (w + gap);
+    const card = rect(x, box.y, w, box.h);
+    G.hits.push({ kind: 'card', laneIndex: G.lanes.indexOf(lane), index: i, x: x, y: box.y, w: w, h: box.h });
+    const opt = lane.question ? lane.question.options[i] : null;
+    const feedback = lane.phase !== 'cruise';
+    let fill = '#e7eef5';
+    let ink = '#102033';
+    let stroke = '#8ea0b3';
+    if (feedback && opt && opt.correct) {
+      fill = '#c9f8df';
+      stroke = '#1ea85a';
+    } else if (feedback && i === lane.picked) {
+      fill = '#ffd5de';
+      stroke = '#ff4d6a';
+    } else if (!feedback && (i === lane.cursor || i === lane.hover)) {
+      fill = '#fff4cc';
+      stroke = '#ffb020';
+    }
+    fillRound(card.x, card.y, card.w, card.h, 16, fill, stroke, i === lane.cursor && !feedback ? 4 : 2);
+    ctx.fillStyle = '#8ea0b3';
+    [[10, 10], [card.w - 10, 10], [10, card.h - 10], [card.w - 10, card.h - 10]].forEach(function (p) {
+      ctx.beginPath();
+      ctx.arc(card.x + p[0], card.y + p[1], 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    const numPx = Math.max(18, Math.min(68, card.h * 0.42));
+    text(opt ? String(opt.value) : '—', card.x + card.w / 2, card.y + card.h * 0.42, '800 ' + numPx + 'px ' + FONT, ink, 'center');
+    const legend = halted ? 'HALT' : keys[i];
+    text(legend, card.x + card.w / 2, card.y + card.h * 0.8, '800 ' + Math.max(11, Math.min(16, card.h * 0.12)) + 'px ' + FONT, '#5c6d7e', 'center');
+  }
+}
+
+function drawHud() {
+  const hud = G.view.hud;
+  ctx.fillStyle = '#1a120e';
+  ctx.fillRect(hud.x, hud.y, hud.w, hud.h);
+  ctx.fillStyle = '#ffb020';
+  ctx.fillRect(0, hud.h - 3, VW, 3);
+  const meta = DIFF_META[G.difficulty];
+  let x = 12;
+  const y = 10;
+  const h = 32;
+  x += drawChip(x, y, h, 'CONVOY', '#ffb020', '#1c1408') + 8;
+  const modeLabel = G.mode === 'solo' ? 'SOLO' : G.mode === 'coop' ? 'TEAM CO-OP' : 'CONVOY DUEL';
+  x += drawChip(x, y, h, modeLabel, '#243044', '#f4f7fb') + 8;
+  const diffLabel = G.mode === 'coop' ? meta.name : (meta.name + ' · ' + meta.role.toUpperCase());
+  x += drawChip(x, y, h, diffLabel, '#243044', '#ffd76a') + 8;
+  if (G.mode !== 'duel' && G.lanes[0]) {
+    const lane = G.lanes[0];
+    const rightLimit = VW - 200;
+    const scoreLabel = (G.mode === 'coop' ? 'TEAM ' : 'SCORE ') + commas(lane.score);
+    x += drawChip(x, y, h, scoreLabel, '#243044', '#f4f7fb') + 8;
+    x += drawChip(x, y, h, 'SPANS ' + lane.spans, '#243044', '#f4f7fb') + 8;
+    const bucket = G.mode === 'coop' ? G.best.coop : G.best.solo;
+    const bestLabel = 'BEST ' + commas(bucket[G.difficulty] || 0);
+    if (x + chipWidth(bestLabel, '800 13px ' + FONT) < rightLimit - 220) {
+      x += drawChip(x, y, h, bestLabel, '#243044', '#d5e4f5') + 8;
+    }
+    drawHearts(x + 8, y + 16, lane.lives, lane.hurtT);
+    x += 86;
+    if (G.mode === 'coop') {
+      for (let i = 0; i < G.playersN; i++) {
+        const p = PILOTS[i];
+        const on = i === G.turn;
+        const label = p.name + ' ' + p.short;
+        const w = chipWidth(label, '800 13px ' + FONT) + 18;
+        if (x + w > rightLimit) break;
+        fillRound(x, y, w, h, 16, on ? p.color : '#243044', on ? '#ffd76a' : p.color, on ? 3 : 1);
+        drawHat(x + 16, y + 14, 0.55, on ? '#ffe08a' : p.color);
+        text(label, x + w / 2 + 6, y + h / 2, '800 13px ' + FONT, '#fff', 'center');
+        x += w + 8;
+      }
+    }
+    const mult = nextMult(lane);
+    if (mult > 1 && x + 110 < rightLimit) drawChip(x, y, h, mult + '× STREAK', '#ffb020', '#1c1408');
+  } else if (G.mode === 'duel') {
+    drawChip(x, y, h, 'RACE TO ' + RACE_TO, '#243044', '#f4f7fb');
+  }
+  const muteW = 84;
+  const menuW = 78;
+  fillRound(VW - muteW - 12, y, muteW, h, 16, '#243044', 'rgba(255,255,255,0.2)', 1);
+  text(G.muted ? 'UNMUTE' : 'MUTE', VW - muteW / 2 - 12, y + h / 2, '800 13px ' + FONT, '#f4f7fb', 'center');
+  G.hits.push({ id: 'mute', x: VW - muteW - 12, y: y, w: muteW, h: h });
+  fillRound(VW - muteW - menuW - 22, y, menuW, h, 16, '#243044', 'rgba(255,255,255,0.2)', 1);
+  text('MENU', VW - muteW - menuW / 2 - 22, y + h / 2, '800 13px ' + FONT, '#f4f7fb', 'center');
+  G.hits.push({ id: 'menu', x: VW - muteW - menuW - 22, y: y, w: menuW, h: h });
+}
+
+function drawLaneHeader(lane, box) {
+  if (!box || box.h < 8) return;
+  const p = PILOTS[lane.player];
+  ctx.fillStyle = 'rgba(16, 18, 24, 0.92)';
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  drawHat(box.x + 16, box.y + box.h / 2, 0.5, p.color);
+  const bits = p.name + ' ' + p.call + '   ' + commas(lane.score) + '   SPANS ' + lane.spans + '/' + RACE_TO + '   ' + KEYS[lane.player].join(' ') + '  PAD ' + lane.player;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x + 30, box.y, box.w - 170, box.h);
+  ctx.clip();
+  text(bits, box.x + 34, box.y + box.h / 2, '800 12px ' + FONT, '#f4f7fb', 'left');
+  ctx.restore();
+  drawHearts(box.x + box.w - 80, box.y + box.h / 2, lane.lives, lane.hurtT);
+  if (lane.halted) text('HALTED', box.x + box.w - 130, box.y + box.h / 2, '800 12px ' + FONT, '#ff8b98', 'right');
+  const mult = nextMult(lane);
+  if (mult > 1 && !lane.halted) text(mult + '×', box.x + box.w - 150, box.y + box.h / 2, '800 12px ' + FONT, '#ffd76a', 'right');
+}
+
+function drawPlay() {
+  ctx.fillStyle = '#87c8ee';
+  ctx.fillRect(0, 0, VW, VH);
+  drawHud();
+  G.lanes.forEach(function (lane, i) {
+    const box = G.view.lanes[i];
+    if (!box) return;
+    if (G.mode === 'duel') drawLaneHeader(lane, box.header);
+    drawBanner(lane, box.banner);
+    drawStage(lane);
+    drawCards(lane, box.deck);
+  });
+}
+
+function titleButton(id, x, y, w, h, titleText, sub, on, disabled) {
+  G.hits.push({ id: id, x: x, y: y, w: w, h: h, disabled: !!disabled });
+  ctx.save();
+  ctx.globalAlpha = disabled ? 0.35 : 1;
+  fillRound(x, y, w, h, 14, on ? '#ffd76a' : 'rgba(12, 18, 28, 0.78)', on ? '#ffd76a' : 'rgba(255,255,255,0.18)', 2);
+  text(titleText, x + 14, y + (sub ? h * 0.36 : h / 2), '800 16px ' + FONT, on ? '#1c1408' : '#f4f7fb', 'left');
+  if (sub) {
+    ctx.font = '600 12px ' + FONT;
+    const lines = wrapText(sub, w - 28).slice(0, 2);
+    lines.forEach(function (line, i) {
+      text(line, x + 14, y + h * 0.62 + i * 14, '600 12px ' + FONT, on ? '#5c4316' : '#c5d4e4', 'left');
+    });
+  }
+  ctx.restore();
+}
+
+function drawSkyScene() {
+  const sky = ctx.createLinearGradient(0, 0, 0, VH);
+  sky.addColorStop(0, '#79c4f8');
+  sky.addColorStop(0.45, '#ffd7a4');
+  sky.addColorStop(1, '#8d3b2e');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.fillStyle = '#ffe08a';
+  ctx.beginPath();
+  ctx.arc(1100, 80, 28, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  const drift = (G.time * 22) % (VW + 200);
+  ctx.beginPath();
+  ctx.ellipse(drift - 80, 70, 36, 14, 0, 0, Math.PI * 2);
+  ctx.ellipse(drift - 50, 66, 24, 12, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#6e2c24';
+  ctx.fillRect(0, 620, VW, 180);
+  ctx.fillStyle = '#c4553a';
+  ctx.beginPath();
+  ctx.moveTo(0, 640);
+  ctx.lineTo(180, 560);
+  ctx.lineTo(300, 640);
+  ctx.lineTo(0, 640);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(980, 650);
+  ctx.lineTo(1140, 540);
+  ctx.lineTo(VW, 650);
+  ctx.fill();
+}
+
+function drawTitle() {
+  drawSkyScene();
+  ctx.fillStyle = 'rgba(20, 12, 10, 0.2)';
+  ctx.fillRect(0, 0, VW, VH);
+  text('SINGAPORE PRIMARY 5  ·  ORDER OF OPERATIONS', 48, 36, '800 13px ' + FONT, '#fff4d2', 'left');
+  text('CONVOY BRIDGE', 48, 78, '800 64px ' + FONT, '#fffaf2', 'left');
+  text('BODMAS Canyon Rush', 52, 122, '800 28px ' + FONT, '#ffd76a', 'left');
+  text('Lay steel before the 18-wheeler reaches the canyon. Brackets first. × and ÷ left to right. + and − left to right.', 52, 158, '600 16px ' + FONT, '#fff4e8', 'left');
+
+  text('ENGINEERS', 52, 196, '800 12px ' + FONT, '#ffd76a', 'left');
+  for (let i = 1; i <= 3; i++) {
+    titleButton('players-' + i, 52 + (i - 1) * 250, 210, 238, 58, i + (i === 1 ? ' PLAYER' : ' PLAYERS'), i === 1 ? 'Solo record run' : 'Co-op or duel', G.playersN === i, false);
+  }
+  text('DIFFICULTY', 52, 286, '800 12px ' + FONT, '#ffd76a', 'left');
+  const diffs = ['easy', 'medium', 'hard', 'extreme'];
+  diffs.forEach(function (id, i) {
+    const meta = DIFF_META[id];
+    titleButton('diff-' + id, 52 + i * 300, 300, 288, 86, meta.name, meta.role, G.difficulty === id, false);
+  });
+  text('MODE', 52, 406, '800 12px ' + FONT, '#ffd76a', 'left');
+  titleButton('mode-solo', 52, 420, 380, 72, 'SOLO', 'Distance record, 3 hearts', G.mode === 'solo', G.playersN !== 1);
+  titleButton('mode-coop', 448, 420, 380, 72, 'TEAM CO-OP', 'One score, shared hearts', G.mode === 'coop', G.playersN < 2);
+  titleButton('mode-duel', 844, 420, 380, 72, 'CONVOY DUEL', 'Lanes, own questions', G.mode === 'duel', G.playersN < 2);
+
+  const blurb = DIFF_META[G.difficulty].blurb + ' ' + MODE_META[G.mode];
+  fillRound(52, 508, 1176, 78, 14, 'rgba(12,18,28,0.72)', 'rgba(255,255,255,0.12)', 1);
+  ctx.font = '600 15px ' + FONT;
+  wrapText(blurb, 1140).slice(0, 3).forEach(function (line, i) {
+    text(line, 68, 532 + i * 18, '600 15px ' + FONT, '#f4f7fb', 'left');
+  });
+
+  let controls = 'Mouse, keys 1 2 3 4, arrows + Enter, or gamepad A.';
+  if (G.playersN >= 2) {
+    controls = 'P1 red 1 2 3 4 / pad 0.   P2 blue Q W E R / pad 1.';
+    if (G.playersN === 3) controls += '   P3 green U I O P / pad 2.';
+    if (G.mode === 'coop') controls += '   Turns alternate. No individual scores.';
+    if (G.mode === 'duel') controls += '   Each lane gets a different expression.';
+  }
+  text(controls, 52, 612, '700 15px ' + FONT, '#fff4d2', 'left');
+
+  fillRound(52, 636, 1176, 70, 16, '#ffd76a', '#c4841a', 0);
+  ctx.fillStyle = '#c4841a';
+  ctx.fillRect(52, 698, 1176, 6);
+  text('ROLL THE CONVOY', 640, 666, '800 28px ' + FONT, '#1c1408', 'center');
+  text('ENTER', 1180, 666, '800 14px ' + FONT, '#5c4316', 'right');
+  G.hits.push({ id: 'start', x: 52, y: 636, w: 1176, h: 76 });
+
+  const bucket = G.mode === 'coop' ? G.best.coop : G.best.solo;
+  const bestLabel = (G.mode === 'coop' ? 'TEAM BEST  ' : 'CANYON BEST  ') + commas(bucket[G.difficulty] || 0);
+  text(bestLabel, 52, 742, '800 16px ' + FONT, '#fffaf2', 'left');
+  text('M toggles mute. A wrong deck or a late gap costs one heart.', 52, 768, '600 14px ' + FONT, '#ffe7d0', 'left');
+
+  fillRound(VW - 120, 18, 92, 34, 17, 'rgba(12,18,28,0.78)', 'rgba(255,255,255,0.2)', 1);
+  text(G.muted ? 'UNMUTE' : 'MUTE', VW - 74, 35, '800 13px ' + FONT, '#fff', 'center');
+  G.hits.push({ id: 'mute', x: VW - 120, y: 18, w: 92, h: 34 });
+}
+
+function rankLanes() {
+  return G.lanes.map(function (lane, i) { return i; }).sort(function (a, b) {
+    const A = G.lanes[a];
+    const B = G.lanes[b];
+    if (B.score !== A.score) return B.score - A.score;
+    if (B.spans !== A.spans) return B.spans - A.spans;
+    return B.lives - A.lives;
+  });
+}
+
+function drawResults() {
+  drawSkyScene();
+  ctx.fillStyle = 'rgba(12, 10, 14, 0.72)';
+  ctx.fillRect(0, 0, VW, VH);
+  fillRound(180, 48, 920, 700, 24, 'rgba(16, 22, 32, 0.94)', '#ffb020', 3);
+  text(G.newRecord ? 'NEW CANYON RECORD' : 'CONVOY REPORT', 640, 92, '800 18px ' + FONT, '#ffd76a', 'center');
+  const heading = G.mode === 'duel' ? 'DUEL STANDINGS' : (G.mode === 'coop' ? 'TEAM SCORE' : 'SOLO RUN');
+  text(heading, 640, 140, '800 42px ' + FONT, '#fffaf2', 'center');
+  text(G.overReason, 640, 184, '600 16px ' + FONT, '#d5e4f5', 'center');
+
+  if (G.mode === 'duel') {
+    const order = rankLanes();
+    order.forEach(function (idx, place) {
+      const lane = G.lanes[idx];
+      const p = PILOTS[lane.player];
+      const y = 230 + place * 78;
+      fillRound(230, y, 820, 68, 14, place === 0 ? 'rgba(255,215,106,0.16)' : 'rgba(255,255,255,0.04)', p.color, 2);
+      text((place + 1) + '   ' + p.name + ' ' + p.call, 250, y + 34, '800 20px ' + FONT, '#fff', 'left');
+      text(commas(lane.score) + '    SPANS ' + lane.spans + '    HEARTS ' + lane.lives, 1020, y + 34, '800 16px ' + FONT, '#ffd76a', 'right');
+    });
+    if (order.length) {
+      const winner = G.lanes[order[0]];
+      text(PILOTS[winner.player].call + ' LEADS THE CANYON', 640, 470, '800 18px ' + FONT, '#ffd76a', 'center');
+    }
+  } else {
+    const lane = G.lanes[0];
+    const score = lane ? lane.score : 0;
+    text(commas(score), 640, 280, '800 84px ' + FONT, '#ffd76a', 'center');
+    const bucket = G.mode === 'coop' ? G.best.coop : G.best.solo;
+    text('BEST ' + commas(bucket[G.difficulty] || 0), 640, 340, '800 18px ' + FONT, '#fff', 'center');
+    if (lane) {
+      text('SPANS ' + lane.spans + '    LAID ' + lane.correct + '    MISSES ' + lane.wrong, 640, 390, '700 18px ' + FONT, '#d5e4f5', 'center');
+      if (G.difficulty === 'extreme') text('BEST STREAK ' + lane.bestCombo, 640, 424, '700 16px ' + FONT, '#ffd76a', 'center');
+      if (lane.question) {
+        ctx.font = '700 16px ' + FONT;
+        const lines = wrapText(lane.question.text + ' = ' + lane.question.answer + '.  ' + lane.question.steps, 820).slice(0, 3);
+        lines.forEach(function (line, i) {
+          text(line, 640, 470 + i * 22, '700 16px ' + FONT, '#f4f7fb', 'center');
+        });
+      }
+    }
+    if (G.mode === 'coop') {
+      const crew = [];
+      for (let i = 0; i < G.playersN; i++) crew.push(PILOTS[i].name + ' ' + PILOTS[i].short);
+      text('CREW  ' + crew.join('   '), 640, 548, '800 16px ' + FONT, '#9ad7ff', 'center');
+    }
+  }
+
+  fillRound(250, 600, 780, 58, 14, '#ffd76a', '#c4841a', 0);
+  text('ROLL AGAIN', 640, 629, '800 22px ' + FONT, '#1c1408', 'center');
+  G.hits.push({ id: 'again', x: 250, y: 600, w: 780, h: 58 });
+  fillRound(250, 674, 780, 48, 14, 'transparent', 'rgba(255,255,255,0.3)', 2);
+  text('TITLE', 640, 698, '800 18px ' + FONT, '#fff', 'center');
+  G.hits.push({ id: 'title', x: 250, y: 674, w: 780, h: 48 });
+}
+
+function draw() {
+  if (!ctx) return;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  computeGeom();
+  G.hits = [];
+  ctx.clearRect(0, 0, VW, VH);
+  if (G.scene === 'title') drawTitle();
+  else if (G.scene === 'results') drawResults();
+  else drawPlay();
+}
+
+function setPlayers(n) {
+  G.playersN = n;
+  if (n === 1) G.mode = 'solo';
+  else if (G.mode === 'solo') G.mode = 'coop';
+}
+function cycleDiff(dir) {
+  const order = ['easy', 'medium', 'hard', 'extreme'];
+  const i = order.indexOf(G.difficulty);
+  G.difficulty = order[(i + dir + order.length) % order.length];
+}
+
+function onTitleHit(id) {
+  if (id === 'start') startRun();
+  else if (id === 'mute') toggleMute();
+  else if (id.indexOf('players-') === 0) setPlayers(Number(id.slice(8)));
+  else if (id.indexOf('diff-') === 0) G.difficulty = id.slice(5);
+  else if (id === 'mode-solo' && G.playersN === 1) G.mode = 'solo';
+  else if (id === 'mode-coop' && G.playersN > 1) G.mode = 'coop';
+  else if (id === 'mode-duel' && G.playersN > 1) G.mode = 'duel';
+}
+
+function onPointerMove(ev) {
+  const p = canvasPoint(ev);
+  G.pointer.x = p.x;
+  G.pointer.y = p.y;
+  if (G.scene !== 'play' || G.mode === 'duel') return;
+  const hit = hitTest(p.x, p.y);
+  const lane = G.lanes[0];
+  if (!lane) return;
+  lane.hover = hit && hit.kind === 'card' ? hit.index : -1;
+}
+
+function onPointerDown(ev) {
+  unlock();
+  const p = canvasPoint(ev);
+  const hit = hitTest(p.x, p.y);
+  if (!hit) return;
+  if (hit.id === 'mute') {
+    toggleMute();
+    return;
+  }
+  if (G.scene === 'title') {
+    onTitleHit(hit.id);
+    return;
+  }
+  if (G.scene === 'results') {
+    if (hit.id === 'again') startRun();
+    if (hit.id === 'title') G.scene = 'title';
+    return;
+  }
+  if (hit.id === 'menu') {
+    G.scene = 'title';
+    return;
+  }
+  if (hit.kind === 'card' && G.mode !== 'duel') {
+    const lane = G.lanes[hit.laneIndex] || G.lanes[0];
+    answer(lane, hit.index);
+  }
+}
+
+function onKey(ev) {
+  unlock();
+  if (ev.code === 'KeyM') {
+    ev.preventDefault();
+    toggleMute();
+    return;
+  }
+  if (['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'].indexOf(ev.code) >= 0) ev.preventDefault();
+  if (ev.repeat) return;
+  if (G.scene === 'title') {
+    if (ev.code === 'Digit1') setPlayers(1);
+    if (ev.code === 'Digit2') setPlayers(2);
+    if (ev.code === 'Digit3') setPlayers(3);
+    if (ev.code === 'ArrowRight') cycleDiff(1);
+    if (ev.code === 'ArrowLeft') cycleDiff(-1);
+    if (ev.code === 'Enter') startRun();
+    return;
+  }
+  if (G.scene === 'results') {
+    if (ev.code === 'Enter') startRun();
+    if (ev.code === 'Escape') G.scene = 'title';
+    return;
+  }
+  if (ev.code === 'Escape') {
+    G.scene = 'title';
+    return;
+  }
+  if (!G.lanes.length) return;
+  if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight' || ev.code === 'Enter' || ev.code === 'Space') {
+    const lane = G.mode === 'duel' ? G.lanes[0] : G.lanes[0];
+    if (!lane) return;
+    if (ev.code === 'ArrowLeft') moveCursor(lane, -1);
+    else if (ev.code === 'ArrowRight') moveCursor(lane, 1);
+    else answer(lane, lane.cursor);
+    return;
+  }
+  const mapped = KEY_CODES[ev.code];
+  if (!mapped) return;
+  if (G.mode === 'duel') {
+    if (mapped[0] >= G.lanes.length) return;
+    answer(G.lanes[mapped[0]], mapped[1]);
+    return;
+  }
+  if (G.mode === 'coop' && mapped[0] !== G.turn) return;
+  if (G.mode === 'solo' && mapped[0] !== 0) return;
+  answer(G.lanes[0], mapped[1]);
+}
+
+let lastFrame = 0;
+function frame(now) {
+  if (!lastFrame) lastFrame = now;
+  const dt = Math.min(0.034, (now - lastFrame) / 1000);
+  lastFrame = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+function boot() {
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d');
+  live = document.getElementById('live');
+  loadSave();
+  fitCanvas();
+  window.addEventListener('resize', fitCanvas);
+  window.addEventListener('keydown', onKey);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  say('Convoy Bridge. Choose players, difficulty, and mode, then roll the convoy.');
+  requestAnimationFrame(frame);
+}
+
+if (typeof window !== 'undefined') boot();
+</script>
+</body>
+</html>
