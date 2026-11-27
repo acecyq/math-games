@@ -48,12 +48,12 @@ const VH = 800;
 const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
 const UI = {
   hud: 52,
-  bannerX: 16, bannerY: 58, bannerW: 1248, bannerH: 128,
-  mechY: 192, mechH: 112,
-  barX: 16, barY: 310, barW: 1248, barH: 190,
-  tipX: 16, tipY: 506, tipW: 1248, tipH: 48,
-  soloY: 560, soloH: 222,
-  duelY1: 560, duelH: 104, duelY2: 672
+  bannerX: 16, bannerY: 56, bannerW: 1248, bannerH: 164,
+  mechY: 224, mechH: 102,
+  barX: 16, barY: 330, barW: 1248, barH: 186,
+  tipX: 16, tipY: 522, tipW: 1248, tipH: 42,
+  soloY: 570, soloH: 212,
+  duelY1: 570, duelH: 98, duelY2: 676
 };
 const TIMER = { easy: 90, medium: 70, hard: 55, extreme: 34 };
 const ROUNDS = 8;
@@ -504,11 +504,76 @@ function findMachine(flavor, name) {
   return asOf ? ('Find the power of ' + named) : ('Find ' + named + "'s power");
 }
 function enterMachine(flavor, machine) {
-  const who = phrase(machine);
-  if (flavor.id === 'cm') return 'Enter the length of ' + who + '.';
-  if (flavor.id === 'marks') return 'Enter the marks of ' + who + '.';
-  if (flavor.id === 'cells') return 'Enter how many power cells ' + who + ' has.';
-  return 'Enter the power of ' + who + '.';
+  const who = machineLabel(machine);
+  if (flavor.id === 'cm') return 'Enter ' + who + "'s length.";
+  if (flavor.id === 'marks') return 'Enter ' + who + "'s marks.";
+  if (flavor.id === 'cells') return 'Enter ' + who + "'s cells.";
+  return 'Enter ' + who + "'s power.";
+}
+function machineLabel(machine) {
+  if (!machine) return '';
+  if (typeof machine === 'string') return machine;
+  return machine.name || '';
+}
+function gapBits(flavor, amount, dir) {
+  const n = fmt(amount);
+  const more = dir === 'more';
+  if (flavor.id === 'cm') return n + ' cm ' + (more ? 'longer' : 'shorter');
+  if (flavor.id === 'marks') return n + (more ? ' more' : ' fewer') + ' marks';
+  if (flavor.id === 'cells') return n + (more ? ' more' : ' fewer') + ' cells';
+  return n + ' MW ' + (more ? 'more' : 'less');
+}
+function vsLine(flavor, who, amount, other, dir) {
+  return machineLabel(who) + ' — ' + gapBits(flavor, amount, dir) + ' than ' + machineLabel(other);
+}
+function amountLine(flavor, machine, amount) {
+  return machineLabel(machine) + ': ' + fmt(amount) + ' ' + flavor.unit;
+}
+function totalLine(flavor, total) {
+  return 'Total: ' + fmt(total) + ' ' + flavor.unit;
+}
+function timesBits(flavor, mult) {
+  const word = mult === 2 ? 'twice' : (mult + ' times');
+  if (flavor.id === 'cm') return word + ' as long as';
+  if (flavor.id === 'mw') return word + ' as much power as';
+  if (flavor.id === 'marks') return word + ' as many marks as';
+  return word + ' as many cells as';
+}
+function timesLine(flavor, big, small, mult) {
+  return machineLabel(big) + ' — ' + timesBits(flavor, mult) + ' ' + machineLabel(small);
+}
+function adjustTail(flavor, amount, fewer) {
+  const n = fmt(amount);
+  if (fewer) {
+    if (flavor.id === 'cm') return 'but ' + n + ' cm shorter';
+    if (flavor.id === 'marks') return 'but ' + n + ' fewer marks';
+    if (flavor.id === 'cells') return 'but ' + n + ' fewer cells';
+    return 'but ' + n + ' MW less';
+  }
+  if (flavor.id === 'cm') return 'plus ' + n + ' cm longer';
+  if (flavor.id === 'marks') return 'plus ' + n + ' more marks';
+  if (flavor.id === 'cells') return 'plus ' + n + ' more cells';
+  return 'plus ' + n + ' MW more';
+}
+function findLine(flavor, name) {
+  if (flavor.id === 'cm') return 'Find ' + name + "'s length";
+  if (flavor.id === 'marks') return 'Find ' + name + "'s marks";
+  if (flavor.id === 'cells') return 'Find ' + name + "'s cells";
+  return 'Find ' + name + "'s power";
+}
+function findTotalLine(flavor, who) {
+  const what = flavor.id === 'cm' ? 'length' : (flavor.id === 'marks' ? 'marks' : (flavor.id === 'cells' ? 'cells' : 'power'));
+  return who ? ('Find total ' + what + ' of ' + who) : ('Find the total ' + what);
+}
+function factLine(text) { return { text: text, ask: false }; }
+function askLine(text) { return { text: text, ask: true }; }
+function joinPoints(points) {
+  return points.map(function (p) { return p.text; }).join('. ') + '.';
+}
+function copyLabel(n, machine) {
+  const name = machineLabel(machine);
+  if (n === 1) return name;
+  return n + ' ' + (/s$/i.test(name) ? name : name + 's');
 }
 function endMultipleClause(big, small, flavor, mult) {
   const word = mult === 2 ? 'twice' : (mult + ' times');
@@ -897,6 +962,7 @@ function basePuzzle(raw, extra) {
     flavor: raw.flavor,
     machines: extra.machines,
     glow: extra.glow,
+    points: extra.points || [],
     directive: extra.directive,
     missionBadge: extra.missionBadge,
     step1: extra.step1,
@@ -911,25 +977,31 @@ function basePuzzle(raw, extra) {
 function composeAdd3(raw) {
   const f = raw.flavor;
   const names = raw.machines.map(function (m) { return m.name; });
-  const who = raw.machines.map(phrase);
   const values = raw.extras.map(function (e) { return raw.unit + e; });
   const total = values[0] + values[1] + values[2];
   const e1 = raw.extras[1];
   const e2 = raw.extras[2];
   const ask = raw.ask;
-  let sentence;
+  let points;
   if (raw.template === 1) {
-    if (f.id === 'cm') sentence = cap(who[0]) + ' is ' + fmt(e1) + ' cm shorter than ' + who[1] + ' and ' + fmt(e2) + ' cm shorter than ' + who[2];
-    else if (f.id === 'marks') sentence = cap(who[0]) + ' scores ' + fmt(e1) + ' fewer marks than ' + who[1] + ' and ' + fmt(e2) + ' fewer marks than ' + who[2];
-    else if (f.id === 'cells') sentence = cap(who[0]) + ' has ' + fmt(e1) + ' fewer power cells than ' + who[1] + ' and ' + fmt(e2) + ' fewer power cells than ' + who[2];
-    else sentence = cap(who[0]) + ' has ' + fmt(e1) + ' MW less power than ' + who[1] + ' and ' + fmt(e2) + ' MW less power than ' + who[2];
+    points = [
+      factLine(vsLine(f, names[0], e1, names[1], 'less')),
+      factLine(vsLine(f, names[0], e2, names[2], 'less'))
+    ];
   } else if (raw.template === 2) {
-    const mid = e2 - e1;
-    sentence = cap(compareClause(f, who[1], e1, who[0], 'more')) + '. ' + cap(compareClause(f, who[2], mid, who[1], 'more'));
+    points = [
+      factLine(vsLine(f, names[1], e1, names[0], 'more')),
+      factLine(vsLine(f, names[2], e2 - e1, names[1], 'more'))
+    ];
   } else {
-    sentence = cap(compareClause(f, who[1], e1, who[0], 'more')) + '. ' + cap(compareClause(f, who[2], e2, who[0], 'more'));
+    points = [
+      factLine(vsLine(f, names[1], e1, names[0], 'more')),
+      factLine(vsLine(f, names[2], e2, names[0], 'more'))
+    ];
   }
-  const directive = sentence + '. ' + totalClause(f, total) + '. ' + findMachine(f, who[ask]) + '.';
+  points.push(factLine(totalLine(f, total)));
+  points.push(askLine(findLine(f, names[ask])));
+  const directive = joinPoints(points);
   const excess = e1 + e2;
   const coach1 = 'Extra blocks ' + fmt(e1) + ' + ' + fmt(e2) + ' = ' + fmt(excess) + '. ' + fmt(total) + ' − ' + fmt(excess) + ' = ' + fmt(3 * raw.unit) + '. ' + fmt(3 * raw.unit) + ' ÷ 3 = ' + fmt(raw.unit) + '.';
   const coach2 = names[ask] + ' = 1 unit + ' + fmt(raw.extras[ask]) + ' = ' + fmt(raw.unit) + ' + ' + fmt(raw.extras[ask]) + ' = ' + fmt(values[ask]) + ' ' + f.unit + '.';
@@ -948,12 +1020,13 @@ function composeAdd3(raw) {
   return basePuzzle(raw, {
     machines: raw.machines.map(function (m, i) { return presentMachine(m, { value: values[i] }); }),
     glow: [ask],
+    points: points,
     directive: directive,
     missionBadge: 'FIND MACHINE POWER',
     strategy: 'Same machine. Subtract every add-on from the total, then divide by 3 equal bars.',
     step1: {
       badge: 'FIND 1 UNIT',
-      subtitle: 'Enter 1 unit — the plain machine, after the add-ons are removed.',
+      subtitle: 'Enter 1 unit. That is ' + names[0] + '.',
       answer: raw.unit,
       coach: coach1,
       traps: traps1,
@@ -985,32 +1058,20 @@ function composeAdd3(raw) {
 function composeTimes(raw) {
   const f = raw.flavor;
   const names = raw.machines.map(function (m) { return m.name; });
-  const who = raw.machines.map(phrase);
   const values = raw.mults.map(function (m, i) { return m * raw.unit + raw.extras[i]; });
   const sum = values.reduce(function (a, b) { return a + b; }, 0);
   const sumMult = raw.mults.reduce(function (a, b) { return a + b; }, 0);
   const host = names[raw.extraIndex];
-  const hostWho = who[raw.extraIndex];
   const baseName = names[0];
-  const baseWho = who[0];
-  let relation;
+  const points = [];
   if (names.length === 3) {
-    relation = cap(endMultipleClause(who[1], who[0], f, raw.k)) + '. ' + cap(raw.fewer
-      ? compareClause(f, who[2], raw.extraAmt, who[1], 'less')
-      : compareClause(f, who[2], raw.extraAmt, who[1], 'more'));
-  } else if (raw.fewer) {
-    relation = cap(endMultipleClause(hostWho, baseWho, f, raw.k)) + ', but ' + fmt(raw.extraAmt) + ' ' + f.unit + ' fewer than that full amount';
-  } else if (f.id === 'cm') {
-    relation = cap(hostWho) + ' is ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as long as ' + baseWho + ', and ' + fmt(raw.extraAmt) + ' cm longer still';
-  } else if (f.id === 'mw') {
-    relation = cap(hostWho) + ' has ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as much power as ' + baseWho + ', and ' + fmt(raw.extraAmt) + ' MW more';
+    points.push(factLine(timesLine(f, raw.machines[1], raw.machines[0], raw.k)));
+    points.push(factLine(vsLine(f, names[2], raw.extraAmt, names[1], raw.fewer ? 'less' : 'more')));
   } else {
-    relation = cap(hostWho) + ' has ' + (raw.k === 2 ? 'twice' : raw.k + ' times') + ' as many ' + f.noun + ' as ' + baseWho + ', and ' + fmt(raw.extraAmt) + ' more';
+    points.push(factLine(timesLine(f, raw.machines[raw.extraIndex], raw.machines[0], raw.k) + ', ' + adjustTail(f, raw.extraAmt, raw.fewer)));
   }
-  let givenSentence;
   let coach1;
   if (raw.given === 'last') {
-    givenSentence = cap(holds(f, hostWho, values[raw.extraIndex]));
     if (raw.fewer) {
       const filled = values[raw.extraIndex] + raw.extraAmt;
       coach1 = host + ' is ' + fmt(raw.extraAmt) + ' fewer than ' + raw.k + ' units. ' + fmt(values[raw.extraIndex]) + ' + ' + fmt(raw.extraAmt) + ' = ' + fmt(filled) + '. ' + fmt(filled) + ' ÷ ' + raw.k + ' = ' + fmt(raw.unit) + '.';
@@ -1019,7 +1080,6 @@ function composeTimes(raw) {
       coach1 = fmt(values[raw.extraIndex]) + ' − ' + fmt(raw.extraAmt) + ' = ' + fmt(bare) + '. ' + fmt(bare) + ' ÷ ' + raw.k + ' = ' + fmt(raw.unit) + '.';
     }
   } else {
-    givenSentence = totalClause(f, sum);
     if (raw.fewer) {
       const filled = sum + raw.extraAmt;
       coach1 = 'The short block is ' + fmt(raw.extraAmt) + '. Add it back: ' + fmt(sum) + ' + ' + fmt(raw.extraAmt) + ' = ' + fmt(filled) + '. ' + fmt(filled) + ' ÷ ' + sumMult + ' = ' + fmt(raw.unit) + '.';
@@ -1042,7 +1102,7 @@ function composeTimes(raw) {
   } else if (raw.ask === 'pair') {
     answer2 = values[0] + values[1];
     badge = 'FIND TOTAL POWER';
-    subtitle2 = 'Enter the combined ' + f.noun + ' of ' + who[0] + ' and ' + who[1] + '.';
+    subtitle2 = 'Enter ' + names[0] + ' + ' + names[1] + '.';
     coach2 = names[0] + ' + ' + names[1] + ' = ' + fmt(values[0]) + ' + ' + fmt(values[1]) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
     glow = [0, 1];
   } else {
@@ -1055,11 +1115,12 @@ function composeTimes(raw) {
     else coach2 = names[i] + ' = ' + raw.mults[i] + ' × ' + fmt(raw.unit) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
     glow = [i];
   }
-  let question;
-  if (raw.ask === 'total') question = 'Find their total ' + (f.id === 'cm' ? 'length' : f.noun);
-  else if (raw.ask === 'pair') question = 'Find the combined ' + f.noun + ' of ' + who[0] + ' and ' + who[1];
-  else question = findMachine(f, who[raw.askIndex]);
-  const directive = relation + '. ' + givenSentence + '. ' + question + '.';
+  if (raw.given === 'last') points.push(factLine(amountLine(f, raw.machines[raw.extraIndex], values[raw.extraIndex])));
+  else points.push(factLine(totalLine(f, sum)));
+  if (raw.ask === 'total') points.push(askLine(findTotalLine(f)));
+  else if (raw.ask === 'pair') points.push(askLine(findTotalLine(f, names[0] + ' and ' + names[1])));
+  else points.push(askLine(findLine(f, names[raw.askIndex])));
+  const directive = joinPoints(points);
   const wrongFewer = raw.unit - 2 * raw.M;
   const wrongMore = raw.unit + 2 * raw.M;
   const traps1 = [];
@@ -1093,6 +1154,7 @@ function composeTimes(raw) {
   return basePuzzle(raw, {
     machines: raw.machines.map(function (m, i) { return presentMachine(m, { value: values[i] }); }),
     glow: glow,
+    points: points,
     directive: directive,
     missionBadge: badge,
     strategy: raw.fewer
@@ -1130,13 +1192,16 @@ function composeEqualize(raw) {
   const low = raw.machines[1];
   const diff = raw.high - raw.low;
   const half = diff / 2;
-  let lead;
+  const points = [];
   if (raw.times) {
-    lead = cap(endMultipleClause(phrase(high), phrase(low), f, raw.times)) + '. ' + cap(holds(f, phrase(low), raw.low));
+    points.push(factLine(timesLine(f, high, low, raw.times)));
+    points.push(factLine(amountLine(f, low, raw.low)));
   } else {
-    lead = cap(holds(f, phrase(high), raw.high)) + '. ' + cap(holds(f, phrase(low), raw.low));
+    points.push(factLine(amountLine(f, high, raw.high)));
+    points.push(factLine(amountLine(f, low, raw.low)));
   }
-  const directive = lead + '. How much must ' + phrase(high) + ' transfer to ' + phrase(low) + ' so both have the same ' + (f.id === 'cm' ? 'length' : f.noun) + '?';
+  points.push(askLine('How much does ' + high.name + ' transfer so both match?'));
+  const directive = joinPoints(points);
   const coach1 = (raw.times ? (raw.times + ' × ' + fmt(raw.low) + ' = ' + fmt(raw.high) + '. ') : '') + 'Gap = ' + fmt(raw.high) + ' − ' + fmt(raw.low) + ' = ' + fmt(diff) + '.';
   const coach2 = 'Transfer half the gap: ' + fmt(diff) + ' ÷ 2 = ' + fmt(half) + ' ' + f.unit + '.';
   const ending = (raw.high + raw.low) / 2;
@@ -1146,12 +1211,13 @@ function composeEqualize(raw) {
       presentMachine(low, { value: raw.low })
     ],
     glow: [0, 1],
+    points: points,
     directive: directive,
     missionBadge: 'FIND POWER TRANSFERRED',
     strategy: 'Find the gap first. The transfer is half the gap — the whole gap would swap who has more.',
     step1: {
       badge: 'FIND THE DIFFERENCE',
-      subtitle: 'Enter the gap between ' + phrase(high) + ' and ' + phrase(low) + '.',
+      subtitle: 'Enter the gap between ' + high.name + ' and ' + low.name + '.',
       answer: diff,
       coach: coach1,
       traps: [
@@ -1196,20 +1262,14 @@ function composeRatio(raw) {
   const f = raw.flavor;
   const A = raw.machines[0].name;
   const B = raw.machines[1].name;
-  const whoA = phrase(raw.machines[0]);
-  const whoB = phrase(raw.machines[1]);
   const donor = raw.donor === 0 ? A : B;
   const recv = raw.donor === 0 ? B : A;
-  const donorWho = raw.donor === 0 ? whoA : whoB;
-  const recvWho = raw.donor === 0 ? whoB : whoA;
   const big = raw.a1 > raw.b1 ? A : B;
   const small = raw.a1 > raw.b1 ? B : A;
-  const bigWho = raw.a1 > raw.b1 ? whoA : whoB;
-  const smallWho = raw.a1 > raw.b1 ? whoB : whoA;
   const total = raw.a0 + raw.b0;
   const askName = raw.ask === 'A' ? A : B;
-  const askWho = raw.ask === 'A' ? whoA : whoB;
   const askValue = raw.ask === 'A' ? raw.a1 : raw.b1;
+  const endNoun = f.id === 'cm' ? 'length' : f.noun;
   let question;
   let badge;
   let subtitle2;
@@ -1218,22 +1278,29 @@ function composeRatio(raw) {
   let glow;
   const endUnit = Math.round(total / (raw.mult + 1));
   if (raw.ask === 'transfer') {
-    question = 'How much does ' + donorWho + ' transfer?';
+    question = 'Find how much ' + donor + ' transfers';
     badge = 'FIND POWER TRANSFERRED';
-    subtitle2 = 'Enter how much ' + donorWho + ' transfers to ' + recvWho + '.';
+    subtitle2 = 'Enter how much ' + donor + ' transfers.';
     answer2 = raw.t;
     coach2 = 'End total stays ' + fmt(total) + '. 1 end unit = ' + fmt(total) + ' ÷ ' + (raw.mult + 1) + ' = ' + fmt(endUnit) + '. Transferred = ' + fmt(raw.t) + ' ' + f.unit + '.';
     glow = [raw.donor === 0 ? 1 : 0];
   } else {
-    question = 'Find the ending ' + (f.id === 'cm' ? 'length' : f.noun) + ' of ' + askWho;
+    question = 'Find ' + askName + "'s ending " + endNoun;
     badge = 'FIND MACHINE POWER';
-    subtitle2 = 'Enter the ending ' + f.noun + ' of ' + askWho + '.';
+    subtitle2 = 'Enter ' + askName + "'s ending " + endNoun + '.';
     answer2 = askValue;
     const parts = Math.max(1, Math.round(askValue / endUnit));
     coach2 = askName + ' ends with ' + parts + ' × ' + fmt(endUnit) + ' = ' + fmt(askValue) + ' ' + f.unit + '.';
     glow = [raw.ask === 'A' ? 0 : 1];
   }
-  const directive = cap(holds(f, whoA, raw.a0)) + '. ' + cap(holds(f, whoB, raw.b0)) + '. ' + cap(donorWho) + ' transfers to ' + recvWho + ' so that ' + endMultipleClause(bigWho, smallWho, f, raw.mult) + '. ' + cap(question) + (question.indexOf('?') >= 0 ? '' : '.');
+  const verb = f.id === 'cm' ? 'is' : 'has';
+  const points = [
+    factLine('Start — ' + A + ': ' + fmt(raw.a0) + ' ' + f.unit + '   ·   ' + B + ': ' + fmt(raw.b0) + ' ' + f.unit),
+    factLine(donor + ' transfers to ' + recv),
+    factLine('End — ' + big + ' ' + verb + ' ' + timesBits(f, raw.mult) + ' ' + small),
+    askLine(question)
+  ];
+  const directive = joinPoints(points);
   const endSegs = [
     rowTitle(raw.machines[0], { accent: raw.machines[0].accent, segments: [{ t: 'unit', n: Math.round(raw.a1 / endUnit) }] }),
     rowTitle(raw.machines[1], { accent: raw.machines[1].accent, segments: [{ t: 'unit', n: Math.round(raw.b1 / endUnit) }] })
@@ -1247,12 +1314,13 @@ function composeRatio(raw) {
   return basePuzzle(raw, {
     machines: transferMachines(raw),
     glow: glow,
+    points: points,
     directive: directive,
     missionBadge: badge,
     strategy: 'No power leaves the hangar. Add both starts, then split that fixed total into the END bars.',
     step1: {
       badge: 'FIND THE TOTAL',
-      subtitle: 'Enter the unchanged total of ' + whoA + ' and ' + whoB + '.',
+      subtitle: 'Enter ' + A + ' + ' + B + '. The total stays the same.',
       answer: total,
       coach: fmt(raw.a0) + ' + ' + fmt(raw.b0) + ' = ' + fmt(total) + '. A transfer inside the hangar does not change this total.',
       traps: [
@@ -1290,19 +1358,14 @@ function composeDiff(raw) {
   const f = raw.flavor;
   const A = raw.machines[0].name;
   const B = raw.machines[1].name;
-  const whoA = phrase(raw.machines[0]);
-  const whoB = phrase(raw.machines[1]);
   const donor = raw.donor === 0 ? A : B;
   const recv = raw.donor === 0 ? B : A;
-  const donorWho = raw.donor === 0 ? whoA : whoB;
-  const recvWho = raw.donor === 0 ? whoB : whoA;
   const largeName = raw.a1 > raw.b1 ? A : B;
   const smallName = raw.a1 > raw.b1 ? B : A;
-  const largeWho = raw.a1 > raw.b1 ? whoA : whoB;
-  const smallWho = raw.a1 > raw.b1 ? whoB : whoA;
   const total = raw.a0 + raw.b0;
   const smallEnd = Math.min(raw.a1, raw.b1);
   const largeEnd = Math.max(raw.a1, raw.b1);
+  const endNoun = f.id === 'cm' ? 'length' : f.noun;
   let question;
   let badge;
   let subtitle2;
@@ -1310,25 +1373,30 @@ function composeDiff(raw) {
   let coach2;
   let glow;
   if (raw.ask === 'transfer') {
-    question = 'How much does ' + donorWho + ' transfer?';
+    question = 'Find how much ' + donor + ' transfers';
     badge = 'FIND POWER TRANSFERRED';
-    subtitle2 = 'Enter how much ' + donorWho + ' transfers.';
+    subtitle2 = 'Enter how much ' + donor + ' transfers.';
     answer2 = raw.t;
     coach2 = fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + '. Transferred = ' + fmt(raw.t) + ' ' + f.unit + '.';
     glow = [raw.donor === 0 ? 1 : 0];
   } else {
     const askName = raw.ask === 'A' ? A : B;
-    const askWho = raw.ask === 'A' ? whoA : whoB;
     const askValue = raw.ask === 'A' ? raw.a1 : raw.b1;
-    question = 'Find the ending ' + (f.id === 'cm' ? 'length' : f.noun) + ' of ' + askWho;
+    question = 'Find ' + askName + "'s ending " + endNoun;
     badge = 'FIND MACHINE POWER';
-    subtitle2 = 'Enter the ending ' + f.noun + ' of ' + askWho + '.';
+    subtitle2 = 'Enter ' + askName + "'s ending " + endNoun + '.';
     answer2 = askValue;
     if (askValue === smallEnd) coach2 = fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + ' ' + f.unit + '.';
     else coach2 = fmt(total) + ' + ' + fmt(raw.gap) + ' = ' + fmt(total + raw.gap) + '. ' + fmt(total + raw.gap) + ' ÷ 2 = ' + fmt(largeEnd) + ' ' + f.unit + '.';
     glow = [raw.ask === 'A' ? 0 : 1];
   }
-  const directive = cap(holds(f, whoA, raw.a0)) + ' and ' + holds(f, whoB, raw.b0) + '. ' + cap(donorWho) + ' transfers to ' + recvWho + ' so that ' + endGapClause(largeWho, smallWho, f, raw.gap) + '. ' + question + (question.indexOf('?') >= 0 ? '' : '.');
+  const points = [
+    factLine('Start — ' + A + ': ' + fmt(raw.a0) + ' ' + f.unit + '   ·   ' + B + ': ' + fmt(raw.b0) + ' ' + f.unit),
+    factLine(donor + ' transfers to ' + recv),
+    factLine('End — ' + largeName + ' — ' + gapBits(f, raw.gap, 'more') + ' than ' + smallName),
+    askLine(question)
+  ];
+  const directive = joinPoints(points);
   const traps2 = [
     trap(total - raw.gap, 'You removed the ' + fmt(raw.gap) + ' ' + f.unit + ' gap but forgot to split the rest into 2 equal bars. ' + fmt(total) + ' − ' + fmt(raw.gap) + ' = ' + fmt(total - raw.gap) + '. ' + fmt(total - raw.gap) + ' ÷ 2 = ' + fmt(smallEnd) + '.'),
     trap(raw.ask === 'A' ? raw.b1 : (raw.ask === 'B' ? raw.a1 : largeEnd), 'Check which END bar the mission names. One bar is the equal part, the other is the equal part plus ' + fmt(raw.gap) + '.'),
@@ -1337,6 +1405,7 @@ function composeDiff(raw) {
   return basePuzzle(raw, {
     machines: transferMachines(raw),
     glow: glow,
+    points: points,
     directive: directive,
     missionBadge: badge,
     strategy: 'The total stays fixed. Draw the END bars with one gap block, then split what remains into two equal parts.',
@@ -1387,7 +1456,6 @@ function composeGroup(raw) {
   const total = raw.nA * raw.A + raw.nB * raw.B;
   const removed = raw.nB * raw.diff;
   const fittedOne = fitted.base + ' with ' + article(fitted.addonName) + ' ' + fitted.addonName;
-  const noun = f.id === 'cm' ? 'length' : f.noun;
   let answer2;
   let badge;
   let subtitle2;
@@ -1402,25 +1470,27 @@ function composeGroup(raw) {
   } else if (raw.ask === 'sumB') {
     answer2 = raw.nB * raw.B;
     badge = 'FIND TOTAL POWER';
-    subtitle2 = 'Enter the total ' + noun + ' of the ' + copiesOf(raw.nB, fitted) + '.';
+    subtitle2 = 'Enter the total of the ' + copyLabel(raw.nB, fitted) + '.';
     coach2 = raw.nB + ' × ' + fmt(raw.B) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
     glow = [1];
   } else {
     answer2 = raw.nA * raw.A;
     badge = 'FIND TOTAL POWER';
-    subtitle2 = 'Enter the total ' + noun + ' of the ' + copiesOf(raw.nA, plain) + '.';
+    subtitle2 = 'Enter the total of the ' + copyLabel(raw.nA, plain) + '.';
     coach2 = raw.nA + ' × ' + fmt(raw.A) + ' = ' + fmt(answer2) + ' ' + f.unit + '.';
     glow = [0];
   }
-  let linkGap;
-  if (f.id === 'marks') linkGap = 'scores ' + fmt(raw.diff) + ' ' + (raw.fewer ? 'fewer' : 'more') + ' marks than';
-  else if (f.id === 'cells') linkGap = 'has ' + fmt(raw.diff) + ' ' + (raw.fewer ? 'fewer' : 'more') + ' power cells than';
-  else linkGap = 'has ' + fmt(raw.diff) + ' MW ' + (raw.fewer ? 'less' : 'more') + ' power than';
-  const link = 'Each ' + fittedOne + ' ' + linkGap + ' ' + plainPhrase(plain);
-  const question = raw.ask === 'B'
-    ? findMachine(f, phrase(fitted))
-    : ('Find the total ' + noun + ' of the ' + copiesOf(raw.ask === 'sumB' ? raw.nB : raw.nA, raw.ask === 'sumB' ? fitted : plain));
-  const directive = cap(totalClause(f, total, copiesOf(raw.nA, plain) + ' and ' + copiesOf(raw.nB, fitted))) + '. ' + link + '. ' + question + '.';
+  const eachLine = 'Each ' + fitted.name + ' — ' + gapBits(f, raw.diff, raw.fewer ? 'less' : 'more') + ' than ' + plain.name;
+  const askText = raw.ask === 'B'
+    ? findLine(f, fitted.name)
+    : findTotalLine(f, copyLabel(raw.ask === 'sumB' ? raw.nB : raw.nA, raw.ask === 'sumB' ? fitted : plain));
+  const points = [
+    factLine(copyLabel(raw.nA, plain) + '   ·   ' + copyLabel(raw.nB, fitted)),
+    factLine(totalLine(f, total)),
+    factLine(eachLine),
+    askLine(askText)
+  ];
+  const directive = joinPoints(points);
   const coach1 = raw.fewer
     ? 'Add the missing add-ons: ' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + '. ' + fmt(total) + ' + ' + fmt(removed) + ' = ' + fmt(N * raw.A) + '. ' + fmt(N * raw.A) + ' ÷ ' + N + ' = ' + fmt(raw.A) + '.'
     : 'Remove the add-ons: ' + raw.nB + ' × ' + fmt(raw.diff) + ' = ' + fmt(removed) + '. ' + fmt(total) + ' − ' + fmt(removed) + ' = ' + fmt(N * raw.A) + '. ' + fmt(N * raw.A) + ' ÷ ' + N + ' = ' + fmt(raw.A) + '.';
@@ -1443,6 +1513,7 @@ function composeGroup(raw) {
       presentMachine(fitted, { count: raw.nB, value: raw.B })
     ],
     glow: glow,
+    points: points,
     directive: directive,
     missionBadge: badge,
     strategy: raw.fewer
@@ -1474,7 +1545,7 @@ function composeGroup(raw) {
         rowTitle(plain, { count: raw.nA, accent: plain.accent, extra: 0 }),
         rowTitle(fitted, { count: raw.nB, accent: fitted.accent, extra: raw.diff, fewer: raw.fewer })
       ],
-      footnote: link + '.'
+      footnote: eachLine + '.'
     },
     sig: ['group', plain.base, fitted.name, raw.nA, raw.nB, raw.A, raw.B, raw.ask, raw.fewer ? 1 : 0].join(':')
   });
@@ -1518,6 +1589,9 @@ function invariantError(puzzle) {
   if (got.step1 === got.step2) return 'steps match';
   if (puzzle.step1.answer !== got.step1 || puzzle.step2.answer !== got.step2) return 'answer drift';
   if (!puzzle.directive || puzzle.directive.length < 20) return 'directive';
+  if (!puzzle.points || puzzle.points.length < 2 || puzzle.points.length > 4) return 'points';
+  if (puzzle.points.some(function (p) { return !p || !p.text || p.text.indexOf('undefined') >= 0 || p.text.indexOf('NaN') >= 0; })) return 'bad point';
+  if (!puzzle.points[puzzle.points.length - 1].ask) return 'ask point';
   if (puzzle.directive.indexOf('undefined') >= 0 || puzzle.directive.indexOf('NaN') >= 0) return 'bad text';
   if (raw.machines && raw.machines.length) {
     const base = raw.machines[0].base;
@@ -2201,12 +2275,47 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 function panel(x, y, w, h, radius) {
-  roundRect(x, y, w, h, radius == null ? 12 : radius);
-  ctx.fillStyle = 'rgba(7, 16, 34, 0.88)';
+  const r = radius == null ? 12 : radius;
+  roundRect(x, y, w, h, r);
+  const g = ctx.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, 'rgba(18, 40, 68, 0.96)');
+  g.addColorStop(1, 'rgba(5, 10, 22, 0.96)');
+  ctx.fillStyle = g;
   ctx.fill();
-  ctx.strokeStyle = COL.line;
+  ctx.strokeStyle = 'rgba(140, 210, 245, 0.38)';
   ctx.lineWidth = 1.5;
   ctx.stroke();
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.92)';
+  ctx.lineWidth = 2;
+  const len = Math.min(12, Math.max(6, h * 0.22));
+  const inset = 6;
+  const corners = [
+    [x + inset, y + inset, 1, 1],
+    [x + w - inset, y + inset, -1, 1],
+    [x + inset, y + h - inset, 1, -1],
+    [x + w - inset, y + h - inset, -1, -1]
+  ];
+  corners.forEach(function (c) {
+    ctx.beginPath();
+    ctx.moveTo(c[0], c[1] + c[3] * len);
+    ctx.lineTo(c[0], c[1]);
+    ctx.lineTo(c[0] + c[2] * len, c[1]);
+    ctx.stroke();
+  });
+}
+function plate(x, y, w, h, r, fill) {
+  roundRect(x, y, w, h, r);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+  ctx.lineWidth = 1.15;
+  ctx.stroke();
+}
+function rivet(x, y) {
+  ctx.beginPath();
+  ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fill();
 }
 function wrap(text, maxW) {
   const words = String(text || '').split(' ');
@@ -2260,115 +2369,162 @@ function machineSlots(puzzle) {
 }
 
 function drawJet(accent) {
+  const flicker = REDUCE ? 8 : 8 + Math.sin(G.time * 18) * 6;
+  ctx.fillStyle = hexAlpha(accent, 0.85);
+  ctx.beginPath();
+  ctx.moveTo(18, -4);
+  ctx.lineTo(-8, -28);
+  ctx.lineTo(-22, -8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(18, 4);
+  ctx.lineTo(-8, 28);
+  ctx.lineTo(-22, 8);
+  ctx.closePath();
+  ctx.fill();
   ctx.fillStyle = accent;
   ctx.beginPath();
-  ctx.moveTo(54, 0);
-  ctx.lineTo(8, -8);
-  ctx.lineTo(-28, -6);
-  ctx.lineTo(-40, -16);
-  ctx.lineTo(-28, 0);
-  ctx.lineTo(-40, 16);
-  ctx.lineTo(-28, 6);
-  ctx.lineTo(8, 8);
+  ctx.moveTo(50, 0);
+  ctx.lineTo(18, -9);
+  ctx.lineTo(-30, -7);
+  ctx.lineTo(-36, 0);
+  ctx.lineTo(-30, 7);
+  ctx.lineTo(18, 9);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = 'rgba(0,0,0,0.28)';
   ctx.beginPath();
-  ctx.moveTo(10, -6);
-  ctx.lineTo(-36, -28);
-  ctx.lineTo(-18, -6);
+  ctx.moveTo(8, -7);
+  ctx.lineTo(-34, -16);
+  ctx.lineTo(-28, 0);
+  ctx.lineTo(-34, 16);
+  ctx.lineTo(8, 7);
   ctx.closePath();
   ctx.fill();
+  ctx.fillStyle = '#d9fbff';
   ctx.beginPath();
-  ctx.moveTo(10, 6);
-  ctx.lineTo(-36, 28);
-  ctx.lineTo(-18, 6);
+  ctx.ellipse(22, 0, 8, 4.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(8, 20, 36, 0.45)';
+  ctx.beginPath();
+  ctx.ellipse(24, -1, 4, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffb020';
+  ctx.beginPath();
+  ctx.moveTo(-30, -4);
+  ctx.lineTo(-46 - flicker, 0);
+  ctx.lineTo(-30, 4);
   ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = '#e9fbff';
+  ctx.fillStyle = '#fff4c4';
   ctx.beginPath();
-  ctx.ellipse(16, 0, 8, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  const flame = 0.45 + Math.sin(G.time * 18) * 0.25;
-  ctx.fillStyle = hexAlpha('#ffd76a', 0.35 + flame);
-  ctx.beginPath();
-  ctx.moveTo(-30, -5);
-  ctx.lineTo(-52 - flame * 16, 0);
-  ctx.lineTo(-30, 5);
+  ctx.moveTo(-30, -2);
+  ctx.lineTo(-38 - flicker * 0.45, 0);
+  ctx.lineTo(-30, 2);
+  ctx.closePath();
   ctx.fill();
 }
 function drawTank(accent) {
-  ctx.fillStyle = '#1b2436';
-  roundRect(-40, 10, 80, 16, 6);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-  ctx.stroke();
+  plate(-42, 12, 84, 16, 5, '#121a28');
+  ctx.fillStyle = '#2a3548';
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.arc(-28 + i * 14, 20, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  plate(-36, -14, 72, 28, 5, accent);
+  rivet(-28, -8);
+  rivet(26, -8);
+  plate(-8, -30, 34, 18, 6, '#101820');
   ctx.fillStyle = accent;
-  roundRect(-36, -16, 72, 30, 6);
+  roundRect(16, -26, 40, 8, 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  roundRect(-10, -28, 36, 20, 8);
-  ctx.fill();
-  ctx.fillStyle = accent;
-  ctx.fillRect(18, -24, 36, 7);
-  ctx.fillStyle = hexAlpha('#7af0ff', 0.85);
+  const muzzle = REDUCE ? 4 : 4 + Math.sin(G.time * 6) * 1.1;
+  ctx.fillStyle = '#fff6c2';
   ctx.beginPath();
-  ctx.arc(54, -20, 5 + Math.sin(G.time * 6) * 1.2, 0, Math.PI * 2);
+  ctx.arc(56, -22, muzzle, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#e9fbff';
-  ctx.fillRect(-22, -8, 16, 4);
+  ctx.fillRect(-24, -6, 14, 3);
+  ctx.fillStyle = COL.gold;
+  ctx.fillRect(-6, -4, 8, 6);
 }
 function drawMech(accent) {
+  plate(-15, 8, 12, 24, 3, '#101820');
+  plate(3, 8, 12, 24, 3, '#101820');
   ctx.fillStyle = accent;
-  roundRect(-18, -24, 36, 34, 6);
+  ctx.fillRect(-15, 26, 12, 6);
+  ctx.fillRect(3, 26, 12, 6);
+  plate(-22, -22, 44, 34, 6, accent);
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  roundRect(-14, -16, 28, 18, 4);
   ctx.fill();
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  roundRect(-12, -44, 24, 18, 4);
+  rivet(-16, -16);
+  rivet(16, -16);
+  const pulse = REDUCE ? 4.5 : 4.2 + Math.sin(G.time * 5) * 1.1;
+  ctx.fillStyle = '#fff6c8';
+  ctx.beginPath();
+  ctx.arc(0, -6, pulse, 0, Math.PI * 2);
   ctx.fill();
+  ctx.strokeStyle = '#ffd76a';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  plate(-12, -40, 24, 16, 4, '#101820');
   ctx.fillStyle = '#9ff6ff';
-  ctx.fillRect(-8, -38, 16, 4);
-  ctx.fillStyle = hexAlpha(accent, 0.85);
+  ctx.fillRect(-8, -34, 16, 3);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(-18, -8);
-  ctx.lineTo(-52, -30);
-  ctx.lineTo(-40, 8);
-  ctx.lineTo(-16, 8);
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(8, -40);
+  ctx.lineTo(16, -48);
+  ctx.stroke();
+  ctx.fillStyle = COL.gold;
   ctx.beginPath();
-  ctx.moveTo(18, -8);
-  ctx.lineTo(52, -30);
-  ctx.lineTo(40, 8);
-  ctx.lineTo(16, 8);
-  ctx.closePath();
+  ctx.arc(16, -48, 2.2, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#101826';
-  roundRect(-16, 8, 12, 26, 3);
-  ctx.fill();
-  roundRect(4, 8, 12, 26, 3);
-  ctx.fill();
-  ctx.fillStyle = '#ffd76a';
-  ctx.beginPath();
-  ctx.arc(0, -8, 5, 0, Math.PI * 2);
-  ctx.fill();
+  plate(-36, -24, 16, 12, 3, accent);
+  plate(20, -24, 16, 12, 3, accent);
+  plate(-48, -16, 16, 8, 2, hexAlpha(accent, 0.92));
+  plate(32, -16, 18, 8, 2, hexAlpha(accent, 0.92));
+  ctx.fillStyle = '#fff6c8';
+  ctx.fillRect(48, -14, 4, 4);
 }
 function drawDrone(accent) {
-  ctx.strokeStyle = hexAlpha(accent, 0.7);
+  const spin = REDUCE ? 0.6 : G.time * 8;
+  const arms = [[-26, -16], [26, -16], [-26, 16], [26, 16]];
+  ctx.strokeStyle = hexAlpha(accent, 0.9);
   ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(0, 0, 24, 0, Math.PI * 2);
-  ctx.stroke();
+  arms.forEach(function (arm) {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(arm[0], arm[1]);
+    ctx.stroke();
+    ctx.save();
+    ctx.translate(arm[0], arm[1]);
+    ctx.rotate(spin);
+    ctx.strokeStyle = 'rgba(230, 250, 255, 0.75)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-9, 0);
+    ctx.lineTo(9, 0);
+    ctx.moveTo(0, -9);
+    ctx.lineTo(0, 9);
+    ctx.stroke();
+    ctx.restore();
+  });
   ctx.fillStyle = accent;
   ctx.beginPath();
   ctx.ellipse(0, 0, 16, 11, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#07111f';
-  ctx.beginPath();
-  ctx.arc(-18, -16, 6, 0, Math.PI * 2);
-  ctx.arc(18, -16, 6, 0, Math.PI * 2);
-  ctx.fill();
-  const pulse = 4 + Math.sin(G.time * 5) * 1.5;
-  ctx.fillStyle = '#ffd76a';
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  const pulse = REDUCE ? 4 : 3.4 + Math.sin(G.time * 5) * 1.2;
+  ctx.fillStyle = '#fff6c8';
   ctx.beginPath();
   ctx.arc(0, 0, pulse, 0, Math.PI * 2);
   ctx.fill();
@@ -2376,22 +2532,40 @@ function drawDrone(accent) {
 function drawCruiser(accent) {
   ctx.fillStyle = accent;
   ctx.beginPath();
-  ctx.moveTo(48, 0);
-  ctx.lineTo(16, -14);
-  ctx.lineTo(-40, -10);
-  ctx.lineTo(-48, 0);
-  ctx.lineTo(-40, 10);
-  ctx.lineTo(16, 14);
+  ctx.moveTo(52, 0);
+  ctx.lineTo(22, -12);
+  ctx.lineTo(-28, -14);
+  ctx.lineTo(-46, -6);
+  ctx.lineTo(-46, 6);
+  ctx.lineTo(-28, 14);
+  ctx.lineTo(22, 12);
   ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = 'rgba(0,0,0,0.28)';
-  roundRect(-8, -22, 22, 14, 3);
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  plate(-6, -26, 24, 14, 3, '#101820');
+  ctx.fillStyle = '#9ff6ff';
+  ctx.fillRect(-2, -22, 5, 4);
+  ctx.fillRect(6, -22, 5, 4);
+  ctx.fillStyle = hexAlpha(accent, 0.75);
+  ctx.beginPath();
+  ctx.moveTo(-10, -12);
+  ctx.lineTo(-34, -24);
+  ctx.lineTo(-18, -8);
+  ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = '#e9fbff';
-  ctx.fillRect(-4, -18, 5, 4);
-  ctx.fillRect(4, -18, 5, 4);
-  ctx.fillStyle = hexAlpha('#7af0ff', 0.8);
-  ctx.fillRect(-46, -4, 10, 8);
+  ctx.beginPath();
+  ctx.moveTo(-10, 12);
+  ctx.lineTo(-34, 24);
+  ctx.lineTo(-18, 8);
+  ctx.closePath();
+  ctx.fill();
+  const glow = REDUCE ? 0.8 : 0.55 + Math.sin(G.time * 6) * 0.35;
+  ctx.fillStyle = hexAlpha('#7af0ff', glow);
+  ctx.fillRect(-48, -5, 12, 10);
+  rivet(8, -4);
+  rivet(8, 4);
 }
 function drawAddon(id) {
   if (!id) return;
@@ -2457,14 +2631,23 @@ function drawAddon(id) {
 }
 function drawMachine(kind, x, y, s, accent, hot, addon) {
   ctx.save();
-  ctx.translate(x, y + (REDUCE ? 0 : Math.sin(G.time * 2 + x * 0.01) * 3));
+  ctx.translate(x, y + (REDUCE ? 0 : Math.sin(G.time * 2 + x * 0.01) * 2.4));
   ctx.scale(s, s);
-  const glow = ctx.createRadialGradient(0, 6, 4, 0, 6, 46);
-  glow.addColorStop(0, hexAlpha(accent, hot ? 0.55 : 0.18));
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.beginPath();
+  ctx.ellipse(0, 34, 34, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = hexAlpha(accent, hot ? 0.95 : 0.55);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 30, 26, 6, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  const glow = ctx.createRadialGradient(0, 0, 4, 0, 4, 52);
+  glow.addColorStop(0, hexAlpha(accent, hot ? 0.62 : 0.22));
   glow.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, 8, 46, 0, Math.PI * 2);
+  ctx.arc(0, 4, 52, 0, Math.PI * 2);
   ctx.fill();
   if (kind === 'jet') drawJet(accent);
   else if (kind === 'tank') drawTank(accent);
@@ -2474,7 +2657,7 @@ function drawMachine(kind, x, y, s, accent, hot, addon) {
   ctx.restore();
   if (addon) {
     ctx.save();
-    ctx.translate(x + 36, y - 18);
+    ctx.translate(x + 42 * s, y - 28 * s);
     drawAddon(addon);
     ctx.restore();
   }
@@ -2482,27 +2665,46 @@ function drawMachine(kind, x, y, s, accent, hot, addon) {
 
 function drawBackground() {
   const g = ctx.createLinearGradient(0, 0, 0, VH);
-  g.addColorStop(0, '#12345f');
-  g.addColorStop(0.45, '#0b1b36');
-  g.addColorStop(1, '#070d18');
+  g.addColorStop(0, '#071018');
+  g.addColorStop(0.28, '#123056');
+  g.addColorStop(0.62, '#0b1830');
+  g.addColorStop(1, '#1c120c');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, VW, VH);
-  ctx.strokeStyle = 'rgba(90, 170, 220, 0.06)';
-  ctx.lineWidth = 1;
-  const shift = REDUCE ? 0 : (G.time * 12) % 46;
-  for (let y = -20; y < VH; y += 46) {
-    for (let x = -20; x < VW; x += 54) {
-      const ox = ((y / 46) | 0) % 2 === 0 ? 0 : 27;
-      ctx.beginPath();
-      ctx.arc(x + ox, y + shift * 0.15, 10, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+  ctx.fillStyle = 'rgba(90, 150, 190, 0.07)';
+  for (let i = 0; i < 6; i++) {
+    ctx.fillRect(70 + i * 210, 0, 10, VH);
   }
-  const floor = ctx.createLinearGradient(0, 520, 0, 800);
-  floor.addColorStop(0, 'rgba(62,224,255,0.03)');
-  floor.addColorStop(1, 'rgba(62,224,255,0)');
-  ctx.fillStyle = floor;
-  ctx.fillRect(0, 520, VW, 280);
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 48);
+  ctx.lineTo(VW, 48);
+  ctx.stroke();
+  const core = ctx.createRadialGradient(VW / 2, VH + 30, 20, VW / 2, VH + 30, 460);
+  core.addColorStop(0, 'rgba(255, 150, 48, 0.34)');
+  core.addColorStop(0.45, 'rgba(255, 90, 30, 0.08)');
+  core.addColorStop(1, 'rgba(255, 80, 20, 0)');
+  ctx.fillStyle = core;
+  ctx.fillRect(0, 420, VW, 380);
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.08)';
+  for (let i = 0; i < 7; i++) {
+    const y = 540 + i * 32;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(VW, y);
+    ctx.stroke();
+  }
+  const embers = REDUCE ? 10 : 18;
+  for (let i = 0; i < embers; i++) {
+    const x = (i * 137 + 30) % VW;
+    const y = 70 + ((i * 67) % 420);
+    const tw = REDUCE ? 0.45 : 0.35 + Math.sin(G.time * 2.2 + i) * 0.35;
+    ctx.globalAlpha = 0.2 + tw;
+    ctx.fillStyle = i % 3 === 0 ? '#ffd76a' : '#9ff6ff';
+    ctx.fillRect(x, y, 2, 2);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawHex(x, y, r, fill, stroke) {
@@ -2521,6 +2723,8 @@ function drawHex(x, y, r, fill, stroke) {
 
 function drawHUD() {
   panel(12, 8, VW - 24, 40, 10);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.55)';
+  ctx.fillRect(28, 42, 88, 2);
   ctx.textBaseline = 'middle';
   ctx.font = '700 13px ' + FONT;
   ctx.fillStyle = COL.gold;
@@ -2677,29 +2881,51 @@ function drawBanner() {
   }
 
   const sub = G.mode === 'duel'
-    ? 'Lock the Step 1 card, then the Step 2 card. First pilot through both wins the star.'
+    ? 'Lock Step 1, then Step 2. First through both wins the star.'
     : (G.step === 1 ? G.puzzle.step1.subtitle : G.puzzle.step2.subtitle);
-  ctx.fillStyle = COL.ink;
+  ctx.fillStyle = '#d7e8f8';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  let subSize = 16;
+  let subSize = 15;
   ctx.font = '700 ' + subSize + 'px ' + FONT;
-  while (subSize > 12 && ctx.measureText(sub).width > b.bannerW - 52) {
+  while (subSize > 12 && ctx.measureText(sub).width > b.bannerW - 64) {
     subSize -= 1;
     ctx.font = '700 ' + subSize + 'px ' + FONT;
   }
-  ctx.fillText(sub, 30, b.bannerY + 52);
-  ctx.font = '500 15px ' + FONT;
-  let lines = wrap(G.puzzle.directive, b.bannerW - 48);
-  let lineH = 18;
-  if (lines.length > 2) {
-    ctx.font = '500 14px ' + FONT;
-    lines = wrap(G.puzzle.directive, b.bannerW - 48);
-    lineH = 16;
-  }
-  ctx.fillStyle = '#d5e4f4';
-  fillLines(lines.slice(0, 3), 30, b.bannerY + 72, lineH, 'left');
+  ctx.fillText(sub, 36, b.bannerY + 50);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.9)';
+  ctx.fillRect(b.bannerX + 14, b.bannerY + 62, 3, b.bannerH - 76);
+  drawPoints(G.puzzle.points || [], 36, b.bannerY + 80, b.bannerW - 70);
   ctx.restore();
+}
+function drawPoints(points, x, y, maxW) {
+  const list = points.slice(0, 4);
+  const lineH = list.length > 3 ? 20 : 22;
+  list.forEach(function (p, i) {
+    const yy = y + i * lineH;
+    ctx.beginPath();
+    if (p.ask) {
+      ctx.moveTo(x, yy - 9);
+      ctx.lineTo(x + 8, yy - 4);
+      ctx.lineTo(x, yy + 1);
+      ctx.closePath();
+      ctx.fillStyle = COL.gold;
+    } else {
+      ctx.arc(x + 3, yy - 4, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = COL.cyan;
+    }
+    ctx.fill();
+    let size = list.length > 3 ? 15 : 16;
+    ctx.font = (p.ask ? '700 ' : '600 ') + size + 'px ' + FONT;
+    while (size > 12 && ctx.measureText(p.text).width > maxW) {
+      size -= 1;
+      ctx.font = (p.ask ? '700 ' : '600 ') + size + 'px ' + FONT;
+    }
+    ctx.fillStyle = p.ask ? COL.gold : '#e8f3ff';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(p.text, x + 16, yy);
+  });
 }
 
 function drawMachines() {
@@ -2707,21 +2933,40 @@ function drawMachines() {
   const slots = machineSlots(G.puzzle);
   slots.forEach(function (slot) {
     const hot = G.surge > 0 && G.puzzle.glow.indexOf(slot.index) >= 0;
-    const scale = slots.length > 2 ? slot.s * 0.86 : slot.s * 0.94;
-    drawMachine(slot.machine.kind, slot.x, UI.mechY + 28, scale, slot.machine.accent, hot, slot.machine.addon);
+    const beam = ctx.createLinearGradient(slot.x, UI.mechY, slot.x, UI.mechY + 78);
+    beam.addColorStop(0, hexAlpha(slot.machine.accent, hot ? 0.28 : 0.12));
+    beam.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = beam;
+    ctx.beginPath();
+    ctx.moveTo(slot.x - 8, UI.mechY + 2);
+    ctx.lineTo(slot.x + 8, UI.mechY + 2);
+    ctx.lineTo(slot.x + 36, UI.mechY + 78);
+    ctx.lineTo(slot.x - 36, UI.mechY + 78);
+    ctx.closePath();
+    ctx.fill();
+    const scale = slots.length > 2 ? 0.74 : 0.8;
+    drawMachine(slot.machine.kind, slot.x, UI.mechY + 36, scale, slot.machine.accent, hot, slot.machine.addon);
     const baseName = slot.machine.base || slot.machine.name;
     const tag = (slot.machine.tag || slot.machine.name) + (slot.machine.count ? '  ×' + slot.machine.count : '');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.font = '700 13px ' + FONT;
+    const nameW = Math.max(ctx.measureText(baseName).width, ctx.measureText(tag).width);
+    roundRect(slot.x - nameW / 2 - 10, UI.mechY + 64, nameW + 20, 38, 8);
+    ctx.fillStyle = 'rgba(4, 10, 20, 0.78)';
+    ctx.fill();
+    ctx.strokeStyle = hexAlpha(slot.machine.accent, 0.7);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.font = '700 13px ' + FONT;
     ctx.fillStyle = COL.ink;
-    ctx.fillText(baseName, slot.x, UI.mechY + 74);
+    ctx.fillText(baseName, slot.x, UI.mechY + 78);
     ctx.font = '700 12px ' + FONT;
     ctx.fillStyle = slot.machine.addon ? COL.gold : COL.dim;
-    ctx.fillText(tag, slot.x, UI.mechY + 92);
+    ctx.fillText(tag, slot.x, UI.mechY + 94);
     const tagW = ctx.measureText(tag).width;
     const coreX = slot.x - tagW / 2 - 12;
-    const coreY = UI.mechY + 88;
+    const coreY = UI.mechY + 90;
     ctx.beginPath();
     ctx.arc(coreX, coreY, 5, 0, Math.PI * 2);
     ctx.strokeStyle = COL.gold;
@@ -2735,8 +2980,8 @@ function drawMachines() {
       ctx.strokeStyle = hexAlpha(COL.gold, 0.45 + Math.sin(G.time * 16) * 0.25);
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(slot.x, slot.y - 20);
-      ctx.lineTo(slot.x + Math.sin(G.time * 20) * 8, UI.mechY + 6);
+      ctx.moveTo(slot.x, slot.y - 18);
+      ctx.lineTo(slot.x + Math.sin(G.time * 20) * 8, UI.mechY + 18);
       ctx.stroke();
     }
   });
@@ -2746,8 +2991,8 @@ function drawMachines() {
     ctx.setLineDash([6, 6]);
     ctx.lineDashOffset = -G.time * 30;
     ctx.beginPath();
-    ctx.moveTo(slots[0].x + 70, UI.mechY + 28);
-    ctx.lineTo(slots[1].x - 70, UI.mechY + 28);
+    ctx.moveTo(slots[0].x + 70, UI.mechY + 30);
+    ctx.lineTo(slots[1].x - 70, UI.mechY + 30);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -3086,10 +3331,32 @@ function drawCards() {
       const selectedSolo = G.mode !== 'duel' && G.cursor === i && step === G.step;
       const miss = G.badFlash && G.badFlash.step === step && G.badFlash.index === i && G.time < G.badFlash.until;
       roundRect(r.x, r.y, r.w, r.h, 14);
-      ctx.fillStyle = miss ? 'rgba(90, 16, 32, 0.95)' : (opt.correct && revealCorrect ? 'rgba(18, 70, 48, 0.95)' : 'rgba(12, 28, 52, 0.95)');
+      const cardFill = ctx.createLinearGradient(r.x, r.y, r.x, r.y + r.h);
+      if (miss) {
+        cardFill.addColorStop(0, 'rgba(128, 28, 46, 0.98)');
+        cardFill.addColorStop(1, 'rgba(42, 8, 18, 0.98)');
+      } else if (opt.correct && revealCorrect) {
+        cardFill.addColorStop(0, 'rgba(32, 118, 74, 0.98)');
+        cardFill.addColorStop(1, 'rgba(8, 42, 30, 0.98)');
+      } else {
+        cardFill.addColorStop(0, 'rgba(32, 64, 104, 0.98)');
+        cardFill.addColorStop(1, 'rgba(7, 14, 28, 0.98)');
+      }
+      ctx.fillStyle = cardFill;
       ctx.fill();
       ctx.lineWidth = hovered || selectedSolo ? 3 : 1.5;
-      ctx.strokeStyle = miss ? COL.red : (opt.correct && revealCorrect ? COL.green : (hovered || selectedSolo ? COL.cyan : 'rgba(150,200,230,0.35)'));
+      ctx.strokeStyle = miss ? COL.red : (opt.correct && revealCorrect ? COL.green : (hovered || selectedSolo ? COL.cyan : 'rgba(150,200,230,0.4)'));
+      ctx.stroke();
+      const tick = 8;
+      ctx.strokeStyle = hexAlpha(miss ? COL.red : (opt.correct && revealCorrect ? COL.green : COL.cyan), 0.8);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(r.x + 8, r.y + 8 + tick);
+      ctx.lineTo(r.x + 8, r.y + 8);
+      ctx.lineTo(r.x + 8 + tick, r.y + 8);
+      ctx.moveTo(r.x + r.w - 8, r.y + 8 + tick);
+      ctx.lineTo(r.x + r.w - 8, r.y + 8);
+      ctx.lineTo(r.x + r.w - 8 - tick, r.y + 8);
       ctx.stroke();
       if (G.mode === 'duel') {
         G.duelists.forEach(function (d, p) {
@@ -3108,9 +3375,16 @@ function drawCards() {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const num = fmt(opt.value);
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h * (G.mode === 'duel' ? 0.48 : 0.46);
+      ctx.beginPath();
+      ctx.arc(cx, cy, G.mode === 'duel' ? 20 : 34, 0, Math.PI * 2);
+      ctx.strokeStyle = hexAlpha(COL.gold, hovered || selectedSolo ? 0.85 : 0.4);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
       ctx.font = '700 ' + (num.length > 5 ? 28 : (G.mode === 'duel' ? 32 : 46)) + 'px ' + FONT;
       ctx.fillStyle = COL.ink;
-      ctx.fillText(num, r.x + r.w / 2, r.y + r.h * (G.mode === 'duel' ? 0.48 : 0.46));
+      ctx.fillText(num, cx, cy);
       ctx.font = '700 13px ' + FONT;
       ctx.fillStyle = COL.gold;
       ctx.fillText(G.puzzle ? G.puzzle.flavor.unit : '', r.x + r.w / 2, r.y + r.h * (G.mode === 'duel' ? 0.72 : 0.66));
@@ -3167,7 +3441,7 @@ function drawTitle() {
   ];
   showcase.forEach(function (m, i) {
     const x = 250 + i * 220;
-    drawMachine(m.kind, x, 178, 0.5, m.accent, false);
+    drawMachine(m.kind, x, 172, 0.48, m.accent, false);
   });
 
   ctx.font = '700 12px ' + FONT;
