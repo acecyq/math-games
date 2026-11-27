@@ -1,0 +1,2574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#070d16">
+<title>Vanguard Overwatch: Tactical Angle Sniper</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070d16'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%233ee0ff' stroke-width='3'/%3E%3Cpath d='M32 8v12M32 44v12M8 32h12M44 32h12' stroke='%23ff4d6a' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='3' fill='%23ffc857'/%3E%3C/svg%3E">
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #070d16;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    outline: none;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  noscript {
+    color: #e8f7ff;
+    font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+    padding: 24px;
+  }
+</style>
+</head>
+<body>
+<noscript>Vanguard Overwatch needs JavaScript and a canvas-capable browser.</noscript>
+<canvas id="game" tabindex="0" aria-label="Vanguard Overwatch. Tactical angle sniper for Singapore Primary 4 to 6 angles and composite figures. Choose agents, a grade, and solo, team co-op, or duel."></canvas>
+<div id="live" class="sr" aria-live="polite"></div>
+<pre id="audit" class="sr"></pre>
+<script>
+'use strict';
+
+/* Vanguard Overwatch: Tactical Angle Sniper
+   Singapore Primary 4–6 angles and composite figures.
+   Every compound is built, measured, and rejected unless the angles match. */
+
+const VW = 1280;
+const VH = 720;
+const RAD = Math.PI / 180;
+const DEGS = '\u00b0';
+const MINUS = '\u2212';
+const FONT = '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif';
+const MAP = { x: 22, y: 162, w: 1236, h: 360 };
+const CARD_Y = 598;
+const CARD_H = 106;
+const CARD_W = 290;
+const CARD_GAP = 16;
+const CARD_X0 = Math.round((VW - (CARD_W * 4 + CARD_GAP * 3)) / 2);
+const STORE_KEY = 'vanguard-overwatch-v1';
+
+const COL = {
+  bg: '#070d16',
+  ink: '#e8f7ff',
+  dim: '#93a4b8',
+  cyan: '#3ee0ff',
+  cyanDim: 'rgba(62, 224, 255, 0.55)',
+  amber: '#ffc857',
+  good: '#5dffa1',
+  bad: '#ff5d73',
+  p1: '#ff4d6a',
+  p2: '#3db7ff',
+  p3: '#3ee0a0',
+  wall: '#9aefff',
+  panel: 'rgba(8, 14, 24, 0.92)'
+};
+
+const PLAYER_COL = [COL.p1, COL.p2, COL.p3];
+const PLAYER_NAME = ['P1 CRIMSON', 'P2 AZURE', 'P3 EMERALD'];
+const KEY_FACE = [
+  ['1', '2', '3', '4'],
+  ['Q', 'W', 'E', 'R'],
+  ['U', 'I', 'O', 'P']
+];
+const KEY_CODE = [
+  ['Digit1', 'Digit2', 'Digit3', 'Digit4'],
+  ['KeyQ', 'KeyW', 'KeyE', 'KeyR'],
+  ['KeyU', 'KeyI', 'KeyO', 'KeyP']
+];
+
+const TIER_META = {
+  P4: {
+    badge: 'P4',
+    name: 'PRIMARY 4',
+    role: 'Foundation Security',
+    blurb: 'Right angles, angles on a straight line, angles at a point, squares and rectangles.'
+  },
+  P5: {
+    badge: 'P5',
+    name: 'PRIMARY 5',
+    role: 'Tactical Division',
+    blurb: 'Triangle sums, equilateral and isosceles triangles, right angles, and vertically opposite angles.'
+  },
+  P6: {
+    badge: 'P6',
+    name: 'PRIMARY 6',
+    role: 'Elite Overwatch',
+    blurb: 'Parallelograms, rhombuses, trapeziums, and composite figures.'
+  },
+  EXTREME: {
+    badge: 'EXTREME',
+    name: 'EXTREME P6',
+    role: 'Shadow Ops Blitz',
+    blurb: 'P6 compounds on a 22-second clock. Clean eliminations build a 2\u00d7 then 3\u00d7 combo.'
+  }
+};
+
+const MODE_META = {
+  solo: { name: 'SOLO', blurb: 'One agent, three lives, and a high score. Mouse, 1\u20134, arrows + Space, or gamepad.' },
+  coop: { name: 'TEAM CO-OP', blurb: 'One team score and shared lives. Agents rotate Step 1 and Step 2. The mouse answers for whoever is on duty.' },
+  duel: { name: 'OVERWATCH DUEL', blurb: 'Fastest correct turn wins the star. A wrong angle costs that agent a life and jams their laser.' }
+};
+
+const TIP_PARA = 'Opposite angles in a parallelogram or rhombus are EQUAL, while adjacent angles between parallel sides add up to 180' + DEGS + '!';
+const TIP_VERT = 'When two straight lines cross, vertically opposite angles are EQUAL, and angles on a straight line add up to 180' + DEGS + '!';
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const live = document.getElementById('live');
+const view = { dpr: 1, scale: 1, ox: 0, oy: 0 };
+const keysDown = new Set();
+const keyEdge = new Set();
+const padPrev = [{}, {}, {}];
+const padEdge = [null, null, null];
+let pointer = { x: 640, y: 360, inside: false };
+let clickEdge = null;
+let history = [];
+let debugReject = '';
+let acted = [false, false, false];
+
+const store = loadStore();
+
+const audio = {
+  ctx: null,
+  master: null,
+  nextAt: 0,
+  step: 0,
+  noise: null,
+  muted: store.mute
+};
+
+const game = {
+  screen: 'title',
+  players: 1,
+  tier: 'P4',
+  mode: 'solo',
+  focusRow: 3,
+  focusCol: 0,
+  round: 1,
+  score: 0,
+  scores: [0, 0, 0],
+  stars: [0, 0, 0],
+  lives: 3,
+  livesP: [3, 3, 3],
+  puzzle: null,
+  step: 0,
+  phase: 'ask',
+  phaseAge: 0,
+  roundTime: 0,
+  streak: 0,
+  clean: true,
+  sel: [0, 0, 0],
+  stun: [0, 0, 0],
+  aim: 0,
+  sweepFrom: 0,
+  sweepSigned: 0,
+  sweepColor: COL.cyan,
+  showHighlight: false,
+  tip: '',
+  tipBad: false,
+  shake: 0,
+  flash: 0,
+  flashColor: '#ffffff',
+  particles: [],
+  floats: [],
+  dash: 0,
+  mark: null,
+  cleared: 0,
+  wrongs: 0,
+  attempts: 0,
+  bestFlash: false,
+  winner: -1,
+  time: 0,
+  paused: false,
+  ui: [],
+  actor: 0,
+  failMode: 'retry',
+  endIn: 0,
+  hidden: false
+};
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return { mute: false, best: {} };
+    const data = JSON.parse(raw);
+    return { mute: !!data.mute, best: data.best || {} };
+  } catch (err) {
+    return { mute: false, best: {} };
+  }
+}
+function saveStore() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (err) { /* ignore quota */ }
+}
+function bestKey() { return game.mode + '|' + game.tier + '|' + game.players; }
+function bestValue() { return store.best[bestKey()] || 0; }
+
+function rnd(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function even(a, b) {
+  let v = rnd(a, b);
+  if (v % 2) v += v < b ? 1 : -1;
+  return v;
+}
+function shuffle(list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = a[i];
+    a[i] = a[j];
+    a[j] = tmp;
+  }
+  return a;
+}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function fail(msg) { debugReject = msg; return null; }
+
+function pt(x, y) { return { x: x, y: y }; }
+function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
+function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y }; }
+function mul(a, s) { return { x: a.x * s, y: a.y * s }; }
+function len(a) { return Math.hypot(a.x, a.y); }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function fromHeading(rad, r) { return { x: Math.cos(rad) * r, y: Math.sin(rad) * r }; }
+function heading(a, b) { return Math.atan2(b.y - a.y, b.x - a.x); }
+function signedTurn(from, to) {
+  let d = to - from;
+  while (d <= -Math.PI) d += Math.PI * 2;
+  while (d > Math.PI) d -= Math.PI * 2;
+  return d * 180 / Math.PI;
+}
+function angleAt(v, a, b) {
+  const a1 = Math.atan2(a.y - v.y, a.x - v.x);
+  const a2 = Math.atan2(b.y - v.y, b.x - v.x);
+  let d = Math.abs(a2 - a1);
+  if (d > Math.PI) d = Math.PI * 2 - d;
+  return d * 180 / Math.PI;
+}
+function measure(pts, at, a, b) { return angleAt(pts[at], pts[a], pts[b]); }
+
+function tipSquare(a, b, turn) {
+  return 'Each corner of a square or rectangle is 90' + DEGS + ', not 180' + DEGS + '! Subtract from 90' + DEGS + ': 90' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + turn + DEGS + '!';
+}
+function tipRhomb(half) {
+  return 'In a rhombus, all 4 sides are equal, so diagonals split the vertex angles into two equal halves (e.g., ' + half + DEGS + ' and ' + half + DEGS + ')!';
+}
+function pack(correct, traps) {
+  const correctN = Math.round(correct);
+  if (correctN < 12 || correctN > 165) return null;
+  const seen = {};
+  seen[correctN] = true;
+  const bag = [];
+  for (let i = 0; i < traps.length; i++) {
+    const v = Math.round(traps[i].v);
+    if (v < 12 || v > 165 || seen[v]) continue;
+    seen[v] = true;
+    bag.push({ v: v, tip: traps[i].tip });
+    if (bag.length === 3) break;
+  }
+  const offsets = [8, -9, 12, -14, 17, -18, 21, -23, 26, -6, 15, -11, 29, -31];
+  let k = 0;
+  while (bag.length < 3 && k < offsets.length) {
+    const v = correctN + offsets[k];
+    k += 1;
+    if (v < 12 || v > 165 || seen[v]) continue;
+    seen[v] = true;
+    bag.push({ v: v, tip: 'Read the intel again and rebuild the angle in one small step.' });
+  }
+  if (bag.length < 3) return null;
+  return shuffle([{ v: correctN, tip: '' }].concat(bag));
+}
+function rayIntersect(p, h1, q, h2) {
+  const d1x = Math.cos(h1);
+  const d1y = Math.sin(h1);
+  const d2x = Math.cos(h2);
+  const d2y = Math.sin(h2);
+  const cross = d1x * d2y - d1y * d2x;
+  if (Math.abs(cross) < 1e-6) return null;
+  const dx = q.x - p.x;
+  const dy = q.y - p.y;
+  const t = (dx * d2y - dy * d2x) / cross;
+  const u = (dx * d1y - dy * d1x) / cross;
+  if (t < 12 || u < 12) return null;
+  return { x: p.x + d1x * t, y: p.y + d1y * t };
+}
+function travelToBox(origin, rad, minX, minY, maxX, maxY) {
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  let best = Infinity;
+  function consider(t) { if (t > 8 && t < best) best = t; }
+  if (dx < -1e-8) consider((minX - origin.x) / dx);
+  if (dx > 1e-8) consider((maxX - origin.x) / dx);
+  if (dy < -1e-8) consider((minY - origin.y) / dy);
+  if (dy > 1e-8) consider((maxY - origin.y) / dy);
+  return best < 1e8 ? best : null;
+}
+
+function edge(a, b, tick, par) { return { a: a, b: b, tick: tick || 0, par: par || 0 }; }
+function chk(at, a, b, expect) { return { at: at, a: a, b: b, expect: expect }; }
+
+function trySplit(kind) {
+  const a = rnd(15, 32);
+  const b = rnd(15, 32);
+  const used = a + b;
+  const turn = 90 - used;
+  if (used < 34 || used > 68 || turn < 18) return fail('range');
+  const w = kind === 'square' ? rnd(210, 250) : rnd(230, 290);
+  const h = kind === 'square' ? w : rnd(140, 180);
+  if (kind === 'rect' && Math.abs(w - h) < 36) return fail('box');
+  const A = pt(0, 0);
+  const B = pt(w, 0);
+  const C = pt(w, h);
+  const D = pt(0, h);
+  const hE = Math.PI - a * RAD;
+  const hF = Math.PI - used * RAD;
+  const tE = travelToBox(B, hE, 0, 0, w, h);
+  const tF = travelToBox(B, hF, 0, 0, w, h);
+  if (!tE || !tF) return fail('ray');
+  const E = add(B, fromHeading(hE, tE * 0.56));
+  const F = add(B, fromHeading(hF, tF * 0.78));
+  if (dist(E, F) < 36 || dist(E, A) < 36 || dist(F, C) < 36 || dist(E, D) < 28 || dist(F, D) < 28) return fail('close');
+  const shape = kind === 'square' ? 'square' : 'rectangle';
+  const tickL = 1;
+  const tickW = kind === 'square' ? 1 : 2;
+  const opt1 = pack(used, [
+    { v: a, tip: 'Add both given angles. Angle ABF = Angle ABE + Angle EBF = ' + a + DEGS + ' + ' + b + DEGS + ' = ' + used + DEGS + '.' },
+    { v: b, tip: 'Add both given angles. Angle ABF = ' + a + DEGS + ' + ' + b + DEGS + ' = ' + used + DEGS + '.' },
+    { v: 90 - a, tip: 'Keep the second given angle in the sum before you subtract from 90' + DEGS + '.' },
+    { v: turn, tip: 'That remainder is the final turn. First lock the combined given angles: ' + a + DEGS + ' + ' + b + DEGS + ' = ' + used + DEGS + '.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: 180 - used, tip: tipSquare(a, b, turn) },
+    { v: 90 - a, tip: 'Subtract both given angles from 90' + DEGS + ': 90' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: used, tip: 'That sum has already been used inside the corner. The turn is what remains: 90' + DEGS + ' ' + MINUS + ' ' + used + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: 90 - b, tip: 'Subtract both ' + a + DEGS + ' and ' + b + DEGS + ' from the 90' + DEGS + ' corner.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: kind === 'square' ? 'sq' : 'rect',
+    sig: (kind === 'square' ? 'sq' : 'rect') + '|' + a + '|' + b,
+    lead: 'ABCD is a ' + shape + '. Angle ABE = ' + a + DEGS + ', Angle EBF = ' + b + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D, E: E, F: F },
+    edges: [
+      edge('A', 'B', tickL, 1), edge('D', 'C', tickL, 1),
+      edge('A', 'D', tickW, 2), edge('B', 'C', tickW, 2),
+      edge('B', 'E', 0, 0), edge('B', 'F', 0, 0)
+    ],
+    rights: [ { at: 'A', a: 'B', b: 'D' }, { at: 'C', a: 'B', b: 'D' }, { at: 'D', a: 'A', b: 'C' } ],
+    highlight: ['B', 'F'],
+    guard: { at: 'B', face: 'C', target: 'F' },
+    turn: turn,
+    checks: [
+      chk('B', 'A', 'E', a), chk('B', 'E', 'F', b), chk('B', 'F', 'C', turn),
+      chk('B', 'A', 'F', used), chk('A', 'B', 'D', 90), chk('B', 'A', 'C', 90)
+    ],
+    equals: kind === 'square'
+      ? [[['A', 'B'], ['B', 'C'], ['C', 'D'], ['D', 'A']]]
+      : [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    parallels: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle ABF', correct: used, options: opt1, lock: 'Intermediate locked: Angle ABF = ' + used + DEGS + '. The corner is 90' + DEGS + ', so the turn is 90' + DEGS + ' ' + MINUS + ' ' + used + DEGS + '.' },
+      { name: 'Angle FBC', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryLine() {
+  const a = rnd(18, 42);
+  const b = rnd(18, 42);
+  const used = a + b;
+  const turn = 180 - used;
+  const trap90 = 90 - used;
+  if (used < 40 || used > 78 || turn < 100 || turn > 150 || trap90 < 14) return fail('range');
+  const B = pt(240, 0);
+  const A = pt(0, 0);
+  const C = pt(480, 0);
+  const D = add(B, fromHeading(Math.PI - a * RAD, 190));
+  const E = add(B, fromHeading(Math.PI - used * RAD, 240));
+  const opt1 = pack(used, [
+    { v: a, tip: 'Add both given angles. Angle ABE = ' + a + DEGS + ' + ' + b + DEGS + ' = ' + used + DEGS + '.' },
+    { v: b, tip: 'Add both given angles on the straight line before you subtract from 180' + DEGS + '.' },
+    { v: turn, tip: 'That is the remaining turn. First lock Angle ABE = ' + a + DEGS + ' + ' + b + DEGS + '.' },
+    { v: trap90, tip: 'Angles on a straight line add to 180' + DEGS + ', not 90' + DEGS + '.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: trap90, tip: 'Angles on a straight line add up to 180' + DEGS + ', not 90' + DEGS + '. 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: used, tip: 'That is the other part of the straight line. The turn is 180' + DEGS + ' ' + MINUS + ' ' + used + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: 180 - a, tip: 'Subtract both given angles from 180' + DEGS + ', not only the first one.' },
+    { v: a + 180 - used, tip: 'Use 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'line',
+    sig: 'line|' + a + '|' + b,
+    lead: 'ABC is a straight line. Angle ABD = ' + a + DEGS + ', Angle DBE = ' + b + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D, E: E },
+    edges: [edge('A', 'B', 0, 0), edge('B', 'C', 0, 0), edge('B', 'D', 0, 0), edge('B', 'E', 0, 0)],
+    rights: [],
+    highlight: ['B', 'E'],
+    guard: { at: 'B', face: 'C', target: 'E' },
+    turn: turn,
+    checks: [chk('B', 'A', 'D', a), chk('B', 'D', 'E', b), chk('B', 'E', 'C', turn), chk('B', 'A', 'E', used)],
+    straights: [['A', 'B', 'C']],
+    steps: [
+      { name: 'Angle ABE', correct: used, options: opt1, lock: 'Intermediate locked: Angle ABE = ' + used + DEGS + '. A straight line is 180' + DEGS + ', so the turn is 180' + DEGS + ' ' + MINUS + ' ' + used + DEGS + '.' },
+      { name: 'Angle EBC', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryPoint() {
+  const z = rnd(78, 138);
+  const remain = 360 - z;
+  const step1Min = Math.max(96, remain - 120);
+  const step1Max = Math.min(165, remain - 40);
+  if (step1Min > step1Max) return fail('range');
+  const step1 = rnd(step1Min, step1Max);
+  const y = remain - step1;
+  const wMin = Math.max(32, step1 - 108);
+  const wMax = Math.min(108, step1 - 32);
+  if (wMin > wMax || y < 40 || y > 120) return fail('range');
+  const w = rnd(wMin, wMax);
+  const x = step1 - w;
+  if (z === step1 || z === y || x < 32) return fail('range');
+  const B = pt(0, 0);
+  const A = fromHeading(0, 176);
+  const D = fromHeading(w * RAD, 214);
+  const E = fromHeading(step1 * RAD, 156);
+  const C = fromHeading((step1 + y) * RAD, 198);
+  const trap180 = 180 - z;
+  const opt1 = pack(step1, [
+    { v: w, tip: 'Add Angle ABD and Angle DBE. Angle ABE = ' + w + DEGS + ' + ' + x + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: x, tip: 'Add both sectors between BA and BE: ' + w + DEGS + ' + ' + x + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: y, tip: 'Angle EBC is only one sector. Angle ABE is ' + w + DEGS + ' + ' + x + DEGS + '.' },
+    { v: z, tip: 'That is the final turn around the point. First add the two sectors that make Angle ABE.' }
+  ]);
+  const opt2 = pack(z, [
+    { v: step1, tip: 'That is only part of the known angles. Angles at a point add to 360' + DEGS + '. 360' + DEGS + ' ' + MINUS + ' ' + w + DEGS + ' ' + MINUS + ' ' + x + DEGS + ' ' + MINUS + ' ' + y + DEGS + ' = ' + z + DEGS + '.' },
+    { v: y, tip: 'One given sector is not the missing turn. Subtract every known angle from 360' + DEGS + '.' },
+    { v: w, tip: 'Angles at a point add to 360' + DEGS + ', so subtract Angle ABD, Angle DBE and Angle EBC.' },
+    { v: trap180, tip: 'A full turn around a point is 360' + DEGS + ', not 180' + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'point',
+    sig: 'point|' + w + '|' + x + '|' + y,
+    lead: 'Rays BA, BD, BE and BC meet at B. Angle ABD = ' + w + DEGS + ', Angle DBE = ' + x + DEGS + ', Angle EBC = ' + y + DEGS + '. Angles at a point add to 360' + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D, E: E },
+    edges: [edge('B', 'A', 0, 0), edge('B', 'D', 0, 0), edge('B', 'E', 0, 0), edge('B', 'C', 0, 0)],
+    rights: [],
+    highlight: ['B', 'E'],
+    guard: { at: 'B', face: 'A', target: 'C' },
+    turn: z,
+    checks: [chk('B', 'A', 'D', w), chk('B', 'D', 'E', x), chk('B', 'E', 'C', y), chk('B', 'A', 'E', step1), chk('B', 'A', 'C', z)],
+    steps: [
+      { name: 'Angle ABE', correct: step1, options: opt1, lock: 'Intermediate locked: Angle ABE = ' + step1 + DEGS + '. Now subtract all three known angles from 360' + DEGS + '.' },
+      { name: 'Angle ABC', correct: z, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryEquil() {
+  const abd = rnd(22, 46);
+  const g = rnd(22, 40);
+  const dbe = 120 - abd;
+  const deb = 60 + abd - g;
+  if (dbe < 70 || dbe > 100 || deb < 36 || deb > 92) return fail('range');
+  const S = 220;
+  const B = pt(0, 0);
+  const C = pt(S, 0);
+  const A = pt(S / 2, -S * Math.sin(Math.PI / 3));
+  const E = pt(-168, 0);
+  const hBD = heading(B, A) - abd * RAD;
+  const BD = 168 * Math.sin(deb * RAD) / Math.sin(g * RAD);
+  if (!(BD > 90 && BD < 340)) return fail('bd');
+  const D = add(B, fromHeading(hBD, BD));
+  const opt1 = pack(dbe, [
+    { v: 60, tip: 'Angle ABC is 60' + DEGS + ' because ABC is equilateral. EBC is straight, so Angle ABE = 120' + DEGS + '. Then Angle DBE = 120' + DEGS + ' ' + MINUS + ' ' + abd + DEGS + ' = ' + dbe + DEGS + '.' },
+    { v: abd, tip: 'Angle ABD is given. Subtract it from Angle ABE: 120' + DEGS + ' ' + MINUS + ' ' + abd + DEGS + ' = ' + dbe + DEGS + '.' },
+    { v: 180 - abd, tip: 'Start from the equilateral angle. Angle ABE = 180' + DEGS + ' ' + MINUS + ' 60' + DEGS + ' = 120' + DEGS + ', then subtract Angle ABD.' },
+    { v: deb, tip: 'That is the final turn at E. First find Angle DBE = 120' + DEGS + ' ' + MINUS + ' ' + abd + DEGS + '.' }
+  ]);
+  const opt2 = pack(deb, [
+    { v: 180 - g, tip: 'Angles in triangle BDE add to 180' + DEGS + '. Subtract Angle DBE as well: 180' + DEGS + ' ' + MINUS + ' ' + dbe + DEGS + ' ' + MINUS + ' ' + g + DEGS + ' = ' + deb + DEGS + '.' },
+    { v: dbe, tip: 'That is the angle at B. Angle DEB = 180' + DEGS + ' ' + MINUS + ' Angle DBE ' + MINUS + ' Angle BDE = ' + deb + DEGS + '.' },
+    { v: 60, tip: 'The equilateral angle was only the first fact. Finish triangle BDE to get ' + deb + DEGS + '.' },
+    { v: abd + g, tip: 'Use the triangle sum in BDE, with Angle DBE = ' + dbe + DEGS + ' and Angle BDE = ' + g + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'equil',
+    sig: 'equil|' + abd + '|' + g,
+    lead: 'ABC is an equilateral triangle. EBC is a straight line. Angle BDE = ' + g + DEGS + ', Angle ABD = ' + abd + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D, E: E },
+    edges: [
+      edge('A', 'B', 1, 0), edge('B', 'C', 1, 0), edge('C', 'A', 1, 0),
+      edge('E', 'B', 0, 0), edge('B', 'D', 0, 0), edge('D', 'E', 0, 0)
+    ],
+    rights: [],
+    highlight: ['B', 'D'],
+    guard: { at: 'E', face: 'D', target: 'B' },
+    turn: deb,
+    checks: [
+      chk('A', 'B', 'C', 60), chk('B', 'A', 'C', 60), chk('C', 'A', 'B', 60),
+      chk('B', 'A', 'D', abd), chk('B', 'D', 'E', dbe), chk('D', 'B', 'E', g), chk('E', 'D', 'B', deb)
+    ],
+    straights: [['E', 'B', 'C']],
+    equals: [[['A', 'B'], ['B', 'C'], ['C', 'A']]],
+    steps: [
+      { name: 'Angle DBE', correct: dbe, options: opt1, lock: 'Intermediate locked: Angle DBE = ' + dbe + DEGS + '. Triangle BDE sums to 180' + DEGS + ', so Angle DEB = 180' + DEGS + ' ' + MINUS + ' ' + dbe + DEGS + ' ' + MINUS + ' ' + g + DEGS + '.' },
+      { name: 'Angle DEB', correct: deb, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryIso() {
+  const v = even(42, 98);
+  if (v === 60) return fail('v60');
+  const base = (180 - v) / 2;
+  const turn = 180 - base;
+  if (base < 40 || base > 74 || turn < 106 || turn > 145) return fail('range');
+  const half = 112;
+  const h = half / Math.tan((v / 2) * RAD);
+  if (!(h > 70 && h < 360)) return fail('h');
+  const B = pt(0, 0);
+  const C = pt(half * 2, 0);
+  const A = pt(half, -h);
+  const D = pt(C.x + 156, 0);
+  const opt1 = pack(base, [
+    { v: v, tip: 'That is the vertex angle. The base angles of an isosceles triangle are equal: (180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + ') \u00f7 2 = ' + base + DEGS + '.' },
+    { v: 180 - v, tip: 'That is the sum of both base angles. Divide by 2. Each base angle is ' + base + DEGS + '.' },
+    { v: turn, tip: 'That is the straight-line turn at C. First find the equal base angle, ' + base + DEGS + '.' },
+    { v: Math.abs(v - base), tip: 'AB = AC, so the base angles are equal and each is (180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + ') \u00f7 2.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: base, tip: 'BCD is a straight line, so the turn is 180' + DEGS + ' ' + MINUS + ' the base angle = ' + turn + DEGS + '.' },
+    { v: v, tip: 'The vertex angle is not the turn. Use 180' + DEGS + ' ' + MINUS + ' ' + base + DEGS + ' because BCD is straight.' },
+    { v: 180 - v, tip: 'Split the base angles first. Then the straight line at C gives 180' + DEGS + ' ' + MINUS + ' ' + base + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: base + v > 165 ? base + 15 : base + v, tip: 'The exterior angle at C equals the two remote interior angles, which simplifies to 180' + DEGS + ' ' + MINUS + ' ' + base + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'iso',
+    sig: 'iso|' + v,
+    lead: 'ABC is an isosceles triangle with AB = AC. Angle BAC = ' + v + DEGS + '. BCD is a straight line.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [edge('A', 'B', 1, 0), edge('A', 'C', 1, 0), edge('B', 'C', 0, 0), edge('C', 'D', 0, 0)],
+    rights: [],
+    highlight: ['A', 'B'],
+    guard: { at: 'C', face: 'D', target: 'A' },
+    turn: turn,
+    checks: [chk('A', 'B', 'C', v), chk('B', 'A', 'C', base), chk('C', 'A', 'B', base), chk('C', 'A', 'D', turn)],
+    straights: [['B', 'C', 'D']],
+    equals: [[['A', 'B'], ['A', 'C']]],
+    steps: [
+      { name: 'Angle ABC', correct: base, options: opt1, lock: 'Intermediate locked: Angle ABC = ' + base + DEGS + '. BCD is straight, so the turn is 180' + DEGS + ' ' + MINUS + ' ' + base + DEGS + '.' },
+      { name: 'Angle ACD', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryVert() {
+  const a = rnd(18, 46);
+  const b = rnd(18, 46);
+  const s = a + b;
+  if (s < 44 || s > 108 || s === 90) return fail('range');
+  const turn = 180 - s;
+  const E = pt(0, 0);
+  const A = fromHeading(Math.PI, 196);
+  const P = fromHeading(Math.PI + a * RAD, 112);
+  const B = fromHeading(Math.PI + s * RAD, 186);
+  const C = fromHeading(0, 196);
+  const D = fromHeading(s * RAD, 186);
+  const opt1 = pack(s, [
+    { v: a, tip: 'Add Angle AEP and Angle PEB to make Angle AEB. ' + TIP_VERT },
+    { v: b, tip: 'Angle CED is vertically opposite Angle AEB, and Angle AEB = ' + a + DEGS + ' + ' + b + DEGS + ' = ' + s + DEGS + '.' },
+    { v: turn, tip: 'That is the adjacent angle on the straight line. Vertically opposite angles are equal, so Angle CED = ' + a + DEGS + ' + ' + b + DEGS + '.' },
+    { v: Math.abs(a - b) < 12 ? a + 12 : Math.abs(a - b), tip: TIP_VERT + ' First add the two pieces of Angle AEB.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: s, tip: 'That is the vertically opposite angle. The turn is the adjacent angle on the straight line: 180' + DEGS + ' ' + MINUS + ' ' + s + DEGS + ' = ' + turn + DEGS + '. ' + TIP_VERT },
+    { v: a, tip: TIP_VERT + ' Angle AED = 180' + DEGS + ' ' + MINUS + ' (' + a + DEGS + ' + ' + b + DEGS + ').' },
+    { v: b, tip: 'Add both given pieces first, then subtract the sum from 180' + DEGS + '.' },
+    { v: 90, tip: 'These lines do not make a right angle here. Use 180' + DEGS + ' ' + MINUS + ' ' + s + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'vert',
+    sig: 'vert|' + a + '|' + b,
+    lead: 'AEC and BED are straight lines. Angle AEP = ' + a + DEGS + ', Angle PEB = ' + b + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D, E: E, P: P },
+    edges: [edge('A', 'E', 0, 0), edge('E', 'C', 0, 0), edge('B', 'E', 0, 0), edge('E', 'D', 0, 0), edge('E', 'P', 0, 0)],
+    rights: [],
+    highlight: ['E', 'B'],
+    guard: { at: 'E', face: 'A', target: 'D' },
+    turn: turn,
+    checks: [
+      chk('E', 'A', 'P', a), chk('E', 'P', 'B', b), chk('E', 'A', 'B', s),
+      chk('E', 'C', 'D', s), chk('E', 'A', 'D', turn)
+    ],
+    straights: [['A', 'E', 'C'], ['B', 'E', 'D']],
+    steps: [
+      { name: 'Angle CED', correct: s, options: opt1, lock: 'Intermediate locked: Angle CED = ' + s + DEGS + '. Adjacent angles on the straight line add to 180' + DEGS + ', so the turn is ' + turn + DEGS + '.' },
+      { name: 'Angle AED', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryRight() {
+  const a = rnd(26, 58);
+  if (a === 45) return fail('45');
+  const h = 200;
+  const w = h * Math.tan(a * RAD);
+  if (!(w > 90 && w < 340)) return fail('w');
+  const acute = 90 - a;
+  const turn = 90 + a;
+  const B = pt(0, 0);
+  const A = pt(0, -h);
+  const C = pt(w, 0);
+  const D = pt(w + 148, 0);
+  const opt1 = pack(acute, [
+    { v: a, tip: 'The two acute angles in a right-angled triangle add to 90' + DEGS + '. Angle ACB = 90' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' = ' + acute + DEGS + '.' },
+    { v: 180 - a, tip: 'Subtract the given acute angle from 90' + DEGS + ', not from 180' + DEGS + '.' },
+    { v: turn, tip: 'That is the straight-line turn. First find the interior angle at C: 90' + DEGS + ' ' + MINUS + ' ' + a + DEGS + '.' },
+    { v: 45, tip: 'This right angle is not split in half. Angle ACB = 90' + DEGS + ' ' + MINUS + ' Angle BAC.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: acute, tip: 'That is the interior angle at C. BCD is a straight line, so the turn is 180' + DEGS + ' ' + MINUS + ' ' + acute + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: a, tip: 'Use the interior angle at C, then subtract it from 180' + DEGS + '.' },
+    { v: 180 - a, tip: 'Angle ACD = 90' + DEGS + ' + Angle BAC = ' + turn + DEGS + ', because BCD is straight.' },
+    { v: 90, tip: 'The right angle is at B, not the turn at C. The turn is ' + turn + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'right',
+    sig: 'right|' + a,
+    lead: 'ABC is a right-angled triangle with the right angle at B. Angle BAC = ' + a + DEGS + '. BCD is a straight line.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [edge('A', 'B', 0, 0), edge('B', 'C', 0, 0), edge('C', 'A', 0, 0), edge('C', 'D', 0, 0)],
+    rights: [{ at: 'B', a: 'A', b: 'C' }],
+    highlight: ['A', 'C'],
+    guard: { at: 'C', face: 'D', target: 'A' },
+    turn: turn,
+    checks: [chk('B', 'A', 'C', 90), chk('A', 'B', 'C', a), chk('C', 'A', 'B', acute), chk('C', 'A', 'D', turn)],
+    straights: [['B', 'C', 'D']],
+    steps: [
+      { name: 'Angle ACB', correct: acute, options: opt1, lock: 'Intermediate locked: Angle ACB = ' + acute + DEGS + '. BCD is straight, so the turn is 180' + DEGS + ' ' + MINUS + ' ' + acute + DEGS + ' = ' + turn + DEGS + '.' },
+      { name: 'Angle ACD', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryTri() {
+  const a = rnd(32, 68);
+  const b = rnd(32, 68);
+  const c = 180 - a - b;
+  const turn = a + b;
+  if (c < 30 || c > 100 || turn < 70 || turn > 148 || turn === c) return fail('range');
+  const B = pt(0, 0);
+  const C = pt(236, 0);
+  const A = rayIntersect(B, -b * RAD, C, Math.PI + c * RAD);
+  if (!A || A.y > -40) return fail('meet');
+  const D = pt(236 + 150, 0);
+  const opt1 = pack(c, [
+    { v: a, tip: 'Angles in a triangle add to 180' + DEGS + '. Angle ACB = 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + c + DEGS + '.' },
+    { v: b, tip: 'Use both given angles. Angle ACB = 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' ' + MINUS + ' ' + b + DEGS + '.' },
+    { v: turn, tip: 'That sum is the exterior turn. First find the interior angle at C.' },
+    { v: 180 - a, tip: 'Subtract both Angle BAC and Angle ABC from 180' + DEGS + '.' }
+  ]);
+  const opt2 = pack(turn, [
+    { v: c, tip: 'That is the interior angle. The exterior turn equals the two remote interior angles: ' + a + DEGS + ' + ' + b + DEGS + ' = ' + turn + DEGS + '.' },
+    { v: a, tip: 'Add both remote interior angles. Angle ACD = Angle BAC + Angle ABC = ' + turn + DEGS + '.' },
+    { v: b, tip: 'The exterior angle equals the sum of the two interior angles that are not next to it.' },
+    { v: 180 - a, tip: 'BCD is straight, so Angle ACD = 180' + DEGS + ' ' + MINUS + ' ' + c + DEGS + ' = ' + turn + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'tri',
+    sig: 'tri|' + a + '|' + b,
+    lead: 'In triangle ABC, Angle BAC = ' + a + DEGS + ' and Angle ABC = ' + b + DEGS + '. BCD is a straight line.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [edge('A', 'B', 0, 0), edge('B', 'C', 0, 0), edge('C', 'A', 0, 0), edge('C', 'D', 0, 0)],
+    rights: [],
+    highlight: ['B', 'C'],
+    guard: { at: 'C', face: 'D', target: 'A' },
+    turn: turn,
+    checks: [chk('A', 'B', 'C', a), chk('B', 'A', 'C', b), chk('C', 'A', 'B', c), chk('C', 'A', 'D', turn)],
+    straights: [['B', 'C', 'D']],
+    steps: [
+      { name: 'Angle ACB', correct: c, options: opt1, lock: 'Intermediate locked: Angle ACB = ' + c + DEGS + '. The exterior turn is 180' + DEGS + ' ' + MINUS + ' ' + c + DEGS + ' = ' + turn + DEGS + '.' },
+      { name: 'Angle ACD', correct: turn, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryPara() {
+  const a = rnd(64, 116);
+  if (Math.abs(a - 90) < 5) return fail('a90');
+  const bMax = Math.min(52, a - 20);
+  if (bMax < 18) return fail('bmax');
+  const b = rnd(18, bMax);
+  const step1 = 180 - a;
+  const step2 = a - b;
+  if (step2 < 18 || step2 > 80 || step1 < 64 || step1 > 124 || step1 === step2) return fail('range');
+  const s = 220;
+  const den = Math.sin((a - b) * RAD);
+  if (den < 0.22) return fail('den');
+  const k = s * Math.sin(b * RAD) / den;
+  if (!(k > 100 && k < 330) || Math.abs(k - s) < 20) return fail('k');
+  const A = pt(0, 0);
+  const B = pt(s, 0);
+  const D = fromHeading(-a * RAD, k);
+  const C = pt(B.x + D.x, B.y + D.y);
+  const halfish = Math.round(a / 2);
+  const opt1 = pack(step1, [
+    { v: a, tip: TIP_PARA + ' Angle ABC = 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: b, tip: 'Angle BAC is only part of the angle at A. The angle at B is adjacent to Angle DAB, so it is ' + step1 + DEGS + '.' },
+    { v: step2, tip: 'That is the final turn in the triangle. First find the parallelogram angle at B: 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + '.' },
+    { v: 90, tip: TIP_PARA }
+  ]);
+  const opt2 = pack(step2, [
+    { v: b, tip: 'Angle BAC is given. In triangle ABC, Angle ACB = 180' + DEGS + ' ' + MINUS + ' ' + step1 + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + step2 + DEGS + '.' },
+    { v: a, tip: 'That is the whole angle at A. A parallelogram diagonal does not bisect the angles unless the shape is a rhombus.' },
+    { v: step1, tip: 'That is Angle ABC. The turn is the remaining angle in triangle ABC: ' + step2 + DEGS + '.' },
+    { v: halfish, tip: 'A parallelogram diagonal does not split the vertex into equal halves. Use the triangle sum to get ' + step2 + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'para',
+    sig: 'para|' + a + '|' + b,
+    lead: 'ABCD is a parallelogram. Angle DAB = ' + a + DEGS + ', Angle BAC = ' + b + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [
+      edge('A', 'B', 1, 1), edge('D', 'C', 1, 1),
+      edge('A', 'D', 2, 2), edge('B', 'C', 2, 2),
+      edge('A', 'C', 0, 0)
+    ],
+    rights: [],
+    highlight: ['B', 'C'],
+    guard: { at: 'C', face: 'B', target: 'A' },
+    turn: step2,
+    checks: [chk('A', 'D', 'B', a), chk('A', 'B', 'C', b), chk('B', 'A', 'C', step1), chk('C', 'A', 'B', step2)],
+    equals: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    parallels: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle ABC', correct: step1, options: opt1, lock: 'Intermediate locked: Angle ABC = ' + step1 + DEGS + '. In triangle ABC, Angle ACB = 180' + DEGS + ' ' + MINUS + ' ' + step1 + DEGS + ' ' + MINUS + ' ' + b + DEGS + '.' },
+      { name: 'Angle ACB', correct: step2, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryRhomb() {
+  const v = even(48, 136);
+  if (v === 90 || v === 120) return fail('v');
+  const half = v / 2;
+  const adj = 180 - v;
+  if (half < 24 || half > 68 || adj < 44 || adj > 140) return fail('range');
+  const s = 200;
+  const A = pt(0, 0);
+  const B = pt(s, 0);
+  const D = fromHeading(-v * RAD, s);
+  const C = pt(B.x + D.x, B.y + D.y);
+  const otherHalf = Math.round(adj / 2);
+  const opt1 = pack(half, [
+    { v: v, tip: tipRhomb(half) },
+    { v: otherHalf, tip: 'That halves the adjacent angle. Diagonal AC bisects Angle DAB, so each half is ' + half + DEGS + '.' },
+    { v: adj, tip: 'That is the adjacent angle. First split Angle DAB into two equal halves of ' + half + DEGS + '.' },
+    { v: v - half + 8, tip: tipRhomb(half) }
+  ]);
+  const opt2 = pack(adj, [
+    { v: half, tip: 'That is only half of the angle at A. ' + TIP_PARA },
+    { v: v, tip: TIP_PARA + ' Angle ABC = 180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + ' = ' + adj + DEGS + '.' },
+    { v: otherHalf, tip: 'Do not halve the adjacent angle. Angle ABC = 180' + DEGS + ' ' + MINUS + ' Angle DAB = ' + adj + DEGS + '.' },
+    { v: half * 2 === v ? v + 14 : v - 14, tip: TIP_PARA }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'rhomb',
+    sig: 'rhomb|' + v,
+    lead: 'ABCD is a rhombus. Diagonal AC bisects Angle DAB. Angle DAB = ' + v + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [
+      edge('A', 'B', 1, 1), edge('B', 'C', 1, 2), edge('C', 'D', 1, 1), edge('D', 'A', 1, 2),
+      edge('A', 'C', 0, 0)
+    ],
+    rights: [],
+    highlight: ['A', 'C'],
+    guard: { at: 'B', face: 'A', target: 'C' },
+    turn: adj,
+    checks: [chk('A', 'D', 'B', v), chk('A', 'B', 'C', half), chk('A', 'C', 'D', half), chk('B', 'A', 'C', adj)],
+    equals: [[['A', 'B'], ['B', 'C'], ['C', 'D'], ['D', 'A']]],
+    parallels: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle BAC', correct: half, options: opt1, lock: 'Intermediate locked: Angle BAC = ' + half + DEGS + '. Adjacent angles add to 180' + DEGS + ', so Angle ABC = 180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + '.' },
+      { name: 'Angle ABC', correct: adj, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryTrap() {
+  const a = rnd(58, 124);
+  const b = rnd(58, 124);
+  if (Math.abs(a - b) < 14) return fail('ab');
+  if (a === 90 || b === 90) return fail('90');
+  if (a + b === 180) return fail('supp');
+  const step1 = 180 - b;
+  const step2 = 180 - a;
+  if (step1 < 52 || step1 > 128 || step2 < 52 || step2 > 128 || step1 === step2) return fail('range');
+  if (step2 === a || step2 === b || step1 === a || step1 === b) return fail('echo');
+  const h = 148;
+  const W = 280;
+  const ax = h * Math.cos(a * RAD) / Math.sin(a * RAD);
+  const bx = W - h * Math.cos(b * RAD) / Math.sin(b * RAD);
+  if (!(bx > ax + 80 && bx - ax < 460)) return fail('top');
+  const D = pt(0, h);
+  const C = pt(W, h);
+  const A = pt(ax, 0);
+  const B = pt(bx, 0);
+  const opt1 = pack(step1, [
+    { v: b, tip: TIP_PARA + ' Angle ABC and Angle BCD are between the parallel sides, so Angle ABC = 180' + DEGS + ' ' + MINUS + ' ' + b + DEGS + '.' },
+    { v: a, tip: 'Use the angle on the same pair of parallel sides as B. Angle ABC = 180' + DEGS + ' ' + MINUS + ' Angle BCD.' },
+    { v: step2, tip: 'That is the angle at A. This step wants Angle ABC = 180' + DEGS + ' ' + MINUS + ' ' + b + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: Math.abs(a - b), tip: 'Co-interior angles between the parallel sides add to 180' + DEGS + '. They are not subtracted from each other.' }
+  ]);
+  const opt2 = pack(step2, [
+    { v: a, tip: TIP_PARA + ' Angle DAB = 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + ' = ' + step2 + DEGS + '.' },
+    { v: step1, tip: 'That is Angle ABC, from the other end of the trapezium. The turn at A is 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + '.' },
+    { v: b, tip: 'Angle BCD belongs to the other pair of co-interior angles. Angle DAB = 180' + DEGS + ' ' + MINUS + ' Angle ADC.' },
+    { v: 90, tip: 'A trapezium does not need a right angle. Use 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'trap',
+    sig: 'trap|' + a + '|' + b,
+    lead: 'ABCD is a trapezium with AB parallel to DC. Angle ADC = ' + a + DEGS + ', Angle BCD = ' + b + DEGS + '.',
+    pts: { A: A, B: B, C: C, D: D },
+    edges: [edge('A', 'B', 0, 1), edge('D', 'C', 0, 1), edge('A', 'D', 0, 0), edge('B', 'C', 0, 0)],
+    rights: [],
+    highlight: ['B', 'C'],
+    guard: { at: 'A', face: 'D', target: 'B' },
+    turn: step2,
+    checks: [chk('D', 'A', 'C', a), chk('C', 'B', 'D', b), chk('B', 'A', 'C', step1), chk('A', 'D', 'B', step2)],
+    parallels: [[['A', 'B'], ['D', 'C']]],
+    skews: [[['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle ABC', correct: step1, options: opt1, lock: 'Intermediate locked: Angle ABC = ' + step1 + DEGS + '. The turn at A is the other co-interior angle: 180' + DEGS + ' ' + MINUS + ' ' + a + DEGS + '.' },
+      { name: 'Angle DAB', correct: step2, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryRhombIso() {
+  const v = even(52, 100);
+  if (v === 90) return fail('90');
+  const step1 = 180 - v;
+  const step2 = v / 2;
+  if (step1 < 80 || step1 > 128 || step2 < 26 || step2 > 50) return fail('range');
+  const s = 188;
+  const A = pt(0, 0);
+  const B = pt(s, 0);
+  const D = fromHeading(-v * RAD, s);
+  const C = pt(B.x + D.x, B.y + D.y);
+  const E = pt(C.x + s, C.y);
+  const opt1 = pack(step1, [
+    { v: v, tip: 'Opposite angles of a rhombus are equal, so Angle BCD = ' + v + DEGS + '. DCE is a straight line, so Angle BCE = 180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: step2, tip: 'That is a base angle of the isosceles triangle. First find the vertex angle on the straight line: 180' + DEGS + ' ' + MINUS + ' ' + v + DEGS + '.' },
+    { v: 180 - step1, tip: TIP_PARA },
+    { v: v - step2, tip: 'Use the straight line at C. Angle BCE = 180' + DEGS + ' ' + MINUS + ' the rhombus angle at C.' }
+  ]);
+  const opt2 = pack(step2, [
+    { v: v, tip: 'That is the rhombus angle. Triangle BCE is isosceles with vertex angle ' + step1 + DEGS + ', so each base angle is ' + step2 + DEGS + '.' },
+    { v: step1, tip: 'That is the vertex angle of triangle BCE. The two base angles split the rest equally: (180' + DEGS + ' ' + MINUS + ' ' + step1 + DEGS + ') \u00f7 2 = ' + step2 + DEGS + '.' },
+    { v: Math.round(step1 / 2), tip: 'BC = CE, so the equal angles are the base angles, not half of the vertex. Each base angle is ' + step2 + DEGS + '.' },
+    { v: 60, tip: 'This is not an equilateral triangle. The base angles are (180' + DEGS + ' ' + MINUS + ' ' + step1 + DEGS + ') \u00f7 2.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'rhombiso',
+    sig: 'rhombiso|' + v,
+    lead: 'ABCD is a rhombus. Angle DAB = ' + v + DEGS + '. DCE is a straight line and BC = CE.',
+    pts: { A: A, B: B, C: C, D: D, E: E },
+    edges: [
+      edge('A', 'B', 1, 1), edge('B', 'C', 1, 2), edge('C', 'D', 1, 1), edge('D', 'A', 1, 2),
+      edge('C', 'E', 1, 0), edge('B', 'E', 0, 0)
+    ],
+    rights: [],
+    highlight: ['B', 'C'],
+    guard: { at: 'E', face: 'C', target: 'B' },
+    turn: step2,
+    checks: [chk('A', 'D', 'B', v), chk('C', 'B', 'D', v), chk('C', 'B', 'E', step1), chk('E', 'B', 'C', step2), chk('B', 'C', 'E', step2)],
+    straights: [['D', 'C', 'E']],
+    equals: [[['A', 'B'], ['B', 'C'], ['C', 'D'], ['D', 'A'], ['C', 'E']]],
+    parallels: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle BCE', correct: step1, options: opt1, lock: 'Intermediate locked: Angle BCE = ' + step1 + DEGS + '. BC = CE, so the base angles are (180' + DEGS + ' ' + MINUS + ' ' + step1 + DEGS + ') \u00f7 2 = ' + step2 + DEGS + '.' },
+      { name: 'Angle BEC', correct: step2, options: opt2, lock: '' }
+    ]
+  };
+}
+
+function tryParaIso() {
+  const p = even(72, 110);
+  if (p === 90) return fail('90');
+  const step1 = 180 - p;
+  const step2 = step1 / 2;
+  if (step2 < 35 || step2 > 54 || step1 < 70 || step1 > 108) return fail('range');
+  const leg = 156;
+  const base = 230;
+  const B = pt(0, 0);
+  const C = pt(base, 0);
+  const A = add(B, fromHeading(-p * RAD, leg));
+  const D = pt(C.x + (A.x - B.x), C.y + (A.y - B.y));
+  const E = add(C, fromHeading(-p * RAD + Math.PI, base));
+  const opt1 = pack(step1, [
+    { v: p, tip: TIP_PARA + ' Angle BCD = 180' + DEGS + ' ' + MINUS + ' ' + p + DEGS + ' = ' + step1 + DEGS + '.' },
+    { v: step2, tip: 'That is the final base angle. First find the adjacent parallelogram angle: 180' + DEGS + ' ' + MINUS + ' ' + p + DEGS + '.' },
+    { v: 180 - step1, tip: 'Adjacent angles add to 180' + DEGS + '. Angle BCD is not equal to Angle ABC.' },
+    { v: p - step2, tip: TIP_PARA }
+  ]);
+  const opt2 = pack(step2, [
+    { v: p, tip: 'That is the vertex angle of triangle BCE. The base angles are equal: (180' + DEGS + ' ' + MINUS + ' ' + p + DEGS + ') \u00f7 2 = ' + step2 + DEGS + '.' },
+    { v: step1, tip: 'That is Angle BCD. On the straight line, Angle BCE = ' + p + DEGS + ', and each base angle is half of (180' + DEGS + ' ' + MINUS + ' ' + p + DEGS + ').' },
+    { v: Math.round(p / 2), tip: 'Forgetting the isosceles split is the miss. BC = CE, so the base angles are equal: ' + step2 + DEGS + ' and ' + step2 + DEGS + '.' },
+    { v: 180 - p, tip: 'You already used that parallelogram angle. The turn is the base angle ' + step2 + DEGS + '.' }
+  ]);
+  if (!opt1 || !opt2) return fail('pack');
+  return {
+    id: 'paraiso',
+    sig: 'paraiso|' + p,
+    lead: 'ABCD is a parallelogram. Angle ABC = ' + p + DEGS + '. DCE is a straight line and BC = CE.',
+    pts: { A: A, B: B, C: C, D: D, E: E },
+    edges: [
+      edge('A', 'B', 1, 1), edge('D', 'C', 1, 1),
+      edge('A', 'D', 2, 2), edge('B', 'C', 2, 2),
+      edge('C', 'E', 2, 0), edge('B', 'E', 0, 0)
+    ],
+    rights: [],
+    highlight: ['C', 'D'],
+    guard: { at: 'E', face: 'C', target: 'B' },
+    turn: step2,
+    checks: [chk('B', 'A', 'C', p), chk('C', 'B', 'D', step1), chk('C', 'B', 'E', p), chk('E', 'B', 'C', step2), chk('B', 'C', 'E', step2)],
+    straights: [['D', 'C', 'E']],
+    equals: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C'], ['C', 'E']]],
+    parallels: [[['A', 'B'], ['D', 'C']], [['A', 'D'], ['B', 'C']]],
+    steps: [
+      { name: 'Angle BCD', correct: step1, options: opt1, lock: 'Intermediate locked: Angle BCD = ' + step1 + DEGS + '. Angle BCE = ' + p + DEGS + ', so each base angle is ' + step2 + DEGS + '.' },
+      { name: 'Angle BEC', correct: step2, options: opt2, lock: '' }
+    ]
+  };
+}
+
+const FAMILIES = [
+  { id: 'sq', tiers: ['P4'], make: function () { return trySplit('square'); } },
+  { id: 'rect', tiers: ['P4'], make: function () { return trySplit('rect'); } },
+  { id: 'line', tiers: ['P4'], make: tryLine },
+  { id: 'point', tiers: ['P4'], make: tryPoint },
+  { id: 'equil', tiers: ['P5'], make: tryEquil },
+  { id: 'iso', tiers: ['P5'], make: tryIso },
+  { id: 'vert', tiers: ['P5'], make: tryVert },
+  { id: 'right', tiers: ['P5'], make: tryRight },
+  { id: 'tri', tiers: ['P5'], make: tryTri },
+  { id: 'para', tiers: ['P6', 'EXTREME'], make: tryPara },
+  { id: 'rhomb', tiers: ['P6', 'EXTREME'], make: tryRhomb },
+  { id: 'trap', tiers: ['P6', 'EXTREME'], make: tryTrap },
+  { id: 'rhombiso', tiers: ['P6', 'EXTREME'], make: tryRhombIso },
+  { id: 'paraiso', tiers: ['P6', 'EXTREME'], make: tryParaIso }
+];
+
+function sameDist(pts, pairs) {
+  const d0 = dist(pts[pairs[0][0]], pts[pairs[0][1]]);
+  if (d0 < 8) return false;
+  for (let i = 1; i < pairs.length; i++) {
+    const d = dist(pts[pairs[i][0]], pts[pairs[i][1]]);
+    if (Math.abs(d - d0) > Math.max(1.6, d0 * 0.025)) return false;
+  }
+  return true;
+}
+function isParallel(pts, a, b, c, d) {
+  const u = sub(pts[b], pts[a]);
+  const v = sub(pts[d], pts[c]);
+  const cross = Math.abs(u.x * v.y - u.y * v.x);
+  const den = len(u) * len(v);
+  return den > 1 && cross / den < 0.025;
+}
+function validate(raw) {
+  const pts = raw.pts;
+  const keys = Object.keys(pts);
+  for (let i = 0; i < keys.length; i++) {
+    if (!isFinite(pts[keys[i]].x) || !isFinite(pts[keys[i]].y)) return 'nan';
+  }
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      if (dist(pts[keys[i]], pts[keys[j]]) < 26) return 'sep';
+    }
+  }
+  if (raw.checks) {
+    for (let i = 0; i < raw.checks.length; i++) {
+      const c = raw.checks[i];
+      const got = measure(pts, c.at, c.a, c.b);
+      if (Math.abs(got - c.expect) > 1.45) return 'ang ' + c.at + c.a + c.b + ' ' + got.toFixed(1) + '!=' + c.expect;
+    }
+  }
+  if (raw.straights) {
+    for (let i = 0; i < raw.straights.length; i++) {
+      const s = raw.straights[i];
+      if (Math.abs(measure(pts, s[1], s[0], s[2]) - 180) > 1.7) return 'straight';
+    }
+  }
+  if (raw.equals) {
+    for (let g = 0; g < raw.equals.length; g++) {
+      if (!sameDist(pts, raw.equals[g])) return 'equal';
+    }
+  }
+  if (raw.parallels) {
+    for (let g = 0; g < raw.parallels.length; g++) {
+      const pair = raw.parallels[g];
+      if (!isParallel(pts, pair[0][0], pair[0][1], pair[1][0], pair[1][1])) return 'parallel';
+    }
+  }
+  if (raw.skews) {
+    for (let g = 0; g < raw.skews.length; g++) {
+      const pair = raw.skews[g];
+      if (isParallel(pts, pair[0][0], pair[0][1], pair[1][0], pair[1][1])) return 'skew';
+    }
+  }
+  if (!raw.steps || raw.steps.length !== 2 || raw.steps[1].correct !== raw.turn) return 'steps';
+  if (raw.steps[0].correct === raw.steps[1].correct) return 'samestep';
+  for (let s = 0; s < 2; s++) {
+    const step = raw.steps[s];
+    if (!step.options || step.options.length !== 4) return 'opts';
+    const seen = {};
+    let found = false;
+    for (let i = 0; i < 4; i++) {
+      const v = step.options[i].v;
+      if (seen[v] || v < 12 || v > 165) return 'optv';
+      seen[v] = true;
+      if (v === step.correct) found = true;
+    }
+    if (!found || step.correct < 12 || step.correct > 165) return 'missing';
+  }
+  return '';
+}
+function transformPoints(pts, rot, mirror) {
+  const keys = Object.keys(pts);
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < keys.length; i++) { cx += pts[keys[i]].x; cy += pts[keys[i]].y; }
+  cx /= keys.length;
+  cy /= keys.length;
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  for (let i = 0; i < keys.length; i++) {
+    let x = pts[keys[i]].x - cx;
+    let y = pts[keys[i]].y - cy;
+    if (mirror) x = -x;
+    pts[keys[i]].x = x * c - y * s + cx;
+    pts[keys[i]].y = x * s + y * c + cy;
+  }
+}
+function fitPoints(pts, rect, pad) {
+  const keys = Object.keys(pts);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < keys.length; i++) {
+    const p = pts[keys[i]];
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const bw = Math.max(1, maxX - minX);
+  const bh = Math.max(1, maxY - minY);
+  const s = Math.min((rect.w - pad * 2) / bw, (rect.h - pad * 2) / bh);
+  const ox = rect.x + (rect.w - bw * s) / 2 - minX * s;
+  const oy = rect.y + (rect.h - bh * s) / 2 - minY * s;
+  for (let i = 0; i < keys.length; i++) {
+    pts[keys[i]].x = pts[keys[i]].x * s + ox;
+    pts[keys[i]].y = pts[keys[i]].y * s + oy;
+  }
+}
+function minPixel(pts) {
+  const keys = Object.keys(pts);
+  let m = Infinity;
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) m = Math.min(m, dist(pts[keys[i]], pts[keys[j]]));
+  }
+  return m;
+}
+function realize(raw, ignoreHistory) {
+  if (!raw) return null;
+  const rot = Math.random() * Math.PI * 2;
+  const mirror = Math.random() < 0.5;
+  const sig = raw.sig + '|' + (mirror ? 'm' : 'n') + '|' + (Math.round(rot / (Math.PI / 4)) & 7);
+  if (!ignoreHistory && history.indexOf(sig) >= 0) {
+    debugReject = 'repeat';
+    return null;
+  }
+  transformPoints(raw.pts, rot, mirror);
+  const reason = validate(raw);
+  if (reason) { debugReject = reason; return null; }
+  const g = raw.pts[raw.guard.at];
+  const signed = signedTurn(heading(g, raw.pts[raw.guard.face]), heading(g, raw.pts[raw.guard.target]));
+  if (Math.abs(Math.abs(signed) - raw.turn) > 1.45) {
+    debugReject = 'turn ' + signed.toFixed(2) + ' vs ' + raw.turn;
+    return null;
+  }
+  fitPoints(raw.pts, MAP, 54);
+  if (minPixel(raw.pts) < 30) { debugReject = 'crowd'; return null; }
+  const g2 = raw.pts[raw.guard.at];
+  const signed2 = signedTurn(heading(g2, raw.pts[raw.guard.face]), heading(g2, raw.pts[raw.guard.target]));
+  if (Math.abs(Math.abs(signed2) - raw.turn) > 1.6) { debugReject = 'turnfit'; return null; }
+  raw.turnSigned = signed2;
+  raw.dirWord = signed2 >= 0 ? 'CLOCKWISE' : 'ANTI-CLOCKWISE';
+  raw.dirIcon = signed2 >= 0 ? '\u21bb' : '\u21ba';
+  raw.intel = raw.lead + ' Bodyguard at ' + raw.guard.at + ' faces wall ' + raw.guard.at + raw.guard.face + ' \u2014 turn ' + raw.dirWord + ' ' + raw.dirIcon + ' to aim at the Assassin on ray ' + raw.guard.at + raw.guard.target + '!';
+  raw.layoutSig = sig;
+  if (!ignoreHistory) {
+    history.push(sig);
+    if (history.length > 8) history.shift();
+  }
+  return raw;
+}
+function poolFor(tier) {
+  const pool = [];
+  for (let i = 0; i < FAMILIES.length; i++) {
+    if (FAMILIES[i].tiers.indexOf(tier) >= 0) pool.push(FAMILIES[i]);
+  }
+  return pool;
+}
+function generatePuzzle(tier, ignoreHistory) {
+  const pool = poolFor(tier);
+  const tries = ignoreHistory ? 80 : 50;
+  for (let n = 0; n < tries; n++) {
+    const fam = pool[rnd(0, pool.length - 1)];
+    debugReject = '';
+    const raw = fam.make();
+    const done = raw ? realize(raw, !!ignoreHistory) : null;
+    if (done) return done;
+  }
+  return null;
+}
+
+function announce(text) {
+  if (!live) return;
+  live.textContent = '';
+  window.setTimeout(function () { if (live) live.textContent = text; }, 30);
+}
+function activeAgent() {
+  if (game.mode !== 'coop') return 0;
+  return ((game.round - 1) + game.step) % game.players;
+}
+function livingCount() {
+  let n = 0;
+  for (let i = 0; i < game.players; i++) if (game.livesP[i] > 0) n += 1;
+  return n;
+}
+function speedBonus() {
+  const windowSec = game.tier === 'EXTREME' ? 22 : 18;
+  return Math.max(0, Math.round((1 - game.roundTime / windowSec) * 250));
+}
+function comboMult(streak) {
+  if (game.tier !== 'EXTREME') return 1;
+  if (streak >= 4) return 3;
+  if (streak >= 2) return 2;
+  return 1;
+}
+function setPhase(name) {
+  game.phase = name;
+  game.phaseAge = 0;
+}
+function floatText(str, x, y, color) {
+  game.floats.push({ str: str, x: x, y: y, color: color, age: 0, life: 1.35 });
+}
+function burst(x, y, color, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = speed * (0.4 + Math.random());
+    game.particles.push({
+      x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+      life: 0.35 + Math.random() * 0.4, age: 0, color: color, r: 1.5 + Math.random() * 2.2
+    });
+  }
+}
+function guardPoint() { return game.puzzle.pts[game.puzzle.guard.at]; }
+function facePoint() { return game.puzzle.pts[game.puzzle.guard.face]; }
+function targetPoint() { return game.puzzle.pts[game.puzzle.guard.target]; }
+function insideMap(p, pad) {
+  return p.x >= MAP.x + pad && p.x <= MAP.x + MAP.w - pad && p.y >= MAP.y + pad && p.y <= MAP.y + MAP.h - pad;
+}
+function assassinPoint() {
+  const g = guardPoint();
+  const t = targetPoint();
+  const h = heading(g, t);
+  let dist = 48;
+  let pos = add(t, fromHeading(h, dist));
+  let guard = 0;
+  while (guard < 8 && !insideMap(pos, 20)) {
+    dist -= 12;
+    pos = add(t, fromHeading(h, dist));
+    guard += 1;
+  }
+  if (!insideMap(pos, 16)) pos = add(g, mul(sub(t, g), 0.7));
+  if (game.dash > 0) pos = add(pos, fromHeading(h + Math.PI / 2, 78 * game.dash));
+  return pos;
+}
+
+function startMission() {
+  game.mode = game.players === 1 ? 'solo' : (game.mode === 'solo' ? 'coop' : game.mode);
+  game.screen = 'play';
+  game.round = 1;
+  game.score = 0;
+  game.scores = [0, 0, 0];
+  game.stars = [0, 0, 0];
+  game.lives = 3;
+  game.livesP = [3, 3, 3];
+  game.streak = 0;
+  game.cleared = 0;
+  game.wrongs = 0;
+  game.attempts = 0;
+  game.paused = false;
+  game.endIn = 0;
+  game.bestFlash = false;
+  game.particles = [];
+  game.floats = [];
+  game.stun = [0, 0, 0];
+  beginRound();
+}
+function beginRound() {
+  let puzzle = generatePuzzle(game.tier, false);
+  if (!puzzle) puzzle = generatePuzzle(game.tier, true);
+  game.puzzle = puzzle;
+  game.step = 0;
+  game.phase = 'ask';
+  game.phaseAge = 0;
+  game.roundTime = 0;
+  game.clean = true;
+  game.showHighlight = false;
+  game.mark = null;
+  game.dash = 0;
+  game.tip = puzzle ? '' : 'Sensors are recalibrating. Deploy again.';
+  game.tipBad = !puzzle;
+  game.sel = [0, 0, 0];
+  game.endIn = 0;
+  if (puzzle) {
+    game.aim = heading(puzzle.pts[puzzle.guard.at], puzzle.pts[puzzle.guard.face]);
+    sfx.ping();
+    announce('Round ' + game.round + '. ' + puzzle.intel);
+  }
+}
+function endGame() {
+  if (game.screen === 'over') return;
+  game.screen = 'over';
+  game.paused = false;
+  game.endIn = 0;
+  const score = game.mode === 'duel'
+    ? Math.max(game.scores[0], game.scores[1], game.scores[2])
+    : game.score;
+  const key = bestKey();
+  game.bestFlash = score > (store.best[key] || 0);
+  if (game.bestFlash) {
+    store.best[key] = score;
+    saveStore();
+  }
+  game.winner = -1;
+  if (game.mode === 'duel') {
+    let win = 0;
+    for (let i = 1; i < game.players; i++) {
+      const betterStars = game.stars[i] > game.stars[win];
+      const tieScore = game.stars[i] === game.stars[win] && game.scores[i] > game.scores[win];
+      if (betterStars || tieScore) win = i;
+    }
+    game.winner = win;
+  }
+  if (game.cleared > 0) sfx.fanfare();
+  else sfx.buzz();
+  announce(game.mode === 'duel' ? (PLAYER_NAME[game.winner] + ' holds the overwatch.') : ('Mission ended. Score ' + game.score + '.'));
+}
+
+function choose(player, index) {
+  if (game.screen !== 'play' || game.paused || game.phase !== 'ask' || !game.puzzle) return;
+  if (acted[player]) return;
+  if (game.mode === 'coop' && player !== activeAgent()) return;
+  if (game.mode === 'solo' && player !== 0) return;
+  if (game.mode === 'duel' && game.livesP[player] <= 0) return;
+  if (game.stun[player] > 0) return;
+  const step = game.puzzle.steps[game.step];
+  if (!step || index < 0 || index >= step.options.length) return;
+  acted[player] = true;
+  const opt = step.options[index];
+  game.attempts += 1;
+  if (opt.v === step.correct) onRight(player, index);
+  else onWrong(player, opt, index);
+}
+function onRight(player, index) {
+  game.mark = { step: game.step, index: index, kind: 'good' };
+  game.actor = player;
+  game.shake = 0;
+  if (game.step === 0) {
+    game.showHighlight = true;
+    game.tip = game.puzzle.steps[0].lock;
+    game.tipBad = false;
+    sfx.snap();
+    setPhase('celebrate1');
+    announce(game.tip);
+    return;
+  }
+  game.sweepFrom = heading(guardPoint(), facePoint());
+  game.sweepSigned = game.puzzle.turnSigned * RAD;
+  game.sweepColor = game.mode === 'duel' ? PLAYER_COL[player] : COL.cyan;
+  game.tip = 'Turn locked: ' + game.puzzle.steps[1].name + ' = ' + game.puzzle.turn + DEGS + ' ' + game.puzzle.dirWord + '.';
+  game.tipBad = false;
+  sfx.servo();
+  setPhase('sweep');
+}
+function onWrong(player, opt, index) {
+  game.wrongs += 1;
+  game.clean = false;
+  game.streak = 0;
+  game.tip = opt.tip;
+  game.tipBad = true;
+  game.mark = { step: game.step, index: index, kind: 'bad' };
+  game.shake = 1;
+  game.flash = 0.45;
+  game.flashColor = '#ff3355';
+  game.actor = player;
+  announce(opt.tip);
+  if (game.mode === 'duel') {
+    game.livesP[player] = Math.max(0, game.livesP[player] - 1);
+    game.stun[player] = 1.5;
+    sfx.buzz();
+    sfx.crack();
+    const assassin = assassinPoint();
+    burst(assassin.x, assassin.y, '#ff5d73', 16, 140);
+    burst(guardPoint().x, guardPoint().y, '#ffd0d8', 10, 90);
+    if (livingCount() <= 1) game.endIn = 1.15;
+    return;
+  }
+  game.lives = Math.max(0, game.lives - 1);
+  const sign = game.puzzle.turnSigned >= 0 ? 1 : -1;
+  game.sweepFrom = heading(guardPoint(), facePoint());
+  game.sweepSigned = sign * opt.v * RAD;
+  game.sweepColor = COL.bad;
+  game.failMode = game.lives <= 0 ? 'over' : 'retry';
+  sfx.buzz();
+  sfx.crack();
+  setPhase('miss');
+}
+function onTimeout() {
+  if (game.phase !== 'ask' || !game.puzzle) return;
+  game.clean = false;
+  game.streak = 0;
+  game.wrongs += 1;
+  const step = game.puzzle.steps[game.step];
+  game.tip = 'Time expired. ' + step.name + ' = ' + step.correct + DEGS + '. The assassin slipped away.';
+  game.tipBad = true;
+  game.flash = 0.4;
+  game.flashColor = '#ff3355';
+  game.shake = 0.7;
+  sfx.buzz();
+  if (game.mode === 'duel') {
+    game.failMode = 'next';
+    setPhase('escape');
+    return;
+  }
+  game.lives = Math.max(0, game.lives - 1);
+  sfx.crack();
+  game.failMode = game.lives <= 0 ? 'over' : 'next';
+  setPhase('escape');
+}
+function award(player) {
+  if (game.clean) game.streak += 1;
+  else game.streak = 0;
+  const mult = comboMult(game.streak);
+  const bonus = speedBonus();
+  const gain = (400 + bonus) * mult;
+  if (game.mode === 'duel') {
+    game.scores[player] += gain;
+    game.stars[player] += 1;
+  } else game.score += gain;
+  game.cleared += 1;
+  let label = '+' + gain;
+  if (bonus) label += '   SPEED +' + bonus;
+  if (mult > 1) label += '   x' + mult;
+  floatText(label, VW / 2, 230, '#b8ffe0');
+  sfx.confirm();
+}
+function finishShot() {
+  award(game.actor);
+  game.round += 1;
+  beginRound();
+}
+function finishMiss() {
+  if (game.failMode === 'over' || (game.mode !== 'duel' && game.lives <= 0)) {
+    endGame();
+    return;
+  }
+  if (game.failMode === 'next') {
+    game.round += 1;
+    beginRound();
+    return;
+  }
+  game.mark = null;
+  game.dash = 0;
+  game.aim = heading(guardPoint(), facePoint());
+  setPhase('ask');
+}
+
+function modeEnabled(id) {
+  if (id === 'solo') return game.players === 1;
+  if (id === 'coop' || id === 'duel') return game.players > 1;
+  return true;
+}
+function activateTitle(id) {
+  if (id === 'p1') { game.players = 1; game.mode = 'solo'; }
+  if (id === 'p2') { game.players = 2; if (game.mode === 'solo') game.mode = 'coop'; }
+  if (id === 'p3') { game.players = 3; if (game.mode === 'solo') game.mode = 'coop'; }
+  if (id === 'P4' || id === 'P5' || id === 'P6' || id === 'EXTREME') game.tier = id;
+  if (id === 'solo' && modeEnabled('solo')) game.mode = 'solo';
+  if (id === 'coop' && modeEnabled('coop')) game.mode = 'coop';
+  if (id === 'duel' && modeEnabled('duel')) game.mode = 'duel';
+  if (id === 'go') { sfx.unlock(); startMission(); return; }
+  sfx.tick();
+}
+function moveFocus(dx, dy) {
+  const rows = [
+    ['p1', 'p2', 'p3'],
+    ['P4', 'P5', 'P6', 'EXTREME'],
+    ['solo', 'coop', 'duel'],
+    ['go']
+  ];
+  let row = game.focusRow;
+  let col = game.focusCol;
+  row = clamp(row + dy, 0, rows.length - 1);
+  const cols = rows[row];
+  col = clamp(col, 0, cols.length - 1);
+  col = (col + dx + cols.length) % cols.length;
+  let guard = 0;
+  while (!modeEnabled(cols[col]) && guard < cols.length) {
+    col = (col + (dx || 1) + cols.length) % cols.length;
+    guard += 1;
+  }
+  game.focusRow = row;
+  game.focusCol = col;
+}
+function focusedId() {
+  const rows = [
+    ['p1', 'p2', 'p3'],
+    ['P4', 'P5', 'P6', 'EXTREME'],
+    ['solo', 'coop', 'duel'],
+    ['go']
+  ];
+  const cols = rows[game.focusRow];
+  return cols[clamp(game.focusCol, 0, cols.length - 1)];
+}
+
+function handlePlayInput() {
+  if (game.paused || game.phase !== 'ask' || !game.puzzle) return;
+  if (clickEdge) {
+    const mute = muteRect();
+    if (hit(mute, clickEdge)) toggleMute();
+    else {
+      const idx = cardIndexAt(clickEdge.x, clickEdge.y);
+      if (idx >= 0) {
+        const who = game.mode === 'duel' ? 0 : (game.mode === 'coop' ? activeAgent() : 0);
+        choose(who, idx);
+      }
+    }
+  }
+  const count = game.mode === 'solo' ? 1 : game.players;
+  for (let p = 0; p < count; p++) {
+    if (game.mode === 'coop' && p !== activeAgent()) continue;
+    if (game.stun[p] > 0) continue;
+    if (game.mode === 'duel' && game.livesP[p] <= 0) continue;
+    for (let k = 0; k < 4; k++) {
+      if (keyEdge.has(KEY_CODE[p][k])) choose(p, k);
+    }
+    const left = (p === 0 && keyEdge.has('ArrowLeft')) || (padEdge[p] && padEdge[p].left);
+    const right = (p === 0 && keyEdge.has('ArrowRight')) || (padEdge[p] && padEdge[p].right);
+    const fire = (p === 0 && (keyEdge.has('Space') || keyEdge.has('Enter'))) || (padEdge[p] && padEdge[p].A);
+    if (left) { game.sel[p] = (game.sel[p] + 3) % 4; if (p === 0) sfx.tick(); }
+    if (right) { game.sel[p] = (game.sel[p] + 1) % 4; if (p === 0) sfx.tick(); }
+    if (fire) choose(p, game.sel[p]);
+  }
+}
+function handleTitleInput() {
+  if (clickEdge) {
+    if (hit(muteRect(), clickEdge)) toggleMute();
+    for (let i = 0; i < game.ui.length; i++) {
+      const item = game.ui[i];
+      if (item.enabled && hit(item, clickEdge)) {
+        game.focusRow = item.row;
+        game.focusCol = item.col;
+        activateTitle(item.id);
+        break;
+      }
+    }
+  }
+  if (keyEdge.has('ArrowLeft') || (padEdge[0] && padEdge[0].left)) moveFocus(-1, 0);
+  if (keyEdge.has('ArrowRight') || (padEdge[0] && padEdge[0].right)) moveFocus(1, 0);
+  if (keyEdge.has('ArrowUp') || (padEdge[0] && padEdge[0].up)) moveFocus(0, -1);
+  if (keyEdge.has('ArrowDown') || (padEdge[0] && padEdge[0].down)) moveFocus(0, 1);
+  if (keyEdge.has('Enter') || keyEdge.has('Space') || (padEdge[0] && padEdge[0].A)) activateTitle(focusedId());
+}
+function handleOverInput() {
+  if (clickEdge) {
+    if (hit(muteRect(), clickEdge)) toggleMute();
+    for (let i = 0; i < game.ui.length; i++) {
+      if (hit(game.ui[i], clickEdge)) {
+        if (game.ui[i].id === 'again') startMission();
+        if (game.ui[i].id === 'title') game.screen = 'title';
+      }
+    }
+  }
+  if (keyEdge.has('Enter') || (padEdge[0] && padEdge[0].A)) startMission();
+  if (keyEdge.has('Escape')) game.screen = 'title';
+}
+
+function update(dt) {
+  game.time += dt;
+  audio.tickMusic();
+  if (game.hidden) return;
+  if (game.screen === 'title') {
+    handleTitleInput();
+    return;
+  }
+  if (game.screen === 'over') {
+    handleOverInput();
+    updateFx(dt);
+    return;
+  }
+  for (let i = 0; i < 3; i++) game.stun[i] = Math.max(0, game.stun[i] - dt);
+  if (keyEdge.has('Escape')) game.paused = !game.paused;
+  if (game.paused) return;
+  game.phaseAge += dt;
+  if (game.phase === 'ask') game.roundTime += dt;
+  game.shake = Math.max(0, game.shake - dt * 2.4);
+  game.flash = Math.max(0, game.flash - dt);
+  if (game.tier === 'EXTREME' && game.phase === 'ask' && game.puzzle && game.roundTime >= 22) onTimeout();
+  if (game.endIn > 0) {
+    game.endIn -= dt;
+    if (game.endIn <= 0) endGame();
+  }
+  handlePlayInput();
+  if (game.phase === 'celebrate1' && game.phaseAge > 0.48) {
+    game.step = 1;
+    game.mark = null;
+    game.sel = [0, 0, 0];
+    setPhase('ask');
+  } else if (game.phase === 'sweep') {
+    const u = clamp(game.phaseAge / 0.68, 0, 1);
+    const e = u * u * (3 - 2 * u);
+    game.aim = game.sweepFrom + game.sweepSigned * e;
+    if (game.phaseAge > 0.68) { sfx.pew(); setPhase('shot'); }
+  } else if (game.phase === 'shot') {
+    game.aim = game.sweepFrom + game.sweepSigned;
+    if (game.phaseAge > 0.52) finishShot();
+  } else if (game.phase === 'miss') {
+    const u = clamp(game.phaseAge / 0.48, 0, 1);
+    const e = u * u * (3 - 2 * u);
+    game.aim = game.sweepFrom + game.sweepSigned * e;
+    game.dash = clamp((game.phaseAge - 0.32) / 0.4, 0, 1);
+    if (game.phaseAge > 1.08) finishMiss();
+  } else if (game.phase === 'escape') {
+    game.dash = clamp(game.phaseAge / 0.45, 0, 1);
+    if (game.phaseAge > 1.12) finishMiss();
+  } else if (game.phase === 'ask' && game.puzzle) {
+    game.aim = heading(guardPoint(), facePoint());
+    game.dash = 0;
+  }
+  updateFx(dt);
+}
+function updateFx(dt) {
+  for (let i = game.particles.length - 1; i >= 0; i--) {
+    const p = game.particles[i];
+    p.age += dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.98;
+    p.vy *= 0.98;
+    if (p.age >= p.life) game.particles.splice(i, 1);
+  }
+  for (let i = game.floats.length - 1; i >= 0; i--) {
+    const f = game.floats[i];
+    f.age += dt;
+    f.y -= 28 * dt;
+    if (f.age >= f.life) game.floats.splice(i, 1);
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  view.dpr = dpr;
+  view.scale = Math.min(window.innerWidth / VW, window.innerHeight / VH);
+  view.ox = (window.innerWidth - VW * view.scale) / 2;
+  view.oy = (window.innerHeight - VH * view.scale) / 2;
+  canvas.width = Math.max(1, Math.round(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.round(window.innerHeight * dpr));
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function toWorld(cx, cy) {
+  return { x: (cx - view.ox) / view.scale, y: (cy - view.oy) / view.scale };
+}
+function hit(r, p) {
+  return !!r && !!p && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+function muteRect() { return { x: 1188, y: 9, w: 76, h: 32 }; }
+function cardRect(i) { return { x: CARD_X0 + i * (CARD_W + CARD_GAP), y: CARD_Y, w: CARD_W, h: CARD_H }; }
+function cardIndexAt(x, y) {
+  for (let i = 0; i < 4; i++) if (hit(cardRect(i), { x: x, y: y })) return i;
+  return -1;
+}
+
+function roundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+function text(str, x, y, size, color, align, weight) {
+  ctx.fillStyle = color;
+  ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(str, x, y);
+}
+function wrap(str, width, size, weight) {
+  ctx.font = (weight || 700) + ' ' + size + 'px ' + FONT;
+  const words = String(str).split(' ');
+  const lines = [];
+  let line = '';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > width && line) {
+      lines.push(line);
+      line = words[i];
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+function drawHeart(x, y, filled, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(0, 3);
+  ctx.bezierCurveTo(-1, 1, -8, 0, -8, -4);
+  ctx.bezierCurveTo(-8, -8, -4, -9, 0, -5.5);
+  ctx.bezierCurveTo(4, -9, 8, -8, 8, -4);
+  ctx.bezierCurveTo(8, 0, 1, 1, 0, 3);
+  ctx.fillStyle = filled ? color : 'transparent';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+function drawHearts(x, y, n, max, color) {
+  for (let i = 0; i < max; i++) drawHeart(x + i * 18, y, i < n, i < n ? color : 'rgba(147,164,184,0.45)');
+}
+
+function draw() {
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, canvas.width / view.dpr, canvas.height / view.dpr);
+  ctx.translate(view.ox, view.oy);
+  ctx.scale(view.scale, view.scale);
+  ctx.save();
+  if (game.shake > 0) {
+    const m = game.shake * 8;
+    ctx.translate((Math.random() - 0.5) * m, (Math.random() - 0.5) * m);
+  }
+  if (game.screen === 'title') drawTitle();
+  else if (game.screen === 'over') drawOver();
+  else drawPlay();
+  if (game.flash > 0 && game.screen === 'play') {
+    ctx.fillStyle = game.flashColor;
+    ctx.globalAlpha = Math.min(0.28, game.flash * 0.35);
+    ctx.fillRect(0, 0, VW, VH);
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+function drawPlay() {
+  drawHUD();
+  drawIntel();
+  drawMap();
+  drawDeck();
+  drawFloats();
+  if (game.paused) drawPause();
+}
+function drawHUD() {
+  ctx.fillStyle = 'rgba(6, 10, 18, 0.96)';
+  ctx.fillRect(0, 0, VW, 50);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.35)';
+  ctx.fillRect(0, 49, VW, 1);
+  text('VANGUARD', 16, 25, 15, COL.ink, 'left', 800);
+  text('OVERWATCH', 108, 25, 15, COL.cyan, 'left', 800);
+  const modeName = game.mode === 'coop' ? 'TEAM CO-OP' : (game.mode === 'duel' ? 'DUEL' : 'SOLO');
+  pill(236, 10, 118, 30, modeName, COL.ink, 'rgba(62,224,255,0.12)');
+  const tier = TIER_META[game.tier];
+  pill(362, 10, tier.badge === 'EXTREME' ? 108 : 64, 30, tier.badge, '#071018', COL.amber);
+  text('R' + game.round, 486, 25, 16, COL.ink, 'left', 800);
+  if (game.mode === 'duel') drawDuelStats();
+  else drawTeamStats();
+  drawTimer();
+  drawMute();
+}
+function pill(x, y, w, h, label, color, fill) {
+  roundRect(x, y, w, h, 8);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62,224,255,0.35)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  text(label, x + w / 2, y + h / 2, 12, color, 'center', 800);
+}
+function drawTeamStats() {
+  const label = game.mode === 'coop' ? 'TEAM' : 'SCORE';
+  text(label, 548, 25, 12, COL.dim, 'left', 800);
+  text(String(game.score), 600, 25, 18, COL.amber, 'left', 800);
+  if (game.tier === 'EXTREME') {
+    const now = comboMult(game.streak);
+    const next = comboMult(game.streak + 1);
+    text(now > 1 ? ('x' + now) : ('NEXT x' + next), 692, 25, 13, COL.cyan, 'left', 800);
+  }
+  text(game.mode === 'coop' ? 'TEAM LIVES' : 'LIVES', 790, 25, 12, COL.dim, 'left', 800);
+  drawHearts(900, 25, game.lives, 3, COL.bad);
+}
+function drawDuelStats() {
+  let x = 548;
+  for (let i = 0; i < game.players; i++) {
+    const alive = game.livesP[i] > 0;
+    ctx.globalAlpha = alive ? 1 : 0.4;
+    text('P' + (i + 1), x, 16, 11, PLAYER_COL[i], 'left', 800);
+    text('\u2605' + game.stars[i], x + 26, 16, 13, COL.amber, 'left', 800);
+    text(String(game.scores[i]), x + 58, 16, 12, COL.ink, 'left', 800);
+    drawHearts(x, 34, game.livesP[i], 3, PLAYER_COL[i]);
+    if (game.stun[i] > 0) text('JAM', x + 62, 34, 10, COL.bad, 'left', 800);
+    if (!alive) text('OUT', x + 62, 34, 10, COL.dim, 'left', 800);
+    ctx.globalAlpha = 1;
+    x += 168;
+  }
+}
+function drawTimer() {
+  let label = 'TIME';
+  let value = formatTime(game.roundTime);
+  let color = COL.ink;
+  if (game.tier === 'EXTREME') {
+    const left = Math.max(0, 22 - game.roundTime);
+    label = 'CLOCK';
+    value = left.toFixed(1);
+    color = left < 6 ? COL.bad : COL.amber;
+  }
+  text(label, 1088, 16, 10, COL.dim, 'left', 800);
+  text(value, 1088, 32, 16, color, 'left', 800);
+}
+function formatTime(t) {
+  const s = Math.floor(t);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + ':' + (r < 10 ? '0' : '') + r;
+}
+function drawMute() {
+  const r = muteRect();
+  const hot = pointer.inside && hit(r, pointer);
+  roundRect(r.x, r.y, r.w, r.h, 8);
+  ctx.fillStyle = hot ? 'rgba(62,224,255,0.16)' : 'rgba(255,255,255,0.04)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(62,224,255,0.4)';
+  ctx.stroke();
+  text(audio.muted ? 'UNMUTE' : 'MUTE', r.x + r.w / 2, r.y + r.h / 2, 11, COL.cyan, 'center', 800);
+}
+function drawIntel() {
+  ctx.fillStyle = 'rgba(10, 18, 30, 0.94)';
+  ctx.fillRect(0, 50, VW, 112);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.18)';
+  ctx.fillRect(0, 161, VW, 1);
+  if (!game.puzzle) {
+    text('Acquiring compound...', 24, 106, 18, COL.dim, 'left', 700);
+    return;
+  }
+  const who = game.mode === 'coop' ? PLAYER_NAME[activeAgent()] : (game.mode === 'duel' ? 'ALL AGENTS' : 'SOLO AGENT');
+  const stepName = game.step === 0 ? 'STEP 1  LOCK INTERMEDIATE' : 'STEP 2  SET THE TURN';
+  text(stepName, 22, 68, 12, COL.amber, 'left', 800);
+  text(who, 280, 68, 12, game.mode === 'coop' ? PLAYER_COL[activeAgent()] : COL.cyan, 'left', 800);
+  if (game.mode === 'duel') text('First exact lock takes the shot', 430, 68, 12, COL.dim, 'left', 700);
+  if (game.tier === 'EXTREME') {
+    const now = comboMult(game.streak);
+    const next = comboMult(game.streak + 1);
+    text('COMBO x' + now + (next > now ? '   NEXT x' + next : ''), 980, 68, 12, COL.cyan, 'left', 800);
+  }
+  let size = 16;
+  let lines = wrap(game.puzzle.intel, 1230, size, 700);
+  if (lines.length > 3) { size = 14; lines = wrap(game.puzzle.intel, 1230, size, 700); }
+  if (lines.length > 4) { size = 13; lines = wrap(game.puzzle.intel, 1230, size, 650); }
+  for (let i = 0; i < Math.min(4, lines.length); i++) {
+    text(lines[i], 22, 92 + i * (size + 4), size, COL.ink, 'left', 650);
+  }
+}
+function drawMap() {
+  ctx.save();
+  roundRect(MAP.x, MAP.y, MAP.w, MAP.h, 16);
+  ctx.clip();
+  ctx.fillStyle = '#09131d';
+  ctx.fillRect(MAP.x, MAP.y, MAP.w, MAP.h);
+  ctx.strokeStyle = 'rgba(90, 190, 210, 0.08)';
+  ctx.lineWidth = 1;
+  for (let x = MAP.x; x < MAP.x + MAP.w; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, MAP.y);
+    ctx.lineTo(x, MAP.y + MAP.h);
+    ctx.stroke();
+  }
+  for (let y = MAP.y; y < MAP.y + MAP.h; y += 32) {
+    ctx.beginPath();
+    ctx.moveTo(MAP.x, y);
+    ctx.lineTo(MAP.x + MAP.w, y);
+    ctx.stroke();
+  }
+  const cx = MAP.x + MAP.w * 0.72;
+  const cy = MAP.y + MAP.h * 0.42;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(game.time * 0.45);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, 280, -0.45, 0.18);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.045)';
+  ctx.fill();
+  ctx.restore();
+  if (game.puzzle) {
+    drawCompound();
+    drawActors();
+  }
+  ctx.restore();
+  ctx.save();
+  roundRect(MAP.x, MAP.y, MAP.w, MAP.h, 16);
+  ctx.strokeStyle = 'rgba(62, 224, 255, 0.28)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+function endInset(a, b, inset) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const L = Math.hypot(vx, vy) || 1;
+  if (L < inset * 2 + 6) return [a, b];
+  return [
+    { x: a.x + vx / L * inset, y: a.y + vy / L * inset },
+    { x: b.x - vx / L * inset, y: b.y - vy / L * inset }
+  ];
+}
+function drawCompound() {
+  const pz = game.puzzle;
+  const pts = pz.pts;
+  for (let i = 0; i < pz.edges.length; i++) {
+    const e = pz.edges[i];
+    const seg = endInset(pts[e.a], pts[e.b], 14);
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(120, 230, 255, 0.28)';
+    ctx.lineWidth = 8;
+    ctx.shadowColor = 'rgba(62, 224, 255, 0.35)';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.moveTo(seg[0].x, seg[0].y);
+    ctx.lineTo(seg[1].x, seg[1].y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#d7fbff';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(seg[0].x, seg[0].y);
+    ctx.lineTo(seg[1].x, seg[1].y);
+    ctx.stroke();
+    ctx.restore();
+    if (e.tick) drawTicks(pts[e.a], pts[e.b], e.tick);
+    if (e.par) drawPar(pts[e.a], pts[e.b], e.par);
+  }
+  if (game.showHighlight && pz.highlight) {
+    const a = pts[pz.highlight[0]];
+    const b = pts[pz.highlight[1]];
+    const seg = endInset(a, b, 14);
+    ctx.save();
+    ctx.strokeStyle = COL.cyan;
+    ctx.lineWidth = 6;
+    ctx.shadowColor = COL.cyan;
+    ctx.shadowBlur = 16;
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(seg[0].x, seg[0].y);
+    ctx.lineTo(seg[1].x, seg[1].y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (pz.rights) {
+    for (let i = 0; i < pz.rights.length; i++) {
+      const r = pz.rights[i];
+      drawRight(pts[r.at], pts[r.a], pts[r.b]);
+    }
+  }
+}
+function drawTicks(a, b, count) {
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const d = norm(sub(b, a));
+  const n = { x: -d.y, y: d.x };
+  ctx.save();
+  ctx.strokeStyle = COL.amber;
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < count; i++) {
+    const c = add(mid, mul(d, (i - (count - 1) / 2) * 7));
+    ctx.beginPath();
+    ctx.moveTo(c.x + n.x * -8, c.y + n.y * -8);
+    ctx.lineTo(c.x + n.x * 8, c.y + n.y * 8);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawPar(a, b, count) {
+  const d = norm(sub(b, a));
+  const n = { x: -d.y, y: d.x };
+  const mid = add({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, mul(d, 16));
+  ctx.save();
+  ctx.strokeStyle = '#f2c14e';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let i = 0; i < count; i++) {
+    const c = add(mid, mul(d, (i - (count - 1) / 2) * 11));
+    const tip = add(c, mul(d, 7));
+    const l = add(add(c, mul(d, -3)), mul(n, 5));
+    const r = add(add(c, mul(d, -3)), mul(n, -5));
+    ctx.beginPath();
+    ctx.moveTo(l.x, l.y);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.lineTo(r.x, r.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function norm(v) {
+  const L = len(v) || 1;
+  return { x: v.x / L, y: v.y / L };
+}
+function drawRight(at, a, b) {
+  const ua = norm(sub(a, at));
+  const ub = norm(sub(b, at));
+  const s = 13;
+  const p1 = add(at, mul(ua, s));
+  const p2 = add(at, mul(add(ua, ub), s));
+  const p3 = add(at, mul(ub, s));
+  ctx.save();
+  ctx.strokeStyle = COL.amber;
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.lineTo(p3.x, p3.y);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawActors() {
+  const pz = game.puzzle;
+  const g = guardPoint();
+  const face = facePoint();
+  const color = game.phase === 'sweep' || game.phase === 'shot' ? game.sweepColor : COL.amber;
+  const assassin = assassinPoint();
+  const aim = game.aim;
+  let end;
+  if (game.phase === 'shot') end = assassin;
+  else if (game.phase === 'sweep' || game.phase === 'miss') end = add(g, fromHeading(aim, 168));
+  else end = add(g, fromHeading(heading(g, face), Math.max(48, dist(g, face) - 16)));
+  const muzzle = add(g, fromHeading(aim, 22));
+  drawLaser(muzzle.x, muzzle.y, end.x, end.y, game.phase === 'miss' ? COL.bad : color);
+  if (game.phase === 'shot') {
+    const u = clamp(game.phaseAge / 0.28, 0, 1);
+    const bolt = add(muzzle, mul(sub(assassin, muzzle), u));
+    ctx.beginPath();
+    ctx.fillStyle = '#f4fdff';
+    ctx.arc(bolt.x, bolt.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    if (u > 0.85) burst(assassin.x, assassin.y, color, 18, 160);
+  }
+  if ((game.phase === 'miss' || game.phase === 'escape') && game.phaseAge > 0.42 && game.phaseAge < 0.78) {
+    drawLaser(assassin.x, assassin.y, g.x, g.y, '#ff3355');
+  }
+  const faceH = heading(assassin, g);
+  const alpha = game.phase === 'shot' && game.phaseAge > 0.34 ? Math.max(0, 1 - (game.phaseAge - 0.34) / 0.2) : 1;
+  drawAssassin(assassin.x, assassin.y, faceH, alpha);
+  if (game.phase !== 'shot') drawAlert(assassin.x, assassin.y - 26);
+  drawAgent(g.x, g.y, aim, color);
+  drawTurnBadge(g, aim, pz.dirWord === 'CLOCKWISE', pz.dirIcon);
+  drawBadges(pz.pts);
+  for (let i = 0; i < game.particles.length; i++) {
+    const p = game.particles[i];
+    ctx.globalAlpha = Math.max(0, 1 - p.age / p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+function drawLaser(x1, y1, x2, y2, color) {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.28;
+  ctx.lineWidth = 8;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 14;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.globalAlpha = 0.95;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#f7feff';
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.restore();
+}
+function drawAgent(x, y, ang, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.scale(1.35, 1.35);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(-28, 11, 18, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-8, 0);
+  ctx.lineTo(-42, -15);
+  ctx.lineTo(-54, -8);
+  ctx.lineTo(-36, 0);
+  ctx.lineTo(-54, 8);
+  ctx.lineTo(-42, 15);
+  ctx.closePath();
+  ctx.fillStyle = '#1a2838';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(-22, 0, 9, 0, Math.PI * 2);
+  ctx.fillStyle = '#101926';
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.6;
+  ctx.arc(-18, 0, 4.6, -1.2, 1.2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.fillStyle = color;
+  ctx.arc(-2, 0, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+function drawAssassin(x, y, ang, alpha) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(ang);
+  ctx.globalAlpha = Math.max(0, alpha);
+  ctx.scale(1.2, 1.2);
+  ctx.beginPath();
+  ctx.moveTo(10, 0);
+  ctx.lineTo(-6, -14);
+  ctx.lineTo(-30, -8);
+  ctx.lineTo(-22, 0);
+  ctx.lineTo(-30, 8);
+  ctx.lineTo(-6, 14);
+  ctx.closePath();
+  ctx.fillStyle = '#4a1024';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ff4d6a';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(2, 0, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#2a0a14';
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#ffd5dc';
+  ctx.fillRect(2, -3.2, 4, 2);
+  ctx.fillRect(2, 1.4, 4, 2);
+  ctx.restore();
+}
+function drawAlert(x, y) {
+  const bob = Math.sin(game.time * 6) * 3;
+  text('!', x, y + bob, 16, COL.bad, 'center', 800);
+}
+function drawTurnBadge(g, aim, clockwise, icon) {
+  let side = clockwise ? 1 : -1;
+  let pos = add(g, fromHeading(aim + side * Math.PI / 2, 46));
+  if (!insideMap(pos, 16)) pos = add(g, fromHeading(aim - side * Math.PI / 2, 46));
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  ctx.beginPath();
+  ctx.fillStyle = 'rgba(18, 14, 6, 0.9)';
+  ctx.arc(0, 0, 15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = COL.amber;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (clockwise) ctx.arc(0, 0, 11, -0.4, 2.15);
+  else ctx.arc(0, 0, 11, Math.PI - 2.15, Math.PI + 0.4);
+  ctx.stroke();
+  text(icon, 0, 1, 13, COL.amber, 'center', 800);
+  ctx.restore();
+}
+function drawBadges(pts) {
+  const keys = Object.keys(pts);
+  for (let i = 0; i < keys.length; i++) {
+    const p = pts[keys[i]];
+    ctx.beginPath();
+    ctx.fillStyle = '#071018';
+    ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = COL.cyan;
+    ctx.stroke();
+    text(keys[i], p.x, p.y + 0.5, 13, COL.ink, 'center', 800);
+  }
+}
+function drawDeck() {
+  ctx.fillStyle = 'rgba(6, 10, 18, 0.96)';
+  ctx.fillRect(0, 522, VW, VH - 522);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.2)';
+  ctx.fillRect(0, 522, VW, 1);
+  if (!game.puzzle) return;
+  const step = game.puzzle.steps[game.step];
+  const who = game.mode === 'coop' ? PLAYER_NAME[activeAgent()] : (game.mode === 'duel' ? 'RACE' : 'AGENT');
+  text('STEP ' + (game.step + 1) + '   ' + who + '   FIND ' + step.name.toUpperCase(), 28, 546, 15, COL.cyan, 'left', 800);
+  const tip = game.tip || (game.mode === 'duel'
+    ? 'P1 mouse / 1-4 / pad 0    P2 Q W E R / pad 1    P3 U I O P / pad 2'
+    : 'Keys 1 2 3 4, arrows + Space, mouse, or gamepad A.  M mutes.  Esc pauses.');
+  ctx.font = '650 13px ' + FONT;
+  const tipFont = ctx.measureText(tip).width > 1220 ? 11 : 13;
+  text(tip, 28, 574, tipFont, game.tip ? (game.tipBad ? COL.bad : COL.good) : COL.dim, 'left', 650);
+  for (let i = 0; i < 4; i++) drawCard(i, step.options[i]);
+}
+function drawCard(i, opt) {
+  const r = cardRect(i);
+  const hover = pointer.inside && hit(r, pointer) && game.phase === 'ask' && !game.paused;
+  const marked = game.mark && game.mark.step === game.step && game.mark.index === i;
+  let border = 'rgba(140, 220, 240, 0.35)';
+  let fill = '#101a28';
+  if (hover) { border = COL.cyan; fill = '#142536'; }
+  if (game.mode !== 'duel' && game.sel[game.mode === 'coop' ? activeAgent() : 0] === i && game.phase === 'ask') border = COL.amber;
+  if (marked && game.mark.kind === 'good') { border = COL.good; fill = '#10281c'; }
+  if (marked && game.mark.kind === 'bad') { border = COL.bad; fill = '#2a1218'; }
+  roundRect(r.x, r.y, r.w, r.h, 14);
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = border;
+  ctx.stroke();
+  text(opt.v + DEGS, r.x + r.w / 2, r.y + 42, 36, COL.ink, 'center', 800);
+  if (game.mode === 'duel') {
+    for (let p = 0; p < game.players; p++) {
+      const label = KEY_FACE[p][i];
+      const x = r.x + 28 + p * 36;
+      text(label, x, r.y + 84, 13, PLAYER_COL[p], 'left', 800);
+      if (game.sel[p] === i) {
+        ctx.fillStyle = PLAYER_COL[p];
+        ctx.fillRect(x, r.y + 94, 14, 3);
+      }
+    }
+  } else {
+    const p = game.mode === 'coop' ? activeAgent() : 0;
+    text(KEY_FACE[p][i], r.x + r.w / 2, r.y + 84, 14, PLAYER_COL[p], 'center', 800);
+  }
+}
+function drawFloats() {
+  for (let i = 0; i < game.floats.length; i++) {
+    const f = game.floats[i];
+    ctx.globalAlpha = Math.max(0, 1 - f.age / f.life);
+    text(f.str, f.x, f.y, 22, f.color, 'center', 800);
+    ctx.globalAlpha = 1;
+  }
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(4, 8, 14, 0.62)';
+  ctx.fillRect(0, 0, VW, VH);
+  text('PAUSED', VW / 2, 320, 42, COL.ink, 'center', 800);
+  text('Esc resumes    M mutes', VW / 2, 368, 16, COL.dim, 'center', 700);
+}
+function drawTitle() {
+  game.ui = [];
+  drawBackdrop();
+  text('SINGAPORE PRIMARY 4\u20136  ·  ANGLES & COMPOSITE FIGURES', VW / 2, 78, 13, COL.amber, 'center', 800);
+  text('VANGUARD OVERWATCH', VW / 2, 124, 48, COL.ink, 'center', 800);
+  text('Tactical Angle Sniper', VW / 2, 168, 20, COL.cyan, 'center', 700);
+  text('AGENTS', 80, 214, 12, COL.dim, 'left', 800);
+  titleButton('p1', 0, 0, 80, 228, 150, 52, '1 AGENT', 'Solo', game.players === 1, true);
+  titleButton('p2', 0, 1, 246, 228, 150, 52, '2 AGENTS', 'Co-op or duel', game.players === 2, true);
+  titleButton('p3', 0, 2, 412, 228, 150, 52, '3 AGENTS', 'Co-op or duel', game.players === 3, true);
+  text('MOE GRADE', 80, 308, 12, COL.dim, 'left', 800);
+  const grades = ['P4', 'P5', 'P6', 'EXTREME'];
+  for (let i = 0; i < grades.length; i++) {
+    const id = grades[i];
+    const meta = TIER_META[id];
+    titleButton(id, 1, i, 80 + i * 292, 322, 276, 64, meta.name, meta.role, game.tier === id, true);
+  }
+  text('MODE', 80, 412, 12, COL.dim, 'left', 800);
+  titleButton('solo', 2, 0, 80, 426, 360, 58, 'SOLO', 'High score · 3 lives', game.mode === 'solo', modeEnabled('solo'));
+  titleButton('coop', 2, 1, 460, 426, 360, 58, 'TEAM CO-OP', 'One score · shared lives', game.mode === 'coop', modeEnabled('coop'));
+  titleButton('duel', 2, 2, 840, 426, 360, 58, 'OVERWATCH DUEL', 'Fastest sniper wins', game.mode === 'duel', modeEnabled('duel'));
+  const blurb = TIER_META[game.tier].blurb + '  ' + MODE_META[game.mode].blurb;
+  const lines = wrap(blurb, 1080, 15, 650);
+  for (let i = 0; i < lines.length; i++) text(lines[i], VW / 2, 512 + i * 20, 15, COL.ink, 'center', 650);
+  titleButton('go', 3, 0, 430, 568, 420, 64, 'DEPLOY OVERWATCH', 'Enter', false, true);
+  const best = bestValue();
+  text(best ? ('BEST ' + best) : 'NO BEST YET', VW / 2, 650, 13, COL.dim, 'center', 700);
+  text('P1 mouse · 1 2 3 4 · arrows + Space · pad 0     P2 Q W E R · pad 1     P3 U I O P · pad 2     M mute', VW / 2, 688, 13, COL.dim, 'center', 650);
+  drawMute();
+}
+function titleButton(id, row, col, x, y, w, h, label, sub, on, enabled) {
+  const focused = game.focusRow === row && game.focusCol === col;
+  const hot = enabled && pointer.inside && hit({ x: x, y: y, w: w, h: h }, pointer);
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = !enabled ? 'rgba(255,255,255,0.03)' : (on ? 'rgba(62,224,255,0.16)' : 'rgba(255,255,255,0.04)');
+  ctx.fill();
+  ctx.lineWidth = focused || on ? 2.5 : 1.2;
+  ctx.strokeStyle = !enabled ? 'rgba(147,164,184,0.25)' : (on || focused || hot ? COL.cyan : 'rgba(140,200,220,0.35)');
+  ctx.stroke();
+  text(label, x + w / 2, y + (sub ? h / 2 - 8 : h / 2), 16, enabled ? COL.ink : COL.dim, 'center', 800);
+  if (sub) text(sub, x + w / 2, y + h / 2 + 12, 12, enabled ? COL.dim : 'rgba(147,164,184,0.7)', 'center', 650);
+  game.ui.push({ id: id, row: row, col: col, x: x, y: y, w: w, h: h, enabled: enabled });
+}
+function drawOver() {
+  game.ui = [];
+  drawBackdrop();
+  drawHUD();
+  text(game.cleared > 0 ? 'OVERWATCH DOWN' : 'COMPOUND LOST', VW / 2, 210, 40, COL.ink, 'center', 800);
+  if (game.mode === 'duel') {
+    text(PLAYER_NAME[game.winner] + ' TAKES THE WATCH', VW / 2, 258, 18, PLAYER_COL[game.winner], 'center', 800);
+    for (let i = 0; i < game.players; i++) {
+      const x = VW / 2 + (i - (game.players - 1) / 2) * 220;
+      text('P' + (i + 1), x, 320, 14, PLAYER_COL[i], 'center', 800);
+      text('\u2605 ' + game.stars[i], x, 348, 28, COL.amber, 'center', 800);
+      text(game.scores[i] + ' pts', x, 382, 14, COL.dim, 'center', 700);
+      drawHearts(x - 26, 410, game.livesP[i], 3, PLAYER_COL[i]);
+    }
+  } else {
+    text((game.mode === 'coop' ? 'TEAM SCORE  ' : 'SCORE  ') + game.score, VW / 2, 268, 28, COL.amber, 'center', 800);
+    text('Rounds cleared  ' + game.cleared, VW / 2, 312, 18, COL.ink, 'center', 700);
+  }
+  const acc = game.attempts ? Math.round((game.attempts - game.wrongs) / game.attempts * 100) : 0;
+  text('Clean locks ' + acc + '%    misses ' + game.wrongs, VW / 2, 450, 16, COL.dim, 'center', 700);
+  if (game.bestFlash) text('NEW BEST', VW / 2, 482, 16, COL.good, 'center', 800);
+  else text('BEST ' + bestValue(), VW / 2, 482, 16, COL.dim, 'center', 700);
+  if (game.tip) {
+    const lines = wrap(game.tip, 900, 14, 650);
+    for (let i = 0; i < Math.min(2, lines.length); i++) text(lines[i], VW / 2, 514 + i * 18, 14, COL.bad, 'center', 650);
+  }
+  overButton('again', 390, 570, 220, 56, 'REDEPLOY');
+  overButton('title', 670, 570, 220, 56, 'TITLE');
+}
+function overButton(id, x, y, w, h, label) {
+  const hot = pointer.inside && hit({ x: x, y: y, w: w, h: h }, pointer);
+  roundRect(x, y, w, h, 12);
+  ctx.fillStyle = hot ? 'rgba(62,224,255,0.18)' : 'rgba(62,224,255,0.08)';
+  ctx.fill();
+  ctx.strokeStyle = COL.cyan;
+  ctx.stroke();
+  text(label, x + w / 2, y + h / 2, 16, COL.ink, 'center', 800);
+  game.ui.push({ id: id, x: x, y: y, w: w, h: h, enabled: true });
+}
+function drawBackdrop() {
+  ctx.fillStyle = '#08111b';
+  ctx.fillRect(0, 0, VW, VH);
+  ctx.strokeStyle = 'rgba(90, 190, 210, 0.07)';
+  for (let x = 0; x < VW; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, VH);
+    ctx.stroke();
+  }
+  for (let y = 0; y < VH; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(VW, y);
+    ctx.stroke();
+  }
+}
+
+function frame(now) {
+  if (!frame.last) frame.last = now;
+  const dt = Math.min(0.05, (now - frame.last) / 1000);
+  frame.last = now;
+  acted = [false, false, false];
+  pollPads();
+  update(game.hidden ? 0 : dt);
+  draw();
+  keyEdge.clear();
+  clickEdge = null;
+  requestAnimationFrame(frame);
+}
+
+function pollPads() {
+  const list = (navigator.getGamepads && navigator.getGamepads()) || [];
+  for (let i = 0; i < 3; i++) {
+    const p = list[i];
+    padEdge[i] = null;
+    if (!p) { padPrev[i] = {}; continue; }
+    const b = p.buttons || [];
+    const ax = p.axes || [];
+    const pressed = function (idx) { return !!(b[idx] && (b[idx].pressed || b[idx].value > 0.5)); };
+    const now = {
+      left: pressed(14) || (ax[0] || 0) < -0.55,
+      right: pressed(15) || (ax[0] || 0) > 0.55,
+      up: pressed(12) || (ax[1] || 0) < -0.55,
+      down: pressed(13) || (ax[1] || 0) > 0.55,
+      A: pressed(0)
+    };
+    const prev = padPrev[i] || {};
+    padEdge[i] = {
+      left: now.left && !prev.left,
+      right: now.right && !prev.right,
+      up: now.up && !prev.up,
+      down: now.down && !prev.down,
+      A: now.A && !prev.A
+    };
+    if (now.A || now.left || now.right || now.up || now.down) sfx.unlock();
+    padPrev[i] = now;
+  }
+}
+
+audio.tickMusic = function () {
+  if (!this.ctx || this.muted || game.paused) return;
+  const pattern = [
+    [110, 'square', 0.03, 0.12],
+    null,
+    [164.81, 'triangle', 0.028, 0.1],
+    [220, 'square', 0.02, 0.08],
+    null,
+    [146.83, 'square', 0.026, 0.1],
+    [196, 'triangle', 0.024, 0.09],
+    null,
+    [98, 'square', 0.032, 0.13],
+    [130.81, 'triangle', 0.02, 0.08],
+    null,
+    [174.61, 'square', 0.02, 0.08],
+    [246.94, 'triangle', 0.018, 0.1],
+    null,
+    [82.41, 'sawtooth', 0.016, 0.12],
+    [123.47, 'square', 0.02, 0.08]
+  ];
+  const horizon = this.ctx.currentTime + 0.25;
+  if (!this.nextAt || this.nextAt < this.ctx.currentTime - 0.05) this.nextAt = this.ctx.currentTime + 0.04;
+  while (this.nextAt < horizon) {
+    const note = pattern[this.step % pattern.length];
+    if (note) {
+      const vol = game.screen === 'play' && !game.paused ? note[2] : note[2] * 0.45;
+      this.tone(note[0], note[3], note[1], vol, this.nextAt - this.ctx.currentTime);
+    }
+    this.nextAt += 0.17;
+    this.step = (this.step + 1) % pattern.length;
+  }
+};
+
+const sfx = {
+  unlock: function () { audio.resume(); },
+  tick: function () { audio.tone(720, 0.04, 'square', 0.03); },
+  ping: function () { audio.tone(880, 0.07, 'sine', 0.04); audio.tone(1320, 0.06, 'triangle', 0.03, 0.05); },
+  snap: function () { audio.tone(520, 0.07, 'square', 0.05); audio.tone(780, 0.09, 'triangle', 0.04, 0.05); },
+  servo: function () { audio.sweep(180, 720, 0.42, 0.045); },
+  pew: function () {
+    audio.burst(0.12, 0.07, 1600);
+    audio.tone(920, 0.07, 'square', 0.05);
+    audio.tone(1380, 0.08, 'triangle', 0.04, 0.03);
+  },
+  confirm: function () { audio.tone(659, 0.08, 'square', 0.04); audio.tone(880, 0.1, 'triangle', 0.035, 0.07); },
+  buzz: function () { audio.tone(90, 0.16, 'sawtooth', 0.05); audio.tone(70, 0.18, 'square', 0.035, 0.02); },
+  crack: function () { audio.burst(0.16, 0.07, 280); audio.tone(140, 0.12, 'square', 0.04); },
+  fanfare: function () {
+    [523.25, 659.25, 783.99, 1046.5].forEach(function (f, i) {
+      audio.tone(f, 0.2, 'square', 0.045, i * 0.09);
+      audio.tone(f * 0.5, 0.2, 'triangle', 0.03, i * 0.09);
+    });
+  }
+};
+function toggleMute() {
+  sfx.unlock();
+  audio.muted = !audio.muted;
+  store.mute = audio.muted;
+  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.2;
+  saveStore();
+}
+audio.ensure = function () {
+  if (this.ctx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  this.ctx = new AC();
+  this.master = this.ctx.createGain();
+  this.master.gain.value = this.muted ? 0 : 0.2;
+  this.master.connect(this.ctx.destination);
+  const buffer = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  this.noise = buffer;
+};
+audio.resume = function () {
+  this.ensure();
+  if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+};
+audio.tone = function (freq, dur, type, vol, delay) {
+  if (!this.ctx || this.muted || !freq) return;
+  const t = this.ctx.currentTime + (delay || 0);
+  const o = this.ctx.createOscillator();
+  const g = this.ctx.createGain();
+  o.type = type || 'square';
+  o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(this.master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+};
+audio.sweep = function (a, b, dur, vol) {
+  if (!this.ctx || this.muted) return;
+  const t = this.ctx.currentTime;
+  const o = this.ctx.createOscillator();
+  const g = this.ctx.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(a, t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(40, b), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(this.master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+};
+audio.burst = function (dur, vol, freq) {
+  if (!this.ctx || this.muted || !this.noise) return;
+  const src = this.ctx.createBufferSource();
+  src.buffer = this.noise;
+  const filter = this.ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq || 1200;
+  const g = this.ctx.createGain();
+  const t = this.ctx.currentTime;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(this.master);
+  src.start(t);
+  src.stop(t + dur);
+};
+
+window.addEventListener('resize', resize);
+window.addEventListener('keydown', function (e) {
+  if (e.repeat) return;
+  keysDown.add(e.code);
+  keyEdge.add(e.code);
+  const named = {
+    '1': 'Digit1', '2': 'Digit2', '3': 'Digit3', '4': 'Digit4',
+    q: 'KeyQ', w: 'KeyW', e: 'KeyE', r: 'KeyR',
+    u: 'KeyU', i: 'KeyI', o: 'KeyO', p: 'KeyP',
+    Q: 'KeyQ', W: 'KeyW', E: 'KeyE', R: 'KeyR',
+    U: 'KeyU', I: 'KeyI', O: 'KeyO', P: 'KeyP'
+  };
+  if (named[e.key]) keyEdge.add(named[e.key]);
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'].indexOf(e.code) >= 0) e.preventDefault();
+  sfx.unlock();
+  if (e.code === 'KeyM') toggleMute();
+});
+window.addEventListener('keyup', function (e) { keysDown.delete(e.code); });
+canvas.addEventListener('pointerdown', function (e) {
+  const p = toWorld(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.inside = true;
+  clickEdge = { x: p.x, y: p.y };
+  sfx.unlock();
+});
+canvas.addEventListener('pointermove', function (e) {
+  const p = toWorld(e.clientX, e.clientY);
+  pointer.x = p.x;
+  pointer.y = p.y;
+  pointer.inside = true;
+});
+canvas.addEventListener('pointerleave', function () { pointer.inside = false; });
+canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+document.addEventListener('visibilitychange', function () { game.hidden = document.hidden; });
+
+function runAudit() {
+  const lines = [];
+  for (let f = 0; f < FAMILIES.length; f++) {
+    const fam = FAMILIES[f];
+    const reasons = {};
+    let ok = 0;
+    for (let i = 0; i < 30; i++) {
+      debugReject = '';
+      const raw = fam.make();
+      if (!raw) {
+        const key = debugReject || 'null';
+        reasons[key] = (reasons[key] || 0) + 1;
+        continue;
+      }
+      const done = realize(raw, true);
+      if (done) ok += 1;
+      else {
+        const key = debugReject || 'realize';
+        reasons[key] = (reasons[key] || 0) + 1;
+      }
+    }
+    const bits = [];
+    const keys = Object.keys(reasons);
+    for (let k = 0; k < keys.length; k++) bits.push(keys[k] + ':' + reasons[keys[k]]);
+    lines.push(fam.id + ' ok=' + ok + '/30  ' + bits.join(', '));
+  }
+  return lines.join('\n');
+}
+
+resize();
+requestAnimationFrame(frame);
+if (location.search.indexOf('audit=1') >= 0) {
+  const report = runAudit();
+  const box = document.getElementById('audit');
+  box.className = '';
+  box.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:5;color:#b8ffe0;background:#071018;padding:8px;font:12px monospace;white-space:pre;max-width:90vw;';
+  box.textContent = report;
+  console.log(report);
+}
+</script>
+</body>
+</html>

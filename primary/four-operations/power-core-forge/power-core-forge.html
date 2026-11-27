@@ -119,7 +119,7 @@ const FLAVORS = [
 ];
 
 const DIFFS = [
-  { id: 'easy', label: 'EASY', rank: 'Cadet Engineer', blurb: 'One machine, different add-ons. More / less bars and equalizing transfers.' },
+  { id: 'easy', label: 'EASY', rank: 'Cadet Engineer', blurb: 'More and fewer add-ons, a known machine, or a transfer that evens both bars.' },
   { id: 'medium', label: 'MEDIUM', rank: 'Systems Specialist', blurb: 'Times as many, plus a more-than or fewer-than block.' },
   { id: 'hard', label: 'HARD', rank: 'Tactical Commander', blurb: 'Internal transfers. The total never leaves the hangar.' },
   { id: 'extreme', label: 'EXTREME', rank: 'Supreme Architect', blurb: 'Multi-unit comparisons, transfers, and a combo reactor timer.' }
@@ -149,6 +149,7 @@ const G = {
   bestSolo: readBest(BEST_SOLO),
   bestCoop: readBest(BEST_COOP),
   history: [],
+  shapeLog: [],
   focus: { row: 0, col: 0 },
   note: 'Arrows move the selector. Enter confirms. Click any control.',
   round: 1,
@@ -689,11 +690,97 @@ function rollAdd3() {
   const ask = rand(1, 2);
   return {
     kind: 'add3', flavor: flavor, machines: machines, unit: unit,
-    extras: [0, e1, e2], ask: ask, template: template
+    extras: [0, e1, e2], ask: ask, template: template,
+    given: 'total', anchor: 0, style: 'more'
   };
 }
 
+function easyMag(flavor) {
+  if (flavor.id === 'mw') return rand(2, 12) * 10;
+  if (flavor.id === 'marks') return rand(4, 16);
+  if (flavor.id === 'cm') return rand(4, 16);
+  return rand(2, 10) * 2;
+}
+
+function tryAdd3Easy(opts) {
+  const flavor = pick(FLAVORS);
+  const count = opts.count === 2 ? 2 : 3;
+  let style = opts.style || 'more';
+  if (count === 2 && style === 'mixed') style = Math.random() < 0.5 ? 'more' : 'fewer';
+  const given = opts.given === 'anchor' ? 'anchor' : 'total';
+  const machines = pickMachines(count);
+  let extras = null;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const mags = [];
+    for (let i = 1; i < count; i++) mags.push(easyMag(flavor));
+    if (count === 3 && mags[0] === mags[1]) continue;
+    let signed;
+    if (style === 'fewer') signed = mags.map(function (m) { return -m; });
+    else if (style === 'mixed') signed = Math.random() < 0.5 ? [mags[0], -mags[1]] : [-mags[0], mags[1]];
+    else signed = mags.slice();
+    const sum = signed.reduce(function (a, b) { return a + b; }, 0);
+    if (given === 'total' && sum % count !== 0) continue;
+    extras = [0].concat(signed);
+    break;
+  }
+  if (!extras) return null;
+  const dip = extras.reduce(function (m, e) { return Math.min(m, e); }, 0);
+  let unit;
+  if (flavor.id === 'mw') unit = rand(8, 24) * 10;
+  else if (flavor.id === 'marks') unit = rand(16, 48);
+  else if (flavor.id === 'cm') unit = rand(24, 80);
+  else unit = rand(16, 64);
+  if (dip < 0) {
+    const minUnit = Math.ceil((-dip) * 1.75);
+    if (unit < minUnit) unit = flavor.id === 'mw' ? Math.ceil(minUnit / 10) * 10 : minUnit;
+  }
+  if (extras.some(function (e) { return unit + e <= 0; })) return null;
+  const tail = extras.slice(1);
+  const allMore = tail.every(function (e) { return e > 0; });
+  const allLess = tail.every(function (e) { return e < 0; });
+  let template = 0;
+  if (allMore) template = rand(0, count === 3 ? 2 : 1);
+  else if (allLess) template = Math.random() < 0.5 ? 0 : 1;
+  if (template === 2 && extras[2] < extras[1]) {
+    const swap = extras[1];
+    extras[1] = extras[2];
+    extras[2] = swap;
+  }
+  let anchor = 0;
+  let ask;
+  if (given === 'anchor') {
+    anchor = count === 3 && Math.random() < 0.5 ? 2 : 1;
+    ask = count === 2 ? 'total' : (anchor === 1 ? 2 : 1);
+  } else {
+    ask = count === 2 ? 1 : rand(1, 2);
+  }
+  const values = extras.map(function (e) { return unit + e; });
+  const total = values.reduce(function (a, b) { return a + b; }, 0);
+  const step2 = ask === 'total' ? total : values[ask];
+  if (step2 === unit || step2 <= 0) return null;
+  if (given === 'anchor' && ask !== 'total' && values[ask] === values[anchor]) return null;
+  return {
+    kind: 'add3', flavor: flavor, machines: machines, unit: unit,
+    extras: extras, ask: ask, template: template,
+    given: given, anchor: anchor, style: style
+  };
+}
+
+function rollAdd3Easy(opts) {
+  for (let i = 0; i < 12; i++) {
+    const made = tryAdd3Easy(opts || {});
+    if (made) return made;
+  }
+  return rollAdd3();
+}
+
+function equalizeAsk(ask, high, low) {
+  if (ask === 'ending' && (high - low) === (high + low) / 2) return 'transfer';
+  return ask;
+}
+
 function rollEqualize() {
+  const ask = Math.random() < 0.5 ? 'ending' : 'transfer';
   const timesMode = Math.random() < 0.42;
   const flavor = timesMode ? pick([FLAVORS[0], FLAVORS[2]]) : pick(FLAVORS);
   const machines = pickMachines(2);
@@ -713,7 +800,8 @@ function rollEqualize() {
       half = rand(4, 40) * 2;
       low = rand(6, 50) * 2;
     }
-    return { kind: 'equalize', flavor: flavor, machines: machines, high: low + half * 2, low: low, times: 0 };
+    const high = low + half * 2;
+    return { kind: 'equalize', flavor: flavor, machines: machines, high: high, low: low, times: 0, ask: equalizeAsk(ask, high, low) };
   }
   const mult = Math.random() < 0.7 ? 2 : 3;
   let low;
@@ -721,7 +809,18 @@ function rollEqualize() {
   else if (flavor.id === 'cells') low = rand(8, 40) * 2;
   else low = rand(8, 30) * 2;
   if (mult === 2 && low % 2 !== 0) low += 1;
-  return { kind: 'equalize', flavor: flavor, machines: machines, high: low * mult, low: low, times: mult };
+  const high = low * mult;
+  return { kind: 'equalize', flavor: flavor, machines: machines, high: high, low: low, times: mult, ask: equalizeAsk(ask, high, low) };
+}
+
+function rollEasy() {
+  const r = Math.random();
+  if (r < 0.16) return rollAdd3();
+  if (r < 0.32) return rollAdd3Easy({ count: 3, style: 'mixed' });
+  if (r < 0.46) return rollAdd3Easy({ count: 3, style: 'fewer' });
+  if (r < 0.62) return rollAdd3Easy({ count: 2, style: Math.random() < 0.55 ? 'more' : 'fewer' });
+  if (r < 0.78) return rollAdd3Easy({ count: Math.random() < 0.4 ? 2 : 3, style: pick(['more', 'fewer', 'mixed']), given: 'anchor' });
+  return rollEqualize();
 }
 
 function rollRatio() {
@@ -900,7 +999,7 @@ function rollTimes() {
 }
 
 function rollRaw(diff) {
-  if (diff === 'easy') return Math.random() < 0.58 ? rollAdd3() : rollEqualize();
+  if (diff === 'easy') return rollEasy();
   if (diff === 'medium') return rollTimes();
   if (diff === 'hard') return Math.random() < 0.52 ? rollRatio() : rollDiff();
   const r = Math.random();
@@ -974,84 +1073,269 @@ function basePuzzle(raw, extra) {
   return puzzle;
 }
 
+function sumSentence(values, unitName) {
+  let running = values[0];
+  const bits = [];
+  for (let i = 1; i < values.length; i++) {
+    const next = running + values[i];
+    bits.push(fmt(running) + ' + ' + fmt(values[i]) + ' = ' + fmt(next));
+    running = next;
+  }
+  return 'Add every machine: ' + bits.join('. ') + ' ' + unitName + '.';
+}
+
+function machineCoach(name, unit, extra, value, unitName) {
+  if (extra > 0) return name + ' = 1 unit + ' + fmt(extra) + ' = ' + fmt(unit) + ' + ' + fmt(extra) + ' = ' + fmt(value) + ' ' + unitName + '.';
+  if (extra < 0) return name + ' = 1 unit − ' + fmt(-extra) + ' = ' + fmt(unit) + ' − ' + fmt(-extra) + ' = ' + fmt(value) + ' ' + unitName + '.';
+  return name + ' = 1 unit = ' + fmt(value) + ' ' + unitName + '.';
+}
+
+function totalUnitCoach(extras, total, unit) {
+  const n = extras.length;
+  const added = [];
+  const missing = [];
+  extras.forEach(function (e) {
+    if (e > 0) added.push(e);
+    if (e < 0) missing.push(-e);
+  });
+  if (!missing.length) {
+    const sumE = added.reduce(function (a, b) { return a + b; }, 0);
+    const head = added.length === 1
+      ? ('Extra block ' + fmt(sumE))
+      : ('Extra blocks ' + added.map(fmt).join(' + ') + ' = ' + fmt(sumE));
+    const bare = total - sumE;
+    return head + '. ' + fmt(total) + ' − ' + fmt(sumE) + ' = ' + fmt(bare) + '. ' + fmt(bare) + ' ÷ ' + n + ' = ' + fmt(unit) + '.';
+  }
+  const sumM = missing.reduce(function (a, b) { return a + b; }, 0);
+  let running = total;
+  let text = missing.length === 1
+    ? ('Add back the missing ' + fmt(sumM) + '. ')
+    : ('Add back the missing blocks ' + missing.map(fmt).join(' + ') + ' = ' + fmt(sumM) + '. ');
+  text += fmt(running) + ' + ' + fmt(sumM) + ' = ' + fmt(running + sumM) + '. ';
+  running += sumM;
+  if (added.length) {
+    const sumE = added.reduce(function (a, b) { return a + b; }, 0);
+    text += added.length === 1
+      ? ('Subtract the add-on ' + fmt(sumE) + '. ')
+      : ('Subtract the add-ons ' + added.map(fmt).join(' + ') + ' = ' + fmt(sumE) + '. ');
+    text += fmt(running) + ' − ' + fmt(sumE) + ' = ' + fmt(running - sumE) + '. ';
+    running -= sumE;
+  }
+  return text + fmt(running) + ' ÷ ' + n + ' = ' + fmt(unit) + '.';
+}
+
+function anchorUnitCoach(raw, values) {
+  const name = raw.machines[raw.anchor].name;
+  const extra = raw.extras[raw.anchor];
+  const known = values[raw.anchor];
+  if (extra > 0) return name + ' = 1 unit + ' + fmt(extra) + '. ' + fmt(known) + ' − ' + fmt(extra) + ' = ' + fmt(raw.unit) + '.';
+  return name + ' is ' + fmt(-extra) + ' fewer than 1 unit. ' + fmt(known) + ' + ' + fmt(-extra) + ' = ' + fmt(raw.unit) + '.';
+}
+
+function compareFacts(raw, names) {
+  const f = raw.flavor;
+  const e1 = raw.extras[1];
+  const e2 = raw.extras.length > 2 ? raw.extras[2] : null;
+  const points = [];
+  if (raw.template === 2 && e2 != null && e1 > 0 && e2 > e1) {
+    points.push(factLine(vsLine(f, names[1], e1, names[0], 'more')));
+    points.push(factLine(vsLine(f, names[2], e2 - e1, names[1], 'more')));
+    return points;
+  }
+  if (raw.template === 1 && e1 > 0 && (e2 == null || e2 > 0)) {
+    points.push(factLine(vsLine(f, names[0], e1, names[1], 'less')));
+    if (e2 != null) points.push(factLine(vsLine(f, names[0], e2, names[2], 'less')));
+    return points;
+  }
+  if (raw.template === 1 && e1 < 0 && (e2 == null || e2 < 0)) {
+    points.push(factLine(vsLine(f, names[0], -e1, names[1], 'more')));
+    if (e2 != null) points.push(factLine(vsLine(f, names[0], -e2, names[2], 'more')));
+    return points;
+  }
+  for (let i = 1; i < raw.extras.length; i++) {
+    const extra = raw.extras[i];
+    points.push(factLine(vsLine(f, names[i], Math.abs(extra), names[0], extra < 0 ? 'less' : 'more')));
+  }
+  return points;
+}
+
+function add3Step1Traps(raw, values, total) {
+  const n = raw.extras.length;
+  const unit = raw.unit;
+  if (raw.given === 'anchor') {
+    const i = raw.anchor;
+    const name = raw.machines[i].name;
+    const extra = raw.extras[i];
+    const known = values[i];
+    const traps = [trap(known, fmt(known) + ' is ' + name + ', which is already numbered. Undo its add-on to get 1 unit.')];
+    const abs = Math.abs(extra);
+    if (abs > 0 && abs !== unit) traps.push(trap(abs, fmt(abs) + ' is only the add-on, not 1 unit.'));
+    if (extra > 0) traps.push(trap(known + extra, 'That add-on is already inside ' + name + '. Subtract it: ' + fmt(known) + ' − ' + fmt(extra) + ' = ' + fmt(unit) + '.'));
+    else if (extra < 0 && known - abs > 0) traps.push(trap(known - abs, name + ' is short of 1 unit. Add the missing block: ' + fmt(known) + ' + ' + fmt(abs) + ' = ' + fmt(unit) + '.'));
+    return traps;
+  }
+  const added = [];
+  const missing = [];
+  raw.extras.forEach(function (e) {
+    if (e > 0) added.push(e);
+    if (e < 0) missing.push(-e);
+  });
+  const excess = added.reduce(function (a, b) { return a + b; }, 0);
+  const miss = missing.reduce(function (a, b) { return a + b; }, 0);
+  const bare = n * unit;
+  const avg = total / n;
+  if (n === 3 && !missing.length && added.length === 2 && isInt(avg)) {
+    return [
+      trap(excess, fmt(excess) + ' is only the extra blocks (' + fmt(added[0]) + ' + ' + fmt(added[1]) + '). Subtract them from the total, then divide by 3.'),
+      trap(bare, fmt(bare) + ' is the 3 equal units together. Divide by 3 to get 1 unit.'),
+      trap(avg, 'Dividing the whole total by 3 leaves the extras inside. Remove ' + fmt(added[0]) + ' + ' + fmt(added[1]) + ' first.')
+    ];
+  }
+  const traps = [];
+  if (excess > 0 && excess !== unit) traps.push(trap(excess, fmt(excess) + ' is only the extra add-on' + (added.length > 1 ? 's' : '') + '. Subtract ' + (added.length > 1 ? 'them' : 'it') + ' from the total, then divide by ' + n + '.'));
+  if (miss > 0 && miss !== unit) traps.push(trap(miss, fmt(miss) + ' is only the missing block' + (missing.length > 1 ? 's' : '') + '. Add ' + (missing.length > 1 ? 'them' : 'it') + ' back, then divide by ' + n + '.'));
+  if (bare !== unit) traps.push(trap(bare, fmt(bare) + ' is the ' + n + ' equal units together. Divide by ' + n + ' to get 1 unit.'));
+  if (isInt(avg) && avg > 0 && avg !== unit) {
+    const fix = miss ? 'Add the missing block' + (missing.length > 1 ? 's' : '') + ' back before you divide.' : 'Remove the add-on' + (added.length > 1 ? 's' : '') + ' before you divide.';
+    traps.push(trap(avg, 'Dividing the whole total by ' + n + ' leaves the add-ons inside. ' + fix));
+  }
+  return traps;
+}
+
+function add3Mission(raw, names, values, f) {
+  if (raw.ask === 'total') return sumSentence(values, f.unit);
+  const extra = raw.extras[raw.ask];
+  const name = names[raw.ask];
+  const value = values[raw.ask];
+  if (extra > 0) return name + ' has 1 unit + ' + fmt(extra) + ' (' + fmt(raw.unit) + ' + ' + fmt(extra) + ' = ' + fmt(value) + ' ' + f.unit + ').';
+  if (extra < 0) return name + ' has 1 unit − ' + fmt(-extra) + ' (' + fmt(raw.unit) + ' − ' + fmt(-extra) + ' = ' + fmt(value) + ' ' + f.unit + ').';
+  return name + ' is 1 unit (' + fmt(value) + ' ' + f.unit + ').';
+}
+
+function add3Step2Traps(raw, names, values, f) {
+  const mission = add3Mission(raw, names, values, f);
+  if (raw.ask === 'total') {
+    const total = values.reduce(function (a, b) { return a + b; }, 0);
+    const traps = [unitTrap(raw.unit, names[0], f, mission)];
+    values.forEach(function (v, i) {
+      if (traps.length >= 3) return;
+      if (v !== total && v !== raw.unit) traps.push(trap(v, 'That is only ' + names[i] + '. Add every machine.'));
+    });
+    return traps;
+  }
+  const ask = raw.ask;
+  const extra = raw.extras[ask];
+  const traps = [unitTrap(raw.unit, names[0], f, mission)];
+  for (let i = 0; i < values.length && traps.length < 3; i++) {
+    if (i !== ask && values[i] !== values[ask] && values[i] !== raw.unit) {
+      traps.push(trap(values[i], 'That is ' + names[i] + '. The mission asks for ' + names[ask] + '.'));
+    }
+  }
+  if (traps.length < 3 && extra > 0 && raw.extras.length === 3) {
+    const stacked = raw.unit + raw.extras[1] + raw.extras[2];
+    if (stacked > 0 && stacked !== values[ask] && !traps.some(function (t) { return t.value === stacked; })) {
+      traps.push(trap(stacked, 'Both extras were stacked on one bar. ' + names[ask] + ' only has its own extra of ' + fmt(extra) + '.'));
+    }
+  }
+  if (traps.length < 3 && extra > 0) {
+    const wrong = raw.unit - extra;
+    if (wrong > 0 && wrong !== values[ask] && !traps.some(function (t) { return t.value === wrong; })) {
+      traps.push(trap(wrong, names[ask] + ' is longer than 1 unit. Add ' + fmt(extra) + ': ' + fmt(raw.unit) + ' + ' + fmt(extra) + ' = ' + fmt(values[ask]) + '.'));
+    }
+  }
+  if (traps.length < 3 && extra < 0) {
+    const added = raw.unit - extra;
+    if (added !== values[ask] && !traps.some(function (t) { return t.value === added; })) {
+      traps.push(trap(added, names[ask] + ' is shorter than 1 unit. Subtract ' + fmt(-extra) + ': ' + fmt(raw.unit) + ' − ' + fmt(-extra) + ' = ' + fmt(values[ask]) + '.'));
+    }
+  }
+  return traps;
+}
+
+function add3Strategy(raw) {
+  const n = raw.extras.length;
+  const fewer = raw.extras.some(function (e) { return e < 0; });
+  const more = raw.extras.some(function (e) { return e > 0; });
+  if (raw.given === 'anchor') return 'One machine is already numbered. Clear its add-on to get 1 unit, then build the bar the mission names.';
+  if (fewer && more) return 'Same machine. Subtract extra blocks and add missing blocks back, then divide by ' + n + ' equal bars.';
+  if (fewer) return 'Same machine. Add every missing block back onto the total, then divide by ' + n + ' equal bars.';
+  if (n === 3) return 'Same machine. Subtract every add-on from the total, then divide by 3 equal bars.';
+  return 'Same machine. Subtract the add-on from the total, then divide by 2 equal bars.';
+}
+
+function add3Footnote(raw) {
+  const fewer = raw.extras.some(function (e) { return e < 0; });
+  const more = raw.extras.some(function (e) { return e > 0; });
+  if (raw.given === 'anchor') return 'One bar is numbered. Undo its add-on to get 1 unit.';
+  if (fewer && more) return 'Gold is extra. The hatch is missing. Put both back, then divide.';
+  if (fewer) return 'Same machine. The hatched block is missing. Add it back before you divide.';
+  return 'Same machine. Each gold block is an add-on. Every equal block is 1 unit.';
+}
+
 function composeAdd3(raw) {
   const f = raw.flavor;
   const names = raw.machines.map(function (m) { return m.name; });
   const values = raw.extras.map(function (e) { return raw.unit + e; });
-  const total = values[0] + values[1] + values[2];
-  const e1 = raw.extras[1];
-  const e2 = raw.extras[2];
-  const ask = raw.ask;
-  let points;
-  if (raw.template === 1) {
-    points = [
-      factLine(vsLine(f, names[0], e1, names[1], 'less')),
-      factLine(vsLine(f, names[0], e2, names[2], 'less'))
-    ];
-  } else if (raw.template === 2) {
-    points = [
-      factLine(vsLine(f, names[1], e1, names[0], 'more')),
-      factLine(vsLine(f, names[2], e2 - e1, names[1], 'more'))
-    ];
-  } else {
-    points = [
-      factLine(vsLine(f, names[1], e1, names[0], 'more')),
-      factLine(vsLine(f, names[2], e2, names[0], 'more'))
-    ];
-  }
-  points.push(factLine(totalLine(f, total)));
-  points.push(askLine(findLine(f, names[ask])));
-  const directive = joinPoints(points);
-  const excess = e1 + e2;
-  const coach1 = 'Extra blocks ' + fmt(e1) + ' + ' + fmt(e2) + ' = ' + fmt(excess) + '. ' + fmt(total) + ' − ' + fmt(excess) + ' = ' + fmt(3 * raw.unit) + '. ' + fmt(3 * raw.unit) + ' ÷ 3 = ' + fmt(raw.unit) + '.';
-  const coach2 = names[ask] + ' = 1 unit + ' + fmt(raw.extras[ask]) + ' = ' + fmt(raw.unit) + ' + ' + fmt(raw.extras[ask]) + ' = ' + fmt(values[ask]) + ' ' + f.unit + '.';
-  const avg = total / 3;
-  const traps1 = [
-    trap(excess, fmt(excess) + ' is only the extra blocks (' + fmt(e1) + ' + ' + fmt(e2) + '). Subtract them from the total, then divide by 3.'),
-    trap(3 * raw.unit, fmt(3 * raw.unit) + ' is the 3 equal units together. Divide by 3 to get 1 unit.'),
-    trap(avg, 'Dividing the whole total by 3 leaves the extras inside. Remove ' + fmt(e1) + ' + ' + fmt(e2) + ' first.')
-  ];
-  const other = ask === 1 ? 2 : 1;
-  const traps2 = [
-    unitTrap(raw.unit, names[0], f, names[ask] + ' has 1 unit + ' + fmt(raw.extras[ask]) + ' (' + fmt(raw.unit) + ' + ' + fmt(raw.extras[ask]) + ' = ' + fmt(values[ask]) + ' ' + f.unit + ').'),
-    trap(values[other], 'That is ' + names[other] + '. The mission asks for ' + names[ask] + '.'),
-    trap(raw.unit + e1 + e2, 'Both extras were stacked on one bar. ' + names[ask] + ' only has its own extra of ' + fmt(raw.extras[ask]) + '.')
-  ];
+  const total = values.reduce(function (a, b) { return a + b; }, 0);
+  const given = raw.given || 'total';
+  const points = compareFacts(raw, names);
+  if (given === 'anchor') points.push(factLine(amountLine(f, raw.machines[raw.anchor], values[raw.anchor])));
+  else points.push(factLine(totalLine(f, total)));
+  const askTotal = raw.ask === 'total';
+  if (askTotal) points.push(askLine(findTotalLine(f)));
+  else points.push(askLine(findLine(f, names[raw.ask])));
+  const coach1 = given === 'anchor' ? anchorUnitCoach(raw, values) : totalUnitCoach(raw.extras, total, raw.unit);
+  const coach2 = askTotal ? sumSentence(values, f.unit) : machineCoach(names[raw.ask], raw.unit, raw.extras[raw.ask], values[raw.ask], f.unit);
+  const answer2 = askTotal ? total : values[raw.ask];
+  const fewer = raw.extras.some(function (e) { return e < 0; });
+  const step1Tip = given === 'anchor'
+    ? 'Start from the numbered machine and undo its add-on. That gives 1 unit.'
+    : (fewer
+      ? 'Add every missing block back, take off any extra, then divide by the number of bars.'
+      : (raw.extras.length === 3
+        ? 'Recount the equal bars. 1 unit is the total after the add-ons are removed, divided by 3.'
+        : 'Subtract the add-on from the total, then divide by 2.'));
+  const step2Tip = askTotal
+    ? 'Add the value of every machine.'
+    : (raw.extras[raw.ask] < 0
+      ? 'Use the 1-unit value, then take off only the missing block on ' + names[raw.ask] + '.'
+      : 'Use the 1-unit value, then add only the add-on that belongs to ' + names[raw.ask] + '.');
   return basePuzzle(raw, {
     machines: raw.machines.map(function (m, i) { return presentMachine(m, { value: values[i] }); }),
-    glow: [ask],
+    glow: askTotal ? names.map(function (_, i) { return i; }) : [raw.ask],
     points: points,
-    directive: directive,
-    missionBadge: 'FIND MACHINE POWER',
-    strategy: 'Same machine. Subtract every add-on from the total, then divide by 3 equal bars.',
+    directive: joinPoints(points),
+    missionBadge: askTotal ? 'FIND TOTAL POWER' : 'FIND MACHINE POWER',
+    strategy: add3Strategy(raw),
     step1: {
       badge: 'FIND 1 UNIT',
       subtitle: 'Enter 1 unit. That is ' + names[0] + '.',
       answer: raw.unit,
       coach: coach1,
-      traps: traps1,
-      fallbackTip: 'Recount the equal bars. 1 unit is the total after the add-ons are removed, divided by 3.'
+      traps: add3Step1Traps(raw, values, total),
+      fallbackTip: step1Tip
     },
     step2: {
-      badge: 'FIND MACHINE POWER',
-      subtitle: enterMachine(f, raw.machines[ask]),
-      answer: values[ask],
+      badge: askTotal ? 'FIND TOTAL POWER' : 'FIND MACHINE POWER',
+      subtitle: askTotal ? 'Enter the total of every machine.' : enterMachine(f, raw.machines[raw.ask]),
+      answer: answer2,
       coach: coach2,
-      traps: traps2,
-      fallbackTip: 'Use the 1-unit value, then add only the add-on that belongs to ' + names[ask] + '.'
+      traps: add3Step2Traps(raw, names, values, f),
+      fallbackTip: step2Tip
     },
     bars: {
       mode: 'compare',
       unitValue: raw.unit,
       rows: raw.machines.map(function (m, i) {
-        return rowTitle(m, {
-          accent: m.accent,
-          segments: raw.extras[i] > 0 ? [{ t: 'unit', n: 1 }, { t: 'more', v: raw.extras[i] }] : [{ t: 'unit', n: 1 }]
-        });
+        const extra = raw.extras[i];
+        const segments = [{ t: 'unit', n: 1 }];
+        if (extra > 0) segments.push({ t: 'more', v: extra });
+        if (extra < 0) segments.push({ t: 'less', v: -extra });
+        return rowTitle(m, { accent: m.accent, segments: segments });
       }),
-      footnote: 'Same machine. Each gold block is an add-on. Every equal block is 1 unit.'
+      footnote: add3Footnote(raw)
     },
-    sig: ['add3', names.join('+'), raw.unit, e1, e2, ask, raw.template].join(':')
+    sig: ['add3', names.join('+'), raw.unit, raw.extras.join(','), raw.ask, raw.template, given, raw.anchor || 0, raw.style || 'more'].join(':')
   });
 }
 
@@ -1192,6 +1476,9 @@ function composeEqualize(raw) {
   const low = raw.machines[1];
   const diff = raw.high - raw.low;
   const half = diff / 2;
+  const ending = (raw.high + raw.low) / 2;
+  const askEnding = raw.ask === 'ending';
+  const noun = f.id === 'cm' ? 'length' : f.noun;
   const points = [];
   if (raw.times) {
     points.push(factLine(timesLine(f, high, low, raw.times)));
@@ -1200,11 +1487,14 @@ function composeEqualize(raw) {
     points.push(factLine(amountLine(f, high, raw.high)));
     points.push(factLine(amountLine(f, low, raw.low)));
   }
-  points.push(askLine('How much does ' + high.name + ' transfer so both match?'));
+  points.push(askLine(askEnding
+    ? ('Find each machine\'s ' + noun + ' once they match')
+    : ('How much does ' + high.name + ' transfer so both match?')));
   const directive = joinPoints(points);
   const coach1 = (raw.times ? (raw.times + ' × ' + fmt(raw.low) + ' = ' + fmt(raw.high) + '. ') : '') + 'Gap = ' + fmt(raw.high) + ' − ' + fmt(raw.low) + ' = ' + fmt(diff) + '.';
-  const coach2 = 'Transfer half the gap: ' + fmt(diff) + ' ÷ 2 = ' + fmt(half) + ' ' + f.unit + '.';
-  const ending = (raw.high + raw.low) / 2;
+  const coach2 = askEnding
+    ? (fmt(raw.low) + ' + ' + fmt(half) + ' = ' + fmt(ending) + '. Both machines end at ' + fmt(ending) + ' ' + f.unit + '.')
+    : ('Transfer half the gap: ' + fmt(diff) + ' ÷ 2 = ' + fmt(half) + ' ' + f.unit + '.');
   return basePuzzle(raw, {
     machines: [
       presentMachine(high, { value: raw.high }),
@@ -1213,8 +1503,10 @@ function composeEqualize(raw) {
     glow: [0, 1],
     points: points,
     directive: directive,
-    missionBadge: 'FIND POWER TRANSFERRED',
-    strategy: 'Find the gap first. The transfer is half the gap — the whole gap would swap who has more.',
+    missionBadge: askEnding ? 'FIND MATCHED POWER' : 'FIND POWER TRANSFERRED',
+    strategy: askEnding
+      ? 'Find the gap first. Half of it moves across, and both machines finish in the middle.'
+      : 'Find the gap first. The transfer is half the gap — the whole gap would swap who has more.',
     step1: {
       badge: 'FIND THE DIFFERENCE',
       subtitle: 'Enter the gap between ' + high.name + ' and ' + low.name + '.',
@@ -1227,7 +1519,20 @@ function composeEqualize(raw) {
       ],
       fallbackTip: 'The gap is the greater amount minus the smaller amount.'
     },
-    step2: {
+    step2: askEnding ? {
+      badge: 'FIND MATCHED POWER',
+      subtitle: 'Enter each machine\'s ' + noun + ' after the transfer.',
+      answer: ending,
+      coach: coach2,
+      traps: [
+        trap(half, fmt(half) + ' is only the transfer. Add it to ' + low.name + ': ' + fmt(raw.low) + ' + ' + fmt(half) + ' = ' + fmt(ending) + '.'),
+        diff === ending
+          ? trap(raw.low, fmt(raw.low) + ' is ' + low.name + ' before the transfer. Both end at ' + fmt(ending) + '.')
+          : trap(diff, 'That is the whole gap. Each machine ends in the middle: ' + fmt(raw.low) + ' + ' + fmt(half) + ' = ' + fmt(ending) + '.'),
+        trap(raw.high, fmt(raw.high) + ' is ' + high.name + ' before the transfer. After it, both sit at ' + fmt(ending) + '.')
+      ],
+      fallbackTip: 'Add half the gap to the smaller machine. That is where both machines finish.'
+    } : {
       badge: 'FIND POWER TRANSFERRED',
       subtitle: 'Enter the amount transferred so both machines match.',
       answer: half,
@@ -1245,9 +1550,11 @@ function composeEqualize(raw) {
       low: rowTitle(low, { value: raw.low, accent: low.accent }),
       diff: diff,
       half: half,
-      footnote: 'The gold stretch is the gap. Half of it moves across.'
+      footnote: askEnding
+        ? 'The gold stretch is the gap. Half of it moves, and both machines finish in the middle.'
+        : 'The gold stretch is the gap. Half of it moves across.'
     },
-    sig: ['equalize', high.name, low.name, raw.high, raw.low, raw.times].join(':')
+    sig: ['equalize', high.name, low.name, raw.high, raw.low, raw.times, raw.ask || 'transfer'].join(':')
   });
 }
 
@@ -1555,7 +1862,9 @@ function valuesOf(raw) {
   if (!raw) return null;
   if (raw.kind === 'add3') {
     const values = raw.extras.map(function (e) { return raw.unit + e; });
-    return { step1: raw.unit, step2: values[raw.ask], total: values.reduce(function (a, b) { return a + b; }, 0), values: values };
+    const total = values.reduce(function (a, b) { return a + b; }, 0);
+    const step2 = raw.ask === 'total' ? total : values[raw.ask];
+    return { step1: raw.unit, step2: step2, total: total, values: values };
   }
   if (raw.kind === 'times') {
     const values = raw.mults.map(function (m, i) { return m * raw.unit + raw.extras[i]; });
@@ -1566,7 +1875,9 @@ function valuesOf(raw) {
     return { step1: raw.unit, step2: step2, total: sum, values: values };
   }
   if (raw.kind === 'equalize') {
-    return { step1: raw.high - raw.low, step2: (raw.high - raw.low) / 2 };
+    const gap = raw.high - raw.low;
+    const half = gap / 2;
+    return { step1: gap, step2: raw.ask === 'ending' ? raw.low + half : half };
   }
   if (raw.kind === 'ratio' || raw.kind === 'diffend') {
     const total = raw.a0 + raw.b0;
@@ -1607,9 +1918,16 @@ function invariantError(puzzle) {
   }
   if (puzzle.step1.coach.indexOf('NaN') >= 0 || puzzle.step2.coach.indexOf('NaN') >= 0) return 'bad coach';
   if (raw.kind === 'add3') {
-    const excess = raw.extras[1] + raw.extras[2];
-    if ((got.total - excess) / 3 !== raw.unit) return 'add3 algebra';
-    if (excess % 3 !== 0) return 'add3 trap not integer';
+    const n = raw.extras.length;
+    const excess = raw.extras.reduce(function (a, b) { return a + b; }, 0);
+    if ((got.total - excess) / n !== raw.unit) return 'add3 algebra';
+    if ((raw.given || 'total') === 'total' && excess % n !== 0) return 'add3 trap not integer';
+    if (raw.extras.some(function (e) { return raw.unit + e <= 0; })) return 'add3 bar';
+    if (raw.given === 'anchor') {
+      if (!(raw.anchor > 0 && raw.anchor < n)) return 'add3 anchor';
+      if (raw.ask === raw.anchor) return 'add3 asks the given bar';
+    }
+    if (raw.ask !== 'total' && !(raw.ask >= 1 && raw.ask < n)) return 'add3 ask';
   }
   if (raw.kind === 'times') {
     const values = got.values;
@@ -1625,7 +1943,10 @@ function invariantError(puzzle) {
   if (raw.kind === 'equalize') {
     if ((raw.high - raw.low) % 2 !== 0) return 'odd gap';
     if (raw.times && raw.high !== raw.low * raw.times) return 'times equalize';
-    if (!puzzle.step2.traps.some(function (t) { return t && t.value === raw.high - raw.low && t.tip.indexOf('HALF') >= 0; })) return 'missing half trap';
+    const half = (raw.high - raw.low) / 2;
+    if (raw.ask === 'ending') {
+      if (puzzle.step2.answer !== raw.low + half) return 'ending amount';
+    } else if (!puzzle.step2.traps.some(function (t) { return t && t.value === raw.high - raw.low && t.tip.indexOf('HALF') >= 0; })) return 'missing half trap';
   }
   if (raw.kind === 'ratio') {
     if (raw.a0 + raw.b0 !== raw.a1 + raw.b1) return 'ratio total';
@@ -1688,31 +2009,64 @@ function buildOptions(step) {
   return shuffle(chosen);
 }
 
+function puzzleShape(raw) {
+  if (!raw) return '';
+  if (raw.kind === 'equalize') return 'eq-' + (raw.ask || 'transfer') + (raw.times ? '-times' : '');
+  if (raw.kind === 'add3') return 'add-' + raw.extras.length + '-' + (raw.given || 'total') + '-' + (raw.style || 'more');
+  return raw.kind || '';
+}
+
+function shapeFamily(shape) {
+  if (shape.indexOf('add-3-total') === 0) return 'trio';
+  if (shape.indexOf('anchor') >= 0) return 'anchor';
+  if (shape.indexOf('add-2-total') === 0) return 'pair';
+  if (shape.indexOf('eq-') === 0) return 'eq';
+  return shape;
+}
+
+function shapeCrowded(shape) {
+  const log = G.shapeLog || [];
+  if (!shape || !log.length) return false;
+  const fam = shapeFamily(shape);
+  const lastFam = shapeFamily(log[log.length - 1]);
+  if (log[log.length - 1] === shape) return true;
+  if (fam === lastFam && fam !== 'pair') return true;
+  let same = 0;
+  let kin = 0;
+  for (let i = 0; i < log.length; i++) {
+    if (log[i] === shape) same++;
+    if (shapeFamily(log[i]) === fam) kin++;
+  }
+  if (fam === 'trio') return same >= 1;
+  if (fam === 'anchor' || fam === 'pair' || fam === 'eq') return kin >= 2;
+  return same >= 2;
+}
+
+function keepPuzzle(puzzle) {
+  G.history.push(puzzle.sig);
+  if (G.history.length > 8) G.history.shift();
+  if (!G.shapeLog) G.shapeLog = [];
+  G.shapeLog.push(puzzleShape(puzzle.raw));
+  if (G.shapeLog.length > 8) G.shapeLog.shift();
+  return puzzle;
+}
+
 function createPuzzle(diff) {
   for (let i = 0; i < 24; i++) {
     const raw = rollRaw(diff);
     const puzzle = compose(raw);
     if (!puzzle) continue;
-    const err = invariantError(puzzle);
-    if (err) continue;
+    if (invariantError(puzzle)) continue;
     if (G.history.indexOf(puzzle.sig) >= 0) continue;
-    G.history.push(puzzle.sig);
-    if (G.history.length > 8) G.history.shift();
-    return puzzle;
+    if (diff === 'easy' && shapeCrowded(puzzleShape(raw))) continue;
+    return keepPuzzle(puzzle);
   }
   for (let i = 0; i < 24; i++) {
     const raw = rollRaw(diff);
     const puzzle = compose(raw);
-    if (puzzle && !invariantError(puzzle)) {
-      G.history.push(puzzle.sig);
-      if (G.history.length > 8) G.history.shift();
-      return puzzle;
-    }
+    if (puzzle && !invariantError(puzzle)) return keepPuzzle(puzzle);
   }
-  const fallback = compose(rollAdd3());
-  G.history.push(fallback.sig);
-  if (G.history.length > 8) G.history.shift();
-  return fallback;
+  return keepPuzzle(compose(rollAdd3()));
 }
 
 /* ---------------- flow ---------------- */
@@ -1753,6 +2107,7 @@ function startRun() {
   G.duelists = makeDuelists(G.mode === 'duel' ? G.playersN : 0);
   G.overReason = '';
   G.stats = null;
+  G.shapeLog = [];
   beginRound();
 }
 
